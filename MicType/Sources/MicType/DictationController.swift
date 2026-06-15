@@ -110,9 +110,9 @@ final class DictationController {
             // 指令模式才读选区——普通输入完全不碰选区和剪贴板
             self.skillSession = skill
             self.targetSelection = skill ? SelectionReader.readSelectedText() : nil
-            // 微信/QQ 的无障碍接口残缺，AX 读不到时用 ⌘C 兜底（异步，不阻塞录音；用完即恢复剪贴板）
-            if skill, self.targetSelection == nil,
-               Self.poorAXApps.contains(self.targetBundleID) {
+            // AX 读不到选区（浏览器/Gmail、VSCode 等 Electron、微信/QQ 都接口残缺）→ ⌘C 兜底。
+            // 异步不阻塞录音；保存并恢复剪贴板，非破坏性。AX 能直接读到的原生应用根本走不到这一步。
+            if skill, self.targetSelection == nil {
                 SelectionReader.readSelectedTextWithClipboardFallback { [weak self] text in
                     guard let self = self, self.phase == .recording else { return }
                     self.targetSelection = text
@@ -234,6 +234,7 @@ final class DictationController {
     /// 指令分发：显式说「帮我回复…」→ 直通草拟回复；有选区 → 模型自判意图（改写/回复/新写）；
     /// 没选区 → 自由指令
     private func runSkillSession(rawText: String, isColdStart: Bool) {
+        Log.info("Skill dispatch selection=\(targetSelection.map { "\($0.count)chars" } ?? "nil") app=\(targetBundleID)")
         if SkillRouter.isReplyTrigger(rawText) {
             runReplyDraft(instruction: rawText, raw: rawText)
             return

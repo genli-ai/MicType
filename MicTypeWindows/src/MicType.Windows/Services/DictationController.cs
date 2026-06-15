@@ -100,7 +100,9 @@ public sealed class DictationController
             "Recording start " +
             $"skill={skill} targetProcess={_targetProcessName ?? "unknown"} targetWindow=0x{_targetWindow.ToInt64():X}");
 
-        if (skill && _targetSelection is null && IsPoorSelectionApp(_targetProcessName))
+        // UIA 读不到选区（浏览器/Chrome、Electron、微信/企业微信/QQ 都接口残缺）→ Ctrl+C 兜底。
+        // 异步不阻塞录音；保存并恢复剪贴板，非破坏性。UIA 能直接读到的原生应用根本走不到这一步。
+        if (skill && _targetSelection is null)
         {
             _ = Task.Run(async () =>
             {
@@ -229,6 +231,7 @@ public sealed class DictationController
 
     private async Task RunSkillSessionAsync(string rawText)
     {
+        Log.Info($"Skill dispatch selection={(_targetSelection is null ? "nil" : _targetSelection.Length + "chars")} app={_targetProcessName ?? "unknown"}");
         if (SkillRouter.IsReplyTrigger(rawText))
         {
             await RunReplyDraftAsync(rawText, rawText);
