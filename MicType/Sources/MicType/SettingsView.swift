@@ -256,7 +256,7 @@ private struct PolishTab: View {
     @AppStorage(SettingsKeys.polishLevel) private var polishLevel = PolishLevel.smart.rawValue
     @AppStorage(SettingsKeys.llmProvider) private var provider = LLMProvider.openai.rawValue
     @AppStorage(SettingsKeys.openaiBaseURL) private var baseURL = "https://api.openai.com/v1"
-    @AppStorage(SettingsKeys.chatModel) private var chatModel = "gpt-5.4-nano"
+    @AppStorage(SettingsKeys.chatModel) private var chatModel = "gpt-5.5"
     @AppStorage(SettingsKeys.openaiCommandModel) private var openaiCommandModel = "gpt-5.4-mini"
     @AppStorage(SettingsKeys.deepseekBaseURL) private var dsBaseURL = LLMProvider.deepseek.defaultBaseURL
     @AppStorage(SettingsKeys.deepseekModel) private var dsModel = LLMProvider.deepseek.defaultModel

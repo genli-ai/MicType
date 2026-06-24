@@ -20,7 +20,7 @@ public sealed class AppSettings
     public LlmProvider LlmProvider { get; set; } = LlmProvider.OpenAi;
     public string OpenAiBaseUrl { get; set; } = "https://api.openai.com/v1";
     public string DeepSeekBaseUrl { get; set; } = "https://api.deepseek.com";
-    public string OpenAiPolishModel { get; set; } = "gpt-5.4-nano";
+    public string OpenAiPolishModel { get; set; } = "gpt-5.5";
     public string OpenAiCommandModel { get; set; } = "gpt-5.4-mini";
     public string DeepSeekPolishModel { get; set; } = "deepseek-v4-flash";
     public string DeepSeekCommandModel { get; set; } = "deepseek-v4-flash";

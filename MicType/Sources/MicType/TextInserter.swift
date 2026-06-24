@@ -9,6 +9,18 @@ enum TextInserter {
         case clipboardOnly   // 没把握粘贴成功，文本保留在剪贴板里
     }
 
+    /// 粘贴时序档：focus 沉淀 / 写剪贴板沉淀 / ⌘V 按住时长。
+    /// fast = 目标本就在前台且非冷启动（焦点没动，几乎无需等待）；
+    /// normal = 需要重新激活的常态；conservative = 冷启动首次粘贴（输入框可能还没吃键，给足时间）。
+    private struct PasteTiming {
+        let focusDelay: Double
+        let pasteDelay: Double
+        let keyHold: Double
+        static let fast = PasteTiming(focusDelay: 0.0, pasteDelay: 0.08, keyHold: 0.03)
+        static let normal = PasteTiming(focusDelay: 0.25, pasteDelay: 0.18, keyHold: 0.03)
+        static let conservative = PasteTiming(focusDelay: 0.75, pasteDelay: 0.35, keyHold: 0.12)
+    }
+
     /// targetBundleID：录音开始时的目标应用。
     /// 如果用户在识别/润色期间切走了窗口，先把目标应用拉回前台、确认到位后再粘贴；
     /// 拉不回来就把文本留在剪贴板并告知用户。completion 在主线程回调。
@@ -23,24 +35,44 @@ enum TextInserter {
         }
 
         guard !targetBundleID.isEmpty else {
-            pasteIntoCurrentFocus(text, allowRestore: allowClipboardRestore,
-                                  conservativePaste: conservativePaste, completion: completion)
+            // 不知道目标 App：无法确认焦点稳定，按 normal/conservative 时序直接粘进当前焦点
+            pasteIntoCurrentFocus(text, timing: conservativePaste ? .conservative : .normal,
+                                  allowRestore: allowClipboardRestore, completion: completion)
             return
         }
 
-        // 无论当前 frontmost 是否匹配，都重新激活目标 App。
-        // App 启动后的第一次粘贴最容易出现"App 在前台但输入框还没吃键"。
         guard let app = NSRunningApplication
             .runningApplications(withBundleIdentifier: targetBundleID).first else {
             putOnClipboard(text)
             completion(.clipboardOnly)
             return
         }
-        app.activate(options: [.activateAllWindows])
+
+        let alreadyFrontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == targetBundleID
+
+        // 常态（轻点听写，用户一直停在同一个 App，模型已热）：目标本就在前台 → 不要重新激活。
+        // 重新激活会改变 key window、把浏览器/Electron（Chrome/Gmail/VSCode/Slack…）正聚焦的
+        // 输入框 blur 掉，光标当场消失。直接快速粘贴即可。
+        let tInsert = DispatchTime.now()
+        if alreadyFrontmost && !conservativePaste {
+            pasteIntoCurrentFocus(text, timing: .fast, allowRestore: allowClipboardRestore) { outcome in
+                Log.info("Timing insert=\(Log.ms(since: tInsert))ms path=fast")
+                completion(outcome)
+            }
+            return
+        }
+
+        // 需要把目标拉回前台（用户中途切走，或冷启动首次粘贴"App 在前台但输入框还没吃键"）。
+        // 去掉 .activateAllWindows——它会抬起该 App 的全部窗口、可能把焦点落到错误的窗口；
+        // 只激活当前/最前窗口，保住光标所在窗口。冷启动仍走 conservative 长时序（保留旧可靠性修复）。
+        app.activate(options: [])
         waitForFrontmost(targetBundleID, attemptsLeft: conservativePaste ? 16 : 8) { arrived in
             if arrived {
-                pasteIntoCurrentFocus(text, allowRestore: allowClipboardRestore,
-                                      conservativePaste: conservativePaste, completion: completion)
+                pasteIntoCurrentFocus(text, timing: conservativePaste ? .conservative : .normal,
+                                      allowRestore: allowClipboardRestore) { outcome in
+                    Log.info("Timing insert=\(Log.ms(since: tInsert))ms path=\(conservativePaste ? "activate-cold" : "activate")")
+                    completion(outcome)
+                }
             } else {
                 putOnClipboard(text)
                 completion(.clipboardOnly)
@@ -70,19 +102,17 @@ enum TextInserter {
         pb.setString(text, forType: .string)
     }
 
-    private static func pasteIntoCurrentFocus(_ text: String, allowRestore: Bool,
-                                              conservativePaste: Bool,
+    private static func pasteIntoCurrentFocus(_ text: String, timing: PasteTiming,
+                                              allowRestore: Bool,
                                               completion: @escaping (Outcome) -> Void) {
-        let focusDelay = conservativePaste ? 0.75 : 0.25
-        DispatchQueue.main.asyncAfter(deadline: .now() + focusDelay) {
-            performPaste(text, allowRestore: allowRestore, conservativePaste: conservativePaste) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + timing.focusDelay) {
+            performPaste(text, timing: timing, allowRestore: allowRestore) {
                 completion(.pasted)
             }
         }
     }
 
-    private static func performPaste(_ text: String, allowRestore: Bool,
-                                     conservativePaste: Bool = false,
+    private static func performPaste(_ text: String, timing: PasteTiming, allowRestore: Bool,
                                      completion: (() -> Void)? = nil) {
         let pasteboard = NSPasteboard.general
         let oldString = pasteboard.string(forType: .string)
@@ -91,9 +121,8 @@ enum TextInserter {
         pasteboard.setString(text, forType: .string)
 
         // 给剪贴板写入留一点时间，再发送 ⌘V
-        let pasteDelay = conservativePaste ? 0.35 : 0.18
-        DispatchQueue.main.asyncAfter(deadline: .now() + pasteDelay) {
-            sendCmdV(keyHold: conservativePaste ? 0.12 : 0.03) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + timing.pasteDelay) {
+            sendCmdV(keyHold: timing.keyHold) {
                 completion?()
             }
             if allowRestore && Settings.shared.restoreClipboard {

@@ -167,6 +167,7 @@ final class DictationController {
         phase = .processing
         overlay.showProcessing(tr("识别中…", "Transcribing…"))
         let isColdStart = !QwenEngine.shared.isModelReady
+        let tASR = DispatchTime.now()
 
         QwenEngine.shared.transcribe(samples: samples) { [weak self] result in
             guard let self = self else { return }
@@ -177,7 +178,7 @@ final class DictationController {
                 self.overlay.flashError(error.message)
                 Sounds.playError()
             case .success(let transcribed):
-                Log.info("Transcription completed chars=\(transcribed.count)")
+                Log.info("Timing ASR=\(Log.ms(since: tASR))ms cold=\(isColdStart) chars=\(transcribed.count)")
                 // 词汇表"错写=正写"硬替换：进入润色/指令之前先做确定性纠正
                 let rawText = TextPostProcessor.applyVocabReplacements(transcribed)
                 guard !rawText.isEmpty else {
@@ -205,8 +206,10 @@ final class DictationController {
                 let level = Settings.shared.polishLevel
                 if level != .off, KeychainHelper.loadAPIKey() != nil {
                     self.overlay.showProcessing(tr("润色中…", "Polishing…"))
+                    let tPolish = DispatchTime.now()
                     PolishService.polish(rawText, level: level) { [weak self] polished, failure in
                         guard let self = self else { return }
+                        Log.info("Timing polish=\(Log.ms(since: tPolish))ms model=\(Settings.shared.currentPolishModel) ok=\(polished != nil)")
                         if let polished = polished {
                             self.deliver(raw: rawText, final: polished,
                                          note: tr("已输入", "Inserted"),

@@ -207,7 +207,9 @@ public sealed class DictationController
             CredentialStore.Load(settings.CurrentCredentialTarget) is not null)
         {
             _overlay.ShowProcessing(L10n.Tr("润色中…", "Polishing…"));
+            var polishWatch = Stopwatch.StartNew();
             var polished = await PolishService.PolishAsync(rawText, settings.PolishLevel);
+            Log.Info($"Timing polish={polishWatch.ElapsedMilliseconds}ms model={settings.CurrentPolishModel} ok={polished.Text is not null}");
             if (polished.Text is not null)
             {
                 await DeliverAsync(rawText, polished.Text, L10n.Tr("已输入", "Inserted"));

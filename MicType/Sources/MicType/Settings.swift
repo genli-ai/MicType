@@ -124,7 +124,7 @@ final class Settings {
             SettingsKeys.polishEnabled: true,
             SettingsKeys.polishLevel: PolishLevel.smart.rawValue,
             SettingsKeys.openaiBaseURL: "https://api.openai.com/v1",
-            SettingsKeys.chatModel: "gpt-5.4-nano",
+            SettingsKeys.chatModel: "gpt-5.5",
             SettingsKeys.openaiCommandModel: "gpt-5.4-mini",
             SettingsKeys.deepseekCommandModel: LLMProvider.deepseek.defaultModel,
             SettingsKeys.polishTemperature: 0.5,
@@ -174,6 +174,16 @@ final class Settings {
             }
             d.set(true, forKey: "migratedSplitModels")
         }
+
+        // 一次性迁移：润色默认升到 gpt-5.5——结构化成稿能力 nano/mini 跟不动（配合默认结构化 prompt）。
+        // 只升「还停在旧自动默认」的用户（nil / gpt-4o-mini / gpt-5.4-nano）；用户手动选过的型号一律不动。
+        if !d.bool(forKey: "migratedPolishTo55") {
+            let current = d.string(forKey: SettingsKeys.chatModel)
+            if current == nil || current == "gpt-4o-mini" || current == "gpt-5.4-nano" {
+                d.set("gpt-5.5", forKey: SettingsKeys.chatModel)
+            }
+            d.set(true, forKey: "migratedPolishTo55")
+        }
     }
 
     var hotkey: HotkeyChoice {
@@ -202,7 +212,7 @@ final class Settings {
     }
 
     var chatModel: String {
-        get { d.string(forKey: SettingsKeys.chatModel) ?? "gpt-5.4-mini" }
+        get { d.string(forKey: SettingsKeys.chatModel) ?? "gpt-5.5" }
         set { d.set(newValue, forKey: SettingsKeys.chatModel) }
     }
 

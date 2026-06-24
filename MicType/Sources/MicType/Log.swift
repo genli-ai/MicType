@@ -29,6 +29,11 @@ enum Log {
     static func warn(_ message: String) { write("WARN", message) }
     static func error(_ message: String) { write("ERROR", message) }
 
+    /// 单调时钟毫秒差，用于给各阶段（识别/润色/插入）计时——埋点排查"慢"用
+    static func ms(since start: DispatchTime) -> Int {
+        Int((DispatchTime.now().uptimeNanoseconds &- start.uptimeNanoseconds) / 1_000_000)
+    }
+
     /// 启动时调用：版本、系统、每块屏幕的几何与缩放（直接服务悬浮窗排障）、设置摘要
     static func startup() {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
