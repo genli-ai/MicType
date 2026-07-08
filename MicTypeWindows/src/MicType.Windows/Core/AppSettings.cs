@@ -14,6 +14,7 @@ public sealed class AppSettings
     public bool LaunchAtLogin { get; set; }
 
     public string SpeechModelRepo { get; set; } = "sherpa-onnx/SenseVoiceSmall";
+    public string SpeechModelDirectory { get; set; } = "";
     public string CustomVocabulary { get; set; } = "";
 
     public PolishLevel PolishLevel { get; set; } = PolishLevel.Smart;
