@@ -1,7 +1,9 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using MicType.Win.Core;
 using MicType.Win.Services;
+using WinForms = System.Windows.Forms;
 
 namespace MicType.Win.Views;
 
@@ -227,12 +229,47 @@ public partial class SettingsWindow : Window
 
     private async void OnDownloadModel(object sender, RoutedEventArgs e)
     {
+        var directory = PromptModelDirectory();
+        if (directory is null) return;
+        _modelDownloader.SetModelDirectory(directory);
+        Settings.SpeechModelDirectory = directory;
+        SettingsStore.Instance.Save();
         await DownloadModelAsync(force: false);
     }
 
     private async void OnRedownloadModel(object sender, RoutedEventArgs e)
     {
+        _modelDownloader.DeleteModelFiles();
+        var directory = PromptModelDirectory();
+        if (directory is null) return;
+        _modelDownloader.SetModelDirectory(directory);
+        Settings.SpeechModelDirectory = directory;
+        SettingsStore.Instance.Save();
         await DownloadModelAsync(force: true);
+    }
+
+    private string? PromptModelDirectory()
+    {
+        using var dialog = new WinForms.FolderBrowserDialog
+        {
+            Description = L10n.Tr("请选择模型下载目录", "Select model download folder"),
+            UseDescriptionForTitle = true,
+            InitialDirectory = GetInitialBrowseDirectory()
+        };
+
+        var result = dialog.ShowDialog();
+        if (result != WinForms.DialogResult.OK || string.IsNullOrWhiteSpace(dialog.SelectedPath))
+            return null;
+        return dialog.SelectedPath;
+    }
+
+    private string GetInitialBrowseDirectory()
+    {
+        var current = _modelDownloader.ModelDirectory;
+        if (Directory.Exists(current)) return current;
+        var parent = Path.GetDirectoryName(current);
+        if (parent is not null && Directory.Exists(parent)) return parent;
+        return Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
     }
 
     private void OnCancelModelDownload(object sender, RoutedEventArgs e)
