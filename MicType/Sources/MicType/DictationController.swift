@@ -47,6 +47,16 @@ final class DictationController {
     private var generation = 0
     /// 当前在飞的 LLM 请求，Esc 取消时直接掐断（省下最坏几十秒的干等）
     private var inflightRequest: LLMRequestHandle?
+    /// 伪流式预览（P13）的状态，全部只在主线程读写。
+    /// 纪律：草稿只进悬浮窗，永远不进目标应用；最终文字永远来自松手后那一遍完整识别。
+    private var previewEnabled = false
+    /// 在飞的那一遍预览解码（可取消：松手时立刻让出 GPU 给最终识别）
+    private var previewTask: Task<Void, Never>?
+    /// 下一次预览的最小间隔：按上一次实测耗时自适应，慢机器/长音频自动放慢，绝不堆积
+    private var previewInterval: Double = 1.5
+    /// 当前预览窗口在整段录音里的起始采样下标（窗口满了就往后滚，已定稿的文字留在 previewCommitted）
+    private var previewWindowStart = 0
+    private var previewCommitted = ""
 
     /// 无障碍接口残缺、读选区需要 ⌘C 兜底的应用
     private static let poorAXApps: Set<String> = [
@@ -60,6 +70,13 @@ final class DictationController {
     /// 静音判据的电平阈值（AudioRecorder 送来的是 min(1, rms*14)）。比"没听到内容"的
     /// 闸门宽松些：这里只是判断"还在说吗"，判错的代价只是提前收尾。
     private static let silenceLevelThreshold: Float = 0.08
+
+    /// 伪流式预览的节奏：窗口最多 20s（再长解码就拖沓，且对预览毫无意义），
+    /// 每段至少 1.5s 才值得跑一遍，基础间隔 1.5s，实测慢了就退到最多 5s 一次。
+    private static let previewWindowSeconds: Double = 20
+    private static let previewMinChunkSeconds: Double = 1.5
+    private static let previewBaseInterval: Double = 1.5
+    private static let previewMaxInterval: Double = 5.0
 
     // MARK: - 入口
 
@@ -149,6 +166,7 @@ final class DictationController {
     /// 结束当前一轮：作废所有在途回调 + 掐断网络请求 + 清掉本轮上下文，状态回 idle
     private func endSession() {
         generation &+= 1
+        stopLivePreview()
         inflightRequest?.cancel()
         inflightRequest = nil
         skillSession = false
@@ -222,6 +240,103 @@ final class DictationController {
                  + " (limit \(String(format: "%.1f", autoStopSilence))s)")
         addSessionNote(tr("检测到静音，已自动结束录音", "Silence detected — recording finished"))
         finishRecording()
+    }
+
+    // MARK: - 伪流式预览（录音中的灰字草稿）
+
+    /// 录音一开始就起的预览循环。三道闸门：用户开关、模型已就绪、录够 1.5s。
+    /// 任何一道不过就整轮不开——预览是锦上添花，绝不能拖慢或搅乱主流程。
+    private func startLivePreview(generation: Int) {
+        previewEnabled = false
+        previewTask = nil
+        previewInterval = Self.previewBaseInterval
+        previewWindowStart = 0
+        previewCommitted = ""
+        guard Settings.shared.livePreview else { return }
+        // 模型还在加载（或刚换过模型）时不开：预览绝不能替用户去等十几秒的加载，
+        // 更不能和加载抢 GPU。这一轮就安静地按老样子走。
+        guard QwenEngine.shared.isModelReady else {
+            Log.info("Live preview skipped (model not ready)")
+            return
+        }
+        previewEnabled = true
+        scheduleNextPartial(after: Self.previewMinChunkSeconds, generation: generation)
+    }
+
+    /// 松手 / 取消 / 作废时都要调：先取消在飞的那一遍，最终识别才不用排在它后面。
+    private func stopLivePreview() {
+        guard previewEnabled || previewTask != nil else { return }
+        previewEnabled = false
+        // 解码循环里有 Task.checkCancellation()，取消后它会尽快让出 Qwen3ASRSTT 这个 actor
+        previewTask?.cancel()
+        previewTask = nil
+        previewWindowStart = 0
+        previewCommitted = ""
+    }
+
+    private func scheduleNextPartial(after delay: Double, generation: Int) {
+        guard previewEnabled, phase == .recording, isCurrent(generation) else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.runPartial(generation: generation)
+        }
+    }
+
+    /// 跑一遍预览解码。同一时刻只允许一遍在飞（previewTask != nil 就直接跳过），
+    /// 下一遍永远在上一遍回来之后才排——预览之间不会互相排队，也不会和最终识别并发。
+    private func runPartial(generation: Int) {
+        guard previewEnabled, phase == .recording, isCurrent(generation), previewTask == nil else { return }
+        // 还没听到过人声就别解码：对纯静音跑识别既浪费 GPU，又容易把热词上下文"复读"出来
+        guard speechDetected else {
+            scheduleNextPartial(after: Self.previewBaseInterval, generation: generation)
+            return
+        }
+        let chunk = recorder.snapshot(fromSampleIndex: previewWindowStart)
+        let chunkSeconds = Double(chunk.count) / 16000.0
+        guard chunkSeconds >= Self.previewMinChunkSeconds else {
+            scheduleNextPartial(after: Self.previewMinChunkSeconds - chunkSeconds + 0.1,
+                                generation: generation)
+            return
+        }
+        let consumed = chunk.count
+        let windowFull = chunkSeconds >= Self.previewWindowSeconds
+        previewTask = QwenEngine.shared.transcribePartial(samples: chunk) { [weak self] text, ms in
+            guard let self = self else { return }
+            self.previewTask = nil
+            guard self.previewEnabled, self.phase == .recording, self.isCurrent(generation) else { return }
+            Log.info("Timing partial=\(ms)ms audio=\(String(format: "%.1f", chunkSeconds))s"
+                     + " ok=\(text != nil) chars=\(text?.count ?? 0)")
+            // 这一遍占了多少 GPU 时间，下一遍就等多久（1.5 倍）：机器忙/音频长时自动放慢刷新，
+            // 宁可草稿更新得稀疏，也不能让预览拖慢松手后的最终识别。
+            let latency = Double(ms) / 1000.0
+            self.previewInterval = min(Self.previewMaxInterval,
+                                       max(Self.previewBaseInterval, latency * 1.5))
+            if let text = text, !text.isEmpty {
+                let draft = self.joinDraft(self.previewCommitted, text)
+                self.overlay.showDraft(draft)
+                if windowFull { self.previewCommitted = draft }
+            }
+            if windowFull {
+                // 窗口满 20s：这一窗的文字（能拿到就）定稿成前缀，音频从这一窗的末尾接着往下看，
+                // 既不重复解码也不丢音频。拿不到文字也照样往前滚，免得窗口无限变长。
+                self.previewWindowStart += consumed
+                Log.info("Preview window rolled at \(String(format: "%.0f", chunkSeconds))s")
+            }
+            self.scheduleNextPartial(after: max(0.4, self.previewInterval - latency),
+                                     generation: generation)
+        }
+        if previewTask == nil {
+            // 模型在这期间被卸载/换掉了：安静收摊，这一轮不再重试
+            previewEnabled = false
+            Log.info("Live preview stopped (model no longer ready)")
+        }
+    }
+
+    /// 拼接已定稿前缀与新一窗的草稿：中文直接接，英文之间补一个空格
+    private func joinDraft(_ prefix: String, _ text: String) -> String {
+        guard !prefix.isEmpty else { return text }
+        let needsSpace = (prefix.last?.isLetter == true && prefix.last?.isASCII == true)
+            && (text.first?.isLetter == true && text.first?.isASCII == true)
+        return prefix + (needsSpace ? " " : "") + text
     }
 
     var isRecording: Bool { phase == .recording }
@@ -316,6 +431,9 @@ final class DictationController {
                      + " autoStopSilence=\(String(format: "%.0f", self.autoStopSilence))s")
             self.overlay.showRecording(label: self.recordingLabel)
             Sounds.playStart()
+            // 伪流式预览：录音期间每隔一会儿把"到目前为止"的音频解码一遍，灰字贴在波形下面。
+            // 纯粹是给眼睛看的，永远不会插入到任何地方。
+            self.startLivePreview(generation: self.generation)
             // 选区必须在录音起点快照（用户随后可能切走焦点）。这里只走 AX：纯读、非破坏性，
             // 绝不发 ⌘C——按下的时候还不知道这是不是指令，纯听写路径永远不该碰剪贴板。
             // 放在 recorder.start() 之后：目标应用的无障碍接口卡住时，至少音频已经在录了。
@@ -328,6 +446,9 @@ final class DictationController {
     private func finishRecording() {
         guard phase == .recording else { return }
         let samples = recorder.stop()
+        // 先掐预览再往下走：最终那一遍识别要用的 GPU（actor）就在预览手上，
+        // 越早取消，用户松手后等得越短
+        stopLivePreview()
         recordingStartedAt = nil
         // 录音已结束，这一段再也不会被"当成修饰键用"而作废了
         pressSession = false

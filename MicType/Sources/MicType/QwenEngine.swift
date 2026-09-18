@@ -122,6 +122,55 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
         return residue.count <= max(2, text.count / 10)
     }
 
+    /// 词汇表直接作为热词上下文喂给模型（decoder 层的第一道纠正）
+    private static func hotwordContext(terms: [String]) -> String? {
+        guard !terms.isEmpty else { return nil }
+        var joined = terms.joined(separator: "、")
+        if joined.count > 800 { joined = String(joined.prefix(800)) }
+        return "常用词汇：" + joined
+    }
+
+    /// 伪流式预览：对"到此为止"的一段音频跑一遍识别，结果**只用于悬浮窗灰字**，永不插入。
+    ///
+    /// 三条纪律：
+    /// 1. 只在模型已就绪（isModelReady）时才跑——预览绝不触发模型加载，也绝不替用户等十几秒；
+    /// 2. GPU 串行由 Qwen3ASRSTT 这个 actor 本身保证：预览和最终那一遍永远排队，不会并发抢 GPU；
+    /// 3. 返回的 Task 可取消——松手时立刻取消，解码循环里的 Task.checkCancellation() 会让出
+    ///    actor，最终识别最多多等一次 prefill，不会被整段预览堵住。
+    ///
+    /// completion 在主线程回调：成功给（文本, 耗时毫秒），失败或被取消不回调（取消是正常路径）。
+    @discardableResult
+    func transcribePartial(samples: [Float],
+                           completion: @escaping (String?, Int) -> Void) -> Task<Void, Never>? {
+        guard isModelReady, let load = loadTask else { return nil }
+        let vocabTerms = Settings.shared.vocabularyTerms
+        let context = Self.hotwordContext(terms: vocabTerms)
+        return Task {
+            guard let stt = try? await load.value else {
+                // 加载失败的善后（清缓存、报错）留给正式 transcribe，预览这边安静退场
+                DispatchQueue.main.async { completion(nil, 0) }
+                return
+            }
+            if Task.isCancelled { return }
+            let started = DispatchTime.now()
+            do {
+                let result = try await stt.transcribe(audio: samples, language: nil,
+                                                      context: context, temperature: 0.0)
+                let elapsed = Log.ms(since: started)
+                if Task.isCancelled { return }
+                let cleaned = TextPostProcessor.cleanTranscript(result.text)
+                let text = Self.isVocabEcho(cleaned, terms: vocabTerms) ? "" : cleaned
+                DispatchQueue.main.async { completion(text, elapsed) }
+            } catch {
+                let elapsed = Log.ms(since: started)
+                // 取消是正常路径（用户松手了），不报错也不刷新草稿
+                if Task.isCancelled { return }
+                Log.warn("Partial transcription failed: " + String(error.localizedDescription.prefix(80)))
+                DispatchQueue.main.async { completion(nil, elapsed) }
+            }
+        }
+    }
+
     func preload() {
         guard isModelAvailable, ensureTokenizerFile() == nil else { return }
         _ = ensureLoadTask()
@@ -146,14 +195,8 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
             return
         }
 
-        // 词汇表直接作为热词上下文喂给模型。
         let vocabTerms = Settings.shared.vocabularyTerms
-        var context: String? = nil
-        if !vocabTerms.isEmpty {
-            var joined = vocabTerms.joined(separator: "、")
-            if joined.count > 800 { joined = String(joined.prefix(800)) }
-            context = "常用词汇：" + joined
-        }
+        let context = Self.hotwordContext(terms: vocabTerms)
 
         let load = ensureLoadTask()
         Task {
@@ -206,7 +249,10 @@ final class QwenEngine: SpeechEngine {
     var engineName: String { "Qwen3-ASR" }
     var isModelAvailable: Bool { false }
     var isModelLoaded: Bool { false }
+    var isModelReady: Bool { false }
     func preload() {}
+    func transcribePartial(samples: [Float],
+                           completion: @escaping (String?, Int) -> Void) -> Task<Void, Never>? { nil }
     func unloadModel() {}
     func transcribe(samples: [Float], completion: @escaping (Result<String, MTError>) -> Void) {
         DispatchQueue.main.async {

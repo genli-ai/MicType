@@ -106,6 +106,7 @@ enum SettingsKeys {
     static let playSounds = "playSounds"
     static let restoreClipboard = "restoreClipboard"
     static let autoStopSilenceSeconds = "autoStopSilenceSeconds"  // 静音自动停秒数（0 = 关）
+    static let livePreview = "livePreview"                 // 录音中悬浮窗灰字预览（伪流式）
     static let qwenModelRepo = "qwenModelRepo"
     static let llmProvider = "llmProvider"
     static let appLanguage = "appLanguage"
@@ -136,6 +137,7 @@ final class Settings {
             SettingsKeys.playSounds: true,
             SettingsKeys.restoreClipboard: true,
             SettingsKeys.autoStopSilenceSeconds: 0.0,
+            SettingsKeys.livePreview: true,
             SettingsKeys.qwenModelRepo: QwenModels.defaultRepo,
             SettingsKeys.llmProvider: LLMProvider.openai.rawValue,
             SettingsKeys.deepseekBaseURL: LLMProvider.deepseek.defaultBaseURL,
@@ -267,6 +269,14 @@ final class Settings {
     var autoStopSilenceSeconds: Double {
         get { d.object(forKey: SettingsKeys.autoStopSilenceSeconds) as? Double ?? 0 }
         set { d.set(max(0, newValue), forKey: SettingsKeys.autoStopSilenceSeconds) }
+    }
+
+    /// 录音中在悬浮窗显示灰色的实时草稿（伪流式预览）。默认开。
+    /// 这条只影响"看得见"，永远不影响插入的文字——草稿绝不会进目标应用，
+    /// 最终结果永远是松手后重跑的那一遍完整识别。
+    var livePreview: Bool {
+        get { d.bool(forKey: SettingsKeys.livePreview) }
+        set { d.set(newValue, forKey: SettingsKeys.livePreview) }
     }
 
     /// 润色/技能使用的大模型服务商（GPT 或 DeepSeek，二选一）

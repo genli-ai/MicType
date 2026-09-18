@@ -16,6 +16,9 @@ final class OverlayState: ObservableObject {
     // 占位初值，显示前必然会被 showRecording/showProcessing 覆盖
     @Published var mode: Mode = .recording("")
     @Published var levels: [Float] = Array(repeating: 0.05, count: 13)
+    /// 录音中的灰色草稿（伪流式预览）。只是"看得见"，永远不会被插入到任何地方；
+    /// 空字符串时胶囊保持原来的紧凑形状。
+    @Published var draftText: String = ""
 
     func pushLevel(_ level: Float) {
         var l = levels
@@ -35,6 +38,44 @@ struct OverlayView: View {
     @ObservedObject var state: OverlayState
 
     var body: some View {
+        VStack(spacing: 6) {
+            row
+            if !state.draftText.isEmpty {
+                // 灰字草稿：识别还在跑，随时会变，所以比正文暗一档；
+                // 只留两行，掐头不掐尾（用户关心的是刚说的那几个字）
+                Text(state.draftText)
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.55))
+                    .lineLimit(2)
+                    .truncationMode(.head)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: 340, alignment: .leading)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: state.draftText)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .frame(minWidth: 160, minHeight: 44)
+        .background(capsuleBackground)
+        .padding(16)
+    }
+
+    /// 没草稿时保持原来的胶囊；有草稿时换成圆角矩形——两行文字装进胶囊里
+    /// 左右会被弧边啃掉，读起来别扭。
+    @ViewBuilder private var capsuleBackground: some View {
+        if state.draftText.isEmpty {
+            Capsule()
+                .fill(Color.black.opacity(0.82))
+                .shadow(color: .black.opacity(0.35), radius: 12, x: 0, y: 4)
+        } else {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.black.opacity(0.82))
+                .shadow(color: .black.opacity(0.35), radius: 12, x: 0, y: 4)
+        }
+    }
+
+    private var row: some View {
         HStack(spacing: 10) {
             switch state.mode {
             case .recording(let label):
@@ -84,15 +125,6 @@ struct OverlayView: View {
                     .lineLimit(2)
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
-        .frame(minWidth: 160, minHeight: 44)
-        .background(
-            Capsule()
-                .fill(Color.black.opacity(0.82))
-                .shadow(color: .black.opacity(0.35), radius: 12, x: 0, y: 4)
-        )
-        .padding(16)
     }
 }
 
@@ -111,7 +143,8 @@ final class OverlayController {
 
     private func ensurePanel() -> NSPanel {
         if let p = panel { return p }
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 420, height: 90),
+        // 面板放大到能装下两行灰字草稿；胶囊在容器里贴底，所以没草稿时位置与以前一模一样
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 160),
                         styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered,
                         defer: false)
@@ -139,7 +172,9 @@ final class OverlayController {
             ?? NSScreen.main ?? NSScreen.screens.first
         guard let frame = screen?.visibleFrame else { return }
         let x = frame.midX - p.frame.width / 2
-        let y = frame.minY + 28
+        // +35 而不是 +28：容器改成贴底之后，胶囊底边相对面板底边固定抬高 16pt，
+        // 这里补回原先居中布局的 7pt，屏幕上的位置与 3.2.19 完全一致
+        let y = frame.minY + 35
         p.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
@@ -147,8 +182,17 @@ final class OverlayController {
         hideGeneration += 1
         endProcessing()
         state.resetLevels()
+        state.draftText = ""
         state.mode = .recording(label)
         present(context: "recording")
+    }
+
+    /// 伪流式预览：把识别到一半的灰字草稿贴到波形下面。只在录音中生效——
+    /// 松手之后显示的是"处理中"，草稿的使命到此为止（最终文字以完整重识别为准）。
+    func showDraft(_ text: String) {
+        guard case .recording = state.mode else { return }
+        guard state.draftText != text else { return }
+        state.draftText = text
     }
 
     /// 只换「正在听…」的文案，不重置波形、不重建面板——按住升级为指令模式（或到 2 分钟
@@ -160,6 +204,7 @@ final class OverlayController {
 
     func showProcessing(_ label: String) {
         hideGeneration += 1
+        state.draftText = ""
         processingLabel = label
         if processingStartedAt == nil { processingStartedAt = Date() }
         state.mode = .processing(processingText())
@@ -251,6 +296,7 @@ final class OverlayController {
     private func flash(_ mode: OverlayState.Mode, duration: Double) {
         hideGeneration += 1
         endProcessing()
+        state.draftText = ""
         let generation = hideGeneration
         state.mode = mode
         present(context: "flash")
@@ -263,6 +309,7 @@ final class OverlayController {
     func hide() {
         hideGeneration += 1
         endProcessing()
+        state.draftText = ""
         panel?.orderOut(nil)
     }
 }
@@ -278,7 +325,6 @@ private struct OverlayContainer: View {
                 OverlayView(state: state)
                 Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
         }
     }
 }
