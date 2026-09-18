@@ -55,6 +55,11 @@ final class DictationController {
     private var softHintShown = false
     private var speechDetected = false
     private var lastLoudAt: Date?
+    /// 开始音的回声闸门（到点时刻，nil = 没响过开始音）。Sounds.play 只是把声音排上队就返回，
+    /// 而麦克风此刻已经在录，所以这一声"叮"必然被自己录进去。闸门内的电平一律不算"听到人声"——
+    /// 否则用户还没开口，静音自动停就按"说完了"把录音收了；预览那道 speechDetected 闸门也会
+    /// 被骗过去，拿一段近静音去解码（空音频最容易诱发热词复读）。
+    private var levelGateUntil: Date?
     /// 本次录音生效的静音自动停秒数（录音开始时取一次快照：录到一半改设置不该影响这一段）
     private var autoStopSilence: Double = 0
     /// 会话代数：每开一轮、每取消一次都自增。所有异步回调（ASR / 润色 / 指令 / 选区兜底）
@@ -102,6 +107,9 @@ final class DictationController {
     /// 静音判据的电平阈值（AudioRecorder 送来的是 min(1, rms*14)）。比"没听到内容"的
     /// 闸门宽松些：这里只是判断"还在说吗"，判错的代价只是提前收尾。
     private static let silenceLevelThreshold: Float = 0.08
+    /// 开始音回声闸门的时长：自带提示音硬上限 200ms（scripts/generate_sounds.py），
+    /// 留点余量按 0.35s 算——这段时间里用户几乎不可能已经说出第一个字。
+    private static let startCueGateSeconds: Double = 0.35
 
     /// 伪流式预览的节奏：窗口最多 20s（再长解码就拖沓，且对预览毫无意义），
     /// 每段至少 1.5s 才值得跑一遍，基础间隔 1.5s，实测慢了就退到最多 5s 一次。
@@ -109,6 +117,9 @@ final class DictationController {
     private static let previewMinChunkSeconds: Double = 1.5
     private static let previewBaseInterval: Double = 1.5
     private static let previewMaxInterval: Double = 5.0
+    /// 两遍预览之间的最小空闲间隙，以及"按实测耗时成比例"的那条下限（半个解码时长）
+    private static let previewMinIdleSeconds: Double = 0.4
+    private static let previewIdleLatencyRatio: Double = 0.5
 
     /// 「换回识别原文」的有效期：过了就忘掉。撤销依赖目标应用的 undo 栈，
     /// 时间一长用户早就编辑过别的东西了，那时候再 ⌘Z 会撤错东西。
@@ -184,11 +195,23 @@ final class DictationController {
     private func revealPressSession() {
         guard phase == .recording, pressSession, !pressRevealed else { return }
         pressRevealed = true
-        // 开始音只能放在这里。代价是它会被已经在录的麦克风收进去一小段（≤0.6s 处的一声"叮"，
-        // 静音门和 ASR 都扛得住）——比"每次把热键当修饰键用都响一声"可接受得多。
+        // 开始音只能放在这里。代价是它会被已经在录的麦克风收进去一小段（≤0.6s 处的一声"叮"）——
+        // 比"每次把热键当修饰键用都响一声"可接受得多。回声不会骗过静音门：armStartCueGate()
+        // 随即开一道闸门，这一声期间的电平一律不算"听到人声"。
         Sounds.playStart()
+        armStartCueGate()
         overlay.showRecording(label: currentRecordingLabel())
         startLivePreview(generation: generation)
+    }
+
+    /// 开一道开始音回声闸门。提示音关着就不用开：没有声音就没有回声，
+    /// 白白吞掉开头 0.35s 的人声判定没必要。
+    private func armStartCueGate() {
+        guard Settings.shared.playSounds else {
+            levelGateUntil = nil
+            return
+        }
+        levelGateUntil = Date().addingTimeInterval(Self.startCueGateSeconds)
     }
 
     /// 按下沿记下的拦路问题，等手势确认了才提示；同一问题 10 秒内只提示一次。
@@ -320,6 +343,7 @@ final class DictationController {
         targetSelection = nil
         sessionNotes = []
         recordingStartedAt = nil
+        levelGateUntil = nil
         phase = .idle
     }
 
@@ -358,7 +382,10 @@ final class DictationController {
     private func checkRecordingLimits(level: Float) {
         guard phase == .recording, let started = recordingStartedAt else { return }
         let now = Date()
-        if level >= Self.silenceLevelThreshold {
+        // 开始音会被自己的麦克风录进去：闸门内的电平一律不算人声（见 levelGateUntil）。
+        // 只挡"听到人声"这一条判定，时长上限/软提示照常走。
+        if let gate = levelGateUntil, now >= gate { levelGateUntil = nil }
+        if levelGateUntil == nil, level >= Self.silenceLevelThreshold {
             speechDetected = true
             lastLoudAt = now
         }
@@ -440,7 +467,11 @@ final class DictationController {
             scheduleNextPartial(after: Self.previewBaseInterval, generation: generation)
             return
         }
-        let chunk = recorder.snapshot(fromSampleIndex: previewWindowStart)
+        // 切片的尾巴钉死在窗口上限：缓冲永远比窗口多出"一个轮询间隔 + 上一遍耗时"，
+        // 不钉的话这一窗实际解码的是 20s + 间隔 + 耗时（白多两三成 GPU 时间，松手时
+        // 最终识别还得等它让出 actor）。截掉的是尾巴、留给下一窗，一个采样都不丢。
+        let chunk = recorder.snapshot(fromSampleIndex: previewWindowStart,
+                                      maxCount: Int(Self.previewWindowSeconds * 16000))
         let chunkSeconds = Double(chunk.count) / 16000.0
         guard chunkSeconds >= Self.previewMinChunkSeconds else {
             scheduleNextPartial(after: Self.previewMinChunkSeconds - chunkSeconds + 0.1,
@@ -471,7 +502,8 @@ final class DictationController {
                 self.previewWindowStart += consumed
                 Log.info("Preview window rolled at \(String(format: "%.0f", chunkSeconds))s")
             }
-            self.scheduleNextPartial(after: max(0.4, self.previewInterval - latency),
+            self.scheduleNextPartial(after: Self.previewIdleDelay(interval: self.previewInterval,
+                                                                  latency: latency),
                                      generation: generation)
         }
         if previewTask == nil {
@@ -479,6 +511,15 @@ final class DictationController {
             previewEnabled = false
             Log.info("Live preview stopped (model no longer ready)")
         }
+    }
+
+    /// 两遍预览之间该空多久。规矩：空闲间隙**随实测耗时增长**，机器越慢草稿越稀疏。
+    /// 之所以要单独算：previewInterval 是"周期"且被 previewMaxInterval 封顶，直接拿
+    /// 「周期 − 耗时」当间隙的话，耗时一过 3.3s 间隙反而越来越短、到 4.6s 就钉死在下限——
+    /// 最该节流的慢机器上节流正好失效。所以再加一条按耗时成比例的下限（半个解码时长）。
+    static func previewIdleDelay(interval: Double, latency: Double) -> Double {
+        let proportional = max(latency, 0) * previewIdleLatencyRatio
+        return max(previewMinIdleSeconds, max(interval - latency, proportional))
     }
 
     /// 拼接已定稿前缀与新一窗的草稿：中文直接接，英文之间补一个空格
@@ -649,9 +690,9 @@ final class DictationController {
             self.recorder.onError = { [weak self] error in
                 self?.handleAudioFault(error.message)
             }
-            // 开始音必须在 recorder.start() 之前起头：反过来的话这一声会被自己的麦克风录进去，
-            // 既污染识别（开头多出一段"叮"），也会骗过静音门。NSSound.play() 是异步的，
-            // 它只是把声音排上队就立刻返回，所以这里不会推迟录音起点。
+            // 开始音抢在 recorder.start() 之前起头，但别指望它能躲开麦克风：NSSound.play()
+            // 只是把声音排上队就立刻返回（好处是不推迟录音起点），紧接着装上的 tap 照样会把
+            // 这一声"叮"录进去。所以真正挡住"回声被当成人声"的是下面的 armStartCueGate()。
             // 代价：启动失败时用户已经听到了开始音，紧接着一声错误音——比丢字可接受得多。
             // 「按下即录」是唯一的例外：按下这一刻还不知道用户是要说话还是只把热键当修饰键用，
             // 所以开始音推迟到 revealPressSession()（手势确认之后）。
@@ -670,6 +711,10 @@ final class DictationController {
             self.softHintShown = false
             self.speechDetected = false
             self.lastLoudAt = nil
+            // 上面刚响过的开始音会被这只麦克风录进去 → 开一道回声闸门。
+            // 「按下即录」的那一声推迟到 revealPressSession()，闸门也在那里开。
+            self.levelGateUntil = nil
+            if !fromPress { self.armStartCueGate() }
             self.autoStopSilence = Settings.shared.autoStopSilenceSeconds
             self.recordingLabel = tr("正在听…", "Listening…")
             Log.info("Recording start press=\(fromPress) target=\(self.targetBundleID)"

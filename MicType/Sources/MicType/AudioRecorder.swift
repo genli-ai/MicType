@@ -19,14 +19,17 @@ private final class RecordingBuffer {
         return samples.count
     }
 
-    /// 取 [start, end) 的一段快照，**不清空**（伪流式预览用：录音继续，只是看一眼已经录到的）。
-    /// 锁只按住一次 memcpy（20s 音频约 1.3MB，远短于一个 tap 周期），音频线程不会被拖垮。
-    func slice(from start: Int) -> [Float] {
+    /// 取 [start, start+maxCount) 的一段快照，**不清空**（伪流式预览用：录音继续，只是看一眼已经录到的）。
+    /// maxCount 把切片长度钉死：预览窗口有秒数上限，轮询晚到时这一窗不能跟着变长，
+    /// 多出来的尾巴留给下一窗。锁只按住一次 memcpy（20s 音频约 1.3MB，远短于一个 tap 周期），
+    /// 音频线程不会被拖垮。
+    func slice(from start: Int, maxCount: Int) -> [Float] {
         lock.lock()
         defer { lock.unlock() }
-        guard start > 0 else { return samples }
-        guard start < samples.count else { return [] }
-        return Array(samples[start...])
+        let lower = max(0, start)
+        let upper = min(samples.count, lower + max(0, maxCount))
+        guard lower < upper else { return [] }
+        return Array(samples[lower..<upper])
     }
 
     func drain() -> [Float] {
@@ -238,10 +241,10 @@ final class AudioRecorder {
     /// 已录采样数（伪流式预览用来算窗口位置；不录音时为 0）
     var recordedSampleCount: Int { buffer?.count ?? 0 }
 
-    /// 录音进行中读一段已录采样（不消费、不影响录音本身）。
+    /// 录音进行中读一段已录采样（不消费、不影响录音本身），最多 maxCount 个采样。
     /// 只给悬浮窗的灰字预览用——真正要送去识别的永远是 stop() 返回的那一整段。
-    func snapshot(fromSampleIndex start: Int) -> [Float] {
+    func snapshot(fromSampleIndex start: Int, maxCount: Int) -> [Float] {
         guard isRecording, let buffer = buffer else { return [] }
-        return buffer.slice(from: max(0, start))
+        return buffer.slice(from: max(0, start), maxCount: maxCount)
     }
 }
