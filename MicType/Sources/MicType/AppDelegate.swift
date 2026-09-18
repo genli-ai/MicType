@@ -18,8 +18,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 录音中 *和* 处理中都要保持 Esc 拦截：处理中 Esc 是用户唯一的出口
             self?.hotkeys.setCancellable(phase != .idle)
         }
+        // 模型缺失时的"去哪儿"：引导窗口的下载页比设置页更直接（有进度、有说明、下完自动继续）
         dictation.onNeedSettings = {
-            SettingsWindowController.shared.show()
+            if QwenEngine.shared.isModelAvailable {
+                SettingsWindowController.shared.show()
+            } else {
+                OnboardingWindowController.shared.show(startAt: .model)
+            }
         }
 
         hotkeys.onTapToggle = { [weak self] in self?.dictation.toggle() }
@@ -33,15 +38,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotkeys.onBusyGesture = { [weak self] in self?.dictation.gestureWhileBusy() }
         hotkeys.start()
 
-        // 首次启动：申请辅助功能权限；模型缺失则打开设置引导下载
-        if !Permissions.isAccessibilityTrusted {
-            Permissions.promptAccessibility()
-        }
         if QwenEngine.shared.isModelAvailable {
             // 后台预加载模型，第一次听写不用等
             QwenEngine.shared.preload()
-        } else {
-            SettingsWindowController.shared.show()
+        }
+        routeFirstLaunch()
+    }
+
+    /// 首启动去哪儿：新用户走引导；已经配好的老用户一个字都不打扰。
+    /// 判据用"模型在 + 辅助功能已授权"——这两项齐了说明他早就在用了，弹引导只会像退步。
+    private func routeFirstLaunch() {
+        let ready = QwenEngine.shared.isModelAvailable && Permissions.isAccessibilityTrusted
+
+        if !Settings.shared.onboardingCompleted {
+            if ready {
+                Settings.shared.onboardingCompleted = true
+                Log.info("Onboarding skipped: already configured")
+            } else {
+                // 引导自己有权限页，这里不要抢先弹系统授权框（用户还没看清这是什么应用）
+                OnboardingWindowController.shared.show()
+                return
+            }
+        } else if !QwenEngine.shared.isModelAvailable {
+            // 走过引导但模型没了（换了模型 / 被删）：仍然带去下载页，而不是把人扔进设置页
+            OnboardingWindowController.shared.show(startAt: .model)
+            return
+        }
+
+        if !Permissions.isAccessibilityTrusted {
+            Permissions.promptAccessibility()
         }
     }
 
@@ -122,7 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         levelItem.submenu = levelMenu
         menu.addItem(levelItem)
 
-        // 历史记录
+        // 历史记录：菜单里只留最近 5 条速览（复制），完整的搜索/原文对照/重新插入在历史窗口里
         let historyItem = NSMenuItem(title: tr("最近记录", "Recent Transcripts"), action: nil, keyEquivalent: "")
         let historyMenu = NSMenu()
         let items = HistoryStore.shared.items
@@ -131,7 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             empty.isEnabled = false
             historyMenu.addItem(empty)
         } else {
-            for item in items.prefix(10) {
+            for item in items.prefix(5) {
                 var title = item.polished.replacingOccurrences(of: "\n", with: " ")
                 if title.count > 36 {
                     title = String(title.prefix(36)) + "…"
@@ -142,7 +167,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 mi.toolTip = tr("点击复制全文", "Click to copy")
                 historyMenu.addItem(mi)
             }
-            historyMenu.addItem(.separator())
+        }
+        historyMenu.addItem(.separator())
+        let openHistoryItem = makeItem(tr("打开历史记录…", "Open History…"), #selector(openHistory))
+        openHistoryItem.keyEquivalent = "y"
+        openHistoryItem.keyEquivalentModifierMask = .command
+        historyMenu.addItem(openHistoryItem)
+        if !items.isEmpty {
             historyMenu.addItem(makeItem(tr("清空记录", "Clear History"), #selector(clearHistory)))
         }
         historyItem.submenu = historyMenu
@@ -203,6 +234,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func clearHistory() {
         HistoryStore.shared.clear()
+    }
+
+    @objc private func openHistory() {
+        HistoryWindowController.shared.show()
     }
 
     @objc private func unloadModel() {

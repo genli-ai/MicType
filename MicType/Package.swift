@@ -23,6 +23,15 @@ let package = Package(
                 // 源码按 Swift 5 语言模式编译（避免 Swift 6 严格并发检查）
                 .swiftLanguageMode(.v5)
             ]
+        ),
+        // 纯函数层单测（词表替换 / 伪影与口水词过滤 / 润色保真校验）——不碰 UI、不碰网络
+        .testTarget(
+            name: "MicTypeTests",
+            dependencies: ["MicType"],
+            path: "Tests/MicTypeTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
         )
     ]
 )

@@ -57,10 +57,22 @@ private struct GeneralTab: View {
     @AppStorage(SettingsKeys.hotkey) private var hotkey = HotkeyChoice.rightOption.rawValue
     @AppStorage(SettingsKeys.playSounds) private var playSounds = true
     @AppStorage(SettingsKeys.restoreClipboard) private var restoreClipboard = true
+    @AppStorage(SettingsKeys.autoStopSilenceSeconds) private var autoStopSilence = 0.0
+    @AppStorage(SettingsKeys.livePreview) private var livePreview = true
     @State private var launchAtLogin = (SMAppService.mainApp.status == .enabled)
     @State private var micOK = Permissions.microphoneGranted
     @State private var axOK = Permissions.isAccessibilityTrusted
     private let permTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+    // 导入导出的结果文字是一次性快照，切语言时要清掉（见 CLAUDE.md「i18n 快照字符串」）
+    @State private var backupStatus = ""
+
+    private var selectedHotkey: HotkeyChoice { HotkeyChoice(rawValue: hotkey) ?? .rightOption }
+
+    /// 秒数 0 = 关；打开时给一个保守的默认 2 秒（够停顿想词，又不至于等太久）
+    private var autoStopEnabled: Binding<Bool> {
+        Binding(get: { autoStopSilence > 0 },
+                set: { autoStopSilence = $0 ? 2 : 0 })
+    }
 
     var body: some View {
         Form {
@@ -73,7 +85,7 @@ private struct GeneralTab: View {
                 .pickerStyle(.segmented)
             }
 
-            Section {
+            Section(tr("快捷键", "Hotkey")) {
                 Picker(tr("听写快捷键：", "Dictation hotkey:"), selection: $hotkey) {
                     ForEach(HotkeyChoice.allCases, id: \.rawValue) { choice in
                         Text(choice.displayName).tag(choice.rawValue)
@@ -83,9 +95,52 @@ private struct GeneralTab: View {
                         "Tap: start / stop dictation · Hold to speak a command, release to run · Esc cancels."))
                     .font(.caption)
                     .foregroundColor(.secondary)
+                if selectedHotkey == .fn {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(tr("用 Fn / 🌐 前必须先让系统放手：系统设置 → 键盘 → 「按下🌐键」选「不执行任何操作」。否则每次轻点都会被系统抢去切换输入法或弹表情面板。",
+                                "Before using Fn / 🌐, tell macOS to let go: System Settings → Keyboard → \"Press 🌐 key to\" → \"Do Nothing\". Otherwise every tap gets swallowed by the emoji or input-source picker."))
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                        Button(tr("打开键盘设置", "Open Keyboard Settings")) {
+                            Permissions.openKeyboardSettings()
+                        }
+                    }
+                }
+                if selectedHotkey.isLeftSideModifier {
+                    Text(tr("左侧修饰键天天参与组合键（⌘C、⌥←…）。单独轻点才会触发，按住它敲别的键不会——但误触概率仍比右侧高，建议先试用几天。",
+                            "Left-side modifiers are used in everyday shortcuts (⌘C, ⌥←…). Only a clean tap triggers MicType — holding it while pressing another key never does — but mistaps are still likelier than on the right side."))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                HStack {
+                    Text(tr("上手引导：", "Welcome guide:"))
+                    Spacer()
+                    Button(tr("重新打开引导", "Show Welcome Guide")) {
+                        OnboardingWindowController.shared.show()
+                    }
+                }
             }
 
-            Section {
+            Section(tr("录音", "Recording")) {
+                Toggle(tr("静音自动停止录音", "Stop recording after silence"), isOn: autoStopEnabled)
+                if autoStopSilence > 0 {
+                    Stepper(value: $autoStopSilence, in: 1...5, step: 1) {
+                        Text(tr("静音 \(Int(autoStopSilence)) 秒后自动结束",
+                                "Stop after \(Int(autoStopSilence))s of silence"))
+                    }
+                }
+                Text(tr("自动结束＝正常收尾这一段（照常识别并输入），不是丢弃。默认关闭：什么时候说完由你决定。",
+                        "Auto-stop finishes the take normally (it is still transcribed and inserted) — nothing is discarded. Off by default: you decide when you are done."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Toggle(tr("录音时显示实时识别草稿", "Show live transcript while recording"), isOn: $livePreview)
+                Text(tr("草稿只出现在悬浮窗里，永远不会输入到光标处；最终结果仍是松手后整段重新识别的那一版。",
+                        "The draft only appears in the floating window and never reaches your cursor; the final text is still the full re-transcription made when you finish."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Section(tr("行为", "Behaviour")) {
                 Toggle(tr("开始 / 完成时播放提示音", "Play sounds on start / finish"), isOn: $playSounds)
                 Toggle(tr("输入后恢复原剪贴板内容", "Restore clipboard after inserting"), isOn: $restoreClipboard)
                 Toggle(tr("登录时自动启动", "Launch at login"), isOn: $launchAtLogin)
@@ -100,6 +155,28 @@ private struct GeneralTab: View {
                             launchAtLogin = (SMAppService.mainApp.status == .enabled)
                         }
                     }
+            }
+
+            Section(tr("备份", "Backup")) {
+                HStack {
+                    Button(tr("导出设置…", "Export Settings…")) {
+                        backupStatus = SettingsBackup.runExport()
+                    }
+                    Button(tr("导入设置…", "Import Settings…")) {
+                        backupStatus = SettingsBackup.runImport()
+                    }
+                    Spacer()
+                }
+                if !backupStatus.isEmpty {
+                    Text(backupStatus)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(3)
+                }
+                Text(tr("导出一个 JSON 文件：词汇表、口水词、关于我、自定义规则、档位与模型偏好、热键与语言。导入是合并——词表取并集（老词条一条不少），其余只覆盖文件里出现的项。\nAPI Key 从不导出、也从不导入：Key 只在系统钥匙串里，写进文件就等于把它交给了拿到文件的人。文件格式 Mac 与 Windows 通用。",
+                        "Exports one JSON file: vocabulary, filler words, about-me, custom rules, polish mode and model preferences, hotkey and language. Import merges — vocabulary lists are unioned (nothing you already have is lost) and other settings are overwritten only where the file has them.\nAPI keys are never exported or imported: they live in the Keychain, and a file containing one gives it away to whoever receives the file. The format is shared with the Windows build."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
 
             Section {
@@ -130,6 +207,10 @@ private struct GeneralTab: View {
         }
         .formStyle(.grouped)
         .padding(.top, 4)
+        // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言
+        .onChange(of: l10n.language) { _, _ in
+            backupStatus = ""
+        }
     }
 }
 
@@ -152,6 +233,7 @@ private struct RecognitionTab: View {
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKeys.qwenModelRepo) private var qwenRepo = QwenModels.defaultRepo
     @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
+    @AppStorage(SettingsKeys.fillerWords) private var fillerWords = ""
     @ObservedObject private var downloader = QwenModelDownloader.shared
     @State private var refreshTick = 0
     @State private var updateMessage = ""
@@ -224,8 +306,23 @@ private struct RecognitionTab: View {
                         .font(.system(size: 12))
                         .frame(height: 80)
                         .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
-                    Text(tr("这些词会作为热词直接送入识别模型，并参与 AI 润色纠错——专有名词识别准确率的第一杠杆，强烈建议填写。\n支持硬替换：填「杰文=捷文」表示识别出的「杰文」一律改成「捷文」——确定性替换、零耗时，对完全同音的人名最有效。",
-                            "These terms are fed to the speech model as hotwords and used by AI polish — the #1 lever for proper-noun accuracy.\nHard replacement supported: an entry like \"Jevin=Jaywen\" deterministically rewrites every occurrence — zero latency, ideal for exact-homophone names."))
+                    Text(tr("这些词会作为热词直接送入识别模型，并参与 AI 润色纠错——专有名词识别准确率的第一杠杆，强烈建议填写。\n支持硬替换：填「杰文=捷文」表示识别出的「杰文」一律改成「捷文」——确定性替换、零耗时，对完全同音的人名最有效。\n一个正写可挂多个错写：「杰文|捷纹|结文=捷文」。西文词条大小写不敏感、按整词匹配。",
+                            "These terms are fed to the speech model as hotwords and used by AI polish — the #1 lever for proper-noun accuracy.\nHard replacement supported: an entry like \"Jevin=Jaywen\" deterministically rewrites every occurrence — zero latency, ideal for exact-homophone names.\nOne correct form can take several wrong spellings: \"Jevin|Jevan|Javin=Jaywen\". Latin entries match whole words, case-insensitively."))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(tr("口水词过滤（用逗号或换行分隔，默认空 = 不过滤）：",
+                            "Filler words to drop (comma or newline separated; empty = off):"))
+                    TextEditor(text: $fillerWords)
+                        .font(.system(size: 12))
+                        .frame(height: 56)
+                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
+                    Text(tr("在本机删掉，不联网、不花润色额度——「仅识别」档也生效。\n分寸是保守的：西文词按整词删（填 um 不会动 umbrella）；中文词只在前后都是标点或空白时删（填「那个」不会动「那个人」）。",
+                            "Removed on-device — no network, no polish tokens; works even in transcribe-only mode.\nDeliberately conservative: Latin entries are dropped as whole words only (\"um\" never touches \"umbrella\"); other entries are dropped only when standing alone between punctuation or spaces."))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -494,10 +591,18 @@ private struct KeyStatusBadge: View {
 
 // MARK: - 关于
 
+/// 已下载、等着用户点「立即安装并重启」的那个包
+private struct PendingUpdate {
+    let version: String
+    let file: URL
+}
+
 private struct AboutTab: View {
     @ObservedObject private var l10n = L10n.shared
     @State private var updateStatus = ""
     @State private var checkingUpdate = false
+    @State private var pendingUpdate: PendingUpdate?
+    @State private var installing = false
 
     var body: some View {
         VStack(spacing: 10) {
@@ -521,6 +626,20 @@ private struct AboutTab: View {
                 .disabled(checkingUpdate)
                 Button(tr("发布页", "Releases")) {
                     NSWorkspace.shared.open(UpdateChecker.releasesPage)
+                }
+            }
+            if let pending = pendingUpdate {
+                HStack(spacing: 8) {
+                    Button(installing ? tr("安装中…", "Installing…")
+                                      : tr("立即安装并重启", "Install and Relaunch")) {
+                        runInstall(pending)
+                    }
+                    .disabled(installing)
+                    // 老流程留作兜底：验签不过、目录不可写，或者用户就是想自己拖一次
+                    Button(tr("在 Finder 中显示", "Show in Finder")) {
+                        NSWorkspace.shared.activateFileViewerSelecting([pending.file])
+                    }
+                    .disabled(installing)
                 }
             }
             if !updateStatus.isEmpty {
@@ -561,19 +680,30 @@ private struct AboutTab: View {
             checkingUpdate = false
             switch result {
             case .upToDate(let v):
+                pendingUpdate = nil
                 updateStatus = tr("已是最新版本（\(v)）", "You're up to date (\(v))")
             case .downloaded(let v, let file):
-                if file.pathExtension.lowercased() == "dmg" {
-                    updateStatus = tr("新版本 \(v) 已下载到「下载」文件夹（已在 Finder 中选中）——双击打开 DMG，把 MicType.app 拖进「应用程序」替换，重新打开即完成升级",
-                                      "Version \(v) downloaded to your Downloads folder (revealed in Finder) — open the DMG, drag MicType.app into Applications to replace, then relaunch")
-                } else {
-                    updateStatus = tr("新版本 \(v) 已下载到「下载」文件夹（已在 Finder 中选中）——解压后把 MicType.app 拖进「应用程序」替换，重新打开即完成升级",
-                                      "Version \(v) downloaded to your Downloads folder (revealed in Finder) — unzip, drag MicType.app into Applications to replace, then relaunch")
-                }
+                pendingUpdate = PendingUpdate(version: v, file: file)
+                updateStatus = tr("新版本 \(v) 已下载到「下载」文件夹——点「立即安装并重启」一步完成（会校验签名后替换当前这份并自动重开），也可以自己拖进「应用程序」替换",
+                                  "Version \(v) downloaded to your Downloads folder — click “Install and Relaunch” to finish in one step (the signature is verified before this copy is replaced), or replace it manually")
             case .failed(let message):
+                pendingUpdate = nil
                 updateStatus = tr("检查失败：\(message)。可点「发布页」手动下载",
                                   "Check failed: \(message). Use the Releases button to download manually")
             }
         }
+    }
+
+    private func runInstall(_ pending: PendingUpdate) {
+        installing = true
+        updateStatus = tr("正在准备安装 \(pending.version)…", "Preparing to install \(pending.version)…")
+        UpdateChecker.installAndRelaunch(archive: pending.file, version: pending.version, progress: { message in
+            updateStatus = message
+        }, failure: { message in
+            installing = false
+            // 失败不动现有这份 app：把原因摆出来，指回手动替换那条路
+            updateStatus = tr("安装失败：\(message)。当前版本未改动，可点「在 Finder 中显示」手动替换",
+                              "Install failed: \(message). This copy was left untouched — use “Show in Finder” to replace it manually")
+        })
     }
 }

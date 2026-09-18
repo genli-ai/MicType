@@ -15,6 +15,8 @@ public sealed class AppSettings
 
     public string SpeechModelRepo { get; set; } = "sherpa-onnx/SenseVoiceSmall";
     public string CustomVocabulary { get; set; } = "";
+    /// 本地口水词过滤表（逗号/换行分隔），默认空 = 不过滤，绝不替用户决定哪些词该删
+    public string FillerWords { get; set; } = "";
 
     public PolishLevel PolishLevel { get; set; } = PolishLevel.Smart;
     public LlmProvider LlmProvider { get; set; } = LlmProvider.OpenAi;
@@ -55,9 +57,14 @@ public sealed class AppSettings
     public IReadOnlyList<string> VocabularyTerms => ParseVocabulary(CustomVocabulary).Terms;
 
     [JsonIgnore]
+    public IReadOnlyList<string> FillerWordList => ParseFillerWords(FillerWords);
+
+    [JsonIgnore]
     public IReadOnlyList<(string Wrong, string Right)> VocabularyReplacements =>
         ParseVocabulary(CustomVocabulary).Replacements;
 
+    /// 词汇表解析：普通词条做热词/润色提示；"错写=正写"词条做硬替换（正写同时进热词）。
+    /// 一个正写可以挂多个错写：「杰文|捷纹|结文=捷文」——同一个名字的各种听错法不必分行写。
     public static (IReadOnlyList<string> Terms, IReadOnlyList<(string Wrong, string Right)> Replacements)
         ParseVocabulary(string value)
     {
@@ -66,14 +73,16 @@ public sealed class AppSettings
         foreach (var raw in value.Split([',', '，', '、', '\n', '\r'],
                      StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
         {
-            var entry = raw.Replace('＝', '=').Trim();
+            var entry = raw.Replace('＝', '=').Replace('｜', '|').Trim();
             var equalsIndex = entry.IndexOf('=');
             if (equalsIndex >= 0)
             {
-                var wrong = entry[..equalsIndex].Trim();
+                var left = entry[..equalsIndex].Trim();
                 var right = entry[(equalsIndex + 1)..].Trim();
-                if (wrong.Length == 0 || right.Length == 0) continue;
-                replacements.Add((wrong, right));
+                if (left.Length == 0 || right.Length == 0) continue;
+                var wrongs = left.Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                if (wrongs.Length == 0) continue;
+                foreach (var wrong in wrongs) replacements.Add((wrong, right));
                 terms.Add(right);
             }
             else if (entry.Length > 0)
@@ -83,6 +92,15 @@ public sealed class AppSettings
         }
 
         return (terms, replacements);
+    }
+
+    /// 口水词表解析：逗号/换行分隔，和词汇表同一套分隔符
+    public static IReadOnlyList<string> ParseFillerWords(string value)
+    {
+        return value.Split([',', '，', '、', '\n', '\r'],
+                StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Where(item => item.Length > 0)
+            .ToList();
     }
 
     private static AppLanguage CultureDefaultLanguage()

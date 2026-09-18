@@ -210,9 +210,23 @@ public sealed class DictationController
             var polishWatch = Stopwatch.StartNew();
             var polished = await PolishService.PolishAsync(rawText, settings.PolishLevel);
             Log.Info($"Timing polish={polishWatch.ElapsedMilliseconds}ms model={settings.CurrentPolishModel} ok={polished.Text is not null}");
-            if (polished.Text is not null)
+            // 保真校验：数字被改 / 否定被吞 / 内容被砍掉 → 当作润色失败，输出识别原文。
+            // 纯机械比对，不花一次 LLM 往返；与 Mac 端同源。
+            var polishedText = polished.Text;
+            var drift = polishedText is null ? null : TextPostProcessor.PolishDriftCheck(rawText, polishedText);
+            if (drift is not null)
             {
-                await DeliverAsync(rawText, polished.Text, L10n.Tr("已输入", "Inserted"));
+                Log.Warn($"Polish drift rejected: {drift}");
+                await DeliverAsync(
+                    rawText,
+                    rawText,
+                    L10n.Tr("润色结果与原文出入过大，已输出原文",
+                        "Polished text drifted too far from the original — raw transcript inserted"),
+                    warning: true);
+            }
+            else if (polishedText is not null)
+            {
+                await DeliverAsync(rawText, polishedText, L10n.Tr("已输入", "Inserted"));
             }
             else
             {

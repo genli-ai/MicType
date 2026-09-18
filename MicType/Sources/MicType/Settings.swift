@@ -6,20 +6,33 @@ enum HotkeyChoice: String, CaseIterable {
     case rightOption
     case rightCommand
     case rightControl
+    case rightShift
+    case leftOption
+    case leftCommand
+    case leftControl
+    case fn
 
+    /// 修饰键的物理键码（左右两侧是不同的键码，所以"只用右侧"是真的只认右侧那颗）
     var keyCode: UInt16 {
         switch self {
         case .rightOption: return 61
         case .rightCommand: return 54
         case .rightControl: return 62
+        case .rightShift: return 60
+        case .leftOption: return 58
+        case .leftCommand: return 55
+        case .leftControl: return 59
+        case .fn: return 63
         }
     }
 
     var flagMask: UInt {
         switch self {
-        case .rightOption: return 1 << 19   // NSEvent.ModifierFlags.option
-        case .rightCommand: return 1 << 20  // NSEvent.ModifierFlags.command
-        case .rightControl: return 1 << 18  // NSEvent.ModifierFlags.control
+        case .rightOption, .leftOption: return 1 << 19     // NSEvent.ModifierFlags.option
+        case .rightCommand, .leftCommand: return 1 << 20   // NSEvent.ModifierFlags.command
+        case .rightControl, .leftControl: return 1 << 18   // NSEvent.ModifierFlags.control
+        case .rightShift: return 1 << 17                   // NSEvent.ModifierFlags.shift
+        case .fn: return 1 << 23                           // NSEvent.ModifierFlags.function
         }
     }
 
@@ -28,6 +41,11 @@ enum HotkeyChoice: String, CaseIterable {
         case .rightOption: return tr("右 Option (⌥)", "Right Option (⌥)")
         case .rightCommand: return tr("右 Command (⌘)", "Right Command (⌘)")
         case .rightControl: return tr("右 Control (⌃)", "Right Control (⌃)")
+        case .rightShift: return tr("右 Shift (⇧)", "Right Shift (⇧)")
+        case .leftOption: return tr("左 Option (⌥)", "Left Option (⌥)")
+        case .leftCommand: return tr("左 Command (⌘)", "Left Command (⌘)")
+        case .leftControl: return tr("左 Control (⌃)", "Left Control (⌃)")
+        case .fn: return tr("Fn / 🌐 地球键", "Fn / 🌐 Globe key")
         }
     }
 
@@ -36,6 +54,19 @@ enum HotkeyChoice: String, CaseIterable {
         case .rightOption: return tr("右⌥", "R⌥")
         case .rightCommand: return tr("右⌘", "R⌘")
         case .rightControl: return tr("右⌃", "R⌃")
+        case .rightShift: return tr("右⇧", "R⇧")
+        case .leftOption: return tr("左⌥", "L⌥")
+        case .leftCommand: return tr("左⌘", "L⌘")
+        case .leftControl: return tr("左⌃", "L⌃")
+        case .fn: return tr("Fn", "Fn")
+        }
+    }
+
+    /// 左侧修饰键天天参与 ⌘C / ⌥← 这类组合键，单独轻点的机会少、也更容易误触，选中时给一句提醒
+    var isLeftSideModifier: Bool {
+        switch self {
+        case .leftOption, .leftCommand, .leftControl: return true
+        default: return false
         }
     }
 }
@@ -103,6 +134,7 @@ enum SettingsKeys {
     static let aboutMe = "aboutMe"
     static let customPolishRules = "customPolishRules"
     static let customVocabulary = "customVocabulary"
+    static let fillerWords = "fillerWords"                 // 本地口水词过滤表（默认空 = 不过滤）
     static let playSounds = "playSounds"
     static let restoreClipboard = "restoreClipboard"
     static let autoStopSilenceSeconds = "autoStopSilenceSeconds"  // 静音自动停秒数（0 = 关）
@@ -112,6 +144,7 @@ enum SettingsKeys {
     static let appLanguage = "appLanguage"
     static let deepseekBaseURL = "deepseekBaseURL"
     static let deepseekModel = "deepseekModel"
+    static let onboardingCompleted = "onboardingCompleted"  // 首启动引导是否走过（老用户按"已配置好"自动置真）
 }
 
 // MARK: - 设置
@@ -134,6 +167,7 @@ final class Settings {
             SettingsKeys.aboutMe: "",
             SettingsKeys.customPolishRules: "",
             SettingsKeys.customVocabulary: "",
+            SettingsKeys.fillerWords: "",
             SettingsKeys.playSounds: true,
             SettingsKeys.restoreClipboard: true,
             SettingsKeys.autoStopSilenceSeconds: 0.0,
@@ -142,6 +176,7 @@ final class Settings {
             SettingsKeys.llmProvider: LLMProvider.openai.rawValue,
             SettingsKeys.deepseekBaseURL: LLMProvider.deepseek.defaultBaseURL,
             SettingsKeys.deepseekModel: LLMProvider.deepseek.defaultModel,
+            SettingsKeys.onboardingCompleted: false,
         ])
 
         // 一次性迁移：产品由 VoiceFlow 改名 MicType，defaults 域随 Bundle ID 变更，
@@ -231,19 +266,27 @@ final class Settings {
         set { d.set(newValue, forKey: SettingsKeys.customVocabulary) }
     }
 
-    /// 词汇表解析：普通词条做热词/润色提示；"错写=正写"词条做硬替换（正写同时进热词）
+    /// 词汇表解析：普通词条做热词/润色提示；"错写=正写"词条做硬替换（正写同时进热词）。
+    /// 一个正写可以挂多个错写：「杰文|捷纹|结文=捷文」——同一个名字的各种听错法不必分行写。
     var vocabularyEntries: (terms: [String], replacements: [(wrong: String, right: String)]) {
         var terms: [String] = []
         var replacements: [(String, String)] = []
-        let raw = customVocabulary.replacingOccurrences(of: "＝", with: "=")
+        let raw = customVocabulary
+            .replacingOccurrences(of: "＝", with: "=")
+            .replacingOccurrences(of: "｜", with: "|")
         for item in raw.components(separatedBy: CharacterSet(charactersIn: ",，、\n")) {
             let entry = item.trimmingCharacters(in: .whitespaces)
             guard !entry.isEmpty else { continue }
             let parts = entry.split(separator: "=", maxSplits: 1)
                 .map { $0.trimmingCharacters(in: .whitespaces) }
             if parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty {
-                replacements.append((parts[0], parts[1]))
-                terms.append(parts[1])
+                let right = parts[1]
+                let wrongs = parts[0].split(separator: "|")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                guard !wrongs.isEmpty else { continue }
+                for wrong in wrongs { replacements.append((wrong, right)) }
+                terms.append(right)
             } else {
                 terms.append(entry)
             }
@@ -253,6 +296,20 @@ final class Settings {
 
     var vocabularyTerms: [String] { vocabularyEntries.terms }
     var vocabularyReplacements: [(wrong: String, right: String)] { vocabularyEntries.replacements }
+
+    /// 口水词表原文（逗号/换行分隔），默认空——不填就完全不过滤，绝不替用户决定哪些词该删
+    var customFillerWords: String {
+        get { d.string(forKey: SettingsKeys.fillerWords) ?? "" }
+        set { d.set(newValue, forKey: SettingsKeys.fillerWords) }
+    }
+
+    /// 解析后的口水词列表，供本机过滤用
+    var fillerWords: [String] {
+        customFillerWords
+            .components(separatedBy: CharacterSet(charactersIn: ",，、\n"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
 
     var playSounds: Bool {
         get { d.bool(forKey: SettingsKeys.playSounds) }
@@ -342,6 +399,12 @@ final class Settings {
         case .openai: return openaiCommandModel
         case .deepseek: return deepseekCommandModel
         }
+    }
+
+    /// 首启动引导是否已经走过（或被用户关掉）。为假时启动会自动弹引导。
+    var onboardingCompleted: Bool {
+        get { d.bool(forKey: SettingsKeys.onboardingCompleted) }
+        set { d.set(newValue, forKey: SettingsKeys.onboardingCompleted) }
     }
 
     /// Qwen 模型 HF 仓库 ID
