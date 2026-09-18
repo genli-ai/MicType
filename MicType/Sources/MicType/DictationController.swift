@@ -211,6 +211,17 @@ final class DictationController {
                         guard let self = self else { return }
                         Log.info("Timing polish=\(Log.ms(since: tPolish))ms model=\(Settings.shared.currentPolishModel) ok=\(polished != nil)")
                         if let polished = polished {
+                            // 保真校验：数字被改 / 否定被吞 / 内容被砍掉 → 当作润色失败，输出识别原文。
+                            // 纯机械比对，不花一次 LLM 往返；宁可少一次润色，也不让改错的稿子进输入框。
+                            if let reason = TextPostProcessor.polishDriftCheck(raw: rawText, polished: polished) {
+                                Log.warn("Polish drift rejected: \(reason)")
+                                self.deliver(raw: rawText, final: rawText,
+                                             note: tr("润色结果与原文出入过大，已输出原文",
+                                                      "Polished text drifted too far from the original — raw transcript inserted"),
+                                             warning: true,
+                                             allowClipboardRestore: !isColdStart)
+                                return
+                            }
                             self.deliver(raw: rawText, final: polished,
                                          note: tr("已输入", "Inserted"),
                                          allowClipboardRestore: !isColdStart)

@@ -103,6 +103,7 @@ enum SettingsKeys {
     static let aboutMe = "aboutMe"
     static let customPolishRules = "customPolishRules"
     static let customVocabulary = "customVocabulary"
+    static let fillerWords = "fillerWords"                 // 本地口水词过滤表（默认空 = 不过滤）
     static let playSounds = "playSounds"
     static let restoreClipboard = "restoreClipboard"
     static let qwenModelRepo = "qwenModelRepo"
@@ -132,6 +133,7 @@ final class Settings {
             SettingsKeys.aboutMe: "",
             SettingsKeys.customPolishRules: "",
             SettingsKeys.customVocabulary: "",
+            SettingsKeys.fillerWords: "",
             SettingsKeys.playSounds: true,
             SettingsKeys.restoreClipboard: true,
             SettingsKeys.qwenModelRepo: QwenModels.defaultRepo,
@@ -227,19 +229,27 @@ final class Settings {
         set { d.set(newValue, forKey: SettingsKeys.customVocabulary) }
     }
 
-    /// 词汇表解析：普通词条做热词/润色提示；"错写=正写"词条做硬替换（正写同时进热词）
+    /// 词汇表解析：普通词条做热词/润色提示；"错写=正写"词条做硬替换（正写同时进热词）。
+    /// 一个正写可以挂多个错写：「杰文|捷纹|结文=捷文」——同一个名字的各种听错法不必分行写。
     var vocabularyEntries: (terms: [String], replacements: [(wrong: String, right: String)]) {
         var terms: [String] = []
         var replacements: [(String, String)] = []
-        let raw = customVocabulary.replacingOccurrences(of: "＝", with: "=")
+        let raw = customVocabulary
+            .replacingOccurrences(of: "＝", with: "=")
+            .replacingOccurrences(of: "｜", with: "|")
         for item in raw.components(separatedBy: CharacterSet(charactersIn: ",，、\n")) {
             let entry = item.trimmingCharacters(in: .whitespaces)
             guard !entry.isEmpty else { continue }
             let parts = entry.split(separator: "=", maxSplits: 1)
                 .map { $0.trimmingCharacters(in: .whitespaces) }
             if parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty {
-                replacements.append((parts[0], parts[1]))
-                terms.append(parts[1])
+                let right = parts[1]
+                let wrongs = parts[0].split(separator: "|")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                guard !wrongs.isEmpty else { continue }
+                for wrong in wrongs { replacements.append((wrong, right)) }
+                terms.append(right)
             } else {
                 terms.append(entry)
             }
@@ -249,6 +259,20 @@ final class Settings {
 
     var vocabularyTerms: [String] { vocabularyEntries.terms }
     var vocabularyReplacements: [(wrong: String, right: String)] { vocabularyEntries.replacements }
+
+    /// 口水词表原文（逗号/换行分隔），默认空——不填就完全不过滤，绝不替用户决定哪些词该删
+    var customFillerWords: String {
+        get { d.string(forKey: SettingsKeys.fillerWords) ?? "" }
+        set { d.set(newValue, forKey: SettingsKeys.fillerWords) }
+    }
+
+    /// 解析后的口水词列表，供本机过滤用
+    var fillerWords: [String] {
+        customFillerWords
+            .components(separatedBy: CharacterSet(charactersIn: ",，、\n"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
 
     var playSounds: Bool {
         get { d.bool(forKey: SettingsKeys.playSounds) }

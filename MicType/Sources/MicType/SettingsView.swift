@@ -152,6 +152,7 @@ private struct RecognitionTab: View {
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKeys.qwenModelRepo) private var qwenRepo = QwenModels.defaultRepo
     @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
+    @AppStorage(SettingsKeys.fillerWords) private var fillerWords = ""
     @ObservedObject private var downloader = QwenModelDownloader.shared
     @State private var refreshTick = 0
     @State private var updateMessage = ""
@@ -224,8 +225,23 @@ private struct RecognitionTab: View {
                         .font(.system(size: 12))
                         .frame(height: 80)
                         .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
-                    Text(tr("这些词会作为热词直接送入识别模型，并参与 AI 润色纠错——专有名词识别准确率的第一杠杆，强烈建议填写。\n支持硬替换：填「杰文=捷文」表示识别出的「杰文」一律改成「捷文」——确定性替换、零耗时，对完全同音的人名最有效。",
-                            "These terms are fed to the speech model as hotwords and used by AI polish — the #1 lever for proper-noun accuracy.\nHard replacement supported: an entry like \"Jevin=Jaywen\" deterministically rewrites every occurrence — zero latency, ideal for exact-homophone names."))
+                    Text(tr("这些词会作为热词直接送入识别模型，并参与 AI 润色纠错——专有名词识别准确率的第一杠杆，强烈建议填写。\n支持硬替换：填「杰文=捷文」表示识别出的「杰文」一律改成「捷文」——确定性替换、零耗时，对完全同音的人名最有效。\n一个正写可挂多个错写：「杰文|捷纹|结文=捷文」。西文词条大小写不敏感、按整词匹配。",
+                            "These terms are fed to the speech model as hotwords and used by AI polish — the #1 lever for proper-noun accuracy.\nHard replacement supported: an entry like \"Jevin=Jaywen\" deterministically rewrites every occurrence — zero latency, ideal for exact-homophone names.\nOne correct form can take several wrong spellings: \"Jevin|Jevan|Javin=Jaywen\". Latin entries match whole words, case-insensitively."))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(tr("口水词过滤（用逗号或换行分隔，默认空 = 不过滤）：",
+                            "Filler words to drop (comma or newline separated; empty = off):"))
+                    TextEditor(text: $fillerWords)
+                        .font(.system(size: 12))
+                        .frame(height: 56)
+                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
+                    Text(tr("在本机删掉，不联网、不花润色额度——「仅识别」档也生效。\n分寸是保守的：西文词按整词删（填 um 不会动 umbrella）；中文词只在前后都是标点或空白时删（填「那个」不会动「那个人」）。",
+                            "Removed on-device — no network, no polish tokens; works even in transcribe-only mode.\nDeliberately conservative: Latin entries are dropped as whole words only (\"um\" never touches \"umbrella\"); other entries are dropped only when standing alone between punctuation or spaces."))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
