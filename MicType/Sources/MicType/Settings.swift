@@ -36,6 +36,35 @@ enum HotkeyChoice: String, CaseIterable {
         }
     }
 
+    /// 这一颗键自己的"设备相关位"（IOLLEvent.h 的 NX_DEVICE*KEYMASK，左右各一位，
+    /// 就藏在 NSEvent.modifierFlags.rawValue 的低位里）。flagMask 那种合并位不分左右，
+    /// 左手按着左 ⌥ 时右 ⌥ 的松开沿会被误判成按下沿，所以判按下/松开一律先看这里。
+    /// Fn 没有设备相关位，也没有"另一侧"，返回 0 表示"用合并位判"。
+    var deviceMask: UInt {
+        switch self {
+        case .leftControl: return 0x0000_0001   // NX_DEVICELCTLKEYMASK
+        case .rightShift: return 0x0000_0004    // NX_DEVICERSHIFTKEYMASK
+        case .leftCommand: return 0x0000_0008   // NX_DEVICELCMDKEYMASK
+        case .rightCommand: return 0x0000_0010  // NX_DEVICERCMDKEYMASK
+        case .leftOption: return 0x0000_0020    // NX_DEVICELALTKEYMASK
+        case .rightOption: return 0x0000_0040   // NX_DEVICERALTKEYMASK
+        case .rightControl: return 0x0000_2000  // NX_DEVICERCTLKEYMASK
+        case .fn: return 0
+        }
+    }
+
+    /// 同名修饰键左右两侧的设备相关位之和。用来判断"这条事件到底报不报设备位"：
+    /// 两侧都是 0 说明设备位不可用（或这颗键确实松了），那就退回合并位，绝不能因此判不出按下。
+    var deviceMaskPair: UInt {
+        switch self {
+        case .leftControl, .rightControl: return 0x0000_0001 | 0x0000_2000
+        case .rightShift: return 0x0000_0002 | 0x0000_0004   // 左 Shift 不是可选热键，但要一起看
+        case .leftCommand, .rightCommand: return 0x0000_0008 | 0x0000_0010
+        case .leftOption, .rightOption: return 0x0000_0020 | 0x0000_0040
+        case .fn: return 0
+        }
+    }
+
     var displayName: String {
         switch self {
         case .rightOption: return tr("右 Option (⌥)", "Right Option (⌥)")

@@ -1,9 +1,11 @@
 import AppKit
 
 /// 全局热键监听。触发手势固定为（3.3 起「按下即录」）：
-/// **按下**（空闲时）立刻开始采音，悬浮窗先按"听写"显示，此刻不碰剪贴板；
-/// **0.6s 内松开** = 轻点：这段录音留着当纯听写继续录，再轻点一次（或菜单/Esc）才结束；
-/// **按住满 0.6s** = 指令模式：同一段录音就地升级，开口的前 0.6 秒不再丢失，松开即结束；
+/// **按下**（空闲时）立刻开始采音，但此刻**完全不现身**——不响开始音、不弹悬浮窗、
+/// 不碰选区也不碰剪贴板（把热键当修饰键用的那些次必须是隐形的，3.2.19 的保证）；
+/// **0.6s 内松开** = 轻点：手势到此确认，这段录音才现身并留着当纯听写继续录，
+/// 再轻点一次（或菜单/Esc）才结束；
+/// **按住满 0.6s** = 指令模式：同一段录音就地升级并现身，开口的前 0.6 秒不再丢失，松开即结束；
 /// 录音中再按：无论按多久，松开一律 = 停止并输出（3.2.11 定的规矩）；
 /// 按住期间敲了别的键（把热键当修饰键用）= 候选作废，刚开始的那段录音一并静默丢弃；
 /// 录音中 / 处理中按 Esc 取消。
@@ -12,6 +14,8 @@ final class HotkeyManager {
     var onTapToggle: (() -> Void)?
     /// 热键按下且当前空闲：立刻开始录音（还不知道这段归听写还是归指令）
     var onPressStart: (() -> Void)?
+    /// 0.6s 内松开 = 轻点：手势确认成"纯听写"，按下时开的那段录音到这一刻才现身
+    var onPressTapConfirm: (() -> Void)?
     /// 按住满 0.6s：把正在录的这一段就地升级为指令模式
     var onHoldPromote: (() -> Void)?
     /// 候选作废：把按下即录的那一段丢掉（用户只是拿热键当修饰键）
@@ -57,8 +61,23 @@ final class HotkeyManager {
             self?.handleKeyDown(event)
             return event
         }
-        monitors = [m1, m2, m3, m4].compactMap { $0 }
+        // 鼠标 / 滚轮 / 亮度音量键也要能作废按下会话：⌥-拖拽复制、⌘-点击开新标签页、
+        // ⌥-横向滚动这些手势一个 keyDown 都不产生，只看键盘的话按下时开的那段录音
+        // 没人认领，会一直录到 5 分钟硬上限再被识别、润色、粘贴出去。
+        let m5 = NSEvent.addGlobalMonitorForEvents(matching: Self.abortingEvents) { [weak self] _ in
+            self?.abortCandidate()
+        }
+        let m6 = NSEvent.addLocalMonitorForEvents(matching: Self.abortingEvents) { [weak self] event in
+            self?.abortCandidate()
+            return event
+        }
+        monitors = [m1, m2, m3, m4, m5, m6].compactMap { $0 }
     }
+
+    /// 除键盘外也算"用户在干别的事"的事件：鼠标按下、滚轮、以及走 NSSystemDefined 的
+    /// 亮度/音量/播放键
+    private static let abortingEvents: NSEvent.EventTypeMask =
+        [.leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel, .systemDefined]
 
     func stop() {
         for m in monitors {
@@ -93,10 +112,18 @@ final class HotkeyManager {
             if type == .keyDown {
                 let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
                 if keyCode == 53 {
-                    DispatchQueue.main.async {
-                        if manager.isRecording() { manager.onCancel?() }
+                    // 这个回调跑在主线程（source 挂在 CFRunLoopGetMain），所以在这里
+                    // **同步**判断这一轮到底能不能取消——放进 DispatchQueue.main.async
+                    // 里判断就晚了，返回值那时早已定死。
+                    // 判据必须和 NSEvent 那条兜底一致（录音中 *或* 处理中）：只认 isRecording()
+                    // 的话，处理中按 Esc 既不取消、又因为 headInsert tap 返回 nil 把事件删掉，
+                    // 前台应用也收不到——「处理中可取消」整个功能形同虚设。
+                    if manager.isRecording() || manager.isBusy() {
+                        DispatchQueue.main.async { manager.onCancel?() }
+                        return nil  // 真的由我们接管了这次 Esc，才吃掉它
                     }
-                    return nil  // 吃掉这次 Esc，不传给前台应用
+                    // 这一轮没什么可取消（phase 回 idle 与 stopEscTap 之间有个短窗口）→ 原样放行
+                    return Unmanaged.passUnretained(event)
                 }
                 DispatchQueue.main.async { manager.abortCandidate() }
             }
@@ -140,11 +167,13 @@ final class HotkeyManager {
     /// 否则 ⌥+C 这类快捷键会在后台悄悄留下一段没人要的录音。
     /// 已经升级成指令模式的会话不在此列：用户正在说指令，途中误触别的键不该把话吞掉。
     private func abortCandidate() {
+        // 没有候选就什么都不用做。鼠标/滚轮监听每秒能来几十条，这一行让它们几乎零成本。
+        guard tapCandidate || pressStartedRecording else { return }
         tapCandidate = false
         holdWorkItem?.cancel()
         guard pressStartedRecording, !skillActive else { return }
         pressStartedRecording = false
-        Log.info("Hotkey press-session aborted (another key pressed)")
+        // 日志只留控制器那一行（带录音时长）：作废是高频路径，两头都记就成了刷屏
         onPressAbort?()
     }
 
@@ -159,7 +188,18 @@ final class HotkeyManager {
 
         let flags = event.modifierFlags.intersection(relevantFlags)
         let targetFlag = NSEvent.ModifierFlags(rawValue: choice.flagMask)
-        let isDown = flags.contains(targetFlag)
+        // 按下/松开沿必须判"这一颗键自己"。合并位（.option / .command / …）不分左右：
+        // 另一侧的同名键还按着时，热键松开事件里这一位仍然是 1，松开会被当成又一次按下，
+        // 松开分支永远不执行——录音停不下来，只能靠再按一次 / Esc / 5 分钟上限收场。
+        // 所以优先读 rawValue 里左右分开的设备相关位；只有这台机器/这条事件根本不报
+        // 设备位（Fn 就没有，它也没有"另一侧"）时才退回合并位。
+        let raw = event.modifierFlags.rawValue
+        let isDown: Bool
+        if choice.deviceMask != 0, raw & choice.deviceMaskPair != 0 {
+            isDown = raw & choice.deviceMask != 0
+        } else {
+            isDown = flags.contains(targetFlag)
+        }
 
         if isDown {
             // 必须是"只按了这一个修饰键"才算候选
@@ -169,11 +209,12 @@ final class HotkeyManager {
                 skillActive = false
                 pressStartedRecording = false
                 holdWorkItem?.cancel()
-                // 按下即录：空闲时立刻开始采音，先按"听写"显示。3.3 之前要按满 0.6s
-                // 才 start，指令模式恒定丢掉开口的前 0.6 秒。
+                // 按下即录：空闲时立刻开始采音，但只开静音缓冲——现身（开始音/悬浮窗/预览）
+                // 等手势确认。3.3 之前要按满 0.6s 才 start，指令模式恒定丢掉开口的前 0.6 秒。
                 if !isRecording(), !isBusy() {
                     pressStartedRecording = true
-                    Log.info("Hotkey press-start (recording from key-down)")
+                    // 这里不记日志：把热键当修饰键用是每天几十上百次的路径，
+                    // 控制器那边的 "Recording start press=true" 已经说明了一切
                     onPressStart?()
                 }
                 // 按住 0.6s 判定归属：这段是听写还是指令
@@ -183,13 +224,16 @@ final class HotkeyManager {
                         self.skillActive = true
                         Log.info("Hotkey hold-promote (command mode)")
                         self.onHoldPromote?()
-                    } else if self.isBusy() {
-                        // 处理中放行会让指令启动撞上 guard phase == .idle 空转，
-                        // 用户按住说完一整句却零反馈（3.2.19 之前的 bug）
-                        Log.info("Hotkey hold rejected (processing)")
+                    } else if self.isRecording() {
+                        // 按下时已经在录音、现在还在录：什么都不做，
+                        // 松开时统一走 release-stop（3.2.11）
+                    } else {
+                        // 按下时在忙（或在录音），所以这一段没开录。到点时那一轮可能刚好结束
+                        // ——这 600ms 的竞态窗口里若什么都不做，用户按住说完一整句会零反馈
+                        // （3.2.19 之前的那类 bug）。一律通知控制器，由它按当下的 phase 给反馈。
+                        Log.info("Hotkey hold rejected (busy at press time)")
                         self.onBusyGesture?()
                     }
-                    // 按下时已经在录音：什么都不做，松开时统一走 release-stop（3.2.11）
                 }
                 holdWorkItem = work
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
@@ -206,8 +250,10 @@ final class HotkeyManager {
             } else if pressStartedRecording {
                 // 0.6s 内松开 = 轻点：按下时开的那段录音留着当纯听写继续录。
                 // 绝不能在这里停——那就变成"按住说话"了。
+                // 手势到这一刻才确认，所以控制器现在才让这段录音现身（开始音 + 悬浮窗 + 灰字预览）。
                 pressStartedRecording = false
                 Log.info("Hotkey tap (dictation continues)")
+                DispatchQueue.main.async { [weak self] in self?.onPressTapConfirm?() }
             } else if tapCandidate, isRecording() {
                 // 录音中无论按了多久，松开一律=停止（否则长按≥0.6s 松开会"没反应"）
                 Log.info("Hotkey release-stop (recording)")

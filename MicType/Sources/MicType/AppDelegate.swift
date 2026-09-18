@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         hotkeys.onTapToggle = { [weak self] in self?.dictation.toggle() }
         hotkeys.onPressStart = { [weak self] in self?.dictation.pressStart() }
+        hotkeys.onPressTapConfirm = { [weak self] in self?.dictation.pressTapConfirm() }
         hotkeys.onHoldPromote = { [weak self] in self?.dictation.holdPromote() }
         hotkeys.onPressAbort = { [weak self] in self?.dictation.abortPressSession() }
         hotkeys.onSkillEnd = { [weak self] in self?.dictation.skillHoldEnd() }

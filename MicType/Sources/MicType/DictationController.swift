@@ -20,7 +20,6 @@ final class DictationController {
 
     private let recorder = AudioRecorder()
     let overlay = OverlayController()
-    private var didPromptAccessibility = false
     /// 录音开始时的前台应用（文字将粘贴到这个应用）
     private var targetBundleID = ""
     /// 录音开始时的选中文本（V3 语音技能用；读不到为 nil）
@@ -30,6 +29,22 @@ final class DictationController {
     /// 本次录音是否由热键按下触发（按下即录）。只有这种会话才可能升级成指令模式，
     /// 也只有它会在"被当成修饰键用"时被静默丢弃
     private var pressSession = false
+    /// 「按下即录」的这一段是否已经对用户现身（开始音 + 悬浮窗 + 灰字预览）。
+    /// 按下沿只开静音缓冲，手势确认（松手 = 轻点 / 满 0.6s = 指令）之后才现身——
+    /// 否则把热键当修饰键用（右⌥+字母、⌘C/⌘V…）每按一次都要"叮"一声、闪一次悬浮窗。
+    private var pressRevealed = false
+    /// 按下沿发现的拦路问题：按下这一刻还不知道用户是要说话还是只把热键当修饰键用，
+    /// 所以先记下来，等手势确认了再提示（3.3 之前每一次 ⌥+字母 都会响错误音并把引导窗抢到前台）
+    private enum BlockedReason: String { case model, accessibility }
+    private var pressBlockedReason: BlockedReason?
+    /// 上一次「拦路问题」提示的时刻：同一类问题短时间内只提示一次，别让用户被连珠炮淹没
+    private var lastBlockedPromptAt: Date?
+    /// 指令模式下 ⌘C 兜底读选区所属的会话代数（nil = 没有在飞的兜底）。
+    /// 兜底固定 0.35s 才回调，整段按住不到 ~0.95s 时它会晚于松手才回来，
+    /// runSkillSession 必须等它，否则选区静默丢失、指令降级成"无选区自由指令"
+    private var selectionProbeGeneration: Int?
+    /// 等这次兜底回来才能继续的活儿（目前只有指令分发）
+    private var selectionProbeWaiters: [() -> Void] = []
     /// 本轮录音的附注（设备变更提前结束 / 到了时长上限 / 静音自动停）：收尾时并进结果提示，
     /// 让用户知道这一段为什么是这样结束的。每条只提示一次，绝不泄漏到下一次录音
     private var sessionNotes: [String] = []
@@ -99,6 +114,10 @@ final class DictationController {
     /// 时间一长用户早就编辑过别的东西了，那时候再 ⌘Z 会撤错东西。
     private static let revertWindowSeconds: Double = 60
 
+    /// 「模型没下载 / 没有辅助功能权限」这类提示的节流窗口：用户拿热键当修饰键用时
+    /// 一分钟能按几十次，每次都弹一遍等于把人堵死
+    private static let blockedPromptThrottleSeconds: Double = 10
+
     // MARK: - 入口
 
     func toggle() {
@@ -109,38 +128,137 @@ final class DictationController {
         }
     }
 
-    /// 处理中收到轻点/按住：不能开新一轮，但绝不静默吞掉手势——
+    /// 处理中/录音中收到按住手势：不能开新一轮，但绝不静默吞掉手势——
     /// 明确告诉用户在忙，以及出口在哪（Esc）。
     func gestureWhileBusy() {
-        guard phase == .processing else { return }
-        Log.info("Gesture ignored while processing")
-        overlay.flashOverProcessing(tr("处理中… 按 Esc 取消", "Processing… press Esc to cancel"))
-        Sounds.playError()
+        switch phase {
+        case .processing:
+            Log.info("Gesture ignored while processing")
+            overlay.flashOverProcessing(tr("处理中… 按 Esc 取消", "Processing… press Esc to cancel"))
+            Sounds.playError()
+        case .recording:
+            // 按下时是上一段录音、现在还在录：松开会走 release-stop，这里不该插嘴
+            return
+        case .idle:
+            // 按下时在忙、0.6s 到点时那一轮恰好结束的竞态（约 600ms 的窗口）：
+            // 这次按住没开录（现在补开也缺了开口的半秒），与其静默吞掉，不如叫用户重按一次
+            Log.info("Hold gesture landed between rounds")
+            overlay.flashNotice(tr("上一轮刚结束，请重新按一次",
+                                   "Previous round just finished — press again"))
+            Sounds.playCancel()
+        }
     }
 
-    /// 热键按下（此刻还不知道用户要听写还是要下指令）：立刻开录。
-    /// 判定推迟到 0.6s——但音频从按下那一刻就在采，指令模式不再丢开口的前半秒。
+    /// 热键按下（此刻还不知道用户要听写还是要下指令）：立刻开录，但**什么都不表现出来**。
+    /// 判定推迟到 0.6s——音频从按下那一刻就在采，指令模式不再丢开口的前半秒；
+    /// 开始音 / 悬浮窗 / 灰字预览 / 读选区一律推迟到 revealPressSession()。
     func pressStart() {
         guard phase == .idle else { return }
+        pressRevealed = false
+        pressBlockedReason = nil
+        // 模型与权限的提示同样推迟：按下这一刻用户很可能只是拿热键当修饰键用，
+        // 这时候响错误音、把引导窗抢到前台，等于让他连字都打不成
+        guard QwenEngine.shared.isModelAvailable else {
+            pressBlockedReason = .model
+            pressSession = true
+            return
+        }
+        guard Permissions.isAccessibilityTrusted else {
+            pressBlockedReason = .accessibility
+            pressSession = true
+            return
+        }
         startRecording(fromPress: true)
     }
 
-    /// 按住满 0.6s：把正在录的这一段就地升级为指令模式。
-    /// 录音不中断、波形不重置，用户完全无感，只是标签换成"正在听指令…"。
+    /// 0.6s 内松开 = 轻点，手势确认成纯听写：这一段录音到这一刻才现身。
+    func pressTapConfirm() {
+        if let reason = pressBlockedReason {
+            reportPressBlocked(reason)
+            return
+        }
+        revealPressSession()
+    }
+
+    /// 让「按下即录」的这一段对用户现身：开始音 + 悬浮窗 + 灰字预览。
+    private func revealPressSession() {
+        guard phase == .recording, pressSession, !pressRevealed else { return }
+        pressRevealed = true
+        // 开始音只能放在这里。代价是它会被已经在录的麦克风收进去一小段（≤0.6s 处的一声"叮"，
+        // 静音门和 ASR 都扛得住）——比"每次把热键当修饰键用都响一声"可接受得多。
+        Sounds.playStart()
+        overlay.showRecording(label: currentRecordingLabel())
+        startLivePreview(generation: generation)
+    }
+
+    /// 按下沿记下的拦路问题，等手势确认了才提示；同一问题 10 秒内只提示一次。
+    private func reportPressBlocked(_ reason: BlockedReason) {
+        pressBlockedReason = nil
+        pressSession = false
+        if let last = lastBlockedPromptAt,
+           Date().timeIntervalSince(last) < Self.blockedPromptThrottleSeconds {
+            Log.info("Press blocked (\(reason.rawValue)) — prompt throttled")
+            return
+        }
+        lastBlockedPromptAt = Date()
+        Log.info("Press blocked (\(reason.rawValue))")
+        switch reason {
+        case .model:
+            overlay.flashError(tr("识别模型未下载，请在设置中下载",
+                                  "Speech model not downloaded — see Settings"))
+            Sounds.playError()
+            onNeedSettings?()
+        case .accessibility:
+            promptAccessibilityNeeded()
+        }
+    }
+
+    /// 没有辅助功能权限时的统一提示：说清在哪儿开，并把那一页直接打开。
+    /// 不提"重启 MicType"——现在的 macOS 授权即时生效，让用户白重启一次只会更迷惑。
+    private func promptAccessibilityNeeded() {
+        Permissions.promptAccessibility()
+        overlay.flashError(tr("请在 系统设置 → 隐私与安全性 → 辅助功能 中开启 MicType",
+                              "Enable MicType in System Settings → Privacy & Security → Accessibility"))
+        Sounds.playError()
+        Permissions.openAccessibilitySettings()
+    }
+
+    /// 按住满 0.6s：把正在录的这一段就地升级为指令模式，并让它现身。
+    /// 录音不中断、波形不重置，用户完全无感，只是标签是"正在听指令…"。
     func holdPromote() {
+        if let reason = pressBlockedReason {
+            reportPressBlocked(reason)
+            return
+        }
         guard phase == .recording, pressSession, !skillSession else { return }
         skillSession = true
         recordingLabel = tr("正在听指令…", "Listening for command…")
-        overlay.updateRecordingLabel(currentRecordingLabel())
+        if pressRevealed {
+            overlay.updateRecordingLabel(currentRecordingLabel())
+        } else {
+            revealPressSession()
+        }
+        // 选区也推迟到这里才读：轻点是纯听写，根本用不到选区；而且按下沿做同步 AX 读取
+        // 会被 Electron / 挂起的应用卡住主线程几百毫秒——把热键当修饰键用时每按一次卡一次。
+        targetSelection = SelectionReader.readSelectedText()
         Log.info("Hold promoted to command mode selection=\(targetSelection == nil ? "none" : "ax")")
         // AX 读不到选区（浏览器/Gmail、VSCode 等 Electron、微信/QQ 都接口残缺）→ 现在才 ⌘C 兜底。
         // 判定成指令之后才做，纯听写路径一个字都不会碰用户的剪贴板。
         guard targetSelection == nil else { return }
         let generation = self.generation
+        selectionProbeGeneration = generation
         SelectionReader.readSelectedTextWithClipboardFallback { [weak self] text in
-            guard let self = self, self.isCurrent(generation),
-                  self.phase == .recording else { return }
-            self.targetSelection = text
+            guard let self = self else { return }
+            // 代数对不上说明这一轮已经被取消或换代了（endSession 会把它清空）
+            guard self.selectionProbeGeneration == generation else { return }
+            self.selectionProbeGeneration = nil
+            // 这里绝不能再要求 phase == .recording：用户完全可能在升级后不到 0.35s 就松手，
+            // 那时 phase 已是 .processing，结果被丢掉 → 选区静默丢失，指令降级成自由指令
+            // （3.2.18 修过的那类失败）。代数已经挡住了取消和新一轮，phase 这一条多余且有害。
+            if self.phase != .idle { self.targetSelection = text }
+            let waiters = self.selectionProbeWaiters
+            self.selectionProbeWaiters = []
+            waiters.forEach { $0() }
         }
     }
 
@@ -157,11 +275,14 @@ final class DictationController {
                      + "duration=\(String(format: "%.2f", recorder.recordedDuration))s")
             _ = recorder.stop()
         } else {
-            // 还卡在权限回调里没真正开录：推进代数把那次启动丢掉即可
+            // 还卡在权限回调里没真正开录，或按下沿就被模型/权限拦下了：推进代数丢掉那次启动即可
             Log.info("Press-session discarded before recording began")
         }
+        let wasRevealed = pressRevealed
         endSession()
-        overlay.hide()
+        // 没现身过就没有属于自己的悬浮窗可关——这时候 hide() 只会把上一轮还在闪的
+        // 「已输入」提示擦掉（把热键当修饰键用的那些次必须完全隐形）
+        if wasRevealed { overlay.hide() }
     }
 
     func cancel() {
@@ -192,6 +313,10 @@ final class DictationController {
         inflightRequest = nil
         skillSession = false
         pressSession = false
+        pressRevealed = false
+        pressBlockedReason = nil
+        selectionProbeGeneration = nil
+        selectionProbeWaiters = []
         targetSelection = nil
         sessionNotes = []
         recordingStartedAt = nil
@@ -252,6 +377,10 @@ final class DictationController {
             overlay.updateRecordingLabel(currentRecordingLabel())
         }
 
+        // 指令模式（按住说话）豁免静音自动停：那里"松开"才是用户明确的结束信号，
+        // 中途停一两秒想措辞是常态。截断的话，半句指令照样会被送去执行，
+        // 用户还按着键说的后半句全部丢失，松开时 skillHoldEnd 又因为 phase 已变而空转。
+        guard !skillSession else { return }
         // 静音自动停：默认关闭（0）。开了也要先真的听到过人声才算数——
         // 否则"还没开口"会被当成"说完了"，一按就停。
         guard autoStopSilence > 0, speechDetected, let loud = lastLoudAt else { return }
@@ -453,13 +582,9 @@ final class DictationController {
             onNeedSettings?()
             return
         }
-        // 检查辅助功能权限（粘贴需要）。权限刚打开时 macOS 往往要重启 App 才完全生效。
+        // 检查辅助功能权限（粘贴需要）
         guard Permissions.isAccessibilityTrusted else {
-            didPromptAccessibility = true
-            Permissions.promptAccessibility()
-            overlay.flashError(tr("请先开启辅助功能权限，然后重启 MicType",
-                                  "Enable Accessibility permission, then restart MicType"))
-            Sounds.playError()
+            promptAccessibilityNeeded()
             return
         }
         // 检查麦克风权限
@@ -513,7 +638,9 @@ final class DictationController {
             // 既污染识别（开头多出一段"叮"），也会骗过静音门。NSSound.play() 是异步的，
             // 它只是把声音排上队就立刻返回，所以这里不会推迟录音起点。
             // 代价：启动失败时用户已经听到了开始音，紧接着一声错误音——比丢字可接受得多。
-            Sounds.playStart()
+            // 「按下即录」是唯一的例外：按下这一刻还不知道用户是要说话还是只把热键当修饰键用，
+            // 所以开始音推迟到 revealPressSession()（手势确认之后）。
+            if !fromPress { Sounds.playStart() }
             do {
                 try self.recorder.start()
             } catch {
@@ -532,16 +659,13 @@ final class DictationController {
             self.recordingLabel = tr("正在听…", "Listening…")
             Log.info("Recording start press=\(fromPress) target=\(self.targetBundleID)"
                      + " autoStopSilence=\(String(format: "%.0f", self.autoStopSilence))s")
+            // 「按下即录」的这一段先不现身：悬浮窗、灰字预览、读选区全部等手势确认
+            // （pressTapConfirm / holdPromote）。菜单等其它入口是用户的明确动作，立刻显示。
+            guard !fromPress else { return }
             self.overlay.showRecording(label: self.recordingLabel)
             // 伪流式预览：录音期间每隔一会儿把"到目前为止"的音频解码一遍，灰字贴在波形下面。
             // 纯粹是给眼睛看的，永远不会插入到任何地方。
             self.startLivePreview(generation: self.generation)
-            // 选区必须在录音起点快照（用户随后可能切走焦点）。这里只走 AX：纯读、非破坏性，
-            // 绝不发 ⌘C——按下的时候还不知道这是不是指令，纯听写路径永远不该碰剪贴板。
-            // 放在 recorder.start() 之后：目标应用的无障碍接口卡住时，至少音频已经在录了。
-            if fromPress {
-                self.targetSelection = SelectionReader.readSelectedText()
-            }
         }
     }
 
@@ -671,6 +795,18 @@ final class DictationController {
     /// 指令分发：显式说「帮我回复…」→ 直通草拟回复；有选区 → 模型自判意图（改写/回复/新写）；
     /// 没选区 → 自由指令
     private func runSkillSession(rawText: String, isColdStart: Bool, generation: Int) {
+        // ⌘C 兜底还在飞（按住满 0.6s 升级后不到 0.35s 就松手，典型是"翻译"这种两三字的口令）：
+        // 等它回来再分发。不等的话选区是 nil，指令被当成无选区自由指令跑，
+        // 结果还会粘到光标处盖掉用户选中的那段字。
+        if selectionProbeGeneration == generation {
+            Log.info("Skill dispatch waiting for clipboard selection fallback")
+            selectionProbeWaiters.append { [weak self] in
+                guard let self = self, self.isCurrent(generation) else { return }
+                self.runSkillSession(rawText: rawText, isColdStart: isColdStart,
+                                     generation: generation)
+            }
+            return
+        }
         Log.info("Skill dispatch selection=\(targetSelection.map { "\($0.count)chars" } ?? "nil") app=\(targetBundleID)")
         if SkillRouter.isReplyTrigger(rawText) {
             runReplyDraft(instruction: rawText, raw: rawText, generation: generation)
@@ -803,12 +939,23 @@ final class DictationController {
         let note = takeSessionNote().map { $0 + tr("；", "; ") + note } ?? note
         // 目标应用在这里定格：回调回来时 targetBundleID 可能已经属于下一轮录音了
         let target = targetBundleID
+        // 这一轮的代数也要定格：上面刚把 phase 置回 .idle，而插入回调最长要等到
+        // 前台切换完成（≤1.2s）+ 保守时序，这期间用户完全可能已经按键开了下一轮
+        let generation = self.generation
         Log.info("Deliver start chars=\(finalText.count) target=\(target)")
         TextInserter.insert(finalText, targetBundleID: target,
                             allowClipboardRestore: allowClipboardRestore,
                             conservativePaste: !allowClipboardRestore) { [weak self] outcome in
             guard let self = self else { return }
             Log.info("Deliver outcome=\(outcome == .pasted ? "pasted" : "clipboardOnly")")
+            // 对不上这一轮就到此为止：迟到的成功提示会把新一轮的录音悬浮窗盖成绿勾，
+            // 1 秒后 flash 结束时整个面板被 orderOut（灰字预览和"正在听指令…"从此不再更新），
+            // 成功音还会被新一轮的麦克风录进去。「换回识别原文」的记忆同理——
+            // 那时候 ⌘Z 撤的已经不是这一次粘贴了。
+            guard self.isCurrent(generation), self.phase == .idle else {
+                Log.info("Deliver feedback suppressed (a new round already started)")
+                return
+            }
             // 只有"确实粘进去了"且"润色确实改了字"才记：没粘进去就无从 ⌘Z 撤起，
             // 一个字没改的话换回原文也是原地踏步
             if outcome == .pasted, revertible, finalText != raw, !target.isEmpty {
@@ -818,6 +965,8 @@ final class DictationController {
             }
             switch outcome {
             case .pasted:
+                // warning = 这次投递有保留（润色失败 / 保真校验没过，输出的是识别原文）。
+                // 这种时候绝不能打绿勾：用户会以为润色成功了，连检查都不检查一眼。
                 if warning {
                     self.overlay.flashError(note)
                 } else {
