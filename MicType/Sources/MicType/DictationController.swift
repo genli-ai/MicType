@@ -58,6 +58,23 @@ final class DictationController {
     private var previewWindowStart = 0
     private var previewCommitted = ""
 
+    /// 「换回识别原文」的记忆（P9）：只记"纯听写 + 润色确实改了字 + 确实粘进去了"的那一次。
+    /// 指令模式不记——那里的 raw 是用户的口令（"翻译成英文"），拿它覆盖结果毫无意义。
+    private struct RevertCandidate {
+        let raw: String
+        let final: String
+        let bundleID: String
+        let at: Date
+    }
+    /// 菜单要问「现在能不能换回原文」，答案分三档：没得撤 / 有但用户切走了 / 可以撤
+    struct RevertOffer {
+        /// 前台仍是当时那个应用 → 菜单项可点
+        let ready: Bool
+        /// 目标应用名，灰着的时候告诉用户该切回哪儿
+        let appName: String
+    }
+    private var revertCandidate: RevertCandidate?
+
     /// 无障碍接口残缺、读选区需要 ⌘C 兜底的应用
     private static let poorAXApps: Set<String> = [
         "com.tencent.xinWeChat", "com.tencent.qq",
@@ -77,6 +94,10 @@ final class DictationController {
     private static let previewMinChunkSeconds: Double = 1.5
     private static let previewBaseInterval: Double = 1.5
     private static let previewMaxInterval: Double = 5.0
+
+    /// 「换回识别原文」的有效期：过了就忘掉。撤销依赖目标应用的 undo 栈，
+    /// 时间一长用户早就编辑过别的东西了，那时候再 ⌘Z 会撤错东西。
+    private static let revertWindowSeconds: Double = 60
 
     // MARK: - 入口
 
@@ -339,6 +360,83 @@ final class DictationController {
         return prefix + (needsSpace ? " " : "") + text
     }
 
+    // MARK: - 换回识别原文（P9）
+
+    /// 取当前仍然有效的记忆；过期就地忘掉（菜单每次打开都会问一遍，等于顺手做了清理）
+    private func freshRevertCandidate() -> RevertCandidate? {
+        guard let candidate = revertCandidate else { return nil }
+        guard Date().timeIntervalSince(candidate.at) <= Self.revertWindowSeconds else {
+            revertCandidate = nil
+            Log.info("Revert candidate expired after \(Int(Self.revertWindowSeconds))s")
+            return nil
+        }
+        return candidate
+    }
+
+    /// 菜单问「现在能不能换回识别原文」。nil = 没得撤，菜单里这一项干脆不出现。
+    func revertOffer() -> RevertOffer? {
+        guard phase == .idle, let candidate = freshRevertCandidate(),
+              !candidate.bundleID.isEmpty else { return nil }
+        let frontID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+        // 打开状态栏菜单这个动作本身可能把 MicType 自己变成前台应用，那不算"用户切走了"；
+        // 真要撤的时候 revertToRaw() 会先把目标应用拉回前台再按键。
+        let ready = frontID == candidate.bundleID || frontID == Bundle.main.bundleIdentifier
+        let name = NSRunningApplication
+            .runningApplications(withBundleIdentifier: candidate.bundleID)
+            .first?.localizedName ?? candidate.bundleID
+        return RevertOffer(ready: ready, appName: name)
+    }
+
+    /// 用识别原文换掉刚刚插入的润色结果。两步：给目标应用发**一次** ⌘Z 撤掉那次粘贴，
+    /// 等 150ms 让它把撤销做完，再把 raw 按正常路径插一遍（目标已在前台 → 走 fast 时序）。
+    /// 只按一次 ⌘Z 是刻意的：撤销粒度各家不同，连发很容易吃掉用户自己之前的编辑。
+    func revertToRaw() {
+        guard phase == .idle, let candidate = freshRevertCandidate() else { return }
+        // 用掉就忘：连点两次会变成"再撤一步"，那一步撤的是用户自己的东西
+        revertCandidate = nil
+        guard Permissions.isAccessibilityTrusted else {
+            overlay.flashError(tr("请先开启辅助功能权限", "Enable Accessibility permission first"))
+            Sounds.playError()
+            return
+        }
+        Log.info("Revert to raw requested target=\(candidate.bundleID)"
+                 + " raw=\(candidate.raw.count)chars polished=\(candidate.final.count)chars")
+        TextInserter.bringToFront(candidate.bundleID) { [weak self] arrived in
+            guard let self = self else { return }
+            guard arrived else {
+                Log.warn("Revert aborted: target app did not come to front")
+                self.overlay.flashError(tr("没能切回原应用，撤销已取消",
+                                           "Could not switch back to the target app — revert cancelled"))
+                Sounds.playError()
+                return
+            }
+            self.overlay.showProcessing(tr("换回识别原文…", "Restoring raw transcript…"))
+            TextInserter.sendUndo {
+                Log.info("Revert step 1/2: undo sent to \(candidate.bundleID)")
+                // 给目标应用 150ms 把撤销做完再插入：紧接着粘贴的话，有些应用会把
+                // 这次粘贴和撤销合并处理，结果两段文字叠在一起
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    TextInserter.insert(candidate.raw, targetBundleID: candidate.bundleID) { [weak self] outcome in
+                        guard let self = self else { return }
+                        Log.info("Revert step 2/2: raw inserted outcome="
+                                 + (outcome == .pasted ? "pasted" : "clipboardOnly"))
+                        // 这期间用户又按了热键的话，别去盖掉录音/处理中的悬浮窗
+                        guard self.phase == .idle else { return }
+                        switch outcome {
+                        case .pasted:
+                            self.overlay.flashSuccess(tr("已换回识别原文", "Raw transcript restored"))
+                            Sounds.playSuccess()
+                        case .clipboardOnly:
+                            self.overlay.flashError(tr("识别原文已复制到剪贴板——按 ⌘V 粘贴",
+                                                       "Raw transcript copied — press ⌘V to paste"))
+                            Sounds.playError()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     var isRecording: Bool { phase == .recording }
     var isProcessing: Bool { phase == .processing }
 
@@ -533,9 +631,11 @@ final class DictationController {
                         self.inflightRequest = nil
                         Log.info("Timing polish=\(Log.ms(since: tPolish))ms model=\(Settings.shared.currentPolishModel) ok=\(polished != nil)")
                         if let polished = polished {
+                            // 唯一开放「换回识别原文」的路径：纯听写 + 润色真的动了字
                             self.deliver(raw: rawText, final: polished,
                                          note: tr("已输入", "Inserted"),
-                                         allowClipboardRestore: !isColdStart)
+                                         allowClipboardRestore: !isColdStart,
+                                         revertible: true)
                         } else {
                             self.deliver(raw: rawText, final: rawText,
                                          note: tr("润色失败（", "Polish failed (")
@@ -678,19 +778,32 @@ final class DictationController {
         }
     }
 
+    /// revertible：这一次是不是"纯听写 + 润色"的结果——只有它值得提供「换回识别原文」。
     private func deliver(raw: String, final text: String, note: String, warning: Bool = false,
-                         allowClipboardRestore: Bool = true) {
+                         allowClipboardRestore: Bool = true, revertible: Bool = false) {
         let finalText = TextPostProcessor.applyVocabReplacements(TextPostProcessor.fixMixedPunctuation(text))
         HistoryStore.shared.add(raw: raw, polished: finalText)
+        // 又插入了新东西 → 上一次的记忆立刻作废：⌘Z 撤的永远是"最后一次粘贴"，
+        // 拿旧记忆去撤只会撤掉这一次的新文字
+        revertCandidate = nil
         phase = .idle
         // 录音被设备变更提前掐断时，把原因并进结果提示：用户得知道这只是"半句"
         let note = takeSessionNote().map { $0 + tr("；", "; ") + note } ?? note
-        Log.info("Deliver start chars=\(finalText.count) target=\(targetBundleID)")
-        TextInserter.insert(finalText, targetBundleID: targetBundleID,
+        // 目标应用在这里定格：回调回来时 targetBundleID 可能已经属于下一轮录音了
+        let target = targetBundleID
+        Log.info("Deliver start chars=\(finalText.count) target=\(target)")
+        TextInserter.insert(finalText, targetBundleID: target,
                             allowClipboardRestore: allowClipboardRestore,
                             conservativePaste: !allowClipboardRestore) { [weak self] outcome in
             guard let self = self else { return }
             Log.info("Deliver outcome=\(outcome == .pasted ? "pasted" : "clipboardOnly")")
+            // 只有"确实粘进去了"且"润色确实改了字"才记：没粘进去就无从 ⌘Z 撤起，
+            // 一个字没改的话换回原文也是原地踏步
+            if outcome == .pasted, revertible, finalText != raw, !target.isEmpty {
+                self.revertCandidate = RevertCandidate(raw: raw, final: finalText,
+                                                       bundleID: target, at: Date())
+                Log.info("Revert available for \(Int(Self.revertWindowSeconds))s target=\(target)")
+            }
             switch outcome {
             case .pasted:
                 if warning {

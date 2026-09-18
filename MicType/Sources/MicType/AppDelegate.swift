@@ -91,6 +91,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(makeItem(tr("取消（Esc）", "Cancel (Esc)"), #selector(cancelDictation)))
         }
 
+        // 「换回识别原文」（P9）：只在刚插入过一次被润色改动的听写、且还在 60 秒内时出现。
+        // 目标应用不在前台就灰着并说清要切回哪儿——不自作主张替用户切窗口去撤销。
+        if let offer = dictation.revertOffer() {
+            let item = makeItem(tr("换回识别原文（撤销润色）", "Use raw transcript instead"),
+                                #selector(revertToRaw))
+            if !offer.ready {
+                // NSMenu 默认自动启用：去掉 action 才是真的灰掉
+                item.action = nil
+                item.isEnabled = false
+                item.toolTip = tr("请先切回 ", "Switch back to ") + offer.appName
+                    + tr(" 再撤销", " first")
+            }
+            menu.addItem(item)
+        }
+
         menu.addItem(.separator())
 
         // 润色档位
@@ -167,6 +182,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func cancelDictation() {
         dictation.cancel()
+    }
+
+    @objc private func revertToRaw() {
+        dictation.revertToRaw()
     }
 
     @objc private func setPolishLevel(_ sender: NSMenuItem) {

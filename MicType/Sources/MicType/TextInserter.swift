@@ -189,6 +189,25 @@ enum TextInserter {
         }
     }
 
+    /// 把目标应用拉回前台（已经在前台就立刻回调 true）。
+    /// 给「先要对目标应用发按键、再走正常插入」的流程用（P9 换回识别原文：先 ⌘Z 再插 raw）——
+    /// 从状态栏菜单点下来时前台很可能已经是 MicType 自己，不先拉回去按键会落到错误的应用上。
+    static func bringToFront(_ bundleID: String, completion: @escaping (Bool) -> Void) {
+        guard !bundleID.isEmpty else { completion(false); return }
+        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID {
+            completion(true)
+            return
+        }
+        guard let app = NSRunningApplication
+            .runningApplications(withBundleIdentifier: bundleID).first else {
+            completion(false)
+            return
+        }
+        // 同 insert()：不要 .activateAllWindows，保住用户光标所在的那个窗口
+        app.activate(options: [])
+        waitForFrontmost(bundleID, attemptsLeft: 8, completion: completion)
+    }
+
     /// 轮询等待目标应用到达前台（每 0.15s 一次，最多约 1.2s）
     private static func waitForFrontmost(_ bundleID: String, attemptsLeft: Int,
                                          completion: @escaping (Bool) -> Void) {
@@ -284,11 +303,23 @@ enum TextInserter {
         ourChangeCount = -1
     }
 
+    /// 给前台应用发一次 ⌘Z。只发一次，绝不连发：各家应用的撤销粒度不一样，
+    /// 多按一次很可能把用户自己之前的编辑也吃掉——宁可撤不干净，也不越界。
+    static func sendUndo(completion: (() -> Void)? = nil) {
+        // 6 = kVK_ANSI_Z
+        sendCommandKey(virtualKey: 6, keyHold: 0.03, completion: completion)
+    }
+
     private static func sendCmdV(keyHold: Double = 0.03, completion: (() -> Void)? = nil) {
-        let source = CGEventSource(stateID: .hidSystemState)
         // 9 = kVK_ANSI_V
-        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
-              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else {
+        sendCommandKey(virtualKey: 9, keyHold: keyHold, completion: completion)
+    }
+
+    private static func sendCommandKey(virtualKey: CGKeyCode, keyHold: Double,
+                                       completion: (() -> Void)? = nil) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: false) else {
             completion?()
             return
         }
