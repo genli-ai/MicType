@@ -101,7 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         levelItem.submenu = levelMenu
         menu.addItem(levelItem)
 
-        // 历史记录
+        // 历史记录：菜单里只留最近 5 条速览（复制），完整的搜索/原文对照/重新插入在历史窗口里
         let historyItem = NSMenuItem(title: tr("最近记录", "Recent Transcripts"), action: nil, keyEquivalent: "")
         let historyMenu = NSMenu()
         let items = HistoryStore.shared.items
@@ -110,7 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             empty.isEnabled = false
             historyMenu.addItem(empty)
         } else {
-            for item in items.prefix(10) {
+            for item in items.prefix(5) {
                 var title = item.polished.replacingOccurrences(of: "\n", with: " ")
                 if title.count > 36 {
                     title = String(title.prefix(36)) + "…"
@@ -121,7 +121,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 mi.toolTip = tr("点击复制全文", "Click to copy")
                 historyMenu.addItem(mi)
             }
-            historyMenu.addItem(.separator())
+        }
+        historyMenu.addItem(.separator())
+        let openHistoryItem = makeItem(tr("打开历史记录…", "Open History…"), #selector(openHistory))
+        openHistoryItem.keyEquivalent = "y"
+        openHistoryItem.keyEquivalentModifierMask = .command
+        historyMenu.addItem(openHistoryItem)
+        if !items.isEmpty {
             historyMenu.addItem(makeItem(tr("清空记录", "Clear History"), #selector(clearHistory)))
         }
         historyItem.submenu = historyMenu
@@ -178,6 +184,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func clearHistory() {
         HistoryStore.shared.clear()
+    }
+
+    @objc private func openHistory() {
+        HistoryWindowController.shared.show()
     }
 
     @objc private func unloadModel() {
