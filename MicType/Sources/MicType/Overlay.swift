@@ -151,6 +151,13 @@ final class OverlayController {
         present(context: "recording")
     }
 
+    /// 只换「正在听…」的文案，不重置波形、不重建面板——按住升级为指令模式（或到 2 分钟
+    /// 软提示）时用户的话已经在录了，波形必须连续，面板也不该闪。
+    func updateRecordingLabel(_ label: String) {
+        guard case .recording = state.mode else { return }
+        state.mode = .recording(label)
+    }
+
     func showProcessing(_ label: String) {
         hideGeneration += 1
         processingLabel = label

@@ -25,11 +25,23 @@ final class DictationController {
     private var targetBundleID = ""
     /// 录音开始时的选中文本（V3 语音技能用；读不到为 nil）
     private var targetSelection: String?
-    /// 本次录音是否为"指令模式"（按住快捷键触发）
+    /// 本次录音是否为"指令模式"（按住快捷键满 0.6s 后就地升级）
     private var skillSession = false
-    /// 录音途中音频链路断掉（换设备后重装 tap 失败）的原因，收尾时附到结果提示里，
-    /// 让用户知道这段是"半句"而不是自己没说清楚
-    private var audioFaultNote: String?
+    /// 本次录音是否由热键按下触发（按下即录）。只有这种会话才可能升级成指令模式，
+    /// 也只有它会在"被当成修饰键用"时被静默丢弃
+    private var pressSession = false
+    /// 本轮录音的附注（设备变更提前结束 / 到了时长上限 / 静音自动停）：收尾时并进结果提示，
+    /// 让用户知道这一段为什么是这样结束的。每条只提示一次，绝不泄漏到下一次录音
+    private var sessionNotes: [String] = []
+    /// 录音起点与电平闸门状态（全部只在主线程读写：闸门跑在录音电平回调里，
+    /// 不给音频线程添任何负担）
+    private var recordingStartedAt: Date?
+    private var recordingLabel = ""
+    private var softHintShown = false
+    private var speechDetected = false
+    private var lastLoudAt: Date?
+    /// 本次录音生效的静音自动停秒数（录音开始时取一次快照：录到一半改设置不该影响这一段）
+    private var autoStopSilence: Double = 0
     /// 会话代数：每开一轮、每取消一次都自增。所有异步回调（ASR / 润色 / 指令 / 选区兜底）
     /// 都带着发起时的代数回来，对不上就整条丢弃——取消之后绝不能再往光标里插入任何东西。
     private var generation = 0
@@ -40,6 +52,14 @@ final class DictationController {
     private static let poorAXApps: Set<String> = [
         "com.tencent.xinWeChat", "com.tencent.qq",
     ]
+
+    /// 录音时长闸门：2 分钟给一句软提示，5 分钟硬上限。到上限是"自动收尾"而不是丢弃——
+    /// 用户对着麦克风说了五分钟，凭什么一个字都不给他。
+    private static let softHintSeconds: Double = 120
+    private static let maxRecordingSeconds: Double = 300
+    /// 静音判据的电平阈值（AudioRecorder 送来的是 min(1, rms*14)）。比"没听到内容"的
+    /// 闸门宽松些：这里只是判断"还在说吗"，判错的代价只是提前收尾。
+    private static let silenceLevelThreshold: Float = 0.08
 
     // MARK: - 入口
 
@@ -60,14 +80,50 @@ final class DictationController {
         Sounds.playError()
     }
 
-    /// 指令模式：按住快捷键触发
-    func skillHoldStart() {
+    /// 热键按下（此刻还不知道用户要听写还是要下指令）：立刻开录。
+    /// 判定推迟到 0.6s——但音频从按下那一刻就在采，指令模式不再丢开口的前半秒。
+    func pressStart() {
         guard phase == .idle else { return }
-        startRecording(skill: true)
+        startRecording(fromPress: true)
+    }
+
+    /// 按住满 0.6s：把正在录的这一段就地升级为指令模式。
+    /// 录音不中断、波形不重置，用户完全无感，只是标签换成"正在听指令…"。
+    func holdPromote() {
+        guard phase == .recording, pressSession, !skillSession else { return }
+        skillSession = true
+        recordingLabel = tr("正在听指令…", "Listening for command…")
+        overlay.updateRecordingLabel(currentRecordingLabel())
+        Log.info("Hold promoted to command mode selection=\(targetSelection == nil ? "none" : "ax")")
+        // AX 读不到选区（浏览器/Gmail、VSCode 等 Electron、微信/QQ 都接口残缺）→ 现在才 ⌘C 兜底。
+        // 判定成指令之后才做，纯听写路径一个字都不会碰用户的剪贴板。
+        guard targetSelection == nil else { return }
+        let generation = self.generation
+        SelectionReader.readSelectedTextWithClipboardFallback { [weak self] text in
+            guard let self = self, self.isCurrent(generation),
+                  self.phase == .recording else { return }
+            self.targetSelection = text
+        }
     }
 
     func skillHoldEnd() {
         if phase == .recording { finishRecording() }
+    }
+
+    /// 热键被当成普通修饰键用了（按住期间敲了别的键）：按下即录的那一段必须作废。
+    /// 静默丢弃——用户本来就没打算录音，这时候再响一次取消音只是噪音。
+    func abortPressSession() {
+        guard pressSession else { return }
+        if phase == .recording {
+            Log.info("Press-session discarded (hotkey used as a modifier) "
+                     + "duration=\(String(format: "%.2f", recorder.recordedDuration))s")
+            _ = recorder.stop()
+        } else {
+            // 还卡在权限回调里没真正开录：推进代数把那次启动丢掉即可
+            Log.info("Press-session discarded before recording began")
+        }
+        endSession()
+        overlay.hide()
     }
 
     func cancel() {
@@ -96,8 +152,10 @@ final class DictationController {
         inflightRequest?.cancel()
         inflightRequest = nil
         skillSession = false
+        pressSession = false
         targetSelection = nil
-        audioFaultNote = nil
+        sessionNotes = []
+        recordingStartedAt = nil
         phase = .idle
     }
 
@@ -110,14 +168,60 @@ final class DictationController {
     private func handleAudioFault(_ message: String) {
         guard phase == .recording else { return }
         Log.error("Audio fault while recording: \(message)")
-        audioFaultNote = message
+        addSessionNote(message)
         finishRecording()
     }
 
-    /// 取出并清空音频故障提示——每条只提示一次，绝不泄漏到下一次录音
-    private func takeAudioFaultNote() -> String? {
-        defer { audioFaultNote = nil }
-        return audioFaultNote
+    private func addSessionNote(_ note: String) {
+        guard !sessionNotes.contains(note) else { return }
+        sessionNotes.append(note)
+    }
+
+    /// 取出并清空本轮附注——每条只提示一次，绝不泄漏到下一次录音
+    private func takeSessionNote() -> String? {
+        defer { sessionNotes = [] }
+        return sessionNotes.isEmpty ? nil : sessionNotes.joined(separator: tr("；", "; "))
+    }
+
+    /// 录音中悬浮窗该显示的文案：基础标签（听写/指令）+ 超过 2 分钟时的软提示
+    private func currentRecordingLabel() -> String {
+        softHintShown ? recordingLabel + tr("（已录 2 分钟）", " (2 min recorded)")
+                      : recordingLabel
+    }
+
+    /// 录音时长上限与静音自动停：复用录音电平回调（约每 85ms 一次）在主线程判断，
+    /// 音频线程什么都不用多做。
+    private func checkRecordingLimits(level: Float) {
+        guard phase == .recording, let started = recordingStartedAt else { return }
+        let now = Date()
+        if level >= Self.silenceLevelThreshold {
+            speechDetected = true
+            lastLoudAt = now
+        }
+        let elapsed = now.timeIntervalSince(started)
+
+        if elapsed >= Self.maxRecordingSeconds {
+            Log.warn("Recording auto-finish: max duration \(Int(Self.maxRecordingSeconds))s reached")
+            addSessionNote(tr("已到最长录音时长，自动收尾", "Maximum recording length reached — wrapped up"))
+            finishRecording()
+            return
+        }
+
+        if !softHintShown, elapsed >= Self.softHintSeconds {
+            softHintShown = true
+            Log.info("Recording soft hint shown at \(Int(elapsed))s")
+            overlay.updateRecordingLabel(currentRecordingLabel())
+        }
+
+        // 静音自动停：默认关闭（0）。开了也要先真的听到过人声才算数——
+        // 否则"还没开口"会被当成"说完了"，一按就停。
+        guard autoStopSilence > 0, speechDetected, let loud = lastLoudAt else { return }
+        let quiet = now.timeIntervalSince(loud)
+        guard quiet >= autoStopSilence else { return }
+        Log.info("Recording auto-finish: silent for \(String(format: "%.1f", quiet))s"
+                 + " (limit \(String(format: "%.1f", autoStopSilence))s)")
+        addSessionNote(tr("检测到静音，已自动结束录音", "Silence detected — recording finished"))
+        finishRecording()
     }
 
     var isRecording: Bool { phase == .recording }
@@ -125,7 +229,9 @@ final class DictationController {
 
     // MARK: - 流程
 
-    private func startRecording(skill: Bool = false) {
+    /// 录音起点。fromPress = 由热键按下触发（按下即录，这一刻还没判定听写还是指令）；
+    /// 菜单等其它入口触发的一律是纯听写，永远不读选区、不碰剪贴板。
+    private func startRecording(fromPress: Bool = false) {
         // 检查模型
         guard QwenEngine.shared.isModelAvailable else {
             overlay.flashError(tr("识别模型未下载，请在设置中下载",
@@ -145,9 +251,13 @@ final class DictationController {
         }
         // 检查麦克风权限
         let alreadyAuthorized = Permissions.microphoneGranted
+        // 授权回调期间这一轮可能已经被作废（按住时敲了别的键 → abortPressSession）
+        let entryGeneration = generation
+        pressSession = fromPress
         Permissions.ensureMicrophone { [weak self] granted in
             guard let self = self else { return }
             guard granted else {
+                self.pressSession = false
                 self.overlay.flashError(tr("没有麦克风权限，请在 系统设置 → 隐私 中开启",
                                            "No microphone access — enable it in System Settings → Privacy"))
                 Sounds.playError()
@@ -157,61 +267,70 @@ final class DictationController {
             // 首次授权会弹系统窗口并打断焦点，授权期间这一次输入不可靠；
             // 统一让用户再触发一次，避免"历史里有但没粘贴进输入框"。
             if !alreadyAuthorized {
+                self.pressSession = false
                 self.overlay.flashSuccess(tr("麦克风已授权，请再按一次开始",
                                              "Microphone granted — press once more to start"))
                 Sounds.playSuccess()
                 return
             }
-            guard self.phase == .idle else { return }
+            guard self.phase == .idle, self.isCurrent(entryGeneration) else { return }
             // 新一轮开始：把代数推进一格，上一轮任何还在路上的回调从此作废
             self.generation &+= 1
-            let generation = self.generation
             self.inflightRequest = nil
             let frontmost = NSWorkspace.shared.frontmostApplication
             self.targetBundleID = frontmost?.bundleIdentifier ?? ""
-            // 指令模式才读选区——普通输入完全不碰选区和剪贴板
-            self.skillSession = skill
-            self.targetSelection = skill ? SelectionReader.readSelectedText() : nil
-            // AX 读不到选区（浏览器/Gmail、VSCode 等 Electron、微信/QQ 都接口残缺）→ ⌘C 兜底。
-            // 异步不阻塞录音；保存并恢复剪贴板，非破坏性。AX 能直接读到的原生应用根本走不到这一步。
-            if skill, self.targetSelection == nil {
-                SelectionReader.readSelectedTextWithClipboardFallback { [weak self] text in
-                    guard let self = self, self.isCurrent(generation),
-                          self.phase == .recording else { return }
-                    self.targetSelection = text
-                }
-            }
+            // 按下这一刻永远先当听写：满 0.6s 才由 holdPromote 就地升级成指令模式
+            self.skillSession = false
+            self.targetSelection = nil
+            self.sessionNotes = []
             // 用户说话期间把到 API 的 DNS+TLS 握手做完，润色/指令请求省下首包延迟
             LLMClient.prewarm()
             self.recorder.onLevel = { [weak self] level in
                 DispatchQueue.main.async {
-                    self?.overlay.state.pushLevel(level)
+                    guard let self = self else { return }
+                    self.overlay.state.pushLevel(level)
+                    self.checkRecordingLimits(level: level)
                 }
             }
             // 录音中途设备变更且无法恢复时的出口（主线程回调）
             self.recorder.onError = { [weak self] error in
                 self?.handleAudioFault(error.message)
             }
-            self.audioFaultNote = nil
             do {
                 try self.recorder.start()
             } catch {
+                self.pressSession = false
                 let message = (error as? MTError)?.message ?? error.localizedDescription
                 self.overlay.flashError(message)
                 Sounds.playError()
                 return
             }
             self.phase = .recording
-            Log.info("Recording start skill=\(skill) target=\(self.targetBundleID)")
-            self.overlay.showRecording(label: skill ? tr("正在听指令…", "Listening for command…")
-                                                    : tr("正在听…", "Listening…"))
+            self.recordingStartedAt = Date()
+            self.softHintShown = false
+            self.speechDetected = false
+            self.lastLoudAt = nil
+            self.autoStopSilence = Settings.shared.autoStopSilenceSeconds
+            self.recordingLabel = tr("正在听…", "Listening…")
+            Log.info("Recording start press=\(fromPress) target=\(self.targetBundleID)"
+                     + " autoStopSilence=\(String(format: "%.0f", self.autoStopSilence))s")
+            self.overlay.showRecording(label: self.recordingLabel)
             Sounds.playStart()
+            // 选区必须在录音起点快照（用户随后可能切走焦点）。这里只走 AX：纯读、非破坏性，
+            // 绝不发 ⌘C——按下的时候还不知道这是不是指令，纯听写路径永远不该碰剪贴板。
+            // 放在 recorder.start() 之后：目标应用的无障碍接口卡住时，至少音频已经在录了。
+            if fromPress {
+                self.targetSelection = SelectionReader.readSelectedText()
+            }
         }
     }
 
     private func finishRecording() {
         guard phase == .recording else { return }
         let samples = recorder.stop()
+        recordingStartedAt = nil
+        // 录音已结束，这一段再也不会被"当成修饰键用"而作废了
+        pressSession = false
         let duration = Double(samples.count) / 16000.0
 
         // 太短当作误触
@@ -219,7 +338,7 @@ final class DictationController {
             Log.info("Recording stop discarded duration=\(String(format: "%.2f", duration))s (<0.4s)")
             phase = .idle
             // 是设备变更把录音打断的就说清楚，别让用户以为是自己按错了
-            if let fault = takeAudioFaultNote() {
+            if let fault = takeSessionNote() {
                 overlay.flashError(fault)
                 Sounds.playError()
             } else {
@@ -233,7 +352,7 @@ final class DictationController {
         guard peak >= 0.012 else {
             Log.info("Recording stop silence-gated duration=\(String(format: "%.2f", duration))s peak=\(String(format: "%.4f", peak))")
             phase = .idle
-            overlay.flashError(takeAudioFaultNote() ?? tr("没有听到内容", "Nothing heard"))
+            overlay.flashError(takeSessionNote() ?? tr("没有听到内容", "Nothing heard"))
             return
         }
 
@@ -390,7 +509,7 @@ final class DictationController {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(final, forType: .string)
-        overlay.flashSuccess(takeAudioFaultNote().map { $0 + tr("；", "; ") + note } ?? note)
+        overlay.flashSuccess(takeSessionNote().map { $0 + tr("；", "; ") + note } ?? note)
         Sounds.playSuccess()
     }
 
@@ -440,7 +559,7 @@ final class DictationController {
         HistoryStore.shared.add(raw: raw, polished: finalText)
         phase = .idle
         // 录音被设备变更提前掐断时，把原因并进结果提示：用户得知道这只是"半句"
-        let note = takeAudioFaultNote().map { $0 + tr("；", "; ") + note } ?? note
+        let note = takeSessionNote().map { $0 + tr("；", "; ") + note } ?? note
         Log.info("Deliver start chars=\(finalText.count) target=\(targetBundleID)")
         TextInserter.insert(finalText, targetBundleID: targetBundleID,
                             allowClipboardRestore: allowClipboardRestore,

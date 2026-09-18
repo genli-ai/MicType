@@ -105,6 +105,7 @@ enum SettingsKeys {
     static let customVocabulary = "customVocabulary"
     static let playSounds = "playSounds"
     static let restoreClipboard = "restoreClipboard"
+    static let autoStopSilenceSeconds = "autoStopSilenceSeconds"  // 静音自动停秒数（0 = 关）
     static let qwenModelRepo = "qwenModelRepo"
     static let llmProvider = "llmProvider"
     static let appLanguage = "appLanguage"
@@ -134,6 +135,7 @@ final class Settings {
             SettingsKeys.customVocabulary: "",
             SettingsKeys.playSounds: true,
             SettingsKeys.restoreClipboard: true,
+            SettingsKeys.autoStopSilenceSeconds: 0.0,
             SettingsKeys.qwenModelRepo: QwenModels.defaultRepo,
             SettingsKeys.llmProvider: LLMProvider.openai.rawValue,
             SettingsKeys.deepseekBaseURL: LLMProvider.deepseek.defaultBaseURL,
@@ -258,6 +260,13 @@ final class Settings {
     var restoreClipboard: Bool {
         get { d.bool(forKey: SettingsKeys.restoreClipboard) }
         set { d.set(newValue, forKey: SettingsKeys.restoreClipboard) }
+    }
+
+    /// 静音自动停：说完后连续这么多秒没有人声就自动收尾。0 = 关闭（默认）。
+    /// 默认关是刻意的——"替用户决定他说完了"必须由用户自己打开，手势永远优先。
+    var autoStopSilenceSeconds: Double {
+        get { d.object(forKey: SettingsKeys.autoStopSilenceSeconds) as? Double ?? 0 }
+        set { d.set(max(0, newValue), forKey: SettingsKeys.autoStopSilenceSeconds) }
     }
 
     /// 润色/技能使用的大模型服务商（GPT 或 DeepSeek，二选一）
