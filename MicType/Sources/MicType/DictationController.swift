@@ -530,27 +530,42 @@ final class DictationController {
         }
         Log.info("Revert to raw requested target=\(candidate.bundleID)"
                  + " raw=\(candidate.raw.count)chars polished=\(candidate.final.count)chars")
+        // 整条撤销链是异步的（拉前台最多约 1.2s + ⌘Z + 150ms + 插入自己的时序），
+        // 期间必须占住 phase：HotkeyManager 的 isRecording/isBusy 和 Esc 拦截都只看 phase，
+        // 停在 .idle 的话用户等得不耐烦按一下热键就会开新一轮录音，而已经在飞的那次
+        // raw 插入照样粘出去 → 光标处叠出两段文字。占住 phase 也顺带让 Esc 能取消这一段。
+        phase = .processing
+        // 被 Esc 取消（endSession 会推进代数）或被新一轮顶掉之后，下面的回调一律作废
+        let entryGeneration = generation
+        overlay.showProcessing(tr("换回识别原文…", "Restoring raw transcript…"))
         TextInserter.bringToFront(candidate.bundleID) { [weak self] arrived in
-            guard let self = self else { return }
+            guard let self = self, self.isCurrent(entryGeneration) else { return }
             guard arrived else {
                 Log.warn("Revert aborted: target app did not come to front")
+                self.phase = .idle
                 self.overlay.flashError(tr("没能切回原应用，撤销已取消",
                                            "Could not switch back to the target app — revert cancelled"))
                 Sounds.playError()
                 return
             }
-            self.overlay.showProcessing(tr("换回识别原文…", "Restoring raw transcript…"))
             TextInserter.sendUndo {
+                guard self.isCurrent(entryGeneration) else { return }
                 Log.info("Revert step 1/2: undo sent to \(candidate.bundleID)")
                 // 给目标应用 150ms 把撤销做完再插入：紧接着粘贴的话，有些应用会把
                 // 这次粘贴和撤销合并处理，结果两段文字叠在一起
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    guard self.isCurrent(entryGeneration) else {
+                        Log.info("Revert aborted before insert (cancelled or a new round started)")
+                        return
+                    }
                     TextInserter.insert(candidate.raw, targetBundleID: candidate.bundleID) { [weak self] outcome in
                         guard let self = self else { return }
                         Log.info("Revert step 2/2: raw inserted outcome="
                                  + (outcome == .pasted ? "pasted" : "clipboardOnly"))
-                        // 这期间用户又按了热键的话，别去盖掉录音/处理中的悬浮窗
-                        guard self.phase == .idle else { return }
+                        // 这期间被取消 / 用户又按了热键开了新一轮：别去动它的 phase，
+                        // 也别拿撤销的结果去盖掉录音中的悬浮窗
+                        guard self.isCurrent(entryGeneration) else { return }
+                        self.phase = .idle
                         switch outcome {
                         case .pasted:
                             self.overlay.flashSuccess(tr("已换回识别原文", "Raw transcript restored"))
@@ -764,13 +779,13 @@ final class DictationController {
                                              note: tr("润色结果与原文出入过大，已输出原文",
                                                       "Polished text drifted too far from the original — raw transcript inserted"),
                                              warning: true,
-                                             allowClipboardRestore: !isColdStart)
+                                             coldStart: isColdStart)
                                 return
                             }
                             // 唯一开放「换回识别原文」的路径：纯听写 + 润色真的动了字
                             self.deliver(raw: rawText, final: polished,
                                          note: tr("已输入", "Inserted"),
-                                         allowClipboardRestore: !isColdStart,
+                                         coldStart: isColdStart,
                                          revertible: true)
                         } else {
                             self.deliver(raw: rawText, final: rawText,
@@ -778,13 +793,13 @@ final class DictationController {
                                              + (failure ?? tr("未知", "unknown"))
                                              + tr("），已输出识别原文", ") — raw transcript inserted"),
                                          warning: true,
-                                         allowClipboardRestore: !isColdStart)
+                                         coldStart: isColdStart)
                         }
                     }
                 } else {
                     self.deliver(raw: rawText, final: rawText,
                                  note: tr("已输入", "Inserted"),
-                                 allowClipboardRestore: !isColdStart)
+                                 coldStart: isColdStart)
                 }
             }
         }
@@ -830,7 +845,7 @@ final class DictationController {
             self.inflightRequest = nil
             if let result = result {
                 self.deliver(raw: raw, final: result, note: tr("已输入指令结果", "Command result inserted"),
-                             allowClipboardRestore: !isColdStart)
+                             coldStart: isColdStart)
             } else {
                 self.phase = .idle
                 self.overlay.flashError(tr("指令执行失败（", "Command failed (") + (failure ?? tr("未知", "unknown")) + tr("）", ")"))
@@ -859,10 +874,10 @@ final class DictationController {
             switch action {
             case .modify:
                 self.deliver(raw: raw, final: result, note: tr("已替换选中文本", "Selection replaced"),
-                             allowClipboardRestore: !isColdStart)
+                             coldStart: isColdStart)
             case .new:
                 self.deliver(raw: raw, final: result, note: tr("已输入指令结果", "Command result inserted"),
-                             allowClipboardRestore: !isColdStart)
+                             coldStart: isColdStart)
             case .reply:
                 self.copyToClipboard(raw: raw, result: result,
                                      note: tr("回复草稿已复制——点到输入框按 ⌘V", "Reply draft copied — click the input field and press ⌘V"))
@@ -927,8 +942,13 @@ final class DictationController {
     }
 
     /// revertible：这一次是不是"纯听写 + 润色"的结果——只有它值得提供「换回识别原文」。
+    /// coldStart：模型这一轮还没热（启动预加载没跑完 / 刚「释放模型内存」/ 刚换过模型）。
+    /// 它**只**决定粘贴时序（输入框可能还没准备好吃键，给足等待），和"要不要恢复剪贴板"
+    /// 毫无关系。3.3 之前两者共用一个参数，于是冷启动那一次会静默忽略用户
+    /// 「输入后恢复原剪贴板内容」的设置，把他的原剪贴板永久换成听写结果，界面上还不吭声。
+    /// 恢复与否永远只听 Settings.restoreClipboard。
     private func deliver(raw: String, final text: String, note: String, warning: Bool = false,
-                         allowClipboardRestore: Bool = true, revertible: Bool = false) {
+                         coldStart: Bool = false, revertible: Bool = false) {
         let finalText = TextPostProcessor.applyVocabReplacements(TextPostProcessor.fixMixedPunctuation(text))
         HistoryStore.shared.add(raw: raw, polished: finalText)
         // 又插入了新东西 → 上一次的记忆立刻作废：⌘Z 撤的永远是"最后一次粘贴"，
@@ -944,8 +964,8 @@ final class DictationController {
         let generation = self.generation
         Log.info("Deliver start chars=\(finalText.count) target=\(target)")
         TextInserter.insert(finalText, targetBundleID: target,
-                            allowClipboardRestore: allowClipboardRestore,
-                            conservativePaste: !allowClipboardRestore) { [weak self] outcome in
+                            allowClipboardRestore: true,
+                            conservativePaste: coldStart) { [weak self] outcome in
             guard let self = self else { return }
             Log.info("Deliver outcome=\(outcome == .pasted ? "pasted" : "clipboardOnly")")
             // 对不上这一轮就到此为止：迟到的成功提示会把新一轮的录音悬浮窗盖成绿勾，

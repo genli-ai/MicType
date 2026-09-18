@@ -14,6 +14,9 @@ struct ClipboardSnapshot {
     /// 拿不到 data 的 flavour 数（promise 类型 / provider 已失效），只用于日志
     let skippedTypes: Int
     private let byteCount: Int
+    /// 剪贴板大到超出预算 → 整份放弃（什么都没存）。调用方必须据此决定"这次不恢复"，
+    /// 而不是拿一份空快照去 restore——那会把剪贴板清空。
+    let isOversize: Bool
 
     var itemCount: Int { items.count }
     var typeCount: Int { items.reduce(0) { $0 + $1.count } }
@@ -37,6 +40,12 @@ struct ClipboardSnapshot {
         type.rawValue.lowercased().contains("promise")
     }
 
+    /// 快照预算：超过就整份放弃。给得这么宽是刻意的——普通截图的 public.tiff 动辄几十 MB，
+    /// 而"复制一张图 → 听写一句 → 图还在"正是全 flavour 快照要保住的头号场景，
+    /// 预算卡小了等于把这个功能废掉。这里只拦病态量级（几百 MB 的大图叠多个 flavour）：
+    /// 那种整份读进内存、驻留、再写回，主线程要停住，低内存机器上还会被压去交换。
+    private static let captureBudget = 256 * 1024 * 1024
+
     static func capture(_ pb: NSPasteboard = .general) -> ClipboardSnapshot {
         let count = pb.changeCount
         var captured: [[(NSPasteboard.PasteboardType, Data)]] = []
@@ -49,17 +58,27 @@ struct ClipboardSnapshot {
                 guard let data = item.data(forType: type) else { skipped += 1; continue }
                 flavours.append((type, data))
                 bytes += data.count
+                guard bytes <= captureBudget else {
+                    // 就地放弃，不把已经读到的几百 MB 继续攥在手里
+                    Log.warn("Clipboard snapshot over budget bytes=\(bytes) — giving up this snapshot")
+                    return ClipboardSnapshot(items: [], changeCount: count,
+                                             skippedTypes: skipped, byteCount: bytes,
+                                             isOversize: true)
+                }
             }
             if !flavours.isEmpty { captured.append(flavours) }
         }
         return ClipboardSnapshot(items: captured, changeCount: count,
-                                 skippedTypes: skipped, byteCount: bytes)
+                                 skippedTypes: skipped, byteCount: bytes,
+                                 isOversize: false)
     }
 
     /// 原样写回，返回写入后的 changeCount（调用方要用它继续跟踪"剪贴板还是不是这一份"）。
     /// 快照为空说明当时剪贴板本来就是空的（或只剩 promise）→ 清空，别把我们的输出留在那儿。
     @discardableResult
     func restore(to pb: NSPasteboard = .general) -> Int {
+        // 超预算的快照根本没存内容：不能写回，更不能 clearContents（那是把剪贴板清空）
+        guard !isOversize else { return pb.changeCount }
         guard !items.isEmpty else { return pb.clearContents() }
         let rebuilt: [NSPasteboardItem] = items.map { flavours in
             let item = NSPasteboardItem()
@@ -72,7 +91,8 @@ struct ClipboardSnapshot {
     }
 
     var logSummary: String {
-        "items=\(itemCount) types=\(typeCount) bytes=\(byteCount) skipped=\(skippedTypes) [\(typeSummary)]"
+        "items=\(itemCount) types=\(typeCount) bytes=\(byteCount) skipped=\(skippedTypes)"
+        + (isOversize ? " OVERSIZE" : "") + " [\(typeSummary)]"
     }
 }
 
@@ -110,6 +130,12 @@ enum TextInserter {
     private static var pendingSnapshot: ClipboardSnapshot?
     /// 我们自己最后一次写入剪贴板之后的 changeCount；-1 = 没在跟踪
     private static var ourChangeCount: Int = -1
+
+    /// 剪贴板里现在躺的是不是 MicType 自己刚写进去、还等着 ⌘V 的那一份？
+    /// 给 SelectionReader 的"迟到复制"看守用：那边绝不该去动我们正要粘的这段文字。
+    static var clipboardIsOurs: Bool {
+        ourChangeCount >= 0 && NSPasteboard.general.changeCount == ourChangeCount
+    }
 
     /// 供 SelectionReader 的 ⌘C 兜底调用：它临时改了剪贴板又原样写回，内容没变但 changeCount 必然跳，
     /// 不同步过来的话待恢复任务会误判成"用户复制了新东西"而放弃恢复，用户的原剪贴板就此丢失。
@@ -260,8 +286,15 @@ enum TextInserter {
                 Log.info("Clipboard snapshot carried over \(carried.logSummary)")
             } else {
                 let fresh = ClipboardSnapshot.capture(pasteboard)
-                snapshot = fresh
-                Log.info("Clipboard snapshot \(fresh.logSummary)")
+                if fresh.isOversize {
+                    // 宁可这一次不恢复，也不把几百 MB 搬进内存、卡住主线程再驻留 5 秒。
+                    // 日志里说清楚，出了事有据可查。
+                    Log.warn("Clipboard snapshot skipped \(fresh.logSummary)"
+                             + " — original clipboard will NOT be restored this time")
+                } else {
+                    snapshot = fresh
+                    Log.info("Clipboard snapshot \(fresh.logSummary)")
+                }
             }
         } else if pendingSnapshot != nil {
             Log.info("Clipboard pending restore dropped reason=restore-disabled")

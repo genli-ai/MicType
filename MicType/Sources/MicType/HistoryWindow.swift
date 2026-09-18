@@ -14,6 +14,7 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var langObserver: AnyCancellable?
     private var escMonitor: Any?
+    private var activationObserver: NSObjectProtocol?
 
     /// 打开窗口前的前台 App，"插入到当前光标"就送回它
     private(set) var previousAppBundleID = ""
@@ -41,6 +42,7 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
         }
         window?.title = tr("MicType 历史记录", "MicType History")
         installEscMonitor()
+        installActivationObserver()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }
@@ -68,8 +70,37 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    // MARK: 目标 App 跟踪
+
+    /// show() 那一次快照不够：窗口是长驻的（isReleasedWhenClosed = false），用户完全可以
+    /// 把它撂在屏幕一角、切到别的应用干活、再回来点「插入到当前光标」——那时候 show() 不会
+    /// 再跑一遍，送去的还是上一次打开时的那个 App，TextInserter 会把它强行拉回前台，
+    /// 文字落在错误的应用里。所以窗口开着期间一直跟着前台走（MicType 自己不算）。
+    private func installActivationObserver() {
+        guard activationObserver == nil else { return }
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: .main) { [weak self] note in
+                guard let self = self else { return }
+                let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                guard let bundleID = app?.bundleIdentifier, !bundleID.isEmpty,
+                      bundleID != Bundle.main.bundleIdentifier else { return }
+                guard self.previousAppBundleID != bundleID else { return }
+                self.previousAppBundleID = bundleID
+                Log.info("History insert target follows frontmost app=\(bundleID)")
+            }
+    }
+
+    private func removeActivationObserver() {
+        if let observer = activationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            activationObserver = nil
+        }
+    }
+
     func windowWillClose(_ notification: Notification) {
         removeEscMonitor()
+        removeActivationObserver()
     }
 
     // MARK: 重新插入
