@@ -17,8 +17,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.updateIcon(for: phase)
             self?.hotkeys.setRecordingActive(phase == .recording)
         }
+        // 模型缺失时的"去哪儿"：引导窗口的下载页比设置页更直接（有进度、有说明、下完自动继续）
         dictation.onNeedSettings = {
-            SettingsWindowController.shared.show()
+            if QwenEngine.shared.isModelAvailable {
+                SettingsWindowController.shared.show()
+            } else {
+                OnboardingWindowController.shared.show(startAt: .model)
+            }
         }
 
         hotkeys.onTapToggle = { [weak self] in self?.dictation.toggle() }
@@ -28,15 +33,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotkeys.isRecording = { [weak self] in self?.dictation.isRecording ?? false }
         hotkeys.start()
 
-        // 首次启动：申请辅助功能权限；模型缺失则打开设置引导下载
-        if !Permissions.isAccessibilityTrusted {
-            Permissions.promptAccessibility()
-        }
         if QwenEngine.shared.isModelAvailable {
             // 后台预加载模型，第一次听写不用等
             QwenEngine.shared.preload()
-        } else {
-            SettingsWindowController.shared.show()
+        }
+        routeFirstLaunch()
+    }
+
+    /// 首启动去哪儿：新用户走引导；已经配好的老用户一个字都不打扰。
+    /// 判据用"模型在 + 辅助功能已授权"——这两项齐了说明他早就在用了，弹引导只会像退步。
+    private func routeFirstLaunch() {
+        let ready = QwenEngine.shared.isModelAvailable && Permissions.isAccessibilityTrusted
+
+        if !Settings.shared.onboardingCompleted {
+            if ready {
+                Settings.shared.onboardingCompleted = true
+                Log.info("Onboarding skipped: already configured")
+            } else {
+                // 引导自己有权限页，这里不要抢先弹系统授权框（用户还没看清这是什么应用）
+                OnboardingWindowController.shared.show()
+                return
+            }
+        } else if !QwenEngine.shared.isModelAvailable {
+            // 走过引导但模型没了（换了模型 / 被删）：仍然带去下载页，而不是把人扔进设置页
+            OnboardingWindowController.shared.show(startAt: .model)
+            return
+        }
+
+        if !Permissions.isAccessibilityTrusted {
+            Permissions.promptAccessibility()
         }
     }
 

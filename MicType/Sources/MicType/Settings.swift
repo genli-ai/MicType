@@ -111,6 +111,7 @@ enum SettingsKeys {
     static let appLanguage = "appLanguage"
     static let deepseekBaseURL = "deepseekBaseURL"
     static let deepseekModel = "deepseekModel"
+    static let onboardingCompleted = "onboardingCompleted"  // 首启动引导是否走过（老用户按"已配置好"自动置真）
 }
 
 // MARK: - 设置
@@ -140,6 +141,7 @@ final class Settings {
             SettingsKeys.llmProvider: LLMProvider.openai.rawValue,
             SettingsKeys.deepseekBaseURL: LLMProvider.deepseek.defaultBaseURL,
             SettingsKeys.deepseekModel: LLMProvider.deepseek.defaultModel,
+            SettingsKeys.onboardingCompleted: false,
         ])
 
         // 一次性迁移：产品由 VoiceFlow 改名 MicType，defaults 域随 Bundle ID 变更，
@@ -347,6 +349,12 @@ final class Settings {
         case .openai: return openaiCommandModel
         case .deepseek: return deepseekCommandModel
         }
+    }
+
+    /// 首启动引导是否已经走过（或被用户关掉）。为假时启动会自动弹引导。
+    var onboardingCompleted: Bool {
+        get { d.bool(forKey: SettingsKeys.onboardingCompleted) }
+        set { d.set(newValue, forKey: SettingsKeys.onboardingCompleted) }
     }
 
     /// Qwen 模型 HF 仓库 ID

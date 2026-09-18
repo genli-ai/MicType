@@ -83,6 +83,13 @@ private struct GeneralTab: View {
                         "Tap: start / stop dictation · Hold to speak a command, release to run · Esc cancels."))
                     .font(.caption)
                     .foregroundColor(.secondary)
+                HStack {
+                    Text(tr("上手引导：", "Welcome guide:"))
+                    Spacer()
+                    Button(tr("重新打开引导", "Show Welcome Guide")) {
+                        OnboardingWindowController.shared.show()
+                    }
+                }
             }
 
             Section {
