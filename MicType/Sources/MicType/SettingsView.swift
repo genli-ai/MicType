@@ -563,10 +563,18 @@ private struct KeyStatusBadge: View {
 
 // MARK: - 关于
 
+/// 已下载、等着用户点「立即安装并重启」的那个包
+private struct PendingUpdate {
+    let version: String
+    let file: URL
+}
+
 private struct AboutTab: View {
     @ObservedObject private var l10n = L10n.shared
     @State private var updateStatus = ""
     @State private var checkingUpdate = false
+    @State private var pendingUpdate: PendingUpdate?
+    @State private var installing = false
 
     var body: some View {
         VStack(spacing: 10) {
@@ -590,6 +598,20 @@ private struct AboutTab: View {
                 .disabled(checkingUpdate)
                 Button(tr("发布页", "Releases")) {
                     NSWorkspace.shared.open(UpdateChecker.releasesPage)
+                }
+            }
+            if let pending = pendingUpdate {
+                HStack(spacing: 8) {
+                    Button(installing ? tr("安装中…", "Installing…")
+                                      : tr("立即安装并重启", "Install and Relaunch")) {
+                        runInstall(pending)
+                    }
+                    .disabled(installing)
+                    // 老流程留作兜底：验签不过、目录不可写，或者用户就是想自己拖一次
+                    Button(tr("在 Finder 中显示", "Show in Finder")) {
+                        NSWorkspace.shared.activateFileViewerSelecting([pending.file])
+                    }
+                    .disabled(installing)
                 }
             }
             if !updateStatus.isEmpty {
@@ -630,19 +652,30 @@ private struct AboutTab: View {
             checkingUpdate = false
             switch result {
             case .upToDate(let v):
+                pendingUpdate = nil
                 updateStatus = tr("已是最新版本（\(v)）", "You're up to date (\(v))")
             case .downloaded(let v, let file):
-                if file.pathExtension.lowercased() == "dmg" {
-                    updateStatus = tr("新版本 \(v) 已下载到「下载」文件夹（已在 Finder 中选中）——双击打开 DMG，把 MicType.app 拖进「应用程序」替换，重新打开即完成升级",
-                                      "Version \(v) downloaded to your Downloads folder (revealed in Finder) — open the DMG, drag MicType.app into Applications to replace, then relaunch")
-                } else {
-                    updateStatus = tr("新版本 \(v) 已下载到「下载」文件夹（已在 Finder 中选中）——解压后把 MicType.app 拖进「应用程序」替换，重新打开即完成升级",
-                                      "Version \(v) downloaded to your Downloads folder (revealed in Finder) — unzip, drag MicType.app into Applications to replace, then relaunch")
-                }
+                pendingUpdate = PendingUpdate(version: v, file: file)
+                updateStatus = tr("新版本 \(v) 已下载到「下载」文件夹——点「立即安装并重启」一步完成（会校验签名后替换当前这份并自动重开），也可以自己拖进「应用程序」替换",
+                                  "Version \(v) downloaded to your Downloads folder — click “Install and Relaunch” to finish in one step (the signature is verified before this copy is replaced), or replace it manually")
             case .failed(let message):
+                pendingUpdate = nil
                 updateStatus = tr("检查失败：\(message)。可点「发布页」手动下载",
                                   "Check failed: \(message). Use the Releases button to download manually")
             }
         }
+    }
+
+    private func runInstall(_ pending: PendingUpdate) {
+        installing = true
+        updateStatus = tr("正在准备安装 \(pending.version)…", "Preparing to install \(pending.version)…")
+        UpdateChecker.installAndRelaunch(archive: pending.file, version: pending.version, progress: { message in
+            updateStatus = message
+        }, failure: { message in
+            installing = false
+            // 失败不动现有这份 app：把原因摆出来，指回手动替换那条路
+            updateStatus = tr("安装失败：\(message)。当前版本未改动，可点「在 Finder 中显示」手动替换",
+                              "Install failed: \(message). This copy was left untouched — use “Show in Finder” to replace it manually")
+        })
     }
 }
