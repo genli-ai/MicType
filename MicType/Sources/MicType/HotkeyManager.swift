@@ -3,15 +3,20 @@ import AppKit
 /// 全局热键监听。触发手势固定为：
 /// 轻点所选修饰键（按下到松开 < 0.6s 且期间没按其它键）= 开始/结束听写；
 /// 按住 0.6s = 进入"指令模式"录音，松开结束（V3 语音技能）；
-/// 录音中按 Esc 取消。
+/// 录音中 / 处理中按 Esc 取消。
 final class HotkeyManager {
 
     var onTapToggle: (() -> Void)?
     var onSkillStart: (() -> Void)?
     var onSkillEnd: (() -> Void)?
     var onCancel: (() -> Void)?
+    /// 处理中收到的手势（轻点由 onTapToggle 走控制器，按住走这里）：不能开新一轮，
+    /// 但绝不静默吞掉——由控制器给用户看得见的反馈
+    var onBusyGesture: (() -> Void)?
     /// 由控制器提供：当前是否正在录音
     var isRecording: (() -> Bool) = { false }
+    /// 由控制器提供：当前是否在处理中（识别/润色/指令在飞）
+    var isBusy: (() -> Bool) = { false }
 
     private var monitors: [Any] = []
     private var pressedAt: Date?
@@ -52,8 +57,9 @@ final class HotkeyManager {
         stopEscTap()
     }
 
-    /// 录音开始/结束时由外部调用：录音期间启用 Esc 拦截
-    func setRecordingActive(_ active: Bool) {
+    /// 状态变化时由外部调用：只要这一轮还能被取消（录音中 *或* 处理中）就保持 Esc 拦截。
+    /// 3.2.19 之前它在离开 .recording 的瞬间就被拆掉，于是处理中按 Esc 毫无反应。
+    func setCancellable(_ active: Bool) {
         if active {
             startEscTap()
         } else {
@@ -139,7 +145,16 @@ final class HotkeyManager {
                 // 按住 0.6s 且当前空闲 → 进入指令模式录音
                 holdWorkItem?.cancel()
                 let work = DispatchWorkItem { [weak self] in
-                    guard let self = self, self.tapCandidate, !self.isRecording() else { return }
+                    guard let self = self, self.tapCandidate else { return }
+                    // 门槛是"空闲"而不是"没在录音"：处理中放行会让 onSkillStart 撞上
+                    // guard phase == .idle 空转，用户按住说完一整句却零反馈（3.2.19 之前的 bug）
+                    guard !self.isRecording(), !self.isBusy() else {
+                        if self.isBusy() {
+                            Log.info("Hotkey hold rejected (processing)")
+                            self.onBusyGesture?()
+                        }
+                        return
+                    }
                     self.skillActive = true
                     Log.info("Hotkey skill-start (hold)")
                     self.onSkillStart?()
@@ -173,8 +188,8 @@ final class HotkeyManager {
         // 修饰键按住期间敲了别的键（快捷键等）→ 不算轻点，也不进指令模式
         tapCandidate = false
         holdWorkItem?.cancel()
-        // Esc 取消录音
-        if event.keyCode == 53, isRecording() {
+        // Esc 取消（录音中或处理中）
+        if event.keyCode == 53, isRecording() || isBusy() {
             DispatchQueue.main.async { [weak self] in self?.onCancel?() }
         }
     }

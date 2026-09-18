@@ -15,7 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         dictation.onPhaseChange = { [weak self] phase in
             self?.updateIcon(for: phase)
-            self?.hotkeys.setRecordingActive(phase == .recording)
+            // 录音中 *和* 处理中都要保持 Esc 拦截：处理中 Esc 是用户唯一的出口
+            self?.hotkeys.setCancellable(phase != .idle)
         }
         dictation.onNeedSettings = {
             SettingsWindowController.shared.show()
@@ -26,6 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotkeys.onSkillEnd = { [weak self] in self?.dictation.skillHoldEnd() }
         hotkeys.onCancel = { [weak self] in self?.dictation.cancel() }
         hotkeys.isRecording = { [weak self] in self?.dictation.isRecording ?? false }
+        hotkeys.isBusy = { [weak self] in self?.dictation.isProcessing ?? false }
+        hotkeys.onBusyGesture = { [weak self] in self?.dictation.gestureWhileBusy() }
         hotkeys.start()
 
         // 首次启动：申请辅助功能权限；模型缺失则打开设置引导下载
@@ -83,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let item = NSMenuItem(title: tr("处理中…", "Processing…"), action: nil, keyEquivalent: "")
             item.isEnabled = false
             menu.addItem(item)
+            menu.addItem(makeItem(tr("取消（Esc）", "Cancel (Esc)"), #selector(cancelDictation)))
         }
 
         menu.addItem(.separator())

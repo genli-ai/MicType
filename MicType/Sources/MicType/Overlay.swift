@@ -9,6 +9,8 @@ final class OverlayState: ObservableObject {
         case processing(String)
         case success(String)
         case error(String)
+        /// 中性提示（取消等用户主动动作）：既不是成功也不是错误，别用绿勾/黄三角误导
+        case notice(String)
     }
 
     // 占位初值，显示前必然会被 showRecording/showProcessing 覆盖
@@ -57,6 +59,16 @@ struct OverlayView: View {
                 Text(label)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.white.opacity(0.9))
+                // 处理中唯一的出口就是 Esc——一直摆在眼前，别让用户以为自己被锁住了
+                Text(tr("⎋ 取消", "⎋ Cancel"))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+            case .notice(let label):
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.white.opacity(0.75))
+                Text(label)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.9))
             case .success(let label):
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundColor(.green)
@@ -91,6 +103,11 @@ final class OverlayController {
     let state = OverlayState()
     private var panel: NSPanel?
     private var hideGeneration = 0
+    /// 本轮「处理中」的起点与当前阶段标签：秒数从整轮处理开始算（用户关心的是"我等了多久"，
+    /// 不是"这一段等了多久"），阶段标签换成「润色中…」时不重新计时
+    private var processingStartedAt: Date?
+    private var processingLabel = ""
+    private var processingTimer: Timer?
 
     private func ensurePanel() -> NSPanel {
         if let p = panel { return p }
@@ -128,6 +145,7 @@ final class OverlayController {
 
     func showRecording(label: String = tr("正在听…", "Listening…")) {
         hideGeneration += 1
+        endProcessing()
         state.resetLevels()
         state.mode = .recording(label)
         present(context: "recording")
@@ -135,8 +153,61 @@ final class OverlayController {
 
     func showProcessing(_ label: String) {
         hideGeneration += 1
-        state.mode = .processing(label)
+        processingLabel = label
+        if processingStartedAt == nil { processingStartedAt = Date() }
+        state.mode = .processing(processingText())
+        startProcessingTimer()
         present(context: "processing")
+    }
+
+    /// 处理中被拒绝的手势（轻点/按住）：闪一句提示后回到「处理中」显示，
+    /// 绝不用这条提示把进度显示擦掉
+    func flashOverProcessing(_ label: String, duration: Double = 1.6) {
+        guard processingStartedAt != nil else {
+            flashError(label)
+            return
+        }
+        hideGeneration += 1
+        let generation = hideGeneration
+        state.mode = .error(label)
+        present(context: "flash-busy")
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+            guard let self = self, self.hideGeneration == generation,
+                  self.processingStartedAt != nil else { return }
+            self.state.mode = .processing(self.processingText())
+        }
+    }
+
+    /// 已等待秒数：3 秒内不显示——短请求上闪一个数字只是噪音
+    private func processingText() -> String {
+        guard let start = processingStartedAt else { return processingLabel }
+        let elapsed = Int(Date().timeIntervalSince(start))
+        guard elapsed >= 3 else { return processingLabel }
+        return processingLabel + " \(elapsed)s"
+    }
+
+    private func startProcessingTimer() {
+        guard processingTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.tickProcessing()
+        }
+        // .common：菜单打开 / 窗口拖动期间 runloop 切模式，默认模式的 timer 会停走
+        RunLoop.main.add(timer, forMode: .common)
+        processingTimer = timer
+    }
+
+    private func tickProcessing() {
+        guard processingStartedAt != nil else { return }
+        // 正在闪别的提示（flashOverProcessing）时不要抢回显示
+        guard case .processing = state.mode else { return }
+        state.mode = .processing(processingText())
+    }
+
+    private func endProcessing() {
+        processingTimer?.invalidate()
+        processingTimer = nil
+        processingStartedAt = nil
+        processingLabel = ""
     }
 
     /// 统一的显示入口：定位 → 置顶 → 回读真实状态。
@@ -166,8 +237,13 @@ final class OverlayController {
         flash(.error(label), duration: 2.5)
     }
 
+    func flashNotice(_ label: String) {
+        flash(.notice(label), duration: 1.0)
+    }
+
     private func flash(_ mode: OverlayState.Mode, duration: Double) {
         hideGeneration += 1
+        endProcessing()
         let generation = hideGeneration
         state.mode = mode
         present(context: "flash")
@@ -179,6 +255,7 @@ final class OverlayController {
 
     func hide() {
         hideGeneration += 1
+        endProcessing()
         panel?.orderOut(nil)
     }
 }
