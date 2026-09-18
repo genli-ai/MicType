@@ -7,6 +7,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let hotkeys = HotkeyManager()
     private let menu = NSMenu()
 
+    /// 给其它窗口借用的悬浮提示层。历史窗口把文字留在剪贴板时要提示「按 ⌘V」，
+    /// 但那一刻它已经让出前台、窗口也收起来了：窗口内的状态条既看不见，
+    /// 把窗口拉回来又会从目标应用抢走焦点（用户的 ⌘V 会落进搜索框）。
+    /// Overlay 是非激活浮窗，正好是这种提示该走的路。
+    static var sharedOverlay: OverlayController? {
+        (NSApp.delegate as? AppDelegate)?.dictation.overlay
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         Log.startup()
@@ -231,9 +239,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
+        // 复制完菜单一收，屏幕上什么都没变，用户只能靠再点一次来确认——所以给一句和
+        // 历史窗口「已复制」一致的反馈。但绝不能抢占录音/处理中的悬浮窗：
+        // flash() 会 endProcessing() 并清掉草稿，等于把「正在听…」或计时擦了（见 Overlay.swift）。
+        switch dictation.phase {
+        case .idle:
+            dictation.overlay.flashSuccess(tr("已复制", "Copied"))
+        case .processing:
+            dictation.overlay.flashOverProcessing(tr("已复制", "Copied"))
+        case .recording:
+            // 录音中只记日志：波形比这句提示重要得多，也不该在录音里插一声提示音
+            Log.info("History copied while recording — overlay left untouched")
+        }
     }
 
     @objc private func clearHistory() {
+        let count = HistoryStore.shared.items.count
+        guard count > 0 else { return }
+        // 破坏性且不可逆：clear() 立刻覆盖 history.json，没有撤销、也不在设置导出的备份里。
+        // 单条删除走历史窗口，这里问一次是最后一道闸。
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = tr("清空 \(count) 条记录？", "Clear \(count) transcripts?")
+        alert.informativeText = tr("此操作无法撤销，历史文件会被立即覆盖。想只删其中一条，请在历史记录窗口里删。",
+                                   "This cannot be undone — the history file is overwritten immediately. To remove a single entry, use the History window.")
+        let clearButton = alert.addButton(withTitle: tr("清空", "Clear"))
+        clearButton.hasDestructiveAction = true
+        alert.addButton(withTitle: tr("取消", "Cancel"))
+        // 菜单栏应用是 .accessory，不激活的话弹窗可能落在别的窗口后面
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            Log.info("Clear history cancelled by user")
+            return
+        }
+        Log.info("History cleared count=\(count)")
         HistoryStore.shared.clear()
     }
 

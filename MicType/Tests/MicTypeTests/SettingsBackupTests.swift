@@ -50,6 +50,13 @@ final class SettingsBackupTests: XCTestCase {
         XCTAssertEqual(r.skipped, 0)
     }
 
+    /// 新加的偏好要跟着备份走：导出表里必须有它，键名也必须在已知表里（否则导入端会忽略）
+    func testExportIncludesKeepHistoryPreference() {
+        let settings = SettingsBackup.makeDocument()["settings"] as? [String: Any]
+        XCTAssertNotNil(settings?[SettingsBackup.Key.keepHistory] as? Bool)
+        XCTAssertTrue(SettingsBackup.Key.all.contains(SettingsBackup.Key.keepHistory))
+    }
+
     func testExportDocumentHasSchemaAndSettings() {
         let doc = SettingsBackup.makeDocument()
         XCTAssertEqual(doc["schemaVersion"] as? Int, SettingsBackup.schemaVersion)

@@ -105,14 +105,23 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
 
     // MARK: 重新插入
 
+    /// 重新插入的结果。比 Bool 多一档是必须的：「压根没有目标应用」和「粘贴没把握、
+    /// 文本留在剪贴板」对用户是两件完全不同的事，提示也得走不同的路——
+    /// 前者窗口还在前台（状态条看得见），后者焦点已经还给目标应用（只能用非激活浮窗）。
+    enum InsertOutcome {
+        case pasted
+        case clipboardOnly
+        case noTarget
+    }
+
     /// 把历史文本重新插入到打开窗口前那个 App 的光标处。
     /// 流程：收起窗口 → 让出前台 → TextInserter 自己把目标拉回前台并确认到位后粘贴。
     /// 用 conservative 时序：焦点刚被我们抢走又还回去，输入框需要一点时间重新吃键。
-    func insertIntoPreviousApp(_ text: String, completion: @escaping (Bool) -> Void) {
+    func insertIntoPreviousApp(_ text: String, completion: @escaping (InsertOutcome) -> Void) {
         let target = previousAppBundleID
         guard !target.isEmpty else {
             Log.warn("History insert: no previous app recorded")
-            completion(false)
+            completion(.noTarget)
             return
         }
         window?.orderOut(nil)
@@ -123,7 +132,7 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
                                 allowClipboardRestore: true,
                                 conservativePaste: true) { outcome in
                 Log.info("History insert outcome=\(outcome == .pasted ? "pasted" : "clipboardOnly")")
-                completion(outcome == .pasted)
+                completion(outcome == .pasted ? .pasted : .clipboardOnly)
             }
         }
     }
@@ -328,6 +337,13 @@ struct HistoryView: View {
                 vocabRight = ""
                 showVocabSheet = true
             }
+            // 单条删除：想抹掉一句含隐私内容的听写，不该只能把 200 条全清了
+            Button(tr("删除", "Delete")) {
+                expanded.remove(item.id)
+                HistoryStore.shared.remove(id: item.id)
+                flash(tr("已删除这条记录", "Transcript deleted"))
+            }
+            .foregroundColor(.red)
         }
         .font(.caption)
         .controlSize(.small)
@@ -378,14 +394,26 @@ struct HistoryView: View {
     }
 
     private func insert(_ text: String) {
-        HistoryWindowController.shared.insertIntoPreviousApp(text) { pasted in
-            if pasted {
+        HistoryWindowController.shared.insertIntoPreviousApp(text) { outcome in
+            switch outcome {
+            case .pasted:
                 Sounds.playSuccess()
-            } else {
-                // 没插进去也不能让文字消失：留在剪贴板里，用户自己 ⌘V
+            case .clipboardOnly:
+                // 文本已经由 TextInserter 留在剪贴板里（这里不必再写一遍）。窗口此刻已收起、
+                // 焦点还给了目标应用：绝不能把窗口拉回前台提示，否则用户接下来的 ⌘V
+                // 会落进搜索框。用主流程同款的非激活浮窗说清楚要按 ⌘V。
+                AppDelegate.sharedOverlay?.flashError(
+                    tr("窗口已切换，文本已复制到剪贴板——按 ⌘V 粘贴",
+                       "Window changed — text copied to clipboard, press ⌘V to paste"))
+                Sounds.playError()
+            case .noTarget:
+                // 窗口没动过、还在前台：用自己的状态条说清为什么没插进去，
+                // 顺手把文字放进剪贴板，别让用户白点一次。
                 let pb = NSPasteboard.general
                 pb.clearContents()
                 pb.setString(text, forType: .string)
+                flash(tr("还不知道要插到哪个应用——文本已复制，切到要输入的窗口按 ⌘V",
+                         "No target app yet — text copied; switch to the window you want and press ⌘V"))
                 Sounds.playError()
             }
         }

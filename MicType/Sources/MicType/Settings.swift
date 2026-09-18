@@ -168,6 +168,7 @@ enum SettingsKeys {
     static let restoreClipboard = "restoreClipboard"
     static let autoStopSilenceSeconds = "autoStopSilenceSeconds"  // 静音自动停秒数（0 = 关）
     static let livePreview = "livePreview"                 // 录音中悬浮窗灰字预览（伪流式）
+    static let keepHistory = "keepHistory"                 // 是否把听写结果记进历史（默认开）
     static let qwenModelRepo = "qwenModelRepo"
     static let llmProvider = "llmProvider"
     static let appLanguage = "appLanguage"
@@ -201,6 +202,7 @@ final class Settings {
             SettingsKeys.restoreClipboard: true,
             SettingsKeys.autoStopSilenceSeconds: 0.0,
             SettingsKeys.livePreview: true,
+            SettingsKeys.keepHistory: true,
             SettingsKeys.qwenModelRepo: QwenModels.defaultRepo,
             SettingsKeys.llmProvider: LLMProvider.openai.rawValue,
             SettingsKeys.deepseekBaseURL: LLMProvider.deepseek.defaultBaseURL,
@@ -363,6 +365,14 @@ final class Settings {
     var livePreview: Bool {
         get { d.bool(forKey: SettingsKeys.livePreview) }
         set { d.set(newValue, forKey: SettingsKeys.livePreview) }
+    }
+
+    /// 是否把每次听写/指令的结果记进历史（Application Support/history.json，最多 200 条）。
+    /// 默认开——历史是菜单栏的一级功能。关掉后立即停止写入，已有的记录留着，
+    /// 要清由用户自己点「清空记录」或在历史窗口里逐条删：这类事永远不替他做主。
+    var keepHistory: Bool {
+        get { d.bool(forKey: SettingsKeys.keepHistory) }
+        set { d.set(newValue, forKey: SettingsKeys.keepHistory) }
     }
 
     /// 润色/技能使用的大模型服务商（GPT 或 DeepSeek，二选一）

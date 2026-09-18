@@ -59,6 +59,7 @@ private struct GeneralTab: View {
     @AppStorage(SettingsKeys.restoreClipboard) private var restoreClipboard = true
     @AppStorage(SettingsKeys.autoStopSilenceSeconds) private var autoStopSilence = 0.0
     @AppStorage(SettingsKeys.livePreview) private var livePreview = true
+    @AppStorage(SettingsKeys.keepHistory) private var keepHistory = true
     @State private var launchAtLogin = (SMAppService.mainApp.status == .enabled)
     @State private var micOK = Permissions.microphoneGranted
     @State private var axOK = Permissions.isAccessibilityTrusted
@@ -138,11 +139,21 @@ private struct GeneralTab: View {
                         "The draft only appears in the floating window and never reaches your cursor; the final text is still the full re-transcription made when you finish."))
                     .font(.caption)
                     .foregroundColor(.secondary)
+                // 5 分钟硬上限此前在界面上无处可查，用户第一次知道它存在就是被自动收尾那一刻
+                Text(tr("单次录音最长 5 分钟：到点自动收尾（照常识别并输入，不丢已录的部分），录到 2 分钟时悬浮窗会提示。",
+                        "A single take runs at most 5 minutes; at the limit it is wrapped up normally (still transcribed and inserted — nothing recorded is lost), with a heads-up in the overlay at 2 minutes."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
 
             Section(tr("行为", "Behaviour")) {
                 Toggle(tr("开始 / 完成时播放提示音", "Play sounds on start / finish"), isOn: $playSounds)
                 Toggle(tr("输入后恢复原剪贴板内容", "Restore clipboard after inserting"), isOn: $restoreClipboard)
+                Toggle(tr("保存听写历史", "Keep transcript history"), isOn: $keepHistory)
+                Text(tr("历史保存在本机 ~/Library/Application Support/MicType/history.json，最多 200 条，从不上传。关掉后立即停止记录；已有的记录不会自动删除，可在菜单栏「最近记录 → 清空记录」清空，或在历史记录窗口（⌘Y）里逐条删。",
+                        "Transcripts are kept on this Mac in ~/Library/Application Support/MicType/history.json (up to 200) and are never uploaded. Turning this off stops recording immediately; existing entries are left alone — clear them from the menu bar (Recent Transcripts → Clear History) or delete them one by one in the History window (⌘Y)."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 Toggle(tr("登录时自动启动", "Launch at login"), isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, newValue in
                         do {
@@ -179,24 +190,37 @@ private struct GeneralTab: View {
                     .foregroundColor(.secondary)
             }
 
-            Section {
+            // 两项权限各自一行、各自一个按钮（与引导页同构）：以前并排两个徽章却只有一个
+            // 「打开系统设置」按钮，而且固定跳辅助功能面板——麦克风是红叉的用户点几次都到同一页。
+            Section(tr("权限", "Permissions")) {
                 HStack {
-                    Text(tr("权限：", "Permissions:"))
                     PermissionBadge(name: tr("麦克风", "Microphone"), ok: micOK)
-                    PermissionBadge(name: tr("辅助功能", "Accessibility"), ok: axOK)
                     Spacer()
-                    Button(tr("打开系统设置", "Open System Settings")) {
-                        Permissions.openAccessibilitySettings()
+                    Button(tr("打开麦克风设置", "Open Microphone Settings")) {
+                        Permissions.openMicrophoneSettings()
                     }
                 }
                 .onReceive(permTimer) { _ in
                     micOK = Permissions.microphoneGranted
                     axOK = Permissions.isAccessibilityTrusted
                 }
-                Text(tr("「辅助功能」权限用于监听快捷键和把文字粘贴到光标处，必须开启。",
-                        "Accessibility is required for the global hotkey and for pasting text at the cursor."))
+                HStack {
+                    PermissionBadge(name: tr("辅助功能", "Accessibility"), ok: axOK)
+                    Spacer()
+                    Button(tr("打开辅助功能设置", "Open Accessibility Settings")) {
+                        Permissions.openAccessibilitySettings()
+                    }
+                }
+                Text(tr("「麦克风」用于录下你说的话（识别全程在本机）；「辅助功能」用于监听快捷键和把文字粘贴到光标处，两项都必须开启。勾上即时生效，不用重启 MicType。",
+                        "Microphone records your voice (recognition stays on this Mac); Accessibility is required for the global hotkey and for pasting text at the cursor. Both are required, and ticking them takes effect immediately — no restart needed."))
                     .font(.caption)
                     .foregroundColor(.secondary)
+                if !micOK {
+                    Text(tr("麦克风还没授权：在 系统设置 → 隐私与安全性 → 麦克风 里勾上 MicType，否则录不到任何声音。",
+                            "Microphone is not granted yet: tick MicType under System Settings → Privacy & Security → Microphone, otherwise nothing is recorded."))
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
                 if !axOK {
                     Text(tr("如果系统设置里显示已开启但这里仍是 ✗：是旧版授权失效了。请在 辅助功能 列表中选中 MicType，点「−」删除，再点「+」重新添加。",
                             "If System Settings shows it enabled but this still shows ✗, the old grant is stale: remove MicType from the Accessibility list (−), then add it back (+)."))
@@ -662,6 +686,8 @@ private struct AboutTab: View {
                         "Privacy: recording and speech recognition stay entirely on this Mac."))
                 Text(tr("只有开启 AI 润色时，识别出的文本会发送给你配置的大模型接口。",
                         "Only with AI polish enabled is the transcribed text sent to the model endpoint you configure."))
+                Text(tr("听写历史以明文保存在本机 Application Support 目录，最多 200 条：可在 设置 → 通用 关掉记录，或在菜单栏「最近记录」里清空、逐条删除。",
+                        "Transcripts are kept in plain text on this Mac (up to 200): turn recording off in Settings → General, or clear and delete them from Recent Transcripts in the menu bar."))
             }
             .font(.caption)
             .foregroundColor(.secondary)

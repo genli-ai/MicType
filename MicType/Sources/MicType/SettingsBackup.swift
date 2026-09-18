@@ -50,6 +50,7 @@ import UniformTypeIdentifiers
 //   livePreview             ← livePreview            / （Windows 暂无）      布尔
 //   playSounds              ← playSounds             / PlaySounds           布尔
 //   restoreClipboard        ← restoreClipboard       / RestoreClipboard     布尔
+//   keepHistory             ← keepHistory            / （Windows 暂无）      布尔
 //
 // 不进这个文件：API Key（安全）、模型仓库 / 下载状态（跟本机磁盘绑定）、登录启动（系统级注册）、
 // 历史记录（另有 history.json）、引导是否走过（本机一次性状态）。
@@ -82,6 +83,7 @@ enum SettingsBackup {
         static let livePreview = "livePreview"
         static let playSounds = "playSounds"
         static let restoreClipboard = "restoreClipboard"
+        static let keepHistory = "keepHistory"
 
         /// 已知键全集——不在这里面的一律忽略并计数（含任何伪装成设置的 Key 字段）
         static let all: Set<String> = [
@@ -89,7 +91,7 @@ enum SettingsBackup {
             llmProvider, openaiBaseURL, deepseekBaseURL,
             openaiPolishModel, openaiCommandModel, deepseekPolishModel, deepseekCommandModel,
             polishTemperature, commandTemperature, appLanguage,
-            autoStopSilenceSeconds, livePreview, playSounds, restoreClipboard,
+            autoStopSilenceSeconds, livePreview, playSounds, restoreClipboard, keepHistory,
         ]
     }
 
@@ -119,6 +121,7 @@ enum SettingsBackup {
             Key.livePreview: s.livePreview,
             Key.playSounds: s.playSounds,
             Key.restoreClipboard: s.restoreClipboard,
+            Key.keepHistory: s.keepHistory,
         ]
 
         let stamp = ISO8601DateFormatter()
@@ -267,6 +270,8 @@ enum SettingsBackup {
         bool(Key.livePreview) { Settings.shared.livePreview = $0 }
         bool(Key.playSounds) { Settings.shared.playSounds = $0 }
         bool(Key.restoreClipboard) { Settings.shared.restoreClipboard = $0 }
+        // 这条走的是"要不要记录"这个偏好，历史内容本身照旧不进备份文件
+        bool(Key.keepHistory) { Settings.shared.keepHistory = $0 }
 
         // 3) 不认识的键：只计数，绝不写进任何地方（API Key 就算被手工塞进来也止步于此）
         for key in settings.keys where !Key.all.contains(key) {

@@ -45,10 +45,20 @@ final class HistoryStore: ObservableObject {
     }
 
     func add(raw: String, polished: String) {
+        // 用户在设置里关掉了"保存听写历史"：这一条连内存都不进，更不写盘。
+        // 已有的记录不动——替用户删掉他没要求删的东西，比不记录更糟。
+        guard Settings.shared.keepHistory else { return }
         items.insert(HistoryItem(date: Date(), raw: raw, polished: polished), at: 0)
         if items.count > maxCount {
             items = Array(items.prefix(maxCount))
         }
+        save()
+    }
+
+    /// 删掉单条。有了它，用户想抹掉一句含隐私内容的听写才不必把 200 条全清了。
+    func remove(id: UUID) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items.remove(at: index)
         save()
     }
 

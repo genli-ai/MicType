@@ -227,8 +227,11 @@ final class DictationController {
         Log.info("Press blocked (\(reason.rawValue))")
         switch reason {
         case .model:
-            overlay.flashError(tr("识别模型未下载，请在设置中下载",
-                                  "Speech model not downloaded — see Settings"))
+            // 文案要和实际落点一致：模型缺失时 onNeedSettings 打开的是引导向导的下载页
+            // （标题「欢迎使用 MicType」），不是设置窗口——说"请在设置中下载"只会让用户
+            // 以为弹错了窗口，去关掉它再自己找设置。
+            overlay.flashError(tr("识别模型未下载——已为你打开下载页",
+                                  "Speech model not downloaded — opening the download page"))
             Sounds.playError()
             onNeedSettings?()
         case .accessibility:
@@ -371,9 +374,11 @@ final class DictationController {
         return sessionNotes.isEmpty ? nil : sessionNotes.joined(separator: tr("；", "; "))
     }
 
-    /// 录音中悬浮窗该显示的文案：基础标签（听写/指令）+ 超过 2 分钟时的软提示
+    /// 录音中悬浮窗该显示的文案：基础标签（听写/指令）+ 超过 2 分钟时的软提示。
+    /// 软提示里带上硬上限：只说"已录 2 分钟"等于什么都没说——用户看不出还能说多久、
+    /// 到点会发生什么，直到 5 分钟被自动收尾才第一次知道有上限。
     private func currentRecordingLabel() -> String {
-        softHintShown ? recordingLabel + tr("（已录 2 分钟）", " (2 min recorded)")
+        softHintShown ? recordingLabel + tr("（已录 2 分钟 / 上限 5 分钟）", " (2 of 5 min)")
                       : recordingLabel
     }
 
@@ -632,8 +637,11 @@ final class DictationController {
     private func startRecording(fromPress: Bool = false) {
         // 检查模型
         guard QwenEngine.shared.isModelAvailable else {
-            overlay.flashError(tr("识别模型未下载，请在设置中下载",
-                                  "Speech model not downloaded — see Settings"))
+            // 文案要和实际落点一致：模型缺失时 onNeedSettings 打开的是引导向导的下载页
+            // （标题「欢迎使用 MicType」），不是设置窗口——说"请在设置中下载"只会让用户
+            // 以为弹错了窗口，去关掉它再自己找设置。
+            overlay.flashError(tr("识别模型未下载——已为你打开下载页",
+                                  "Speech model not downloaded — opening the download page"))
             Sounds.playError()
             onNeedSettings?()
             return
@@ -759,7 +767,16 @@ final class DictationController {
         guard peak >= 0.012 else {
             Log.info("Recording stop silence-gated duration=\(String(format: "%.2f", duration))s peak=\(String(format: "%.4f", peak))")
             phase = .idle
-            overlay.flashError(takeSessionNote() ?? tr("没有听到内容", "Nothing heard"))
+            // 有故障附注（设备被拔/切走、到最长时长自动收尾）＝真出了事，必须出声——
+            // 眼睛不在屏幕底部的人只有这一声能提醒他这一轮被丢了。
+            // 裸的"没有听到内容"（误触 / 没开口）继续保持安静：按下时已经响过开始音，
+            // 为一次误触再吵一声不值当，这也是 3.2.2 起的既定约定（见 <0.4s 那条分支）。
+            if let fault = takeSessionNote() {
+                overlay.flashError(fault)
+                Sounds.playError()
+            } else {
+                overlay.flashError(tr("没有听到内容", "Nothing heard"))
+            }
             return
         }
 
@@ -785,7 +802,10 @@ final class DictationController {
                 let rawText = TextPostProcessor.applyVocabReplacements(transcribed)
                 guard !rawText.isEmpty else {
                     self.phase = .idle
+                    // 这里和静音闸门不同：音频过了电平闸门、识别也真跑过一遍，却什么都没出来
+                    // ——这不是误触，是实打实的一次失败，和其它失败出口一样要出声。
                     self.overlay.flashError(tr("没有听到内容", "Nothing heard"))
+                    Sounds.playError()
                     return
                 }
                 // 指令模式：这次说的话就是命令。普通输入永远不做指令解析。
