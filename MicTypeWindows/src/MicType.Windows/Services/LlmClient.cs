@@ -13,15 +13,19 @@ public static class LlmClient
 {
     private static readonly HttpClient Client = new();
 
+    /// 预热到 API 的连接（DNS + TLS 握手在用户说话期间完成），结果丢弃。
+    /// **故意不带 Authorization**：预热要的只是连接，带上 Key 毫无必要，却会让
+    /// 「配了 Key 但润色关掉、只用轻点听写」的用户每次按键都把 Key 送出去一遍。
+    /// 端点大多回 401，但 DNS/TLS/连接池已经热好了。（与 macOS 端同源）
     public static async Task PrewarmAsync(CancellationToken cancellationToken = default)
     {
         var settings = SettingsStore.Instance.Current;
+        // 没配 Key = 这台机器压根不会调 LLM，连接也不用热
         var key = CredentialStore.Load(settings.CurrentCredentialTarget);
         if (string.IsNullOrWhiteSpace(key)) return;
 
         var baseUrl = settings.CurrentBaseUrl.TrimEnd('/');
         using var request = new HttpRequestMessage(HttpMethod.Get, baseUrl + "/models");
-        request.Headers.Authorization = new("Bearer", key);
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromSeconds(5));

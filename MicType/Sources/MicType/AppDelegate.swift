@@ -52,6 +52,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             QwenEngine.shared.preload()
         }
         routeFirstLaunch()
+        reportPreviousUpdateResult()
+    }
+
+    /// 自更新是"App 把自己换掉"：失败时本进程早就退了，界面上的失败回调永远不会触发，
+    /// 而脚本有两条 abort 路径会把旧版重新打开——看起来和升级成功一模一样。
+    /// 所以脚本留了张条子，这里启动时念一次（成功静默），顺手清掉临时目录里的安装残留。
+    private func reportPreviousUpdateResult() {
+        UpdateChecker.cleanupStaleStages()
+        guard let message = UpdateChecker.consumePreviousInstallResult() else { return }
+        // 排在引导 / 权限那些窗口之后弹，别抢首启动的流程
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = tr("上次升级没有完成", "The last update didn't finish")
+            alert.informativeText = message
+            alert.addButton(withTitle: tr("好", "OK"))
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+        }
     }
 
     /// 首启动去哪儿：新用户走引导；已经配好的老用户一个字都不打扰。

@@ -57,6 +57,37 @@ final class SettingsBackupTests: XCTestCase {
         XCTAssertTrue(SettingsBackup.Key.all.contains(SettingsBackup.Key.keepHistory))
     }
 
+    // MARK: 接口地址白名单（导入的 base URL 决定 API Key 发给谁）
+
+    func testAcceptsHttpsEndpoints() {
+        XCTAssertTrue(SettingsBackup.isAcceptableBaseURL("https://api.openai.com/v1"))
+        XCTAssertTrue(SettingsBackup.isAcceptableBaseURL("  https://api.deepseek.com/v1  "))
+    }
+
+    /// 明文 http 一律不收：ATS 本来就会拦掉，存进去只是一个用不了的地址
+    func testRejectsPlainHttpEndpoint() {
+        XCTAssertFalse(SettingsBackup.isAcceptableBaseURL("http://relay.attacker.tld/v1"))
+    }
+
+    /// 没有主机名 / 不是 URL / 空串：一个都不能进设置
+    func testRejectsMalformedEndpoints() {
+        XCTAssertFalse(SettingsBackup.isAcceptableBaseURL(""))
+        XCTAssertFalse(SettingsBackup.isAcceptableBaseURL("   "))
+        XCTAssertFalse(SettingsBackup.isAcceptableBaseURL("https:///v1"))
+        XCTAssertFalse(SettingsBackup.isAcceptableBaseURL("api.openai.com/v1"))
+        XCTAssertFalse(SettingsBackup.isAcceptableBaseURL("file:///etc/passwd"))
+        XCTAssertFalse(SettingsBackup.isAcceptableBaseURL("HTTP://api.openai.com/v1"))
+    }
+
+    /// 自己导出的地址必须能被自己导回来（白名单不能把正常配置也挡掉）
+    func testExportedEndpointsSurviveTheImportCheck() {
+        let settings = SettingsBackup.makeDocument()["settings"] as? [String: Any]
+        for key in [SettingsBackup.Key.openaiBaseURL, SettingsBackup.Key.deepseekBaseURL] {
+            let value = settings?[key] as? String ?? ""
+            XCTAssertTrue(SettingsBackup.isAcceptableBaseURL(value), "exported \(key) rejected: \(value)")
+        }
+    }
+
     func testExportDocumentHasSchemaAndSettings() {
         let doc = SettingsBackup.makeDocument()
         XCTAssertEqual(doc["schemaVersion"] as? Int, SettingsBackup.schemaVersion)

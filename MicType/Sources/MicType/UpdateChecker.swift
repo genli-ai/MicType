@@ -1,9 +1,10 @@
 import AppKit
 
 /// 轻量更新检查 + 应用内自更新：查 GitHub Releases latest → 比版本 → 下载安装包到「下载」文件夹，
-/// 再由用户点一下「立即安装并重启」完成 解压 → 验签（Developer ID + Team ID）→ 替换自身 → 重开。
+/// 再由用户点一下「立即安装并重启」完成 解压 → 验签（证书链锚定 Apple + 本 Team）→ 替换自身 → 重开。
 /// 优先下载公证过的 DMG（应用内更新也零警告）；没有 DMG 时回退 Developer ID 签名的 zip。
-/// 不引入 Sparkle：替换逻辑只有一段 bash，看得见、可回滚（失败自动把旧 bundle 从废纸篓挪回来）。
+/// 不引入 Sparkle：替换逻辑只有一段 bash，看得见、可回滚（新版先拷到旁边，两次同卷改名完成交换），
+/// 失败结果写成标记文件留给下次启动的自己念（这时 App 已经退出，没别的办法回话）。
 enum UpdateChecker {
 
     enum CheckResult {
@@ -66,7 +67,7 @@ enum UpdateChecker {
 
     private static func downloadAsset(_ url: URL, named name: String, version: String,
                                       finish: @escaping (CheckResult) -> Void) {
-        URLSession.shared.downloadTask(with: url) { tempURL, _, error in
+        URLSession.shared.downloadTask(with: url) { tempURL, response, error in
             if let error = error {
                 Log.warn("Update download failed: \(error.localizedDescription)")
                 finish(.failed(error.localizedDescription))
@@ -74,6 +75,20 @@ enum UpdateChecker {
             }
             guard let tempURL = tempURL else {
                 finish(.failed(tr("下载失败", "Download failed")))
+                return
+            }
+            // URLSession 只把"传输失败"算 error：404/403/5xx 一样会给一个临时文件，
+            // 里面装的是 GitHub 的错误页。不看状态码就会把这几 KB 的 HTML 当安装包搬进
+            // 「下载」文件夹、点亮「立即安装并重启」，用户最后只看到一句"解压失败"。
+            // 限流兜底那条路更需要这一刀：它按命名规矩硬拼下载地址，没有资产清单可核对。
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                Log.warn("Update download HTTP \(http.statusCode) for \(name)")
+                let hint = http.statusCode == 404
+                    ? tr("发布页上没有 \(name)（HTTP 404），请点「发布页」手动下载",
+                         "\(name) is not on the release page (HTTP 404) — use the Releases button to download manually")
+                    : tr("下载失败（HTTP \(http.statusCode)），请点「发布页」手动下载",
+                         "Download failed (HTTP \(http.statusCode)) — use the Releases button to download manually")
+                finish(.failed(hint))
                 return
             }
             do {
@@ -190,11 +205,19 @@ extension UpdateChecker {
                 try verifySignature(of: newApp)
 
                 report(tr("正在替换并重启…", "Replacing and relaunching…"))
-                try launchInstaller(newApp: newApp, target: target, stage: stage)
+                // 上一次的条子清掉，免得这次脚本还没来得及写结果、下次启动却念出一条旧消息
+                try? FileManager.default.removeItem(at: installResultFile)
+                try launchInstaller(newApp: newApp, target: target, stage: stage, version: version)
 
                 DispatchQueue.main.async {
                     Log.info("Self-update: installer detached, quitting for v\(version)")
                     NSApp.terminate(nil)
+                    // terminate 正常一定成功；万一没退成（被拦下 / 被用户取消），脚本等 30 秒后会放弃，
+                    // 而界面会永远停在"安装中…"。给一个出口，让用户知道这次没装、可以重试。
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
+                        fail(tr("没能退出当前实例，升级已取消——当前这份没有被改动，可以再试一次",
+                                "Could not quit this instance, so the update was cancelled — this copy is untouched; try again"))
+                    }
                 }
             } catch let e as MTError {
                 try? FileManager.default.removeItem(at: stage)
@@ -278,26 +301,34 @@ extension UpdateChecker {
 
     // MARK: 验签
 
-    /// 三道关：签名自洽（--verify --deep --strict）、Team ID 是发布证书、bundle id 与自己一致。
+    /// 发布包必须满足的代码签名要求（designated requirement）：
+    /// 证书链锚定到 **Apple 根**（anchor apple generic），且叶证书属于我们这个 Team。
+    ///
+    /// 为什么不能只比对 `codesign -dv` 里那行 TeamIdentifier：那只是叶证书的 OU 字段，
+    /// 任何人拿自签证书都能把它写成 8568XNW6L3；而 `codesign --verify` 只验"签名与内容自洽"，
+    /// 根本不做证书链信任评估（实测：一个 ad-hoc 签名的假 app 也能 --verify 通过）。
+    /// 也就是说，旧的两道关加起来并不能证明这个 bundle 出自我们手里。
+    /// 只有 `-R '=anchor apple generic ...'` 这一句才真的要求链到 Apple。
+    ///
+    /// 为什么不再加一道 `spctl --assess`：公证不是每版都做（见发布流程），拿它当硬闸会把
+    /// 正常的 Developer ID 版本一并拦掉；证书链 + Team + bundle id 这三道已经足够。
+    static var releaseRequirement: String {
+        "=anchor apple generic and certificate leaf[subject.OU] = \"\(expectedTeamID)\""
+    }
+
+    /// 三道关：Apple 签发的本 Team 证书（--verify --deep --strict -R）、bundle id 与自己一致。
     /// 任何一道不过就拒装——用户手里那个能用的版本比"装上一个来路不明的 app"重要得多。
     private static func verifySignature(of app: URL) throws {
-        let verify = run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
+        let verify = run("/usr/bin/codesign",
+                         ["--verify", "--deep", "--strict", "-R", releaseRequirement, app.path])
         guard verify.status == 0 else {
-            throw MTError(tr("新版本签名校验未通过，已拒绝安装：\(brief(verify.output))",
-                             "Signature check failed, install refused: \(brief(verify.output))"))
+            // 顺手把签名者报出来：用户才分得清拒的是"没签名"、"别人的 Team"还是"自签证书冒充我们"
+            let team = signingTeam(of: app)
+            let shown = team.isEmpty ? tr("未签名", "unsigned") : team
+            throw MTError(tr("新版本签名校验未通过（签名者：\(shown)；要求 Apple 签发给 \(expectedTeamID) 的证书），已拒绝安装：\(brief(verify.output))",
+                             "Signature check failed (signed by: \(shown); requires an Apple-issued certificate for \(expectedTeamID)) — install refused: \(brief(verify.output))"))
         }
-
-        let detail = run("/usr/bin/codesign", ["-dv", "--verbose=4", app.path])
-        let team = detail.output
-            .split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .first { $0.hasPrefix("TeamIdentifier=") }
-            .map { String($0.dropFirst("TeamIdentifier=".count)) } ?? ""
-        guard team == expectedTeamID else {
-            let shown = (team.isEmpty || team == "not set") ? tr("未签名", "unsigned") : team
-            throw MTError(tr("签名者 Team ID 是 \(shown)，不是 \(expectedTeamID)，已拒绝安装",
-                             "Signed by team \(shown), not \(expectedTeamID) — install refused"))
-        }
+        let team = signingTeam(of: app)
 
         let info = NSDictionary(contentsOf: app.appendingPathComponent("Contents/Info.plist")) as? [String: Any]
         let newID = info?["CFBundleIdentifier"] as? String ?? ""
@@ -310,16 +341,30 @@ extension UpdateChecker {
         Log.info("Self-update verified: team=\(team) bundle=\(newID) version=\(newVersion)")
     }
 
+    /// 只用来做提示文案与日志——**不作为安全判据**（叶证书 OU 可被自签证书伪造，
+    /// 真正的判据是上面那条 releaseRequirement）
+    private static func signingTeam(of app: URL) -> String {
+        let detail = run("/usr/bin/codesign", ["-dv", "--verbose=4", app.path])
+        let team = detail.output
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { $0.hasPrefix("TeamIdentifier=") }
+            .map { String($0.dropFirst("TeamIdentifier=".count)) } ?? ""
+        return team == "not set" ? "" : team
+    }
+
     // MARK: 替换 + 重启
 
     /// 把替换动作交给一段独立 bash：它比我们活得久，等我们退出后才动 bundle。
-    /// 失败可回滚（旧 bundle 先进废纸篓，ditto 不成就挪回原位并重开旧版）。
-    private static func launchInstaller(newApp: URL, target: URL, stage: URL) throws {
+    /// 失败可回滚（新版先拷到目标旁边的 .new，拷不成时原来那份一个字节都没动过），
+    /// 结果写进 resultFile 供下次启动读取。
+    private static func launchInstaller(newApp: URL, target: URL, stage: URL, version: String) throws {
         try? FileManager.default.createDirectory(at: Log.logsDirectory, withIntermediateDirectories: true)
         let logFile = Log.logsDirectory.appendingPathComponent("update-install.log")
         let script = stage.appendingPathComponent("install.sh")
         let body = installerScript(pid: ProcessInfo.processInfo.processIdentifier,
-                                   newApp: newApp, target: target, stage: stage, logFile: logFile)
+                                   newApp: newApp, target: target, stage: stage,
+                                   logFile: logFile, resultFile: installResultFile, version: version)
         try body.write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
 
@@ -337,19 +382,34 @@ extension UpdateChecker {
     }
 
     private static func installerScript(pid: Int32, newApp: URL, target: URL,
-                                        stage: URL, logFile: URL) -> String {
+                                        stage: URL, logFile: URL,
+                                        resultFile: URL, version: String) -> String {
         """
         #!/bin/bash
         # MicType 自更新脚本（由 App 生成在临时目录，安装完自删）
-        # 等主进程退出 → 旧 bundle 进废纸篓 → ditto 新 bundle 到原路径 → 去隔离 → 重开
+        # 等主进程退出 → ditto 新 bundle 到目标旁边的 .new → 旧的进废纸篓 → .new 改名就位 → 重开
         exec >>\(shq(logFile.path)) 2>&1
         PID=\(pid)
         APP=\(shq(target.path))
         NEW=\(shq(newApp.path))
         STAGE=\(shq(stage.path))
+        RESULT=\(shq(resultFile.path))
+        VERSION=\(shq(version))
         SELF="$0"
+        STAGED="$APP.new"
         TRASH="$HOME/.Trash/MicType-$(date '+%Y%m%d-%H%M%S').app"
         echo "=== $(date '+%Y-%m-%dT%H:%M:%S') MicType self-update: $NEW -> $APP"
+
+        # 收尾统一走这里：
+        # 1) 把结果写成标记文件——脚本比 App 活得久，失败时 App 早就退了，没人能把失败回传到界面，
+        #    只能留一张条子给下次启动的自己念（见 consumePreviousInstallResult）。
+        # 2) 清 stage：过去只有成功路径清，三条 abort 各留一份解压好的 app bundle 在临时目录。
+        #    本脚本自己就在 $STAGE 里，所以照旧延后到后台再删，别抽掉 bash 正在读的文件。
+        finish() {
+            printf '%s' "$2" > "$RESULT" 2>/dev/null || true
+            ( sleep 3; /bin/rm -rf "$STAGE" "$SELF" ) >/dev/null 2>&1 &
+            exit "$1"
+        }
 
         # 等自己退出，最多 30 秒；没退出就什么都不做（绝不换掉正在跑的 bundle）
         for _ in $(seq 1 150); do
@@ -358,34 +418,104 @@ extension UpdateChecker {
         done
         if kill -0 "$PID" 2>/dev/null; then
             echo "old instance (pid $PID) still running after 30s — abort"
-            exit 1
+            finish 1 "FAIL:still-running"
         fi
 
-        if [ -e "$APP" ]; then
-            if ! /bin/mv "$APP" "$TRASH"; then
-                echo "moving the old bundle to Trash failed — reopening the old version"
-                /usr/bin/open -n "$APP" || true
-                exit 1
-            fi
-        fi
-
-        if ! /usr/bin/ditto "$NEW" "$APP"; then
-            echo "ditto failed — rolling back from Trash"
-            /bin/rm -rf "$APP"
-            [ -e "$TRASH" ] && /bin/mv "$TRASH" "$APP"
+        # 先把新 bundle 拷到目标同目录的 .new（同卷），再用两次 rename 完成交换：
+        # 旧版进废纸篓与新版就位都是原子的 rename，中间不存在"哪儿都没有 MicType"的真空窗口，
+        # 拷贝失败时原来那份一个字节都没被动过。
+        /bin/rm -rf "$STAGED"
+        if ! /usr/bin/ditto "$NEW" "$STAGED"; then
+            echo "copying the new bundle next to $APP failed — nothing was touched"
+            /bin/rm -rf "$STAGED"
             /usr/bin/open -n "$APP" || true
-            exit 1
+            finish 1 "FAIL:copy-failed"
         fi
 
         # 下载来的包可能带隔离标记，不清掉会被 Gatekeeper 当成"首次打开"再拦一次
-        /usr/bin/xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+        /usr/bin/xattr -dr com.apple.quarantine "$STAGED" 2>/dev/null || true
+
+        if [ -e "$APP" ] && ! /bin/mv "$APP" "$TRASH"; then
+            echo "moving the old bundle to Trash failed — reopening the old version"
+            /bin/rm -rf "$STAGED"
+            /usr/bin/open -n "$APP" || true
+            finish 1 "FAIL:move-failed"
+        fi
+
+        if ! /bin/mv "$STAGED" "$APP"; then
+            echo "swapping in the new bundle failed — rolling back from Trash"
+            # 只在原路径确实空着时才放回来：旧版直接 mv 进一个残留目录会变成
+            # MicType.app/MicType-xxx.app 这种套娃，接着被 open 打开一个坏包
+            if [ ! -e "$APP" ] && [ -e "$TRASH" ]; then
+                /bin/mv "$TRASH" "$APP"
+            fi
+            /usr/bin/open -n "$APP" || true
+            finish 1 "FAIL:swap-failed"
+        fi
+
         echo "installed -> $APP"
         /usr/bin/open -n "$APP" || echo "relaunch failed — open it from Finder"
-
-        # 清理放到后台并延后，避免删掉正在被 bash 读取的本脚本
-        ( sleep 3; /bin/rm -rf "$STAGE" "$SELF" ) >/dev/null 2>&1 &
-        exit 0
+        finish 0 "OK:$VERSION"
         """
+    }
+
+    // MARK: 上一次安装的结果（脚本 → 下次启动的 App）
+
+    /// 安装脚本写给下次启动的自己的一张条子
+    static var installResultFile: URL {
+        Paths.appSupportDir.appendingPathComponent("last-update-result")
+    }
+
+    /// 启动时读一次并删掉：成功（OK:）静默，失败返回给调用方当面说清楚。
+    /// 为什么需要它：installAndRelaunch 启动脚本后立刻 terminate，失败回调从那一刻起
+    /// 永远不可能再触发；脚本的三条 abort 路径里有两条还会把**旧版**重新打开，
+    /// 用户看到 MicType 消失又回来，完全有理由以为升级成功了。
+    static func consumePreviousInstallResult() -> String? {
+        let file = installResultFile
+        guard let raw = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        try? FileManager.default.removeItem(at: file)
+        let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty else { return nil }
+        if line.hasPrefix("OK:") {
+            Log.info("Previous self-update installed \(line.dropFirst(3))")
+            return nil
+        }
+        let code = line.hasPrefix("FAIL:") ? String(line.dropFirst(5)) : line
+        Log.warn("Previous self-update failed: \(code)")
+        return describeInstallFailure(code)
+    }
+
+    private static func describeInstallFailure(_ code: String) -> String {
+        let reason: String
+        switch code {
+        case "still-running":
+            reason = tr("旧版本没有及时退出", "the old version didn't quit in time")
+        case "copy-failed":
+            reason = tr("复制新版本失败（磁盘空间或权限）", "copying the new version failed (disk space or permissions)")
+        case "move-failed":
+            reason = tr("没能把旧版本移到废纸篓", "the old version couldn't be moved to the Trash")
+        case "swap-failed":
+            reason = tr("替换时失败，已回滚", "the swap failed and was rolled back")
+        default:
+            reason = code
+        }
+        return tr("上次升级没有完成：\(reason)。当前这份没有被改动，可以在「关于」页重试，或到发布页手动下载。",
+                  "The last update didn't finish: \(reason). This copy is untouched — retry from the About tab, or download manually from the Releases page.")
+    }
+
+    /// 清掉临时目录里的历史 stage 残留（每份是一整个解压好的 app bundle）。
+    /// 只扫一小时前的：刚装完那次，脚本可能还在读自己——它自己会延后删。
+    static func cleanupStaleStages() {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory
+        let cutoff = Date().addingTimeInterval(-3600)
+        let items = (try? fm.contentsOfDirectory(at: tmp, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        for item in items where item.lastPathComponent.hasPrefix("MicType-update-") {
+            let modified = (try? item.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            guard (modified ?? .distantPast) < cutoff else { continue }
+            try? fm.removeItem(at: item)
+            Log.info("Removed stale update stage \(item.lastPathComponent)")
+        }
     }
 
     // MARK: 小工具

@@ -38,7 +38,8 @@ import UniformTypeIdentifiers
 //   customPolishRules       ← customPolishRules      / CustomPolishRules
 //   llmProvider             ← llmProvider            / LlmProvider          "openai" | "deepseek"
 //   openaiBaseURL           ← openaiBaseURL          / OpenAiBaseUrl
-//   deepseekBaseURL         ← deepseekBaseURL        / DeepSeekBaseUrl
+//                             只接受 https 且带主机名的地址，别的一律忽略（见 isAcceptableBaseURL）
+//   deepseekBaseURL         ← deepseekBaseURL        / DeepSeekBaseUrl        同上
 //   openaiPolishModel       ← chatModel              / OpenAiPolishModel
 //   openaiCommandModel      ← openaiCommandModel     / OpenAiCommandModel
 //   deepseekPolishModel     ← deepseekModel          / DeepSeekPolishModel
@@ -150,6 +151,9 @@ enum SettingsBackup {
         var fillerSkipped = 0
         var updatedKeys: [String] = []
         var ignoredKeys: [String] = []
+        /// 需要当面点名的改动（接口地址 / 模型名）："键 = 新值"。
+        /// 别的设置改错了顶多难用，这几项改错了是"换了个收信人"——只报数量等于没报。
+        var notableChanges: [String] = []
         /// 文件来自更新版本的 MicType：能读的照读，读不懂的忽略，如实告诉用户
         var newerSchema = false
     }
@@ -178,6 +182,20 @@ enum SettingsBackup {
         if !merged.isEmpty && !merged.hasSuffix("\n") { merged += "\n" }
         merged += appended.joined(separator: "\n")
         return (merged, appended.count, skipped)
+    }
+
+    /// 导入进来的接口地址必须是 https 且带主机名，否则一律忽略。
+    ///
+    /// 为什么单独卡这一道：base URL 决定钥匙串里的 API Key 发给谁。一份"同事发来的 MicType 设置"
+    /// 只要把 openaiBaseURL 换成自己的地址，用户下一次说话时 Key 和全部识别文本就一起送过去了——
+    /// 而文件头还写着"不含 API Key"，最容易让人放心转发。
+    /// 只认 https：明文 http 本来就会被 ATS 拦掉，放进去只是存了一个用不了的地址。
+    static func isAcceptableBaseURL(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed),
+              url.scheme?.lowercased() == "https",
+              let host = url.host, !host.isEmpty else { return false }
+        return true
     }
 
     /// 把文档应用到设置上（合并语义）。抛错只发生在「这压根不是一份 MicType 设置文件」。
@@ -212,11 +230,26 @@ enum SettingsBackup {
         }
 
         // 2) 标量类：文件里出现才覆盖，没出现就一个字不动
-        func string(_ key: String, _ assign: (String) -> Void) {
+        /// notable：接口 / 模型类的键，导入摘要里要按键名逐条念出新值
+        func string(_ key: String, notable: Bool = false, _ assign: (String) -> Void) {
             guard let raw = settings[key] else { return }
             guard let value = raw as? String else { summary.ignoredKeys.append(key); return }
             assign(value)
             summary.updatedKeys.append(key)
+            if notable { summary.notableChanges.append("\(key) = \(value)") }
+        }
+        /// 接口地址：类型对还不够，还得是个我们敢把 Key 发过去的地址
+        func baseURL(_ key: String, _ assign: (String) -> Void) {
+            guard let raw = settings[key] else { return }
+            guard let value = raw as? String, isAcceptableBaseURL(value) else {
+                summary.ignoredKeys.append(key)
+                Log.warn("Settings import: rejected \(key) (not an https URL)")
+                return
+            }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            assign(trimmed)
+            summary.updatedKeys.append(key)
+            summary.notableChanges.append("\(key) = \(trimmed)")
         }
         func number(_ key: String, range: ClosedRange<Double>, _ assign: (Double) -> Void) {
             guard let raw = settings[key] else { return }
@@ -253,12 +286,12 @@ enum SettingsBackup {
 
         string(Key.aboutMe) { Settings.shared.aboutMe = $0 }
         string(Key.customPolishRules) { Settings.shared.customPolishRules = $0 }
-        string(Key.openaiBaseURL) { Settings.shared.openaiBaseURL = $0 }
-        string(Key.deepseekBaseURL) { Settings.shared.deepseekBaseURL = $0 }
-        string(Key.openaiPolishModel) { Settings.shared.chatModel = $0 }
-        string(Key.openaiCommandModel) { Settings.shared.openaiCommandModel = $0 }
-        string(Key.deepseekPolishModel) { Settings.shared.deepseekModel = $0 }
-        string(Key.deepseekCommandModel) { Settings.shared.deepseekCommandModel = $0 }
+        baseURL(Key.openaiBaseURL) { Settings.shared.openaiBaseURL = $0 }
+        baseURL(Key.deepseekBaseURL) { Settings.shared.deepseekBaseURL = $0 }
+        string(Key.openaiPolishModel, notable: true) { Settings.shared.chatModel = $0 }
+        string(Key.openaiCommandModel, notable: true) { Settings.shared.openaiCommandModel = $0 }
+        string(Key.deepseekPolishModel, notable: true) { Settings.shared.deepseekModel = $0 }
+        string(Key.deepseekCommandModel, notable: true) { Settings.shared.deepseekCommandModel = $0 }
 
         number(Key.polishTemperature, range: 0...1.5) { Settings.shared.polishTemperature = $0 }
         number(Key.commandTemperature, range: 0...1.5) { Settings.shared.commandTemperature = $0 }
@@ -360,6 +393,17 @@ extension SettingsBackup {
                         "Filler words: \(summary.fillerAdded) added, \(summary.fillerSkipped) already present"))
         lines.append(tr("其他设置：覆盖 \(summary.updatedKeys.count) 项",
                         "Other settings: \(summary.updatedKeys.count) overwritten"))
+        // 接口地址 / 模型名逐条念出来：这几项决定"文本发给谁、由谁处理"，
+        // 只报一句"覆盖 12 项"的话，别人发来的文件把接口换掉了用户也看不出来
+        if !summary.notableChanges.isEmpty {
+            lines.append(tr("接口与模型（已按文件改动）：", "Endpoints and models (changed by this file):"))
+            lines.append(contentsOf: summary.notableChanges.map { "  · " + $0 })
+            // 只有地址真的被改了才说这句重话，模型名换一换不至于
+            if summary.notableChanges.contains(where: { $0.hasPrefix(Key.openaiBaseURL) || $0.hasPrefix(Key.deepseekBaseURL) }) {
+                lines.append(tr("接口地址决定你的 API Key 和文本发往哪里——不是自己写的地址请改回去。",
+                                "The endpoint decides where your API key and text are sent — change it back if you didn't choose it."))
+            }
+        }
         if !summary.ignoredKeys.isEmpty {
             lines.append(tr("忽略 \(summary.ignoredKeys.count) 项（不认识或格式不对）",
                             "Ignored \(summary.ignoredKeys.count) entries (unknown or malformed)"))
