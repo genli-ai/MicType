@@ -41,23 +41,30 @@ enum SelectionReader {
             return
         }
         let pb = NSPasteboard.general
-        let oldString = pb.string(forType: .string)
-        let oldCount = pb.changeCount
+        // 全 flavour 快照：用户的剪贴板里可能是图片/文件/RTF，只存 `.string` 再写回
+        // 等于把这些 flavour 抹掉（oldString 还会是 nil，剪贴板直接归零）。
+        let snapshot = ClipboardSnapshot.capture(pb)
+        let oldCount = snapshot.changeCount
+        Log.info("Selection fallback snapshot \(snapshot.logSummary)")
 
         sendCmdC()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            let copiedCount = pb.changeCount
             var result: String? = nil
-            if pb.changeCount != oldCount,
+            if copiedCount != oldCount,
                let copied = pb.string(forType: .string),
                !copied.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 result = copied
             }
             // 恢复原剪贴板，不留痕迹
-            if pb.changeCount != oldCount {
-                pb.clearContents()
-                if let old = oldString {
-                    pb.setString(old, forType: .string)
-                }
+            if copiedCount != oldCount {
+                let after = snapshot.restore(to: pb)
+                // 内容原样写回了，但 changeCount 必然跳一格；不告诉插入会话的话，
+                // 它待恢复的任务会误判成"用户复制了新东西"而放弃，用户的原剪贴板就此丢失。
+                TextInserter.clipboardRewritten(previousChangeCount: oldCount, newChangeCount: after)
+                Log.info("Selection fallback restored items=\(snapshot.itemCount) types=\(snapshot.typeCount)")
+            } else {
+                Log.info("Selection fallback: clipboard untouched (no copy happened)")
             }
             completion(result)
         }
