@@ -411,6 +411,11 @@ final class DictationController {
             self.recorder.onError = { [weak self] error in
                 self?.handleAudioFault(error.message)
             }
+            // 开始音必须在 recorder.start() 之前起头：反过来的话这一声会被自己的麦克风录进去，
+            // 既污染识别（开头多出一段"叮"），也会骗过静音门。NSSound.play() 是异步的，
+            // 它只是把声音排上队就立刻返回，所以这里不会推迟录音起点。
+            // 代价：启动失败时用户已经听到了开始音，紧接着一声错误音——比丢字可接受得多。
+            Sounds.playStart()
             do {
                 try self.recorder.start()
             } catch {
@@ -430,7 +435,6 @@ final class DictationController {
             Log.info("Recording start press=\(fromPress) target=\(self.targetBundleID)"
                      + " autoStopSilence=\(String(format: "%.0f", self.autoStopSilence))s")
             self.overlay.showRecording(label: self.recordingLabel)
-            Sounds.playStart()
             // 伪流式预览：录音期间每隔一会儿把"到目前为止"的音频解码一遍，灰字贴在波形下面。
             // 纯粹是给眼睛看的，永远不会插入到任何地方。
             self.startLivePreview(generation: self.generation)
