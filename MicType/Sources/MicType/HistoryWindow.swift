@@ -151,9 +151,9 @@ enum VocabularyEditor {
         let entry = r.isEmpty ? w : "\(w)=\(r)"
 
         let current = Settings.shared.customVocabulary
-        let existing = current
-            .components(separatedBy: CharacterSet(charactersIn: ",，、\n"))
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+        // 判重按 Settings 的同一套分隔符（含 \r）拆——漏掉 CR 的话，从 Windows 搬来的
+        // 词表里已有的条目会被当成"没有"，每次都重复追加一遍
+        let existing = Settings.parseList(current)
         if existing.contains(entry) { return false }
 
         var updated = current

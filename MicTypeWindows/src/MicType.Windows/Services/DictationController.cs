@@ -212,7 +212,13 @@ public sealed class DictationController
             Log.Info($"Timing polish={polishWatch.ElapsedMilliseconds}ms model={settings.CurrentPolishModel} ok={polished.Text is not null}");
             // 保真校验：数字被改 / 否定被吞 / 内容被砍掉 → 当作润色失败，输出识别原文。
             // 纯机械比对，不花一次 LLM 往返；与 Mac 端同源。
-            var polishedText = polished.Text;
+            // 词汇表硬替换在**每个产出点各做一次**（识别原文已在上面做过）。
+            // 不能挪到 DeliverAsync 里做：那样纯听写路径会对同一串文本替换两趟，
+            // 「萍果=苹果」+「苹果=Apple」这类链式词表会被串起来——ApplyVocabReplacements
+            // 承诺的"单趟扫描不串链"只在一次调用内成立。
+            var polishedText = polished.Text is null
+                ? null
+                : TextPostProcessor.ApplyVocabReplacements(polished.Text);
             var drift = polishedText is null ? null : TextPostProcessor.PolishDriftCheck(rawText, polishedText);
             if (drift is not null)
             {
@@ -270,7 +276,9 @@ public sealed class DictationController
         if (result.Text is not null)
         {
             Log.Info($"Freeform command succeeded resultChars={result.Text.Length}");
-            await DeliverAsync(raw, result.Text, L10n.Tr("已输入指令结果", "Command result inserted"));
+            // 词汇表硬替换在每个产出点各做一次；DeliverAsync 里不再做，否则同一串文本被替换两趟
+            await DeliverAsync(raw, TextPostProcessor.ApplyVocabReplacements(result.Text),
+                L10n.Tr("已输入指令结果", "Command result inserted"));
         }
         else
         {
@@ -292,19 +300,21 @@ public sealed class DictationController
         }
         Log.Info($"Selection command succeeded action={result.Action} resultChars={result.Text.Length}");
 
+        // 词汇表硬替换在每个产出点各做一次；DeliverAsync / CopyToClipboardAsync 里不再做
+        var finalText = TextPostProcessor.ApplyVocabReplacements(result.Text);
         switch (result.Action)
         {
             case SelectionAction.Modify:
-                await DeliverAsync(raw, result.Text, L10n.Tr("已替换选中文本", "Selection replaced"));
+                await DeliverAsync(raw, finalText, L10n.Tr("已替换选中文本", "Selection replaced"));
                 break;
             case SelectionAction.New:
-                await DeliverAsync(raw, result.Text, L10n.Tr("已输入指令结果", "Command result inserted"));
+                await DeliverAsync(raw, finalText, L10n.Tr("已输入指令结果", "Command result inserted"));
                 break;
             case SelectionAction.Reply:
-                await CopyToClipboardAsync(raw, result.Text, L10n.Tr("回复草稿已复制——点到输入框按 Ctrl+V", "Reply draft copied — click the input field and press Ctrl+V"));
+                await CopyToClipboardAsync(raw, finalText, L10n.Tr("回复草稿已复制——点到输入框按 Ctrl+V", "Reply draft copied — click the input field and press Ctrl+V"));
                 break;
             default:
-                await CopyToClipboardAsync(raw, result.Text, L10n.Tr("结果已复制到剪贴板——按 Ctrl+V 粘贴", "Result copied — press Ctrl+V to paste"));
+                await CopyToClipboardAsync(raw, finalText, L10n.Tr("结果已复制到剪贴板——按 Ctrl+V 粘贴", "Result copied — press Ctrl+V to paste"));
                 break;
         }
     }
@@ -330,7 +340,9 @@ public sealed class DictationController
         if (result.Text is not null)
         {
             Log.Info($"Reply draft succeeded resultChars={result.Text.Length}");
-            await CopyToClipboardAsync(raw, result.Text, L10n.Tr("回复草稿已复制——点到输入框按 Ctrl+V", "Reply draft copied — click the input field and press Ctrl+V"));
+            // 词汇表硬替换在每个产出点各做一次；CopyToClipboardAsync 里不再做
+            await CopyToClipboardAsync(raw, TextPostProcessor.ApplyVocabReplacements(result.Text),
+                L10n.Tr("回复草稿已复制——点到输入框按 Ctrl+V", "Reply draft copied — click the input field and press Ctrl+V"));
         }
         else
         {
@@ -355,7 +367,9 @@ public sealed class DictationController
             }
         }
 
-        var text = TextPostProcessor.ApplyVocabReplacements(TextPostProcessor.FixMixedPunctuation(finalText));
+        // 只做标点归一：词汇表硬替换已经在各产出点做过了（识别原文 / 润色结果 / 各技能结果）。
+        // 在这里再做一趟等于对同一串文本替换两次，链式词表会被串起来。
+        var text = TextPostProcessor.FixMixedPunctuation(finalText);
         _pendingDeliverText = text;
         Log.Info($"Deliver enter rawChars={raw.Length} finalChars={text.Length} targetProcess={_targetProcessName ?? "unknown"}");
         try
@@ -400,7 +414,8 @@ public sealed class DictationController
 
     private async Task CopyToClipboardAsync(string raw, string result, string note)
     {
-        var text = TextPostProcessor.ApplyVocabReplacements(TextPostProcessor.FixMixedPunctuation(result));
+        // 同 DeliverAsync：只做标点归一，词汇表硬替换已在各产出点做过
+        var text = TextPostProcessor.FixMixedPunctuation(result);
         _pendingDeliverText = text;
         try
         {

@@ -25,25 +25,31 @@
                 </StackPanel>
             </TabItem>
             <TabItem x:Name="RecognitionTab" Header="Recognition">
-                <StackPanel Margin="16">
-                    <TextBlock x:Name="AsrStatusLabel" FontWeight="SemiBold" />
-                    <TextBlock x:Name="AsrStatusText" TextWrapping="Wrap" Foreground="#A16207" Margin="0,6,0,8" />
-                    <TextBlock x:Name="ModelDirectoryText" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,10" />
-                    <ProgressBar x:Name="ModelDownloadProgress"
-                                 Height="12"
-                                 Minimum="0"
-                                 Maximum="100"
-                                 Visibility="Collapsed"
-                                 Margin="0,0,0,10" />
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                        <Button x:Name="DownloadModelButton" Width="130" Margin="0,0,8,0" Click="OnDownloadModel" />
-                        <Button x:Name="RedownloadModelButton" Width="130" Margin="0,0,8,0" Click="OnRedownloadModel" />
-                        <Button x:Name="CancelModelDownloadButton" Width="100" Click="OnCancelModelDownload" Visibility="Collapsed" />
+                <!-- 识别页内容比窗口高（词表 + 口水词表两块输入框），套 ScrollViewer 才不会被截断 -->
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="16">
+                        <TextBlock x:Name="AsrStatusLabel" FontWeight="SemiBold" />
+                        <TextBlock x:Name="AsrStatusText" TextWrapping="Wrap" Foreground="#A16207" Margin="0,6,0,8" />
+                        <TextBlock x:Name="ModelDirectoryText" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,10" />
+                        <ProgressBar x:Name="ModelDownloadProgress"
+                                     Height="12"
+                                     Minimum="0"
+                                     Maximum="100"
+                                     Visibility="Collapsed"
+                                     Margin="0,0,0,10" />
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                            <Button x:Name="DownloadModelButton" Width="130" Margin="0,0,8,0" Click="OnDownloadModel" />
+                            <Button x:Name="RedownloadModelButton" Width="130" Margin="0,0,8,0" Click="OnRedownloadModel" />
+                            <Button x:Name="CancelModelDownloadButton" Width="100" Click="OnCancelModelDownload" Visibility="Collapsed" />
+                        </StackPanel>
+                        <TextBlock x:Name="VocabularyLabel" FontWeight="SemiBold" />
+                        <TextBox x:Name="VocabularyBox" AcceptsReturn="True" TextWrapping="Wrap" Height="130" Margin="0,6,0,8" />
+                        <TextBlock x:Name="VocabularyHelp" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,16" />
+                        <TextBlock x:Name="FillerLabel" FontWeight="SemiBold" />
+                        <TextBox x:Name="FillerBox" AcceptsReturn="True" TextWrapping="Wrap" Height="70" Margin="0,6,0,8" />
+                        <TextBlock x:Name="FillerHelp" TextWrapping="Wrap" Foreground="#666" />
                     </StackPanel>
-                    <TextBlock x:Name="VocabularyLabel" FontWeight="SemiBold" />
-                    <TextBox x:Name="VocabularyBox" AcceptsReturn="True" TextWrapping="Wrap" Height="130" Margin="0,6,0,8" />
-                    <TextBlock x:Name="VocabularyHelp" TextWrapping="Wrap" Foreground="#666" />
-                </StackPanel>
+                </ScrollViewer>
             </TabItem>
             <TabItem x:Name="AiTab" Header="AI Polish">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">

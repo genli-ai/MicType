@@ -834,7 +834,12 @@ final class DictationController {
                         guard let self = self, self.isCurrent(generation) else { return }
                         self.inflightRequest = nil
                         Log.info("Timing polish=\(Log.ms(since: tPolish))ms model=\(Settings.shared.currentPolishModel) ok=\(polished != nil)")
-                        if let polished = polished {
+                        if let raw = polished {
+                            // 词汇表硬替换在**每个产出点各做一次**（识别原文已在上面做过）。
+                            // 不能放到 deliver 里做：那样纯听写路径会对同一串文本替换两趟，
+                            // 「萍果=苹果」+「苹果=Apple」这种链式词表会被串起来（applyVocabReplacements
+                            // 承诺的"单趟扫描不串链"只在一次调用内成立）。
+                            let polished = TextPostProcessor.applyVocabReplacements(raw)
                             // 保真校验：数字被改 / 否定被吞 / 内容被砍掉 → 当作润色失败，输出识别原文。
                             // 纯机械比对，不花一次 LLM 往返；宁可少一次润色，也不让改错的稿子进输入框。
                             // 走这条回退的结果本身就是识别原文，所以不开放「换回识别原文」（没得换）。
@@ -909,7 +914,9 @@ final class DictationController {
             guard let self = self, self.isCurrent(generation) else { return }
             self.inflightRequest = nil
             if let result = result {
-                self.deliver(raw: raw, final: result, note: tr("已输入指令结果", "Command result inserted"),
+                // 词汇表硬替换在每个产出点各做一次；deliver 里不再做，否则同一串文本会被替换两趟
+                let finalText = TextPostProcessor.applyVocabReplacements(result)
+                self.deliver(raw: raw, final: finalText, note: tr("已输入指令结果", "Command result inserted"),
                              coldStart: isColdStart)
             } else {
                 self.phase = .idle
@@ -936,19 +943,21 @@ final class DictationController {
                 Sounds.playError()
                 return
             }
+            // 词汇表硬替换在每个产出点各做一次；deliver / copyToClipboard 里不再做
+            let finalText = TextPostProcessor.applyVocabReplacements(result)
             switch action {
             case .modify:
-                self.deliver(raw: raw, final: result, note: tr("已替换选中文本", "Selection replaced"),
+                self.deliver(raw: raw, final: finalText, note: tr("已替换选中文本", "Selection replaced"),
                              coldStart: isColdStart)
             case .new:
-                self.deliver(raw: raw, final: result, note: tr("已输入指令结果", "Command result inserted"),
+                self.deliver(raw: raw, final: finalText, note: tr("已输入指令结果", "Command result inserted"),
                              coldStart: isColdStart)
             case .reply:
-                self.copyToClipboard(raw: raw, result: result,
+                self.copyToClipboard(raw: raw, result: finalText,
                                      note: tr("回复草稿已复制——点到输入框按 ⌘V", "Reply draft copied — click the input field and press ⌘V"))
             case nil:
                 // 意图行没解析出来：进剪贴板最安全，不碰选区
-                self.copyToClipboard(raw: raw, result: result,
+                self.copyToClipboard(raw: raw, result: finalText,
                                      note: tr("结果已复制到剪贴板——按 ⌘V 粘贴", "Result copied — press ⌘V to paste"))
             }
         }
@@ -957,7 +966,9 @@ final class DictationController {
     /// 结果进剪贴板（不自动粘贴），记录历史并提示
     private func copyToClipboard(raw: String, result: String, note: String) {
         phase = .idle
-        let final = TextPostProcessor.applyVocabReplacements(TextPostProcessor.fixMixedPunctuation(result))
+        // 只做标点归一：词汇表硬替换已经在各产出点做过了。在这里再做一次的话，
+        // 纯听写路径（final 就是已替换过的 rawText）会被替换两趟，链式词表串成链。
+        let final = TextPostProcessor.fixMixedPunctuation(result)
         HistoryStore.shared.add(raw: raw, polished: final)
         let pb = NSPasteboard.general
         pb.clearContents()
@@ -996,7 +1007,9 @@ final class DictationController {
             guard let self = self, self.isCurrent(generation) else { return }
             self.inflightRequest = nil
             if let result = result {
-                self.copyToClipboard(raw: raw, result: result,
+                // 词汇表硬替换在每个产出点各做一次；copyToClipboard 里不再做
+                let finalText = TextPostProcessor.applyVocabReplacements(result)
+                self.copyToClipboard(raw: raw, result: finalText,
                                      note: tr("回复草稿已复制——点到输入框按 ⌘V", "Reply draft copied — click the input field and press ⌘V"))
             } else {
                 self.phase = .idle
@@ -1014,7 +1027,9 @@ final class DictationController {
     /// 恢复与否永远只听 Settings.restoreClipboard。
     private func deliver(raw: String, final text: String, note: String, warning: Bool = false,
                          coldStart: Bool = false, revertible: Bool = false) {
-        let finalText = TextPostProcessor.applyVocabReplacements(TextPostProcessor.fixMixedPunctuation(text))
+        // 只做标点归一：词汇表硬替换已经在各产出点做过了（识别原文 / 润色结果 / 各技能结果），
+        // 这里再做一趟等于对同一串文本替换两次，「萍果=苹果」+「苹果=Apple」会被串成链
+        let finalText = TextPostProcessor.fixMixedPunctuation(text)
         HistoryStore.shared.add(raw: raw, polished: finalText)
         // 又插入了新东西 → 上一次的记忆立刻作废：⌘Z 撤的永远是"最后一次粘贴"，
         // 拿旧记忆去撤只会撤掉这一次的新文字

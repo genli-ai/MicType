@@ -297,23 +297,36 @@ final class Settings {
         set { d.set(newValue, forKey: SettingsKeys.customVocabulary) }
     }
 
+    /// 词表 / 口水词表共用的分隔符。**必须含 \r**：Windows 端多行文本框产出的换行是 CRLF，
+    /// 只认 \n 的话从 Windows 搬过来（设置导入 / 直接粘贴）的每个条目都会拖一个裸 CR，
+    /// 之后既会被当成热词送进识别与润色提示，也会让口水词的正则永远匹配不上（静默失效）。
+    /// 与 Windows 端 AppSettings.cs 的 [',', '，', '、', '\n', '\r'] 同源。
+    static let listSeparators = CharacterSet(charactersIn: ",，、\n\r")
+
     /// 词汇表解析：普通词条做热词/润色提示；"错写=正写"词条做硬替换（正写同时进热词）。
     /// 一个正写可以挂多个错写：「杰文|捷纹|结文=捷文」——同一个名字的各种听错法不必分行写。
-    var vocabularyEntries: (terms: [String], replacements: [(wrong: String, right: String)]) {
+    /// 纯函数（不碰 UserDefaults）以便单测，并与 Windows 端 AppSettings.ParseVocabulary 逐条对齐。
+    static func parseVocabulary(_ text: String)
+        -> (terms: [String], replacements: [(wrong: String, right: String)]) {
         var terms: [String] = []
         var replacements: [(String, String)] = []
-        let raw = customVocabulary
+        let raw = text
             .replacingOccurrences(of: "＝", with: "=")
             .replacingOccurrences(of: "｜", with: "|")
-        for item in raw.components(separatedBy: CharacterSet(charactersIn: ",，、\n")) {
-            let entry = item.trimmingCharacters(in: .whitespaces)
+        for item in raw.components(separatedBy: listSeparators) {
+            let entry = item.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !entry.isEmpty else { continue }
-            let parts = entry.split(separator: "=", maxSplits: 1)
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-            if parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty {
-                let right = parts[1]
-                let wrongs = parts[0].split(separator: "|")
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
+            // 用 firstIndex(of:) 定位等号，不用 split：split 默认丢弃空段，
+            // 「Qwen=」「=捷文」「=」这类半空条目会切出 1 段（甚至 0 段）掉进 else 分支，
+            // 把**带等号的整串**当成热词送进 Qwen3-ASR 与润色提示词。
+            // Windows 端一律 continue 丢弃（AppSettings.cs），两端行为必须一致。
+            if let idx = entry.firstIndex(of: "=") {
+                let left = String(entry[..<idx]).trimmingCharacters(in: .whitespacesAndNewlines)
+                let right = String(entry[entry.index(after: idx)...])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !left.isEmpty, !right.isEmpty else { continue }
+                let wrongs = left.split(separator: "|")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .filter { !$0.isEmpty }
                 guard !wrongs.isEmpty else { continue }
                 for wrong in wrongs { replacements.append((wrong, right)) }
@@ -323,6 +336,17 @@ final class Settings {
             }
         }
         return (terms, replacements)
+    }
+
+    /// 「逗号/换行分隔」的简单列表解析（口水词表等），与 Windows 端 ParseFillerWords 同源
+    static func parseList(_ text: String) -> [String] {
+        text.components(separatedBy: listSeparators)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    var vocabularyEntries: (terms: [String], replacements: [(wrong: String, right: String)]) {
+        Settings.parseVocabulary(customVocabulary)
     }
 
     var vocabularyTerms: [String] { vocabularyEntries.terms }
@@ -335,12 +359,7 @@ final class Settings {
     }
 
     /// 解析后的口水词列表，供本机过滤用
-    var fillerWords: [String] {
-        customFillerWords
-            .components(separatedBy: CharacterSet(charactersIn: ",，、\n"))
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-    }
+    var fillerWords: [String] { Settings.parseList(customFillerWords) }
 
     var playSounds: Bool {
         get { d.bool(forKey: SettingsKeys.playSounds) }

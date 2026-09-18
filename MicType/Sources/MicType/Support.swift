@@ -77,8 +77,10 @@ enum TextPostProcessor {
     ///     所以「那个人」「不嗯」里的词永远不动，只有独立成分的口水词会被删。
     ///   • 删完做收尾：合并因此出现的重复标点、去掉标点前的空格与句首孤儿标点。
     static func removeFillerWords(_ text: String, fillerWords: [String]) -> String {
+        // 去空白用 whitespacesAndNewlines：.whitespaces 不含 \r，带尾随 CR 的口水词
+        // 经 escapedPattern 转义后永远匹配不到——用户以为开了过滤，其实一个词都没删
         let fillers = fillerWords
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         guard !fillers.isEmpty, !text.isEmpty else { return text }
 

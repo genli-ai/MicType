@@ -34,6 +34,7 @@ public partial class SettingsWindow : Window
         PlaySoundsBox.IsChecked = Settings.PlaySounds;
         RestoreClipboardBox.IsChecked = Settings.RestoreClipboard;
         VocabularyBox.Text = Settings.CustomVocabulary;
+        FillerBox.Text = Settings.FillerWords;
         SelectByTag(PolishLevelBox, Settings.PolishLevel.ToString());
         SelectByTag(ProviderBox, Settings.LlmProvider.ToString());
         PolishTempSlider.Value = Settings.PolishTemperature;
@@ -65,8 +66,13 @@ public partial class SettingsWindow : Window
         CancelModelDownloadButton.Content = L10n.Tr("取消", "Cancel");
         VocabularyLabel.Text = L10n.Tr("专有词汇表（逗号或换行分隔）", "Custom vocabulary (comma or newline separated)");
         VocabularyHelp.Text = L10n.Tr(
-            "普通词条提升识别命中率；「杰文=捷文」格式则把左边强制替换为右边——适合同音人名等热词救不了的情况。",
-            "Plain entries bias recognition; \"wrong=right\" force-replaces the left side with the right — for exact homophones that hotwords can't fix.");
+            "普通词条提升识别命中率；「杰文=捷文」格式则把左边强制替换为右边——适合同音人名等热词救不了的情况。\n一个正写可挂多个错写：「杰文|捷纹|结文=捷文」。西文词条大小写不敏感、按整词匹配。",
+            "Plain entries bias recognition; \"wrong=right\" force-replaces the left side with the right — for exact homophones that hotwords can't fix.\nOne correct form can take several wrong spellings: \"Jevin|Jevan|Javin=Jaywen\". Latin entries match whole words, case-insensitively.");
+        FillerLabel.Text = L10n.Tr("口水词过滤（逗号或换行分隔，默认空 = 不过滤）",
+            "Filler words to drop (comma or newline separated; empty = off)");
+        FillerHelp.Text = L10n.Tr(
+            "在本机删掉，不联网、不花润色额度——「仅识别」档也生效。\n分寸是保守的：西文词按整词删（填 um 不会动 umbrella）；中文词只在前后都是标点或空白时删（填「那个」不会动「那个人」）。",
+            "Removed on-device — no network, no polish tokens; works even in transcribe-only mode.\nDeliberately conservative: Latin entries are dropped as whole words only (\"um\" never touches \"umbrella\"); other entries are dropped only when standing alone between punctuation or spaces.");
         PolishModeLabel.Text = L10n.Tr("润色档位", "Polish mode");
         SetComboContent(PolishLevelBox, "Off", L10n.Tr("仅识别", "Transcribe only"));
         SetComboContent(PolishLevelBox, "Smart", L10n.Tr("AI 润色", "AI polish"));
@@ -302,6 +308,7 @@ public partial class SettingsWindow : Window
         Settings.PlaySounds = PlaySoundsBox.IsChecked == true;
         Settings.RestoreClipboard = RestoreClipboardBox.IsChecked == true;
         Settings.CustomVocabulary = VocabularyBox.Text;
+        Settings.FillerWords = FillerBox.Text;
         Settings.PolishTemperature = PolishTempSlider.Value;
         Settings.CommandTemperature = CommandTempSlider.Value;
         Settings.AboutMe = AboutMeBox.Text;

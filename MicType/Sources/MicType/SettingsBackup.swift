@@ -162,11 +162,10 @@ enum SettingsBackup {
     /// 判重按去空白后的整条精确比较——西文大小写不同的写法用户可能是故意的，不当重复。
     static func mergeList(existing: String, incoming: String)
         -> (merged: String, added: Int, skipped: Int) {
-        let separators = CharacterSet(charactersIn: ",，、\n")
+        // 分隔符与去空白都走 Settings 的同一套（含 \r）：备份文件本来就是 Mac/Windows 通用的，
+        // 在这里漏掉 CR 的话，CRLF 条目会**带着裸 CR 被写进设置并持久化**，之后每次解析都带着它。
         func entries(_ text: String) -> [String] {
-            text.components(separatedBy: separators)
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty }
+            Settings.parseList(text)
         }
         let have = Set(entries(existing))
         var seen = have
