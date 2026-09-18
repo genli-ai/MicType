@@ -27,6 +27,9 @@ final class DictationController {
     private var targetSelection: String?
     /// 本次录音是否为"指令模式"（按住快捷键触发）
     private var skillSession = false
+    /// 录音途中音频链路断掉（换设备后重装 tap 失败）的原因，收尾时附到结果提示里，
+    /// 让用户知道这段是"半句"而不是自己没说清楚
+    private var audioFaultNote: String?
 
     /// 无障碍接口残缺、读选区需要 ⌘C 兜底的应用
     private static let poorAXApps: Set<String> = [
@@ -58,9 +61,26 @@ final class DictationController {
         Log.info("Recording cancelled by user")
         _ = recorder.stop()
         skillSession = false
+        audioFaultNote = nil
         phase = .idle
         overlay.hide()
         Sounds.playCancel()
+    }
+
+    /// 录音期间音频链路断了（换设备后重装 tap 失败）：绝不干等一个不会再来数据的录音，
+    /// 立刻拿已经录到的部分走正常收尾（太短/无声仍由 finishRecording 的既有闸门处理）。
+    /// AudioRecorder 在主线程回调。
+    private func handleAudioFault(_ message: String) {
+        guard phase == .recording else { return }
+        Log.error("Audio fault while recording: \(message)")
+        audioFaultNote = message
+        finishRecording()
+    }
+
+    /// 取出并清空音频故障提示——每条只提示一次，绝不泄漏到下一次录音
+    private func takeAudioFaultNote() -> String? {
+        defer { audioFaultNote = nil }
+        return audioFaultNote
     }
 
     var isRecording: Bool { phase == .recording }
@@ -125,6 +145,11 @@ final class DictationController {
                     self?.overlay.state.pushLevel(level)
                 }
             }
+            // 录音中途设备变更且无法恢复时的出口（主线程回调）
+            self.recorder.onError = { [weak self] error in
+                self?.handleAudioFault(error.message)
+            }
+            self.audioFaultNote = nil
             do {
                 try self.recorder.start()
             } catch {
@@ -150,7 +175,13 @@ final class DictationController {
         guard duration >= 0.4 else {
             Log.info("Recording stop discarded duration=\(String(format: "%.2f", duration))s (<0.4s)")
             phase = .idle
-            overlay.hide()
+            // 是设备变更把录音打断的就说清楚，别让用户以为是自己按错了
+            if let fault = takeAudioFaultNote() {
+                overlay.flashError(fault)
+                Sounds.playError()
+            } else {
+                overlay.hide()
+            }
             return
         }
 
@@ -159,7 +190,7 @@ final class DictationController {
         guard peak >= 0.012 else {
             Log.info("Recording stop silence-gated duration=\(String(format: "%.2f", duration))s peak=\(String(format: "%.4f", peak))")
             phase = .idle
-            overlay.flashError(tr("没有听到内容", "Nothing heard"))
+            overlay.flashError(takeAudioFaultNote() ?? tr("没有听到内容", "Nothing heard"))
             return
         }
 
@@ -309,7 +340,7 @@ final class DictationController {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(final, forType: .string)
-        overlay.flashSuccess(note)
+        overlay.flashSuccess(takeAudioFaultNote().map { $0 + tr("；", "; ") + note } ?? note)
         Sounds.playSuccess()
     }
 
@@ -354,6 +385,8 @@ final class DictationController {
         let finalText = TextPostProcessor.applyVocabReplacements(TextPostProcessor.fixMixedPunctuation(text))
         HistoryStore.shared.add(raw: raw, polished: finalText)
         phase = .idle
+        // 录音被设备变更提前掐断时，把原因并进结果提示：用户得知道这只是"半句"
+        let note = takeAudioFaultNote().map { $0 + tr("；", "; ") + note } ?? note
         Log.info("Deliver start chars=\(finalText.count) target=\(targetBundleID)")
         TextInserter.insert(finalText, targetBundleID: targetBundleID,
                             allowClipboardRestore: allowClipboardRestore,

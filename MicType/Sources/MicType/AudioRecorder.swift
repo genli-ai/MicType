@@ -1,23 +1,94 @@
 import AVFoundation
 
+/// 一次录音会话的采样缓冲。tap 闭包直接捕获它，不经过 AudioRecorder 的属性——
+/// 音频线程于是只碰这一个对象和它自己的锁；stop() 换掉会话之后，那一次还没返回的
+/// tap 回调最多往旧缓冲里多写几十毫秒，污染不到下一次录音。
+private final class RecordingBuffer {
+    private let lock = NSLock()
+    private var samples: [Float] = []
+
+    func append(_ ptr: UnsafeBufferPointer<Float>) {
+        lock.lock()
+        samples.append(contentsOf: ptr)
+        lock.unlock()
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return samples.count
+    }
+
+    func drain() -> [Float] {
+        lock.lock()
+        defer { lock.unlock() }
+        let result = samples
+        samples.removeAll()
+        return result
+    }
+}
+
 /// 麦克风录音，实时重采样为 16kHz 单声道 Float32（识别模型需要的格式）
 final class AudioRecorder {
 
     private var engine: AVAudioEngine?
-    private var converter: AVAudioConverter?
-    private var outFormat: AVAudioFormat?
-    private var samples: [Float] = []
-    private let lock = NSLock()
+    /// 当前会话的采样缓冲（只在主线程换；音频线程拿的是捕获进闭包的同一个引用）
+    private var buffer: RecordingBuffer?
+    /// tap 是否还挂在 inputNode 上（只在主线程读写）：重装/停止前要准确知道，避免空 removeTap
+    private var tapInstalled = false
+    /// 装 tap 时输入设备的格式，用来判断配置变更是否真的换了格式
+    private var installedFormat: AVAudioFormat?
+    /// 设备变更观察者（AirPods 插拔、采样率变化）
+    private var configObserver: NSObjectProtocol?
 
     /// 录音音量回调（0~1），用于悬浮窗波形动画。注意：在音频线程回调。
+    /// 装 tap 那一刻取一次快照交给音频线程，录音开始后再改不会生效。
     var onLevel: ((Float) -> Void)?
+    /// 录音期间音频链路不可恢复地断了（换设备后重装 tap 失败）。主线程回调。
+    /// 上层应当拿已经录到的采样收尾，而不是干等一个再也不会来数据的录音。
+    var onError: ((MTError) -> Void)?
 
     private(set) var isRecording = false
+
+    deinit {
+        if let observer = configObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
 
     func start() throws {
         guard !isRecording else { return }
 
         let engine = AVAudioEngine()
+        let buffer = RecordingBuffer()
+        self.buffer = buffer
+
+        do {
+            try installTap(on: engine, into: buffer)
+        } catch {
+            self.buffer = nil
+            throw error
+        }
+
+        self.engine = engine
+        isRecording = true
+
+        // 录音途中换设备（插拔 AirPods、切外置声卡、采样率变化）会让 inputNode 换格式，
+        // 旧 tap 从此收不到数据。收到通知就按新格式重装一次，用户无感，已录采样原样保留。
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main) { [weak self] _ in
+            self?.handleConfigurationChange()
+        }
+    }
+
+    /// 按当前输入设备的格式装 tap 并启动引擎。
+    /// 关键：converter / outFormat / onLevel 全部作为闭包捕获的**局部常量**交给音频线程，
+    /// 实时回调里一个 self 的可变属性都不读——否则 stop() 在主线程把属性置 nil 时会和
+    /// 正在执行的 tap 并发读写同一引用（removeTap 不保证 block 已返回，TSan 必报，
+    /// 线上表现为偶发崩溃）。
+    private func installTap(on engine: AVAudioEngine, into sink: RecordingBuffer) throws {
         let input = engine.inputNode
         let inFormat = input.outputFormat(forBus: 0)
 
@@ -33,36 +104,75 @@ final class AudioRecorder {
         guard let converter = AVAudioConverter(from: inFormat, to: outFormat) else {
             throw MTError(tr("无法创建音频转换器", "Could not create audio converter"))
         }
+        let levelCallback = onLevel
 
-        lock.lock()
-        samples.removeAll()
-        lock.unlock()
-
-        self.engine = engine
-        self.converter = converter
-        self.outFormat = outFormat
-
-        input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { [weak self] buffer, _ in
-            self?.process(buffer: buffer)
+        input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { pcm, _ in
+            AudioRecorder.process(buffer: pcm, into: sink, converter: converter,
+                                  outFormat: outFormat, onLevel: levelCallback)
         }
+        tapInstalled = true
+        installedFormat = inFormat
 
         engine.prepare()
         do {
             try engine.start()
         } catch {
-            input.removeTap(onBus: 0)
-            self.engine = nil
-            self.converter = nil
-            self.outFormat = nil
+            removeTap(from: engine)
             throw MTError(tr("无法启动录音：", "Could not start recording: ") + error.localizedDescription)
         }
-
-        isRecording = true
+        Log.info("Audio tap installed rate=\(Int(inFormat.sampleRate)) ch=\(inFormat.channelCount)")
     }
 
-    private func process(buffer: AVAudioPCMBuffer) {
-        guard let converter = converter, let outFormat = outFormat else { return }
+    private func removeTap(from engine: AVAudioEngine) {
+        guard tapInstalled else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        tapInstalled = false
+        installedFormat = nil
+    }
 
+    /// 输入设备变了：旧 tap 的格式已经对不上，就地按新格式重装。
+    /// 缓冲不动——用户前半句话必须留着。主线程调用。
+    private func handleConfigurationChange() {
+        guard isRecording, let engine = engine, let sink = buffer else { return }
+
+        let newFormat = engine.inputNode.outputFormat(forBus: 0)
+        if let old = installedFormat, engine.isRunning,
+           old.sampleRate == newFormat.sampleRate, old.channelCount == newFormat.channelCount {
+            // 格式没变、引擎还在跑（常见的无害通知）：不打断，避免白白丢一小段音频
+            Log.info("Audio configuration change ignored (format unchanged, engine running)")
+            return
+        }
+
+        let kept = String(format: "%.2f", Double(sink.count) / 16000.0)
+        Log.warn("Audio configuration changed rate=\(Int(newFormat.sampleRate)) ch=\(newFormat.channelCount)"
+                 + " — reinstalling tap (kept \(kept)s)")
+        removeTap(from: engine)
+        engine.stop()
+
+        do {
+            try installTap(on: engine, into: sink)
+        } catch {
+            let message = (error as? MTError)?.message ?? error.localizedDescription
+            Log.error("Audio tap reinstall failed: \(message)")
+            // 引擎已经停了，再"录"下去只有静音。不动 isRecording：上层随后 stop() 依然拿得到
+            // 已经录到的采样，用半句话出结果，好过让用户对着死掉的麦克风一直说。
+            stopObservingConfiguration()
+            onError?(MTError(tr("录音设备已变更，本次录音提前结束",
+                                "Audio device changed — recording ended early")))
+        }
+    }
+
+    private func stopObservingConfiguration() {
+        if let observer = configObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configObserver = nil
+        }
+    }
+
+    /// 音频线程入口：静态方法，不捕获 self，所有依赖由调用点以局部常量传入
+    private static func process(buffer: AVAudioPCMBuffer, into sink: RecordingBuffer,
+                                converter: AVAudioConverter, outFormat: AVAudioFormat,
+                                onLevel: ((Float) -> Void)?) {
         let ratio = outFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
         guard let out = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else { return }
@@ -86,9 +196,7 @@ final class AudioRecorder {
         guard n > 0 else { return }
 
         let ptr = UnsafeBufferPointer(start: channel[0], count: n)
-        lock.lock()
-        samples.append(contentsOf: ptr)
-        lock.unlock()
+        sink.append(ptr)
 
         // 计算 RMS 音量
         var sum: Float = 0
@@ -100,24 +208,20 @@ final class AudioRecorder {
     /// 停止并返回 16kHz 采样
     func stop() -> [Float] {
         guard isRecording else { return [] }
-        engine?.inputNode.removeTap(onBus: 0)
-        engine?.stop()
+        stopObservingConfiguration()
+        if let engine = engine {
+            removeTap(from: engine)
+            engine.stop()
+        }
         engine = nil
-        converter = nil
-        outFormat = nil
         isRecording = false
 
-        lock.lock()
-        let result = samples
-        samples.removeAll()
-        lock.unlock()
+        let result = buffer?.drain() ?? []
+        buffer = nil
         return result
     }
 
     var recordedDuration: Double {
-        lock.lock()
-        let count = samples.count
-        lock.unlock()
-        return Double(count) / 16000.0
+        Double(buffer?.count ?? 0) / 16000.0
     }
 }
