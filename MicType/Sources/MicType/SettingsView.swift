@@ -57,10 +57,20 @@ private struct GeneralTab: View {
     @AppStorage(SettingsKeys.hotkey) private var hotkey = HotkeyChoice.rightOption.rawValue
     @AppStorage(SettingsKeys.playSounds) private var playSounds = true
     @AppStorage(SettingsKeys.restoreClipboard) private var restoreClipboard = true
+    @AppStorage(SettingsKeys.autoStopSilenceSeconds) private var autoStopSilence = 0.0
+    @AppStorage(SettingsKeys.livePreview) private var livePreview = true
     @State private var launchAtLogin = (SMAppService.mainApp.status == .enabled)
     @State private var micOK = Permissions.microphoneGranted
     @State private var axOK = Permissions.isAccessibilityTrusted
     private let permTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+
+    private var selectedHotkey: HotkeyChoice { HotkeyChoice(rawValue: hotkey) ?? .rightOption }
+
+    /// 秒数 0 = 关；打开时给一个保守的默认 2 秒（够停顿想词，又不至于等太久）
+    private var autoStopEnabled: Binding<Bool> {
+        Binding(get: { autoStopSilence > 0 },
+                set: { autoStopSilence = $0 ? 2 : 0 })
+    }
 
     var body: some View {
         Form {
@@ -73,7 +83,7 @@ private struct GeneralTab: View {
                 .pickerStyle(.segmented)
             }
 
-            Section {
+            Section(tr("快捷键", "Hotkey")) {
                 Picker(tr("听写快捷键：", "Dictation hotkey:"), selection: $hotkey) {
                     ForEach(HotkeyChoice.allCases, id: \.rawValue) { choice in
                         Text(choice.displayName).tag(choice.rawValue)
@@ -83,6 +93,23 @@ private struct GeneralTab: View {
                         "Tap: start / stop dictation · Hold to speak a command, release to run · Esc cancels."))
                     .font(.caption)
                     .foregroundColor(.secondary)
+                if selectedHotkey == .fn {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(tr("用 Fn / 🌐 前必须先让系统放手：系统设置 → 键盘 → 「按下🌐键」选「不执行任何操作」。否则每次轻点都会被系统抢去切换输入法或弹表情面板。",
+                                "Before using Fn / 🌐, tell macOS to let go: System Settings → Keyboard → \"Press 🌐 key to\" → \"Do Nothing\". Otherwise every tap gets swallowed by the emoji or input-source picker."))
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                        Button(tr("打开键盘设置", "Open Keyboard Settings")) {
+                            Permissions.openKeyboardSettings()
+                        }
+                    }
+                }
+                if selectedHotkey.isLeftSideModifier {
+                    Text(tr("左侧修饰键天天参与组合键（⌘C、⌥←…）。单独轻点才会触发，按住它敲别的键不会——但误触概率仍比右侧高，建议先试用几天。",
+                            "Left-side modifiers are used in everyday shortcuts (⌘C, ⌥←…). Only a clean tap triggers MicType — holding it while pressing another key never does — but mistaps are still likelier than on the right side."))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
                 HStack {
                     Text(tr("上手引导：", "Welcome guide:"))
                     Spacer()
@@ -92,7 +119,26 @@ private struct GeneralTab: View {
                 }
             }
 
-            Section {
+            Section(tr("录音", "Recording")) {
+                Toggle(tr("静音自动停止录音", "Stop recording after silence"), isOn: autoStopEnabled)
+                if autoStopSilence > 0 {
+                    Stepper(value: $autoStopSilence, in: 1...5, step: 1) {
+                        Text(tr("静音 \(Int(autoStopSilence)) 秒后自动结束",
+                                "Stop after \(Int(autoStopSilence))s of silence"))
+                    }
+                }
+                Text(tr("自动结束＝正常收尾这一段（照常识别并输入），不是丢弃。默认关闭：什么时候说完由你决定。",
+                        "Auto-stop finishes the take normally (it is still transcribed and inserted) — nothing is discarded. Off by default: you decide when you are done."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Toggle(tr("录音时显示实时识别草稿", "Show live transcript while recording"), isOn: $livePreview)
+                Text(tr("草稿只出现在悬浮窗里，永远不会输入到光标处；最终结果仍是松手后整段重新识别的那一版。",
+                        "The draft only appears in the floating window and never reaches your cursor; the final text is still the full re-transcription made when you finish."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Section(tr("行为", "Behaviour")) {
                 Toggle(tr("开始 / 完成时播放提示音", "Play sounds on start / finish"), isOn: $playSounds)
                 Toggle(tr("输入后恢复原剪贴板内容", "Restore clipboard after inserting"), isOn: $restoreClipboard)
                 Toggle(tr("登录时自动启动", "Launch at login"), isOn: $launchAtLogin)

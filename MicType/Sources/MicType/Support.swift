@@ -343,4 +343,11 @@ enum Permissions {
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
         NSWorkspace.shared.open(url)
     }
+
+    /// 键盘设置页：用 Fn / 🌐 当热键的人要去这里把「按下🌐键」改成「不执行任何操作」，
+    /// 否则每次触发都会被系统抢去弹输入法切换或表情面板。
+    static func openKeyboardSettings() {
+        let url = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!
+        NSWorkspace.shared.open(url)
+    }
 }

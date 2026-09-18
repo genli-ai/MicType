@@ -6,20 +6,33 @@ enum HotkeyChoice: String, CaseIterable {
     case rightOption
     case rightCommand
     case rightControl
+    case rightShift
+    case leftOption
+    case leftCommand
+    case leftControl
+    case fn
 
+    /// 修饰键的物理键码（左右两侧是不同的键码，所以"只用右侧"是真的只认右侧那颗）
     var keyCode: UInt16 {
         switch self {
         case .rightOption: return 61
         case .rightCommand: return 54
         case .rightControl: return 62
+        case .rightShift: return 60
+        case .leftOption: return 58
+        case .leftCommand: return 55
+        case .leftControl: return 59
+        case .fn: return 63
         }
     }
 
     var flagMask: UInt {
         switch self {
-        case .rightOption: return 1 << 19   // NSEvent.ModifierFlags.option
-        case .rightCommand: return 1 << 20  // NSEvent.ModifierFlags.command
-        case .rightControl: return 1 << 18  // NSEvent.ModifierFlags.control
+        case .rightOption, .leftOption: return 1 << 19     // NSEvent.ModifierFlags.option
+        case .rightCommand, .leftCommand: return 1 << 20   // NSEvent.ModifierFlags.command
+        case .rightControl, .leftControl: return 1 << 18   // NSEvent.ModifierFlags.control
+        case .rightShift: return 1 << 17                   // NSEvent.ModifierFlags.shift
+        case .fn: return 1 << 23                           // NSEvent.ModifierFlags.function
         }
     }
 
@@ -28,6 +41,11 @@ enum HotkeyChoice: String, CaseIterable {
         case .rightOption: return tr("右 Option (⌥)", "Right Option (⌥)")
         case .rightCommand: return tr("右 Command (⌘)", "Right Command (⌘)")
         case .rightControl: return tr("右 Control (⌃)", "Right Control (⌃)")
+        case .rightShift: return tr("右 Shift (⇧)", "Right Shift (⇧)")
+        case .leftOption: return tr("左 Option (⌥)", "Left Option (⌥)")
+        case .leftCommand: return tr("左 Command (⌘)", "Left Command (⌘)")
+        case .leftControl: return tr("左 Control (⌃)", "Left Control (⌃)")
+        case .fn: return tr("Fn / 🌐 地球键", "Fn / 🌐 Globe key")
         }
     }
 
@@ -36,6 +54,19 @@ enum HotkeyChoice: String, CaseIterable {
         case .rightOption: return tr("右⌥", "R⌥")
         case .rightCommand: return tr("右⌘", "R⌘")
         case .rightControl: return tr("右⌃", "R⌃")
+        case .rightShift: return tr("右⇧", "R⇧")
+        case .leftOption: return tr("左⌥", "L⌥")
+        case .leftCommand: return tr("左⌘", "L⌘")
+        case .leftControl: return tr("左⌃", "L⌃")
+        case .fn: return tr("Fn", "Fn")
+        }
+    }
+
+    /// 左侧修饰键天天参与 ⌘C / ⌥← 这类组合键，单独轻点的机会少、也更容易误触，选中时给一句提醒
+    var isLeftSideModifier: Bool {
+        switch self {
+        case .leftOption, .leftCommand, .leftControl: return true
+        default: return false
         }
     }
 }
@@ -104,6 +135,8 @@ enum SettingsKeys {
     static let customPolishRules = "customPolishRules"
     static let customVocabulary = "customVocabulary"
     static let fillerWords = "fillerWords"                 // 本地口水词过滤表（默认空 = 不过滤）
+    static let autoStopSilenceSeconds = "autoStopSilenceSeconds"  // 静音自动停：连续静音多少秒后自动收尾（0 = 关）
+    static let livePreview = "livePreview"                 // 录音时在悬浮窗显示实时识别草稿
     static let playSounds = "playSounds"
     static let restoreClipboard = "restoreClipboard"
     static let qwenModelRepo = "qwenModelRepo"
@@ -135,6 +168,8 @@ final class Settings {
             SettingsKeys.customPolishRules: "",
             SettingsKeys.customVocabulary: "",
             SettingsKeys.fillerWords: "",
+            SettingsKeys.autoStopSilenceSeconds: 0.0,
+            SettingsKeys.livePreview: true,
             SettingsKeys.playSounds: true,
             SettingsKeys.restoreClipboard: true,
             SettingsKeys.qwenModelRepo: QwenModels.defaultRepo,
@@ -274,6 +309,19 @@ final class Settings {
             .components(separatedBy: CharacterSet(charactersIn: ",，、\n"))
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+    }
+
+    /// 静音自动停：连续静音超过这个秒数就自动收尾（0 = 关闭，默认关——绝不替用户决定他说完没有）。
+    /// 收尾是"正常结束这次听写"，不是丢弃。
+    var autoStopSilenceSeconds: Double {
+        get { d.object(forKey: SettingsKeys.autoStopSilenceSeconds) as? Double ?? 0 }
+        set { d.set(newValue, forKey: SettingsKeys.autoStopSilenceSeconds) }
+    }
+
+    /// 录音时在悬浮窗显示实时识别草稿（只是悬浮窗里的灰字，永远不会进目标 App）
+    var livePreview: Bool {
+        get { d.bool(forKey: SettingsKeys.livePreview) }
+        set { d.set(newValue, forKey: SettingsKeys.livePreview) }
     }
 
     var playSounds: Bool {
