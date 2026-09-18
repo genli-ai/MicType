@@ -5,11 +5,13 @@ enum PolishService {
 
     /// 润色。completion 在主线程回调：(润色结果, 失败原因)。
     /// 结果为 nil 时调用方降级用原文，失败原因用于提示用户。
+    /// 返回句柄供调用方中途取消（Esc）；不需要联网的 .off 档没有句柄。
+    @discardableResult
     static func polish(_ rawText: String, level: PolishLevel,
-                       completion: @escaping (String?, String?) -> Void) {
+                       completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle? {
         guard level != .off else {
             DispatchQueue.main.async { completion(rawText, nil) }
-            return
+            return nil
         }
 
         // 示例已内嵌进系统提示词——few-shot 消息对在短输入时会被模型原样"复读"出来
@@ -22,11 +24,12 @@ enum PolishService {
         // 那趟废请求（UAE 链路下每趟往返都贵）。LLMClient 仍保留按需去参重试做兜底。
         let model = Settings.shared.currentPolishModel
         let temperature: Double? = rejectsCustomTemperature(model) ? nil : Settings.shared.polishTemperature
-        LLMClient.chat(messages: messages,
-                       temperature: temperature,
-                       timeout: 20,
-                       model: model,
-                       completion: completion)
+        // 15s：润色是"顺手加工"，等超过这个数就该退回识别原文，而不是让用户干等
+        return LLMClient.chat(messages: messages,
+                              temperature: temperature,
+                              timeout: 15,
+                              model: model,
+                              completion: completion)
     }
 
     /// 推理系模型只接受默认 temperature（gpt-5.5 / *-pro / o 系）

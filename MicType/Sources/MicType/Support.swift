@@ -90,23 +90,58 @@ enum TextPostProcessor {
 
 // MARK: - 提示音
 
+/// 四个提示音。自带短音（Resources/Sounds/*.wav，由 scripts/generate_sounds.py 生成），
+/// 而不是系统的 Pop/Glass/Basso/Bottle：系统警告音是"出事了"的语义，语音输入一天要响几十次，
+/// 而且用户可以在系统设置里把它们换掉，我们就彻底失去了对提示音的控制。
+/// 资源缺失（比如直接跑 .build 里的裸可执行文件，没打成 .app）时退回老的系统音，不至于静音。
 enum Sounds {
-    static func playStart() {
-        guard Settings.shared.playSounds else { return }
-        NSSound(named: "Pop")?.play()
+
+    private enum Cue: String {
+        case start, success, error, cancel
+
+        /// 资源缺失时的兜底：3.2.19 之前一直用的那四个系统音
+        var systemFallback: String {
+            switch self {
+            case .start:   return "Pop"
+            case .success: return "Glass"
+            case .error:   return "Basso"
+            case .cancel:  return "Bottle"
+            }
+        }
     }
-    static func playSuccess() {
-        guard Settings.shared.playSounds else { return }
-        NSSound(named: "Glass")?.play()
+
+    /// NSSound 每次构造都要读文件解码，而提示音是高频路径 → 首次用到时加载一次并留着。
+    /// 只在主线程访问（所有 play* 调用点都在主线程）。
+    private static var cache: [Cue: NSSound] = [:]
+
+    private static func sound(_ cue: Cue) -> NSSound? {
+        if let cached = cache[cue] { return cached }
+        var loaded: NSSound? = nil
+        if let url = Bundle.main.url(forResource: cue.rawValue, withExtension: "wav",
+                                     subdirectory: "Sounds") {
+            loaded = NSSound(contentsOf: url, byReference: false)
+            if loaded == nil { Log.warn("Sound decode failed: \(cue.rawValue).wav") }
+        }
+        if loaded == nil {
+            Log.warn("Bundled sound missing: \(cue.rawValue).wav — falling back to system sound")
+            loaded = NSSound(named: cue.systemFallback)
+        }
+        if let loaded = loaded { cache[cue] = loaded }
+        return loaded
     }
-    static func playError() {
+
+    private static func play(_ cue: Cue) {
         guard Settings.shared.playSounds else { return }
-        NSSound(named: "Basso")?.play()
+        guard let s = sound(cue) else { return }
+        // 复用同一个 NSSound：上一声还没放完就再触发时必须先 stop，否则 play() 被忽略
+        if s.isPlaying { s.stop() }
+        s.play()
     }
-    static func playCancel() {
-        guard Settings.shared.playSounds else { return }
-        NSSound(named: "Bottle")?.play()
-    }
+
+    static func playStart()   { play(.start) }
+    static func playSuccess() { play(.success) }
+    static func playError()   { play(.error) }
+    static func playCancel()  { play(.cancel) }
 }
 
 // MARK: - 权限

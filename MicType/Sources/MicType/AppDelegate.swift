@@ -15,17 +15,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         dictation.onPhaseChange = { [weak self] phase in
             self?.updateIcon(for: phase)
-            self?.hotkeys.setRecordingActive(phase == .recording)
+            // 录音中 *和* 处理中都要保持 Esc 拦截：处理中 Esc 是用户唯一的出口
+            self?.hotkeys.setCancellable(phase != .idle)
         }
         dictation.onNeedSettings = {
             SettingsWindowController.shared.show()
         }
 
         hotkeys.onTapToggle = { [weak self] in self?.dictation.toggle() }
-        hotkeys.onSkillStart = { [weak self] in self?.dictation.skillHoldStart() }
+        hotkeys.onPressStart = { [weak self] in self?.dictation.pressStart() }
+        hotkeys.onHoldPromote = { [weak self] in self?.dictation.holdPromote() }
+        hotkeys.onPressAbort = { [weak self] in self?.dictation.abortPressSession() }
         hotkeys.onSkillEnd = { [weak self] in self?.dictation.skillHoldEnd() }
         hotkeys.onCancel = { [weak self] in self?.dictation.cancel() }
         hotkeys.isRecording = { [weak self] in self?.dictation.isRecording ?? false }
+        hotkeys.isBusy = { [weak self] in self?.dictation.isProcessing ?? false }
+        hotkeys.onBusyGesture = { [weak self] in self?.dictation.gestureWhileBusy() }
         hotkeys.start()
 
         // 首次启动：申请辅助功能权限；模型缺失则打开设置引导下载
@@ -82,6 +87,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .processing:
             let item = NSMenuItem(title: tr("处理中…", "Processing…"), action: nil, keyEquivalent: "")
             item.isEnabled = false
+            menu.addItem(item)
+            menu.addItem(makeItem(tr("取消（Esc）", "Cancel (Esc)"), #selector(cancelDictation)))
+        }
+
+        // 「换回识别原文」（P9）：只在刚插入过一次被润色改动的听写、且还在 60 秒内时出现。
+        // 目标应用不在前台就灰着并说清要切回哪儿——不自作主张替用户切窗口去撤销。
+        if let offer = dictation.revertOffer() {
+            let item = makeItem(tr("换回识别原文（撤销润色）", "Use raw transcript instead"),
+                                #selector(revertToRaw))
+            if !offer.ready {
+                // NSMenu 默认自动启用：去掉 action 才是真的灰掉
+                item.action = nil
+                item.isEnabled = false
+                item.toolTip = tr("请先切回 ", "Switch back to ") + offer.appName
+                    + tr(" 再撤销", " first")
+            }
             menu.addItem(item)
         }
 
@@ -161,6 +182,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func cancelDictation() {
         dictation.cancel()
+    }
+
+    @objc private func revertToRaw() {
+        dictation.revertToRaw()
     }
 
     @objc private func setPolishLevel(_ sender: NSMenuItem) {

@@ -3,6 +3,41 @@ import Foundation
 // MARK: - 统一的大模型调用层
 // PolishService 与各技能共用：OpenAI 兼容接口 + 自动重试
 
+/// 一次 LLM 调用的取消句柄。一次调用内部可能跑好几趟请求（瞬时网络错误重试、
+/// 被拒 temperature 后去参重试），句柄始终指向"此刻在飞的那一趟"；
+/// cancel() 之后已发出的请求被中断，后续的重试也不会再发起，completion 不再回调。
+/// 这是 `.processing` 期间 Esc 能真正把用户放出来的前提。
+final class LLMRequestHandle {
+
+    private let lock = NSLock()
+    private var task: URLSessionDataTask?
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    /// 返回 false 表示已被取消，调用方不要 resume 这个 task
+    fileprivate func adopt(_ newTask: URLSessionDataTask) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled else { return false }
+        task = newTask
+        return true
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let inflight = task
+        task = nil
+        lock.unlock()
+        inflight?.cancel()
+    }
+}
+
 enum LLMClient {
 
     /// 这些网络错误值得重试（连接被重置、超时、DNS 失败等瞬时故障）
@@ -48,26 +83,32 @@ enum LLMClient {
     /// 调用 chat/completions。completion 在主线程回调：(结果, 失败原因)。
     /// model：润色传 currentPolishModel（快），指令传 currentCommandModel（强）。
     /// temperature：润色传 0.5（保真任务要偏低温）；指令传 nil 用模型默认（更自然，且推理系模型只接受默认）。
+    /// 返回的句柄可用来中途取消整次调用（含尚未发起的重试）。
+    @discardableResult
     static func chat(messages: [[String: String]],
                      temperature: Double?,
                      timeout: TimeInterval,
                      model: String,
-                     completion: @escaping (String?, String?) -> Void) {
-        perform(messages: messages, temperature: temperature, timeout: timeout, model: model) { result, failure in
+                     completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle {
+        let handle = LLMRequestHandle()
+        perform(messages: messages, temperature: temperature, timeout: timeout, model: model, handle: handle) { result, failure in
             // 推理系模型（gpt-5.5 / *-pro 等）只接受默认 temperature：被拒时去掉该参数重试一次
             if result == nil, temperature != nil, let failure = failure, failure.lowercased().contains("temperature") {
-                perform(messages: messages, temperature: nil, timeout: timeout, model: model, completion: completion)
+                perform(messages: messages, temperature: nil, timeout: timeout, model: model, handle: handle, completion: completion)
             } else {
                 completion(result, failure)
             }
         }
+        return handle
     }
 
     private static func perform(messages: [[String: String]],
                                 temperature: Double?,
                                 timeout: TimeInterval,
                                 model: String,
+                                handle: LLMRequestHandle,
                                 completion: @escaping (String?, String?) -> Void) {
+        guard !handle.isCancelled else { return }
         guard let apiKey = KeychainHelper.loadAPIKey() else {
             DispatchQueue.main.async { completion(nil, tr("未配置 API Key", "No API key configured")) }
             return
@@ -93,20 +134,23 @@ enum LLMClient {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
-        send(request, retriesLeft: 1, completion: completion)
+        send(request, retriesLeft: 1, handle: handle, completion: completion)
     }
 
-    private static func send(_ request: URLRequest, retriesLeft: Int,
+    private static func send(_ request: URLRequest, retriesLeft: Int, handle: LLMRequestHandle,
                              completion: @escaping (String?, String?) -> Void) {
         let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            // 用户取消（Esc）：不回调、不重试——取消不是"失败"，不该在悬浮窗上再弹一句错误
+            guard !handle.isCancelled else { return }
             var result: String? = nil
             var failure: String? = nil
 
             if let error = error {
                 let nsError = error as NSError
+                if nsError.code == NSURLErrorCancelled { return }
                 if retryableCodes.contains(nsError.code), retriesLeft > 0 {
                     DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
-                        send(request, retriesLeft: retriesLeft - 1, completion: completion)
+                        send(request, retriesLeft: retriesLeft - 1, handle: handle, completion: completion)
                     }
                     return
                 }
@@ -141,8 +185,12 @@ enum LLMClient {
             } else {
                 failure = tr("返回格式无法解析", "Could not parse the response")
             }
-            DispatchQueue.main.async { completion(result, failure) }
+            DispatchQueue.main.async {
+                guard !handle.isCancelled else { return }
+                completion(result, failure)
+            }
         }
+        guard handle.adopt(task) else { return }
         task.resume()
     }
 }
@@ -197,8 +245,10 @@ enum AgentService {
     /// 技能：有选区时的统一入口——模型先判意图（改写/回复/新写）再直接执行，单次调用。
     /// chatContext：选区来自聊天软件的消息记录（微信/QQ 等）——对方的话无法被原地修改，意图基本排除 MODIFY。
     /// completion(意图, 正文, 失败原因)：正文非 nil 即成功；意图为 nil 表示首行解析失败，调用方走剪贴板兜底。
+    /// 返回句柄供调用方中途取消（Esc）。
+    @discardableResult
     static func runOnSelection(_ selection: String, instruction: String, chatContext: Bool,
-                               completion: @escaping (SelectionAction?, String?, String?) -> Void) {
+                               completion: @escaping (SelectionAction?, String?, String?) -> Void) -> LLMRequestHandle {
         var system = """
         你是语音指令执行器。用户选中了一段文本，并对它口述了一条指令。你先判断意图，再直接执行。
         第一行只输出意图词本身，三选一：
@@ -220,10 +270,11 @@ enum AgentService {
             user += "\n\n（背景事实：选中文本来自聊天软件的消息记录，是对方发来的话，无法被原地修改。除非指令明确要求加工这段文字本身，意图应为 REPLY 或 NEW。）"
         }
         if let email = emailFormatRequirement(for: instruction) { user += email }
-        LLMClient.chat(messages: [
+        // 30s：40s×(1 次重试) 的最坏 80s 等待对"随时能退出"来说太长；配合 Esc 取消一起收敛
+        return LLMClient.chat(messages: [
             ["role": "system", "content": system],
             ["role": "user", "content": user],
-        ], temperature: Settings.shared.commandTemperature, timeout: 40, model: Settings.shared.currentCommandModel) { result, failure in
+        ], temperature: Settings.shared.commandTemperature, timeout: 30, model: Settings.shared.currentCommandModel) { result, failure in
             guard let result = result else {
                 completion(nil, nil, failure)
                 return
@@ -264,8 +315,9 @@ enum AgentService {
 
     /// 技能：自由指令（无选区）——把口述当作给大模型的任务（草拟邮件、翻译、列提纲、解释等），
     /// 输出可直接粘贴使用的成品文本
+    @discardableResult
     static func freeform(instruction: String,
-                         completion: @escaping (String?, String?) -> Void) {
+                         completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle {
         var system = """
         你是一个语音驱动的写作助手。用户口述一个任务——草拟邮件、翻译一段话、改写、起标题、列提纲、回答问题等——你直接给出可用的结果。
         规则：
@@ -283,15 +335,16 @@ enum AgentService {
         system += userContextHint()
         var userContent = instruction
         if let email = emailFormatRequirement(for: instruction) { userContent += email }
-        LLMClient.chat(messages: [
+        return LLMClient.chat(messages: [
             ["role": "system", "content": system],
             ["role": "user", "content": userContent],
-        ], temperature: Settings.shared.commandTemperature, timeout: 40, model: Settings.shared.currentCommandModel, completion: completion)
+        ], temperature: Settings.shared.commandTemperature, timeout: 30, model: Settings.shared.currentCommandModel, completion: completion)
     }
 
     /// 技能：根据选中的对方消息草拟回复（显式触发词「帮我回复」等直通此处）
+    @discardableResult
     static func replyDraft(context: String, instruction: String,
-                           completion: @escaping (String?, String?) -> Void) {
+                           completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle {
         var system = """
         你是一个回复草拟助手。用户给你一段"对方发来的消息/上下文"，你代表用户起草一条可以直接发送的回复。
         规则：
@@ -307,7 +360,7 @@ enum AgentService {
         let req = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
         var user = "对方消息/上下文：\n\(context)\n\n用户要求：\(req.isEmpty ? "得体地回复" : req)"
         if let email = emailFormatRequirement(for: instruction) { user += email }
-        LLMClient.chat(messages: [
+        return LLMClient.chat(messages: [
             ["role": "system", "content": system],
             ["role": "user", "content": user],
         ], temperature: Settings.shared.commandTemperature, timeout: 25, model: Settings.shared.currentCommandModel, completion: completion)

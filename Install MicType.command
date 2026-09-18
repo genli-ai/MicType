@@ -91,6 +91,13 @@ fi
 mkdir -p "$APP/Contents/Resources/QwenTokenizer"
 cp "Resources/QwenTokenizer/tokenizer.json" "$APP/Contents/Resources/QwenTokenizer/"
 
+# 自带的 4 个提示音（替掉系统的 Pop/Glass/Basso/Bottle）。
+# 缺了 App 会退回系统音，所以这里不让它阻断安装。
+if [ -d "Resources/Sounds" ]; then
+    mkdir -p "$APP/Contents/Resources/Sounds"
+    cp Resources/Sounds/*.wav "$APP/Contents/Resources/Sounds/"
+fi
+
 if [ -f "Resources/AppIcon.png" ]; then
     ICONSET=$(mktemp -d)/AppIcon.iconset
     mkdir -p "$ICONSET"
