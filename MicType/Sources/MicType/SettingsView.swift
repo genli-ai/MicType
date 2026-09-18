@@ -63,6 +63,8 @@ private struct GeneralTab: View {
     @State private var micOK = Permissions.microphoneGranted
     @State private var axOK = Permissions.isAccessibilityTrusted
     private let permTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+    // 导入导出的结果文字是一次性快照，切语言时要清掉（见 CLAUDE.md「i18n 快照字符串」）
+    @State private var backupStatus = ""
 
     private var selectedHotkey: HotkeyChoice { HotkeyChoice(rawValue: hotkey) ?? .rightOption }
 
@@ -155,6 +157,28 @@ private struct GeneralTab: View {
                     }
             }
 
+            Section(tr("备份", "Backup")) {
+                HStack {
+                    Button(tr("导出设置…", "Export Settings…")) {
+                        backupStatus = SettingsBackup.runExport()
+                    }
+                    Button(tr("导入设置…", "Import Settings…")) {
+                        backupStatus = SettingsBackup.runImport()
+                    }
+                    Spacer()
+                }
+                if !backupStatus.isEmpty {
+                    Text(backupStatus)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(3)
+                }
+                Text(tr("导出一个 JSON 文件：词汇表、口水词、关于我、自定义规则、档位与模型偏好、热键与语言。导入是合并——词表取并集（老词条一条不少），其余只覆盖文件里出现的项。\nAPI Key 从不导出、也从不导入：Key 只在系统钥匙串里，写进文件就等于把它交给了拿到文件的人。文件格式 Mac 与 Windows 通用。",
+                        "Exports one JSON file: vocabulary, filler words, about-me, custom rules, polish mode and model preferences, hotkey and language. Import merges — vocabulary lists are unioned (nothing you already have is lost) and other settings are overwritten only where the file has them.\nAPI keys are never exported or imported: they live in the Keychain, and a file containing one gives it away to whoever receives the file. The format is shared with the Windows build."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             Section {
                 HStack {
                     Text(tr("权限：", "Permissions:"))
@@ -183,6 +207,10 @@ private struct GeneralTab: View {
         }
         .formStyle(.grouped)
         .padding(.top, 4)
+        // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言
+        .onChange(of: l10n.language) { _, _ in
+            backupStatus = ""
+        }
     }
 }
 
