@@ -24,6 +24,17 @@ let package = Package(
                 .swiftLanguageMode(.v5)
             ]
         ),
+        // 离线诊断 CLI（长音频失败模式 / 各语言质量实测）——独立可执行，App 不依赖它
+        .executableTarget(
+            name: "mictype-asr-probe",
+            dependencies: [
+                .product(name: "MLXASR", package: "mlx-swift-asr"),
+            ],
+            path: "Sources/ASRProbe",
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
+        ),
         // 纯函数层单测（词表替换 / 伪影与口水词过滤 / 润色保真校验）——不碰 UI、不碰网络
         .testTarget(
             name: "MicTypeTests",
