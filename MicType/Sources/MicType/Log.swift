@@ -34,6 +34,25 @@ enum Log {
         Int((DispatchTime.now().uptimeNanoseconds &- start.uptimeNanoseconds) / 1_000_000)
     }
 
+    /// 今天这份日志文件。**故意每次新建一个 DateFormatter**：上面那个 dayFormatter 只在
+    /// 串行日志队列里用，DateFormatter 不是线程安全的，从主线程（诊断信息）再碰一次就有风险。
+    /// 一次复制诊断信息才建一个，这点开销无所谓。
+    static var todayLogFile: URL {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return logsDirectory.appendingPathComponent("mictype-\(f.string(from: Date())).log")
+    }
+
+    /// 今天日志的最后 n 行，供「复制诊断信息」取用。
+    /// 读不到（今天还没写过日志 / 文件被删）就返回空数组——诊断信息宁可少一段，
+    /// 也绝不能因为没有日志文件就失败。
+    static func recentLines(_ n: Int) -> [String] {
+        guard n > 0, let text = try? String(contentsOf: todayLogFile, encoding: .utf8) else { return [] }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        return Array(lines.suffix(n))
+    }
+
     /// 启动时调用：版本、系统、每块屏幕的几何与缩放（直接服务悬浮窗排障）、设置摘要
     static func startup() {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"

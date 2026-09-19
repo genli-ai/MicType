@@ -77,6 +77,11 @@ final class DictationController {
     /// 当前预览窗口在整段录音里的起始采样下标（窗口满了就往后滚，已定稿的文字留在 previewCommitted）
     private var previewWindowStart = 0
     private var previewCommitted = ""
+    /// 本轮跑成功的预览解码遍数（进性能指标：预览跑得越多，最终识别越可能在排队等 GPU）
+    private var partialCount = 0
+    /// 本轮的耗时草稿（P20 性能指标）：识别/润色各阶段算完填一格，插入完成时提交进 Metrics。
+    /// 只在主线程读写。取消 / 识别失败的那些轮不提交——它们没有完整的一条耗时可记。
+    private var pendingMetric: SessionMetricDraft?
 
     /// 「换回识别原文」的记忆（P9）：只记"纯听写 + 润色确实改了字 + 确实粘进去了"的那一次。
     /// 指令模式不记——那里的 raw 是用户的口令（"翻译成英文"），拿它覆盖结果毫无意义。
@@ -352,6 +357,9 @@ final class DictationController {
         sessionNotes = []
         recordingStartedAt = nil
         levelGateUntil = nil
+        // 取消掉的这一轮不该留下半条耗时草稿给下一轮捡走
+        pendingMetric = nil
+        partialCount = 0
         phase = .idle
     }
 
@@ -496,6 +504,7 @@ final class DictationController {
             guard self.previewEnabled, self.phase == .recording, self.isCurrent(generation) else { return }
             Log.info("Timing partial=\(ms)ms audio=\(String(format: "%.1f", chunkSeconds))s"
                      + " ok=\(text != nil) chars=\(text?.count ?? 0)")
+            self.partialCount += 1
             // 这一遍占了多少 GPU 时间，下一遍就等多久（1.5 倍）：机器忙/音频长时自动放慢刷新，
             // 宁可草稿更新得稀疏，也不能让预览拖慢松手后的最终识别。
             let latency = Double(ms) / 1000.0
@@ -724,6 +733,8 @@ final class DictationController {
             self.softHintShown = false
             self.speechDetected = false
             self.lastLoudAt = nil
+            self.partialCount = 0
+            self.pendingMetric = nil
             // 上面刚响过的开始音会被这只麦克风录进去 → 开一道回声闸门。
             // 「按下即录」的那一声推迟到 revealPressSession()，闸门也在那里开。
             self.levelGateUntil = nil
@@ -800,6 +811,12 @@ final class DictationController {
         let isColdStart = !QwenEngine.shared.isModelReady
         let tASR = DispatchTime.now()
         let generation = self.generation
+        // 这一轮的耗时草稿从这里开始攒：模式在松手这一刻就定了（skillSession 还没被清），
+        // 时长/预览遍数/冷启动也都已成定局，剩下三段耗时各自算完填进来
+        pendingMetric = SessionMetricDraft(mode: skillSession ? .command : .dictation,
+                                           audioSeconds: duration,
+                                           partialCount: partialCount,
+                                           cold: isColdStart)
 
         // 识别本身停不下来（MLX 一次解码到底），取消靠"丢结果"：代数对不上就当这轮没发生过
         QwenEngine.shared.transcribe(samples: samples) { [weak self] result in
@@ -811,7 +828,9 @@ final class DictationController {
                 self.overlay.flashError(error.message)
                 Sounds.playError()
             case .success(let transcribed):
-                Log.info("Timing ASR=\(Log.ms(since: tASR))ms cold=\(isColdStart) chars=\(transcribed.count)")
+                let asrMs = Log.ms(since: tASR)
+                Log.info("Timing ASR=\(asrMs)ms cold=\(isColdStart) chars=\(transcribed.count)")
+                self.pendingMetric?.asrMs = asrMs
                 // 词汇表"错写=正写"硬替换：进入润色/指令之前先做确定性纠正
                 let rawText = TextPostProcessor.applyVocabReplacements(transcribed)
                 guard !rawText.isEmpty else {
@@ -851,7 +870,11 @@ final class DictationController {
                     self.inflightRequest = PolishService.polish(rawText, level: level) { [weak self] polished, failure in
                         guard let self = self, self.isCurrent(generation) else { return }
                         self.inflightRequest = nil
-                        Log.info("Timing polish=\(Log.ms(since: tPolish))ms model=\(Settings.shared.currentPolishModel) ok=\(polished != nil)")
+                        let polishMs = Log.ms(since: tPolish)
+                        Log.info("Timing polish=\(polishMs)ms model=\(Settings.shared.currentPolishModel) ok=\(polished != nil)")
+                        // 润色失败那一次也要记：用户感觉到的等待是实打实的，
+                        // 只记成功的话中位数会漂亮得不像话，排障时反而看不出问题
+                        self.pendingMetric?.polishMs = polishMs
                         if let raw = polished {
                             // 词汇表硬替换在**每个产出点各做一次**（识别原文已在上面做过）。
                             // 不能放到 deliver 里做：那样纯听写路径会对同一串文本替换两趟，
@@ -1061,11 +1084,19 @@ final class DictationController {
         // 前台切换完成（≤1.2s）+ 保守时序，这期间用户完全可能已经按键开了下一轮
         let generation = self.generation
         Log.info("Deliver start chars=\(finalText.count) target=\(target)")
+        // 插入这一段也计时：它包含切前台（最长 1.2s）+ 粘贴时序，是用户真实等待的一部分。
+        // 草稿在这里定格成局部变量——回调最长要等一秒多，那时 pendingMetric 可能已经是下一轮的了。
+        let tInsert = DispatchTime.now()
+        let metric = pendingMetric
+        pendingMetric = nil
         TextInserter.insert(finalText, targetBundleID: target,
                             allowClipboardRestore: true,
                             conservativePaste: coldStart) { [weak self] outcome in
             guard let self = self else { return }
-            Log.info("Deliver outcome=\(outcome == .pasted ? "pasted" : "clipboardOnly")")
+            let insertMs = Log.ms(since: tInsert)
+            Log.info("Timing insert=\(insertMs)ms outcome=\(outcome == .pasted ? "pasted" : "clipboardOnly")")
+            // 先记指标再判代数：这一轮的耗时是既成事实，哪怕用户已经开了下一轮也照样算数
+            if let metric = metric { Metrics.shared.record(metric.finished(insertMs: insertMs)) }
             // 对不上这一轮就到此为止：迟到的成功提示会把新一轮的录音悬浮窗盖成绿勾，
             // 1 秒后 flash 结束时整个面板被 orderOut（灰字预览和"正在听指令…"从此不再更新），
             // 成功音还会被新一轮的麦克风录进去。「换回识别原文」的记忆同理——

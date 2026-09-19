@@ -386,6 +386,7 @@ private struct RecognitionTab: View {
     @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
     @AppStorage(SettingsKeys.fillerWords) private var fillerWords = ""
     @ObservedObject private var downloader = QwenModelDownloader.shared
+    @ObservedObject private var metrics = Metrics.shared
     @StateObject private var micTest = MicTestSession()
     @State private var inputDevices: [InputDevice] = []
     /// 插拔 AirPods / 接上声卡时下拉框要立刻跟上（否则得关掉设置窗口再打开才看得见）
@@ -531,6 +532,22 @@ private struct RecognitionTab: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
+            }
+
+            // 性能：只是照镜子，不提供任何"自动优化"开关——快慢的原因摆出来，怎么调由用户决定
+            Section(tr("性能", "Performance")) {
+                if let digest = Metrics.digest(metrics.items) {
+                    Text(Metrics.summaryLine(digest))
+                        .monospacedDigit()
+                } else {
+                    Text(tr("还没有可统计的记录——正常用几次就会出现。",
+                            "No sessions recorded yet — dictate a few times and this will fill in."))
+                        .foregroundColor(.secondary)
+                }
+                Text(tr("识别与插入都在本机完成；润色那一段主要取决于到大模型接口的网络往返，和这台 Mac 快慢无关。\n只统计数字，不保存任何听写内容。",
+                        "Recognition and insertion run on this Mac; the polish figure is network-bound — it is dominated by the round trip to your model endpoint, not by this machine.\nOnly timings are stored — never any transcribed text."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -820,6 +837,9 @@ private struct AboutTab: View {
     @State private var checkingUpdate = false
     @State private var pendingUpdate: PendingUpdate?
     @State private var installing = false
+    /// 刚复制过诊断信息：按钮就地变成「已复制」两秒。就地确认不额外占一行高度——
+    /// 关于页是个固定高度的 VStack，多一行就可能把底下的隐私说明挤出窗口。
+    @State private var diagnosticsCopied = false
 
     var body: some View {
         VStack(spacing: 10) {
@@ -843,6 +863,14 @@ private struct AboutTab: View {
                 .disabled(checkingUpdate)
                 Button(tr("发布页", "Releases")) {
                     NSWorkspace.shared.open(UpdateChecker.releasesPage)
+                }
+                Button(diagnosticsCopied ? tr("已复制", "Copied")
+                                         : tr("复制诊断信息", "Copy diagnostics")) {
+                    Diagnostics.copyToPasteboard()
+                    diagnosticsCopied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        diagnosticsCopied = false
+                    }
                 }
             }
             if let pending = pendingUpdate {
@@ -881,6 +909,8 @@ private struct AboutTab: View {
                         "Only with AI polish enabled is the transcribed text sent to the model endpoint you configure."))
                 Text(tr("听写历史以明文保存在本机 Application Support 目录，最多 200 条：可在 设置 → 通用 关掉记录，或在菜单栏「最近记录」里清空、逐条删除。",
                         "Transcripts are kept in plain text on this Mac (up to 200): turn recording off in Settings → General, or clear and delete them from Recent Transcripts in the menu bar."))
+                Text(tr("「复制诊断信息」只包含版本、系统、芯片、设置摘要、最近的耗时数字和今天的日志尾巴——不含 API Key，也不含任何听写内容，可以放心贴给别人。",
+                        "“Copy diagnostics” includes only the version, system, chip, a settings summary, recent timings and today's log tail — never your API key and never any transcribed text, so it is safe to paste to someone."))
             }
             .font(.caption)
             .foregroundColor(.secondary)
