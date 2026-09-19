@@ -1,6 +1,70 @@
 import Foundation
 import Combine
 
+/// 下载失败的原因（语言中性）。为什么不直接存一句中文/英文：见 `QwenDownloadPhase`。
+enum QwenDownloadFailure: Equatable {
+    case fileListUnavailable
+    case emptyRepo
+    /// 系统层面的写盘失败；detail 是 OS 给的原文（语言由系统决定），只当次要细节附在后面
+    case saveFailed(detail: String)
+    case allMirrorsFailed
+
+    var text: String {
+        switch self {
+        case .fileListUnavailable:
+            return tr("无法获取模型文件清单，请检查网络", "Could not fetch the model file list — check your network")
+        case .emptyRepo:
+            return tr("模型仓库为空或清单格式异常", "Model repo is empty or the manifest is malformed")
+        case .saveFailed(let detail):
+            return tr("保存失败：", "Save failed: ") + detail
+        case .allMirrorsFailed:
+            return tr("下载源均失败，请检查网络后重试（已完成的文件会保留，重试可续传）",
+                      "All mirrors failed — check your network and retry (completed files are kept; retry resumes)")
+        }
+    }
+}
+
+/// 下载进行到哪一步——**语言中性**：只存事实（阶段 + 计数 + 字节数），不存拼好的文字。
+/// 为什么：以前下载器直接存一句 `statusText`，那是一次性生成的语言快照，切界面语言不会
+/// 自己刷新（CLAUDE.md「i18n 快照字符串」那个老坑），而下载正在进行时又不能一清了之
+/// ——于是英文界面下能一直挂着一句中文。现在文字由 `statusText` 现场 tr() 渲染：
+/// 视图每次重绘都重新渲染，切语言立刻跟上，下载中也不例外。
+enum QwenDownloadPhase: Equatable {
+    case idle
+    case fetchingList
+    /// 刚起一个文件、还没有字节数（此时报文件路径比报 0 MB 有用）
+    case startingFile(fileIndex: Int, fileCount: Int, file: String)
+    case downloading(fileIndex: Int, fileCount: Int, doneBytes: Int64, totalBytes: Int64)
+    case completed(fileCount: Int)
+    case cancelled
+    case failed(QwenDownloadFailure)
+
+    static func megabytes(_ bytes: Int64) -> Double {
+        Double(bytes) / 1_048_576
+    }
+
+    /// 界面上那一行状态文字。**每次读都重新渲染**，所以它永远跟着当前界面语言
+    var statusText: String {
+        switch self {
+        case .idle:
+            return ""
+        case .fetchingList:
+            return tr("正在获取文件清单…", "Fetching file list…")
+        case .startingFile(let index, let count, let file):
+            return tr("下载中 ", "Downloading ") + "(\(index + 1)/\(count)): \(file)"
+        case .downloading(let index, let count, let done, let total):
+            return String(format: tr("下载中 (%d/%d) %.0f / %.0f MB", "Downloading (%d/%d) %.0f / %.0f MB"),
+                          index + 1, count, Self.megabytes(done), Self.megabytes(total))
+        case .completed(let count):
+            return tr("下载完成 ✓（", "Download complete ✓ (") + "\(count)" + tr(" 个文件）", " files)")
+        case .cancelled:
+            return tr("已取消", "Cancelled")
+        case .failed(let failure):
+            return tr("失败：", "Failed: ") + failure.text
+        }
+    }
+}
+
 /// Qwen 模型下载器：HF 仓库是多文件目录（safetensors/config/tokenizer…），
 /// 先取文件清单再逐个下载。hf-mirror.com 优先，失败回退 huggingface.co。
 final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadDelegate {
@@ -9,12 +73,18 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
 
     @Published var isDownloading = false
     @Published var progress: Double = 0
-    @Published var statusText = ""
+    /// 只存阶段，不存文字——界面用下面的 `statusText` 现场渲染
+    @Published var phase: QwenDownloadPhase = .idle
+
+    /// 给界面用的一行状态：每次求值都走一遍 tr()，切语言即刻跟上（不是快照）
+    var statusText: String { phase.statusText }
 
     private static let defaultHosts = ["https://hf-mirror.com", "https://huggingface.co"]
 
     private let hosts = QwenModelDownloader.defaultHosts
     private var hostIndex = 0
+    /// 这一轮里有没有哪个镜像把清单给全了、但解析出来是空的（决定最终失败话术）
+    private var sawEmptyManifest = false
     private var repo = ""
     private var destDir: URL!
     private var files: [(path: String, size: Int64)] = []
@@ -36,12 +106,13 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
             try? FileManager.default.removeItem(at: destDir)
         }
         hostIndex = 0
+        sawEmptyManifest = false
         fileIndex = 0
         completedBytes = 0
         cancelled = false
         isDownloading = true
         progress = 0
-        statusText = tr("正在获取文件清单…", "Fetching file list…")
+        phase = .fetchingList
         try? FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
         fetchFileList()
     }
@@ -52,7 +123,7 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
         session?.invalidateAndCancel()
         session = nil
         isDownloading = false
-        statusText = tr("已取消", "Cancelled")
+        phase = .cancelled
     }
 
     // MARK: - 文件清单
@@ -113,7 +184,8 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
 
     private func fetchFileList() {
         guard hostIndex < hosts.count else {
-            finishWithError(tr("无法获取模型文件清单，请检查网络", "Could not fetch the model file list — check your network"))
+            // 镜像都试完了：清单能取回来但内容是空的 → 说"仓库为空"；压根没取回来 → 说"拿不到清单"
+            finishWithError(sawEmptyManifest ? .emptyRepo : .fileListUnavailable)
             return
         }
         let url = URL(string: "\(hosts[hostIndex])/api/models/\(repo)/tree/main")!
@@ -131,8 +203,10 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
                 }
                 let list = Self.parseManifest(data).map { (path: $0.path, size: $0.size) }
                 guard !list.isEmpty else {
-                    // 清单解析不出来（响应异常 / 仓库为空）就换下一个镜像；都试完了由上面那道
-                    // guard 给出「无法获取清单」——绝不因为一个镜像返回怪东西就判定仓库有问题
+                    // 清单解析不出来（响应异常 / 仓库为空）就换下一个镜像；都试完了才由上面那道
+                    // guard 收口——绝不因为一个镜像返回怪东西就判定仓库有问题。记下"至少有一个
+                    // 镜像把清单给全了、但里面是空的"，让最后那句失败话术说得准（仓库空 ≠ 拿不到清单）
+                    self.sawEmptyManifest = true
                     self.hostIndex += 1
                     self.fetchFileList()
                     return
@@ -152,7 +226,7 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
         guard fileIndex < files.count else {
             isDownloading = false
             progress = 1
-            statusText = tr("下载完成 ✓（", "Download complete ✓ (") + "\(files.count)" + tr(" 个文件）", " files)")
+            phase = .completed(fileCount: files.count)
             session?.finishTasksAndInvalidate()
             session = nil
             recordRemoteVersion()
@@ -177,7 +251,7 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
             config.timeoutIntervalForRequest = 60
             session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
         }
-        statusText = tr("下载中 ", "Downloading ") + "(\(fileIndex + 1)/\(files.count)): \(file.path)"
+        phase = .startingFile(fileIndex: fileIndex, fileCount: files.count, file: file.path)
         let task = session!.downloadTask(with: url)
         currentTask = task
         task.resume()
@@ -287,9 +361,9 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
         attempt(0)
     }
 
-    private func finishWithError(_ message: String) {
+    private func finishWithError(_ failure: QwenDownloadFailure) {
         isDownloading = false
-        statusText = tr("失败：", "Failed: ") + message
+        phase = .failed(failure)
         session?.finishTasksAndInvalidate()
         session = nil
     }
@@ -302,10 +376,8 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
         guard !cancelled else { return }
         let done = completedBytes + totalBytesWritten
         progress = min(1, Double(done) / Double(totalBytes))
-        let doneMB = Double(done) / 1_048_576
-        let totalMB = Double(totalBytes) / 1_048_576
-        statusText = String(format: tr("下载中 (%d/%d) %.0f / %.0f MB", "Downloading (%d/%d) %.0f / %.0f MB"),
-                            fileIndex + 1, files.count, doneMB, totalMB)
+        phase = .downloading(fileIndex: fileIndex, fileCount: files.count,
+                             doneBytes: done, totalBytes: totalBytes)
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
@@ -323,7 +395,7 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
         do {
             try FileManager.default.moveItem(at: location, to: dest)
         } catch {
-            finishWithError(tr("保存失败：", "Save failed: ") + error.localizedDescription)
+            finishWithError(.saveFailed(detail: error.localizedDescription))
             return
         }
         completedBytes += max(file.size, 0)
@@ -344,7 +416,7 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
             hostIndex += 1
             downloadNextFile()
         } else {
-            finishWithError(tr("下载源均失败，请检查网络后重试（已完成的文件会保留，重试可续传）", "All mirrors failed — check your network and retry (completed files are kept; retry resumes)"))
+            finishWithError(.allMirrorsFailed)
         }
     }
 }

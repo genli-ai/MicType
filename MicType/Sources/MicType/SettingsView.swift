@@ -78,6 +78,21 @@ struct SettingsView: View {
 
 // MARK: - 通用
 
+/// 通用页的段序（v4.0 调研 §4.4）。以前第一个控件是「界面语言」——一辈子点一次的东西占了
+/// 最贵的位置，而每天都要看的快捷键和录音要往下滚。重排成"用得最多的在最前"：
+/// 快捷键 → 录音 → 悬浮窗 → 行为 → 权限 → 语言与备份。
+///
+/// 为什么写成一张有序表而不是把顺序埋在 body 里：顺序本身是这次改动的产出，得能被单测钉住，
+/// 否则下一次顺手在中间插一段就悄悄退回原样了。
+enum GeneralSectionOrder: Int, CaseIterable {
+    case hotkey
+    case recording
+    case overlay
+    case behaviour
+    case permissions
+    case languageAndBackup
+}
+
 private struct GeneralTab: View {
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKeys.hotkey) private var hotkey = HotkeyChoice.rightOption.rawValue
@@ -104,145 +119,170 @@ private struct GeneralTab: View {
 
     var body: some View {
         Form {
-            Section {
-                Picker(tr("界面语言 / Language:", "Language / 界面语言:"), selection: $l10n.language) {
-                    ForEach(AppLanguage.allCases, id: \.self) { lang in
-                        Text(lang.displayName).tag(lang)
-                    }
-                }
-                .pickerStyle(.segmented)
+            ForEach(GeneralSectionOrder.allCases, id: \.self) { section in
+                sectionView(section)
             }
+        }
+        .formStyle(.grouped)
+        .padding(.top, 4)
+        // 权限轮询挂在整页上而不是权限段里：两项都绿时那一段折叠成一行，轮询不能跟着一起消失
+        .onReceive(permTimer) { _ in
+            micOK = Permissions.microphoneGranted
+            axOK = Permissions.isAccessibilityTrusted
+        }
+        // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言
+        .onChange(of: l10n.language) { _, _ in
+            backupStatus = ""
+        }
+    }
 
-            Section(tr("快捷键", "Hotkey")) {
-                Picker(tr("听写快捷键：", "Dictation hotkey:"), selection: $hotkey) {
-                    ForEach(HotkeyChoice.allCases, id: \.rawValue) { choice in
-                        Text(choice.displayName).tag(choice.rawValue)
-                    }
+    @ViewBuilder
+    private func sectionView(_ section: GeneralSectionOrder) -> some View {
+        switch section {
+        case .hotkey: hotkeySection
+        case .recording: recordingSection
+        case .overlay: overlaySection
+        case .behaviour: behaviourSection
+        case .permissions: permissionsSection
+        case .languageAndBackup: languageAndBackupSection
+        }
+    }
+
+    // MARK: ① 快捷键
+
+    private var hotkeySection: some View {
+        Section(tr("快捷键", "Hotkey")) {
+            Picker(tr("听写快捷键：", "Dictation hotkey:"), selection: $hotkey) {
+                ForEach(HotkeyChoice.allCases, id: \.rawValue) { choice in
+                    Text(choice.displayName).tag(choice.rawValue)
                 }
-                Text(tr("轻点：开始 / 结束听写 · 按住说话、松手：执行语音指令 · 录音中按 Esc 取消。",
-                        "Tap: start / stop dictation · Hold to speak a command, release to run · Esc cancels."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                if selectedHotkey == .fn {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(tr("用 Fn / 🌐 前必须先让系统放手：系统设置 → 键盘 → 「按下🌐键」选「不执行任何操作」。否则每次轻点都会被系统抢去切换输入法或弹表情面板。",
-                                "Before using Fn / 🌐, tell macOS to let go: System Settings → Keyboard → \"Press 🌐 key to\" → \"Do Nothing\". Otherwise every tap gets swallowed by the emoji or input-source picker."))
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                        Button(tr("打开键盘设置", "Open Keyboard Settings")) {
-                            Permissions.openKeyboardSettings()
-                        }
-                    }
-                }
-                if selectedHotkey.isLeftSideModifier {
-                    Text(tr("左侧修饰键天天参与组合键（⌘C、⌥←…）。单独轻点才会触发，按住它敲别的键不会——但误触概率仍比右侧高，建议先试用几天。",
-                            "Left-side modifiers are used in everyday shortcuts (⌘C, ⌥←…). Only a clean tap triggers MicType — holding it while pressing another key never does — but mistaps are still likelier than on the right side."))
+            }
+            Text(tr("轻点：开始 / 结束听写 · 按住说话、松手：执行语音指令 · 录音中按 Esc 取消。",
+                    "Tap: start / stop dictation · Hold to speak a command, release to run · Esc cancels."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+            if selectedHotkey == .fn {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(tr("用 Fn / 🌐 前必须先让系统放手：系统设置 → 键盘 → 「按下🌐键」选「不执行任何操作」。否则每次轻点都会被系统抢去切换输入法或弹表情面板。",
+                            "Before using Fn / 🌐, tell macOS to let go: System Settings → Keyboard → \"Press 🌐 key to\" → \"Do Nothing\". Otherwise every tap gets swallowed by the emoji or input-source picker."))
                         .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                HStack {
-                    Text(tr("上手引导：", "Welcome guide:"))
-                    Spacer()
-                    Button(tr("重新打开引导", "Show Welcome Guide")) {
-                        OnboardingWindowController.shared.show()
+                        .foregroundColor(.orange)
+                    Button(tr("打开键盘设置", "Open Keyboard Settings")) {
+                        Permissions.openKeyboardSettings()
                     }
                 }
             }
-
-            Section(tr("录音", "Recording")) {
-                Toggle(tr("静音自动停止录音", "Stop recording after silence"), isOn: autoStopEnabled)
-                if autoStopSilence > 0 {
-                    Stepper(value: $autoStopSilence, in: 1...5, step: 1) {
-                        Text(tr("静音 \(Int(autoStopSilence)) 秒后自动结束",
-                                "Stop after \(Int(autoStopSilence))s of silence"))
-                    }
-                }
-                Text(tr("自动结束＝正常收尾这一段（照常识别并输入），不是丢弃。默认关闭：什么时候说完由你决定。",
-                        "Auto-stop finishes the take normally (it is still transcribed and inserted) — nothing is discarded. Off by default: you decide when you are done."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Toggle(tr("录音时显示实时识别草稿", "Show live transcript while recording"), isOn: $livePreview)
-                Text(tr("草稿只出现在悬浮窗里，永远不会输入到光标处；最终结果仍是松手后整段重新识别的那一版。",
-                        "The draft only appears in the floating window and never reaches your cursor; the final text is still the full re-transcription made when you finish."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                // 硬上限此前在界面上无处可查，用户第一次知道它存在就是被自动收尾那一刻。
-                // 分段也写在这里：长段口述的识别是一段一段出来的，用户会在悬浮窗上看见「第 2/5 段」
-                Text(tr("单次录音最长 10 分钟。录到 2 分钟起悬浮窗显示「8:30 / 10:00」的计时，最后 30 秒提示即将收尾；到点自动收尾＝照常识别并把全部内容插入。长段口述按 60 秒左右分段转写，每转完一段就显示一段。",
-                        "A single take runs up to 10 minutes. From 2 minutes the overlay shows a running \"8:30 / 10:00\" clock and warns 30 seconds before the end; at the limit MicType wraps the take up, transcribes it and inserts everything. Long takes are transcribed in roughly 60-second parts, each shown as soon as it is ready."))
+            if selectedHotkey.isLeftSideModifier {
+                Text(tr("左侧修饰键天天参与组合键（⌘C、⌥←…）。单独轻点才会触发，按住它敲别的键不会——但误触概率仍比右侧高，建议先试用几天。",
+                        "Left-side modifiers are used in everyday shortcuts (⌘C, ⌥←…). Only a clean tap triggers MicType — holding it while pressing another key never does — but mistaps are still likelier than on the right side."))
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
-
-            Section(tr("悬浮窗", "Overlay")) {
-                Picker(tr("悬浮窗位置：", "Overlay position:"), selection: $overlayPosition) {
-                    ForEach(OverlayPosition.allCases, id: \.rawValue) { position in
-                        Text(position.displayName).tag(position.rawValue)
-                    }
+            HStack {
+                Text(tr("上手引导：", "Welcome guide:"))
+                Spacer()
+                Button(tr("重新打开引导", "Show Welcome Guide")) {
+                    OnboardingWindowController.shared.show()
                 }
-                Text(tr("多屏时悬浮窗永远出现在鼠标所在的那块屏幕，这里只决定它落在这块屏的哪个位置。录音中和处理中可以直接点悬浮窗右端的「⎋ 取消」，和按 Esc 一样；点它不会切走当前应用的输入焦点。",
-                        "On multiple displays the overlay always appears on the screen holding the pointer; this only picks where it sits on that screen. While recording or processing you can click ⎋ Cancel at the right end of the capsule — same as pressing Esc, and it never takes focus away from the app you are typing into."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
             }
+        }
+    }
 
-            Section(tr("行为", "Behaviour")) {
-                Toggle(tr("开始 / 完成时播放提示音", "Play sounds on start / finish"), isOn: $playSounds)
-                Toggle(tr("输入后恢复原剪贴板内容", "Restore clipboard after inserting"), isOn: $restoreClipboard)
-                Toggle(tr("保存听写历史", "Keep transcript history"), isOn: $keepHistory)
-                Text(tr("历史保存在本机 ~/Library/Application Support/MicType/history.json，最多 200 条，从不上传。关掉后立即停止记录；已有的记录不会自动删除，可在菜单栏「最近记录 → 清空记录」清空，或在历史记录窗口（⌘Y）里逐条删。",
-                        "Transcripts are kept on this Mac in ~/Library/Application Support/MicType/history.json (up to 200) and are never uploaded. Turning this off stops recording immediately; existing entries are left alone — clear them from the menu bar (Recent Transcripts → Clear History) or delete them one by one in the History window (⌘Y)."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Toggle(tr("登录时自动启动", "Launch at login"), isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, newValue in
-                        do {
-                            if newValue {
-                                try SMAppService.mainApp.register()
-                            } else {
-                                try SMAppService.mainApp.unregister()
-                            }
-                        } catch {
-                            launchAtLogin = (SMAppService.mainApp.status == .enabled)
+    // MARK: ② 录音
+
+    private var recordingSection: some View {
+        Section(tr("录音", "Recording")) {
+            Toggle(tr("静音自动停止录音", "Stop recording after silence"), isOn: autoStopEnabled)
+            if autoStopSilence > 0 {
+                Stepper(value: $autoStopSilence, in: 1...5, step: 1) {
+                    Text(tr("静音 \(Int(autoStopSilence)) 秒后自动结束",
+                            "Stop after \(Int(autoStopSilence))s of silence"))
+                }
+            }
+            Text(tr("自动结束＝正常收尾这一段（照常识别并输入），不是丢弃。默认关闭：什么时候说完由你决定。",
+                    "Auto-stop finishes the take normally (it is still transcribed and inserted) — nothing is discarded. Off by default: you decide when you are done."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Toggle(tr("录音时显示实时识别草稿", "Show live transcript while recording"), isOn: $livePreview)
+            Text(tr("草稿只出现在悬浮窗里，永远不会输入到光标处；最终结果仍是松手后整段重新识别的那一版。",
+                    "The draft only appears in the floating window and never reaches your cursor; the final text is still the full re-transcription made when you finish."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+            // 时长上限此前在界面上无处可查，用户第一次知道它存在就是被自动收尾那一刻。
+            // 具体秒数故意不写死在这段文案里：上限归识别链路（DictationController）管，
+            // 数字改了而这里忘了改，比不写数字更糟。
+            Text(tr("单次录音有时长上限：接近上限时悬浮窗会显示已录时长与上限，到点前会先提醒一次。长段口述按分段转写，每转完一段就显示一段；到上限时 MicType 会收尾，把你已经说的内容全部识别、全部插入。",
+                    "A single take has a length limit; as you get close, the overlay shows how long you have been recording against it and warns you shortly before the end. Long dictation is transcribed in segments, each shown as soon as it is ready, and at the limit MicType finishes up and inserts everything you have said."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: ③ 悬浮窗
+
+    private var overlaySection: some View {
+        Section(tr("悬浮窗", "Overlay")) {
+            Picker(tr("悬浮窗位置：", "Overlay position:"), selection: $overlayPosition) {
+                ForEach(OverlayPosition.allCases, id: \.rawValue) { position in
+                    Text(position.displayName).tag(position.rawValue)
+                }
+            }
+            Text(tr("多屏时悬浮窗永远出现在鼠标所在的那块屏幕，这里只决定它落在这块屏的哪个位置。录音中和处理中可以直接点悬浮窗右端的「⎋ 取消」，和按 Esc 一样；点它不会切走当前应用的输入焦点。",
+                    "On multiple displays the overlay always appears on the screen holding the pointer; this only picks where it sits on that screen. While recording or processing you can click ⎋ Cancel at the right end of the capsule — same as pressing Esc, and it never takes focus away from the app you are typing into."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: ④ 行为
+
+    private var behaviourSection: some View {
+        Section(tr("行为", "Behaviour")) {
+            Toggle(tr("开始 / 完成时播放提示音", "Play sounds on start / finish"), isOn: $playSounds)
+            Toggle(tr("输入后恢复原剪贴板内容", "Restore clipboard after inserting"), isOn: $restoreClipboard)
+            Toggle(tr("保存听写历史", "Keep transcript history"), isOn: $keepHistory)
+            Text(tr("历史保存在本机 ~/Library/Application Support/MicType/history.json，最多 200 条，从不上传。关掉后立即停止记录；已有的记录不会自动删除，可在菜单栏「最近记录 → 清空记录」清空，或在历史记录窗口（⌘Y）里逐条删。",
+                    "Transcripts are kept on this Mac in ~/Library/Application Support/MicType/history.json (up to 200) and are never uploaded. Turning this off stops recording immediately; existing entries are left alone — clear them from the menu bar (Recent Transcripts → Clear History) or delete them one by one in the History window (⌘Y)."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Toggle(tr("登录时自动启动", "Launch at login"), isOn: $launchAtLogin)
+                .onChange(of: launchAtLogin) { _, newValue in
+                    do {
+                        if newValue {
+                            try SMAppService.mainApp.register()
+                        } else {
+                            try SMAppService.mainApp.unregister()
                         }
+                    } catch {
+                        launchAtLogin = (SMAppService.mainApp.status == .enabled)
                     }
-            }
+                }
+        }
+    }
 
-            Section(tr("备份", "Backup")) {
-                HStack {
-                    Button(tr("导出设置…", "Export Settings…")) {
-                        backupStatus = SettingsBackup.runExport()
-                    }
-                    Button(tr("导入设置…", "Import Settings…")) {
-                        backupStatus = SettingsBackup.runImport()
-                    }
+    // MARK: ⑤ 权限
+
+    /// 两项都绿就折叠成一行。为什么：这一段是给"还没弄好"的人看的教学文字，齐了以后每天
+    /// 打开设置都顶着两行按钮 + 四段说明，纯属噪音；缺项才展开，缺什么说什么（v4.0 §4.4）。
+    /// 两项权限各自一行、各自一个按钮（与引导页同构）：以前并排两个徽章却只有一个
+    /// 「打开系统设置」按钮，而且固定跳辅助功能面板——麦克风是红叉的用户点几次都到同一页。
+    private var permissionsSection: some View {
+        Section(tr("权限", "Permissions")) {
+            if micOK && axOK {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                    Text(tr("权限齐全", "All permissions granted"))
                     Spacer()
                 }
-                if !backupStatus.isEmpty {
-                    Text(backupStatus)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(3)
-                }
-                Text(tr("导出一个 JSON 文件：词汇表、口水词、关于我、自定义规则、档位与模型偏好、热键与语言。导入是合并——词表取并集（老词条一条不少），其余只覆盖文件里出现的项。\nAPI Key 从不导出、也从不导入：Key 只在系统钥匙串里，写进文件就等于把它交给了拿到文件的人。文件格式 Mac 与 Windows 通用。",
-                        "Exports one JSON file: vocabulary, filler words, about-me, custom rules, polish mode and model preferences, hotkey and language. Import merges — vocabulary lists are unioned (nothing you already have is lost) and other settings are overwritten only where the file has them.\nAPI keys are never exported or imported: they live in the Keychain, and a file containing one gives it away to whoever receives the file. The format is shared with the Windows build."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            // 两项权限各自一行、各自一个按钮（与引导页同构）：以前并排两个徽章却只有一个
-            // 「打开系统设置」按钮，而且固定跳辅助功能面板——麦克风是红叉的用户点几次都到同一页。
-            Section(tr("权限", "Permissions")) {
+                .font(.caption)
+            } else {
                 HStack {
                     PermissionBadge(name: tr("麦克风", "Microphone"), ok: micOK)
                     Spacer()
                     Button(tr("打开麦克风设置", "Open Microphone Settings")) {
                         Permissions.openMicrophoneSettings()
                     }
-                }
-                .onReceive(permTimer) { _ in
-                    micOK = Permissions.microphoneGranted
-                    axOK = Permissions.isAccessibilityTrusted
                 }
                 HStack {
                     PermissionBadge(name: tr("辅助功能", "Accessibility"), ok: axOK)
@@ -269,11 +309,39 @@ private struct GeneralTab: View {
                 }
             }
         }
-        .formStyle(.grouped)
-        .padding(.top, 4)
-        // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言
-        .onChange(of: l10n.language) { _, _ in
-            backupStatus = ""
+    }
+
+    // MARK: ⑥ 语言与备份
+
+    private var languageAndBackupSection: some View {
+        Section(tr("语言与备份", "Language & Backup")) {
+            // 故意双语（CJKUIStringGuardTests 里唯一的按行白名单）：语言选择器是切回
+            // 母语的唯一入口，界面已经是看不懂的那一种语言时，它必须还认得出来
+            Picker(tr("界面语言 / Language:", "Language / 界面语言:"), selection: $l10n.language) {
+                ForEach(AppLanguage.allCases, id: \.self) { lang in
+                    Text(lang.displayName).tag(lang)
+                }
+            }
+            .pickerStyle(.segmented)
+            HStack {
+                Button(tr("导出设置…", "Export Settings…")) {
+                    backupStatus = SettingsBackup.runExport()
+                }
+                Button(tr("导入设置…", "Import Settings…")) {
+                    backupStatus = SettingsBackup.runImport()
+                }
+                Spacer()
+            }
+            if !backupStatus.isEmpty {
+                Text(backupStatus)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(3)
+            }
+            Text(tr("导出一个 JSON 文件：词汇表、口水词、关于我、自定义规则、档位与模型偏好、热键与语言。导入是合并——词表取并集（老词条一条不少），其余只覆盖文件里出现的项。\nAPI Key 从不导出、也从不导入：Key 只在系统钥匙串里，写进文件就等于把它交给了拿到文件的人。文件格式 Mac 与 Windows 通用。",
+                    "Exports one JSON file: vocabulary, filler words, about-me, custom rules, polish mode and model preferences, hotkey and language. Import merges — vocabulary lists are unioned (nothing you already have is lost) and other settings are overwritten only where the file has them.\nAPI keys are never exported or imported: they live in the Keychain, and a file containing one gives it away to whoever receives the file. The format is shared with the Windows build."))
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
     }
 }
@@ -291,174 +359,10 @@ private struct PermissionBadge: View {
     }
 }
 
-// MARK: - 麦克风自检
-
-/// 麦克风自检此刻在不在跑。为什么要有这么一个全局：自检和主录音是各自独立的 AVAudioEngine，
-/// 抢的是同一只麦克风。自检这边一直知道要避让主流程（AppDelegate.isDictationBusy），
-/// 反过来主流程却完全看不见自检——用户在设置里点完「测试麦克风」顺手按了热键，两路 tap
-/// 同时开着：电平条量的是他正在听写的那句话，3 秒到点还会给出一句与本次自检无关的结论。
-/// 只在主线程读写（自检的起止、主流程的起录都在主线程）。
-enum MicTest {
-
-    private(set) static var isRunning = false
-    /// 自检登记的收手闭包。主流程起录时用它把自检掐掉——用户正要说的那句话比一次自检重要得多
-    private static var stopHandler: (() -> Void)?
-
-    static func began(stop: @escaping () -> Void) {
-        isRunning = true
-        stopHandler = stop
-    }
-
-    static func ended() {
-        isRunning = false
-        stopHandler = nil
-    }
-
-    /// 正在自检就让位给听写。返回是否真的让了位（只给日志用）
-    @discardableResult
-    static func yieldToDictation() -> Bool {
-        guard isRunning, let stop = stopHandler else { return false }
-        stop()
-        return true
-    }
-}
-
-/// 麦克风自检（路线图 P12）：借 AudioRecorder 跑一段 3 秒录音，只读电平——
-/// 采样收上来立刻丢掉，不送识别、不落盘、不进历史。
-/// 为什么值得做：选错麦克风这件事，用户通常是在真的要说话的时候才发现的（说完一段，什么都没出来）。
-/// 给一条电平条 + 峰值读数，选完当场就能确认"这只真的在收声"。
-private final class MicTestSession: ObservableObject {
-
-    @Published private(set) var isRunning = false
-    /// 0~1，画电平条（AudioRecorder 送来的归一化 RMS）
-    @Published private(set) var level: Float = 0
-    /// 本次自检收到的最大峰值（线性幅度 0~1）
-    @Published private(set) var peak: Float = 0
-    @Published private(set) var message = ""
-
-    private static let seconds: Double = 3
-
-    private let recorder = AudioRecorder()
-    /// 自检代数：连点两次「测试」时，旧的那一次定时收尾不能把新的一次关掉
-    private var run = 0
-
-    /// 峰值读数。dBFS 是音频里通用的刻度（0 = 满刻度，越负越小），比 0~1 更好对照
-    var peakLabel: String {
-        guard peak > 0 else { return "— dBFS" }
-        return String(format: "%.0f dBFS", 20 * log10(peak))
-    }
-
-    func start() {
-        guard !isRunning else { return }
-        // 主流程正在录音/出结果时不抢麦克风：用户正说着的话比一次自检重要得多
-        guard !AppDelegate.isDictationBusy else {
-            message = busyMessage
-            return
-        }
-        message = tr("请用平常的音量说一句话…", "Say something at your normal volume…")
-        Permissions.ensureMicrophone { [weak self] granted in
-            guard let self = self else { return }
-            guard granted else {
-                self.message = tr("没有麦克风权限：系统设置 › 隐私与安全性 › 麦克风 里勾上 MicType",
-                                  "Microphone permission denied — enable MicType in System Settings › Privacy & Security › Microphone")
-                return
-            }
-            // 上面那次判定是在权限回调之前做的。首次授权的系统弹窗能挂好几秒，这期间用户
-            // 完全来得及按热键开始听写，所以真正起录前必须再查一次。
-            guard !AppDelegate.isDictationBusy else {
-                self.message = self.busyMessage
-                return
-            }
-            self.begin()
-        }
-    }
-
-    private var busyMessage: String {
-        tr("正在录音或处理中，稍后再测", "Busy recording — try again in a moment")
-    }
-
-    /// 结论文字是一次性生成的快照，切语言不会自己刷新 → 切换时清掉（3.1.1 的老坑）
-    func clearMessage() { message = "" }
-
-    /// 关窗 / 切走标签页时收手，别让一路录音在看不见的地方继续开着
-    func cancel() {
-        guard isRunning else { return }
-        finish(note: "")
-    }
-
-    private func begin() {
-        // 回调必须在 start() 之前设好：AudioRecorder 装 tap 那一刻就把它们快照给音频线程了
-        recorder.onLevel = { [weak self] value in
-            // 和 onPeak 一样要查 isRunning：tap 回调在音频线程，async 回主线程时 finish()
-            // 可能已经把电平条归零了，在途的那一两块会把它写回非零——测试早结束了，
-            // 条子却停在半格上，看着像麦克风还在收音
-            DispatchQueue.main.async {
-                guard let self = self, self.isRunning else { return }
-                self.level = value
-            }
-        }
-        recorder.onPeak = { [weak self] value in
-            DispatchQueue.main.async {
-                guard let self = self, self.isRunning else { return }
-                self.peak = max(self.peak, value)
-            }
-        }
-        recorder.onError = { [weak self] error in
-            self?.finish(note: error.message)
-        }
-        peak = 0
-        level = 0
-        do {
-            try recorder.start()
-        } catch {
-            message = (error as? MTError)?.message ?? error.localizedDescription
-            Log.warn("Mic test start failed: \(message)")
-            return
-        }
-        isRunning = true
-        MicTest.began { [weak self] in
-            self?.finish(note: tr("已让位给这次听写，稍后再测",
-                                  "Stopped — dictation is using the microphone"))
-        }
-        run += 1
-        let token = run
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.seconds) { [weak self] in
-            guard let self = self, self.run == token else { return }
-            self.finish(note: nil)
-        }
-    }
-
-    /// note: nil = 正常到点收尾（给结论）；非 nil = 被打断（原样显示，空串表示什么都不说）
-    private func finish(note: String?) {
-        guard isRunning else { return }
-        _ = recorder.stop()
-        isRunning = false
-        MicTest.ended()
-        level = 0
-        run += 1     // 让还没到点的那个定时收尾作废
-        if let note = note {
-            message = note
-            return
-        }
-        Log.info("Mic test done peak=\(String(format: "%.4f", peak)) uid=\(Settings.shared.inputDeviceUID)")
-        // 结论直接对齐识别链路的静音闸门（SilenceGate），别让自检说"没问题"而真录音被判静音
-        if peak < SilenceGate.silentPeak {
-            message = tr("几乎没有收到声音：换一只麦克风，或检查系统设置里的输入音量",
-                         "Almost nothing came through — try another microphone, or check the input volume in System Settings")
-        } else if peak < SilenceGate.faintPeak {
-            message = tr("收到了，但很小：靠近麦克风会明显更准",
-                         "Picked you up, but very quietly — moving closer will noticeably help accuracy")
-        } else {
-            message = tr("麦克风工作正常", "Microphone works")
-        }
-    }
-}
-
 // MARK: - 识别（Qwen3-ASR）
 
 private struct RecognitionTab: View {
     @ObservedObject private var l10n = L10n.shared
-    @AppStorage(SettingsKeys.inputDeviceUID) private var inputDeviceUID = ""
     @AppStorage(SettingsKeys.qwenModelRepo) private var qwenRepo = QwenModels.defaultRepo
     @AppStorage(SettingsKeys.recognitionLanguage) private var recognitionLanguage = RecognitionLanguages.autoCode
     @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
@@ -468,10 +372,6 @@ private struct RecognitionTab: View {
     /// 模型目录到货时下拉框要立刻跟上（首启动时目录还在路上）
     @ObservedObject private var catalogStore = ModelCatalogStore.shared
     @ObservedObject private var metrics = Metrics.shared
-    @StateObject private var micTest = MicTestSession()
-    @State private var inputDevices: [InputDevice] = []
-    /// 插拔 AirPods / 接上声卡时下拉框要立刻跟上（否则得关掉设置窗口再打开才看得见）
-    @State private var deviceObserver: InputDevices.DeviceChangeObserver?
     @State private var refreshTick = 0
     @State private var updateMessage = ""
     @State private var checkingUpdate = false
@@ -480,14 +380,6 @@ private struct RecognitionTab: View {
         _ = refreshTick
         let dir = QwenModels.localDirectory(for: qwenRepo)
         return FileManager.default.fileExists(atPath: dir.appendingPathComponent("model.safetensors").path)
-    }
-
-    /// 「系统默认」当前实际指向谁——写在选项里，用户不用去系统设置里对照
-    private var systemDefaultLabel: String {
-        let base = tr("系统默认", "System default")
-        guard let uid = InputDevices.defaultUID,
-              let device = inputDevices.first(where: { $0.uid == uid }) else { return base }
-        return base + "（\(device.name)）"
     }
 
     /// 选了阿语却还在小模型上：出一条推荐行（只推荐，不自动换——1.1 GB 的下载由用户点）
@@ -613,48 +505,11 @@ private struct RecognitionTab: View {
         .cornerRadius(8)
     }
 
-    /// 存着的麦克风此刻不在（没插上 / 换了台机器）。**不自动改设置**：插回来还要照旧用，
-    /// 只是在列表里如实标出来，并让 Picker 有一个能选中的选项（否则 SwiftUI 显示空白）
-    private var savedDeviceMissing: Bool {
-        !inputDeviceUID.isEmpty && !inputDevices.contains { $0.uid == inputDeviceUID }
-    }
-
     var body: some View {
         Form {
+            // 麦克风选择 + 电平自检：与引导第二屏共用同一个组件（MicCheck.swift）
             Section {
-                Picker(tr("麦克风：", "Microphone:"), selection: $inputDeviceUID) {
-                    Text(systemDefaultLabel).tag("")
-                    ForEach(inputDevices) { device in
-                        Text(device.name).tag(device.uid)
-                    }
-                    if savedDeviceMissing {
-                        Text(tr("已选的麦克风（当前未连接）", "Selected microphone (not connected)"))
-                            .tag(inputDeviceUID)
-                    }
-                }
-                HStack(spacing: 10) {
-                    Button(micTest.isRunning ? tr("测试中…", "Testing…")
-                                             : tr("测试麦克风", "Test microphone")) {
-                        micTest.start()
-                    }
-                    .disabled(micTest.isRunning)
-                    ProgressView(value: Double(min(max(micTest.level, 0), 1)))
-                        .progressViewStyle(.linear)
-                        .frame(width: 150)
-                    Text(micTest.peakLabel)
-                        .font(.caption)
-                        .monospacedDigit()
-                        .foregroundColor(.secondary)
-                }
-                if !micTest.message.isEmpty {
-                    Text(micTest.message)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                Text(tr("测试会录 3 秒，只看音量：录到的声音当场丢弃，不识别、不保存。\n选定的麦克风在开始录音时没插上，会自动退回系统默认（这次录音照常进行），设置本身不改动。",
-                        "The test records for 3 seconds and only meters the level — the audio is discarded, never transcribed or saved.\nIf the selected microphone is not connected when recording starts, MicType falls back to the system default for that session and leaves your choice untouched."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                MicCheckPanel()
             }
 
             Section {
@@ -813,17 +668,6 @@ private struct RecognitionTab: View {
         }
         .formStyle(.grouped)
         .padding(.top, 4)
-        .onAppear {
-            let devices = $inputDevices
-            devices.wrappedValue = InputDevices.list()
-            deviceObserver = InputDevices.DeviceChangeObserver {
-                devices.wrappedValue = InputDevices.list()
-            }
-        }
-        .onDisappear {
-            deviceObserver = nil      // 释放即注销 CoreAudio 监听
-            micTest.cancel()
-        }
         .onReceive(downloader.$isDownloading) { _ in
             refreshTick += 1
         }
@@ -832,11 +676,12 @@ private struct RecognitionTab: View {
             QwenEngine.shared.unloadModel()
             refreshTick += 1
         }
-        // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言
+        // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言。
+        // 下载状态不在其列：它现在存的是语言中性的 phase，文字由 tr() 现场渲染，下载中也跟着切
         .onChange(of: l10n.language) { _, _ in
             updateMessage = ""
-            micTest.clearMessage()
-            if !downloader.isDownloading { downloader.statusText = "" }
+            // 下载状态已经是语言中性的 phase，麦克风自检的文字归 MicCheckPanel 自己管；
+            // 升级器那句结论仍是快照，照旧清掉
             if !upgrader.isBusy { upgrader.clearStatus() }
         }
     }
@@ -1469,18 +1314,23 @@ private struct AboutTab: View {
             }
             .font(.caption)
             Divider().padding(.horizontal, 60)
-            VStack(spacing: 4) {
-                Text(tr("隐私：录音和语音识别完全在本机进行。",
-                        "Privacy: recording and speech recognition stay entirely on this Mac."))
-                Text(tr("只有开启 AI 润色时，识别出的文本会发送给你配置的大模型接口。",
-                        "Only with AI polish enabled is the transcribed text sent to the model endpoint you configure."))
-                Text(tr("听写历史以明文保存在本机 Application Support 目录，最多 200 条：可在 设置 → 通用 关掉记录，或在菜单栏「最近记录」里清空、逐条删除。",
-                        "Transcripts are kept in plain text on this Mac (up to 200): turn recording off in Settings → General, or clear and delete them from Recent Transcripts in the menu bar."))
-                Text(tr("「复制诊断信息」只包含版本、系统、芯片、设置摘要、最近的耗时数字和今天的日志尾巴（日志里的路径和账户名已脱敏）——不含 API Key，也不含任何听写内容，可以放心贴给别人。",
-                        "“Copy diagnostics” includes only the version, system, chip, a settings summary, recent timings and today's log tail (paths and your account name in it are redacted) — never your API key and never any transcribed text, so it is safe to paste to someone."))
+            // 隐私与费用这几句取自 PrivacyCopy——引导页用的是同一批句子，改一处三处同步。
+            // 外面套 ScrollView：关于页是固定高度的 VStack，文案一长就会把底下的内容顶出窗口，
+            // 宁可让它能滚，也不要有一句是用户看不见的。
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(PrivacyCopy.allLines, id: \.self) { line in
+                        Text(line)
+                    }
+                    Text(tr("听写历史以明文保存在本机 Application Support 目录，最多 200 条：可在 设置 → 通用 关掉记录，或在菜单栏「最近记录」里清空、逐条删除。",
+                            "Transcripts are kept in plain text on this Mac (up to 200): turn recording off in Settings → General, or clear and delete them from Recent Transcripts in the menu bar."))
+                    Text(tr("「复制诊断信息」只包含版本、系统、芯片、设置摘要、最近的耗时数字和今天的日志尾巴（日志里的路径和账户名已脱敏）——不含 API Key，也不含任何听写内容，可以放心贴给别人。",
+                            "“Copy diagnostics” includes only the version, system, chip, a settings summary, recent timings and today's log tail (paths and your account name in it are redacted) — never your API key and never any transcribed text, so it is safe to paste to someone."))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .font(.caption)
+                .foregroundColor(.secondary)
             }
-            .font(.caption)
-            .foregroundColor(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()

@@ -222,8 +222,11 @@ enum LLMClient {
             return
         }
         let start = Date()
+        // 测试用的提示词也要跟界面语言走：模型的回答会原样显示在「测试」结果里
+        //（"✓ 1.2s · 返回：好"），中文提示会让英文界面的用户收到一个看不懂的中文字
+        let probe = tr("请只回复一个字：好", "Reply with exactly one word: OK")
         complete(system: "You are a connectivity probe. Reply with exactly one word.",
-                 user: "请只回复一个字：好",
+                 user: probe,
                  purpose: .polish, temperature: nil, timeout: 30, model: model,
                  maxOutputTokens: LLMCatalog.polishMinOutputTokens,
                  apiKeyOverride: candidate) { result, failure in
