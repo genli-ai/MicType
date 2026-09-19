@@ -31,6 +31,12 @@ final class OverlayState: ObservableObject {
     /// 布局回填再触发一次重绘，绕成死循环。
     var cancelHitRect: CGRect = .zero
 
+    /// 这一刻按 Esc（或点胶囊）到底是"扔掉"还是"收尾并输入"。
+    /// 分段识别到一半时，第一次 Esc 会叫停后续段落、把已经转出来的前几段照常插入——
+    /// 那是真的往文档里打字，胶囊却写着「取消」就是在骗人（用户按它正是为了不插入）。
+    /// 由 DictationController 按与 cancel() 同源的判据翻转（见 escFinishesEarly）。
+    @Published var cancelFinishes: Bool = false
+
     /// 错误提示里那个可点的小胶囊的文字（「去配置」）。nil = 这条提示没有可点动作。
     /// 只有错误提示配得上它：成功/中性提示一闪就走，摆个按钮只会让人去够一个够不着的东西。
     @Published var actionLabel: String?
@@ -275,7 +281,10 @@ private struct CancelChip: View {
     let state: OverlayState
 
     var body: some View {
-        Text(tr("⎋ 取消", "⎋ Cancel"))
+        // 同一个键这会儿是什么意思，就写什么：已经有段落可交付时按它 = 停掉后面、把手上
+        // 这些字照常插入（再按一次才是彻底丢弃），写「取消」会让人以为什么都不会被插入
+        Text(state.cancelFinishes ? tr("⎋ 收尾并输入", "⎋ Finish & insert")
+                                  : tr("⎋ 取消", "⎋ Cancel"))
             .font(.subheadline.weight(.medium))
             .foregroundColor(.white.opacity(0.72))
             .padding(.horizontal, 7)
@@ -461,8 +470,17 @@ final class OverlayController {
         clearAction()
         state.resetLevels()
         state.draftText = ""
+        // 录音中的 Esc 永远是真取消（一个字都不会插入），上一轮的"收尾并输入"不能留到这一轮
+        state.cancelFinishes = false
         state.mode = .recording(label)
         present(context: "recording")
+    }
+
+    /// 处理中那一刻按 Esc 到底是"收尾并输入"还是"丢弃"——只有 DictationController 知道，
+    /// 它按与 cancel() 同源的判据告诉胶囊该写哪四个字
+    func setCancelFinishes(_ flag: Bool) {
+        guard state.cancelFinishes != flag else { return }
+        state.cancelFinishes = flag
     }
 
     /// 伪流式预览：把识别到一半的灰字草稿贴到波形下面。只在录音中生效——
@@ -484,6 +502,9 @@ final class OverlayController {
         hideGeneration += 1
         clearAction()
         state.draftText = ""
+        // 默认回到"取消"：润色中 / 执行指令中按 Esc 都是真取消。分段识别那条路会在
+        // 调用之后自己把它打开（syncCancelAffordance），别让上一阶段的说法留在屏幕上
+        state.cancelFinishes = false
         processingLabel = label
         if processingStartedAt == nil { processingStartedAt = Date() }
         state.mode = .processing(processingText())

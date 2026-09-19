@@ -625,7 +625,7 @@ private struct AISetupPage: View {
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Picker(tr("服务商：", "Service:"), selection: $model.aiChoice) {
+                Picker(tr("服务商：", "Provider:"), selection: $model.aiChoice) {
                     ForEach(offered, id: \.rawValue) { provider in
                         Text(provider.segmentName).tag(AISetupChoice.provider(provider))
                     }

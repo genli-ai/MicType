@@ -157,8 +157,15 @@ private struct GeneralTab: View {
                     Text(choice.displayName).tag(choice.rawValue)
                 }
             }
-            Text(tr("轻点：开始 / 结束听写 · 按住说话、松手：执行语音指令 · 录音中按 Esc 取消。",
-                    "Tap: start / stop dictation · Hold to speak a command, release to run · Esc cancels."))
+            Text(tr("轻点：开始 / 结束听写 · 按住说话、松手：执行语音指令 · 录音中按 Esc 取消（一个字都不会输入）。",
+                    "Tap: start / stop dictation · Hold to speak a command, release to run · Esc cancels while recording (nothing is inserted)."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+            // 处理中的 Esc 与录音中的不是一回事，而这件事从前只能靠用户自己撞出来：
+            // 长录音已经转出前几段时，第一次 Esc 是"停掉后面、把手上的字插入"（悬浮窗那颗
+            // 胶囊这时也会改写成「收尾并输入」），再按一次才是彻底丢弃
+            Text(tr("长录音识别到一半时按 Esc 是「收尾并输入」：停掉还没转的部分，把已经转好的照常插入（悬浮窗上的胶囊会跟着改字）。再按一次才是彻底丢弃。",
+                    "While a long take is still being transcribed, Esc means finish and insert: later parts are dropped and what is already transcribed goes in as usual (the overlay chip says so). Press it again to discard everything."))
                 .font(.caption)
                 .foregroundColor(.secondary)
             if selectedHotkey == .fn {
@@ -208,6 +215,15 @@ private struct GeneralTab: View {
                     "The draft only appears in the floating window and never reaches your cursor; the final text always comes from the recognition pipeline itself, never from the draft."))
                 .font(.caption)
                 .foregroundColor(.secondary)
+            // 草稿是本机模型转的（云端档不会为了看草稿把每一秒都上传一遍）。只用云端、
+            // 从没下过本机模型的人打开这个开关什么也不会发生——与其让他录一遍再来报 bug，
+            // 不如当面说清这个开关这会儿没有用武之地。
+            if !QwenEngine.shared.isModelAvailable {
+                Text(tr("草稿由本机模型转写。这台 Mac 上还没有本机模型（云端识别不需要它），所以这个开关现在不起作用。",
+                        "The draft is produced by the on-device model. There is no on-device model on this Mac yet (a cloud engine does not need one), so this switch does nothing for now."))
+                    .font(.caption)
+                    .foregroundColor(.orange)
+            }
             // 时长上限此前在界面上无处可查，用户第一次知道它存在就是被自动收尾那一刻。
             // 这句话连同里面的数字都由识别链路自己给（DictationController.recordingLimitCopy
             // 读的是上限 / 预警提前量 / 分段长度这三个常量），界面这边一个数字都不写死。
@@ -226,8 +242,8 @@ private struct GeneralTab: View {
                     Text(position.displayName).tag(position.rawValue)
                 }
             }
-            Text(tr("多屏时悬浮窗永远出现在鼠标所在的那块屏幕，这里只决定它落在这块屏的哪个位置。录音中和处理中可以直接点悬浮窗右端的「⎋ 取消」，和按 Esc 一样；点它不会切走当前应用的输入焦点。",
-                    "On multiple displays the overlay always appears on the screen holding the pointer; this only picks where it sits on that screen. While recording or processing you can click ⎋ Cancel at the right end of the capsule — same as pressing Esc, and it never takes focus away from the app you are typing into."))
+            Text(tr("多屏时悬浮窗永远出现在鼠标所在的那块屏幕，这里只决定它落在这块屏的哪个位置。录音中和处理中可以直接点胶囊右端那颗小按钮，和按 Esc 完全一样（它这一刻写着什么就是什么：「⎋ 取消」或「⎋ 收尾并输入」）；点它不会切走当前应用的输入焦点。",
+                    "On multiple displays the overlay always appears on the screen holding the pointer; this only picks where it sits on that screen. While recording or processing you can click the small button at the right end of the capsule — it does exactly what it says at that moment (⎋ Cancel, or ⎋ Finish & insert), same as pressing Esc, and it never takes focus away from the app you are typing into."))
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -236,7 +252,9 @@ private struct GeneralTab: View {
     // MARK: ④ 行为
 
     private var behaviourSection: some View {
-        Section(tr("行为", "Behaviour")) {
+        // 英文拼写统一用美式："AI" 页的同名段落写的是 "Behavior"，同一个窗口里
+        // 一个 Behaviour 一个 Behavior 只会显得是拼错了
+        Section(tr("行为", "Behavior")) {
             Toggle(tr("开始 / 完成时播放提示音", "Play sounds on start / finish"), isOn: $playSounds)
             Toggle(tr("输入后恢复原剪贴板内容", "Restore clipboard after inserting"), isOn: $restoreClipboard)
             Toggle(tr("保存听写历史", "Keep transcript history"), isOn: $keepHistory)
@@ -337,8 +355,12 @@ private struct GeneralTab: View {
                     .foregroundColor(.secondary)
                     .lineLimit(3)
             }
-            Text(tr("导出一个 JSON 文件：词汇表、口水词、关于我、自定义规则、档位与模型偏好、热键与语言。导入是合并——词表取并集（老词条一条不少），其余只覆盖文件里出现的项。\nAPI Key 从不导出、也从不导入：Key 只在系统钥匙串里，写进文件就等于把它交给了拿到文件的人。文件格式 Mac 与 Windows 通用。",
-                    "Exports one JSON file: vocabulary, filler words, about-me, custom rules, polish mode and model preferences, hotkey and language. Import merges — vocabulary lists are unioned (nothing you already have is lost) and other settings are overwritten only where the file has them.\nAPI keys are never exported or imported: they live in the Keychain, and a file containing one gives it away to whoever receives the file. The format is shared with the Windows build."))
+            // 清单要跟着 SettingsBackup.Key.all 走：v4.0 往文件里加了识别块（引擎 / 识别语言 /
+            // 区域 + WorkspaceId / 本机模型仓库），这段说明还停在 3.x 就等于没说。
+            // 「导入可能把识别改成云端」也写在这里——导入后那张模态摘要确实会讲，
+            // 但**决定要不要信这个文件**是在点「导入设置…」之前发生的。
+            Text(tr("导出一个 JSON 文件：词汇表、口水词、关于我、自定义规则、润色档位与各服务商的型号、识别引擎与识别语言、阿里云区域与 WorkspaceId、本机识别模型、热键与界面语言。导入是合并——词表取并集（老词条一条不少），其余只覆盖文件里出现的项。\n别人给的文件可能把识别引擎改成云端（导入后会明确提示一次，云端要自己填 Key 才跑得起来）。\nAPI Key 从不导出、也从不导入：Key 只在系统钥匙串里，写进文件就等于把它交给了拿到文件的人。文件格式 Mac 与 Windows 通用。",
+                    "Exports one JSON file: vocabulary, filler words, about-me, custom rules, polish mode and each provider's model names, recognition engine and recognition language, Alibaba region and workspace ID, on-device speech model, hotkey and interface language. Import merges — vocabulary lists are unioned (nothing you already have is lost) and other settings are overwritten only where the file has them.\nA file from someone else can switch recognition to a cloud engine (the import summary says so, and a cloud engine still needs a key of your own before it runs).\nAPI keys are never exported or imported: they live in the Keychain, and a file containing one gives it away to whoever receives the file. The format is shared with the Windows build."))
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -641,21 +663,6 @@ private struct RecognitionTab: View {
 
     @ViewBuilder
     private var localModelSection: some View {
-        if showsArabicVocabularyTip {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Image(systemName: "lightbulb")
-                        .foregroundColor(.orange)
-                    Text(tr("阿拉伯语：把英文专名加进词汇表",
-                            "Arabic: put English product names in your vocabulary"))
-                        .fontWeight(.medium)
-                }
-                Text(tr("阿语口述里夹的英文品牌 / 产品名会被写成阿语字母（Microsoft Excel → معرفة أكسيل）。把它们加进「设置 → AI → 词汇表」，识别时会作为热词直接送进模型：实测字错率从 12.5% 降到 4.0%，比换更大的模型有效得多。\n能用的是现代标准阿语和朗读级内容；海湾、埃及等方言不承诺能用——那是模型的已知短板，不是设置问题。",
-                        "English brand and product names spoken inside Arabic come back transliterated into Arabic letters (Microsoft Excel becomes an Arabic spelling). Add them under Settings > AI > Vocabulary and they are fed to the model as hotwords: measured character error rate went from 12.5% down to 4.0%, far more than a bigger model buys you.\nModern Standard Arabic and read-aloud speech are usable. Gulf, Egyptian and other dialects are not promised - that is a known weakness of the model, not a setting you can fix."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-        }
         // 升级横幅：非模态、可忽略，永不自动换模型（换代要下几百 MB，这种事只由用户点）
         upgradeBanner
         Picker(tr("识别模型：", "Speech model:"), selection: $qwenRepo) {
@@ -875,6 +882,26 @@ private struct RecognitionTab: View {
     @ViewBuilder
     private var vocabularySection: some View {
         VStack(alignment: .leading, spacing: 4) {
+            // 这条提示就摆在词汇表上面：它要用户做的动作是"往下面这个框里填词"，
+            // 以前写成「设置 → AI → 词汇表」指向了一个不存在的界面（AI 页没有词汇表），
+            // 而且当时挂在本机模型那一段里，选了云端的阿语用户根本看不到——
+            // 词汇表对云端同样作为热词生效，这条提示与引擎无关。
+            if showsArabicVocabularyTip {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "lightbulb")
+                            .foregroundColor(.orange)
+                        Text(tr("阿拉伯语：把英文专名加进词汇表",
+                                "Arabic: put English product names in your vocabulary"))
+                            .fontWeight(.medium)
+                    }
+                    Text(tr("阿语口述里夹的英文品牌 / 产品名会被写成阿语字母（Microsoft Excel → معرفة أكسيل）。把它们填进下面的词汇表，识别时会作为热词直接送进模型：实测字错率从 12.5% 降到 4.0%，比换更大的模型有效得多。\n能用的是现代标准阿语和朗读级内容；海湾、埃及等方言不承诺能用——那是模型的已知短板，不是设置问题。",
+                            "English brand and product names spoken inside Arabic come back transliterated into Arabic letters (Microsoft Excel becomes an Arabic spelling). Put them in the vocabulary box below and they are fed to the model as hotwords: measured character error rate went from 12.5% down to 4.0%, far more than a bigger model buys you.\nModern Standard Arabic and read-aloud speech are usable. Gulf, Egyptian and other dialects are not promised - that is a known weakness of the model, not a setting you can fix."))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.bottom, 4)
+            }
             Text(tr("专有词汇表（人名、品牌、术语等，用逗号或换行分隔）：",
                     "Custom vocabulary (names, brands, jargon — comma or newline separated):"))
             TextEditor(text: $vocabulary)
@@ -963,6 +990,8 @@ private struct AITab: View {
     @AppStorage(SettingsKeys.localCommandModel) private var localCommandModel = ""
     @AppStorage(SettingsKeys.fastTier) private var fastTier = false
     @AppStorage(SettingsKeys.webSearchEnabled) private var webSearch = false
+    /// 只读：区域改动会不会把云端识别弄哑，得在这一页当面说（见 connectionSection）
+    @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
     @AppStorage(SettingsKeys.polishTemperature) private var polishTemp = 0.5
     @AppStorage(SettingsKeys.commandTemperature) private var commandTemp = 1.0
     @AppStorage(SettingsKeys.aboutMe) private var aboutMe = ""
@@ -996,6 +1025,14 @@ private struct AITab: View {
 
     private var searchStyle: LLMCatalog.WebSearchStyle {
         LLMCatalog.searchStyle(provider: selected, baseURL: effectiveBaseURL)
+    }
+
+    /// 云端·阿里云识别在当前区域配得出接入点吗。用的是识别页同一个判据：
+    /// 只有识别引擎真的是云端·阿里云时才为假（其余档位永远为真，不多嘴）
+    private var cloudASRRegionOK: Bool {
+        CloudASRSettings.regionSupported(
+            choice: RecognitionEngineChoice.parse(recognitionEngine),
+            region: LLMCatalog.QwenRegion(rawValue: qwenRegion) ?? .international)
     }
 
     /// 润色/指令模型的输入框都绑到这两个 Binding 上——五个服务商共用一套控件，
@@ -1044,7 +1081,7 @@ private struct AITab: View {
         Form {
             Section(tr("连接", "Connection")) { connectionSection }
             Section(tr("行为", "Behavior")) { behaviorSection }
-            Section(tr("个性化", "Personal")) { personalSection }
+            Section(tr("个性化", "Personalization")) { personalSection }
             Section { advancedSection }
         }
         .formStyle(.grouped)
@@ -1088,6 +1125,15 @@ private struct AITab: View {
             if effectiveBaseURL.isEmpty {
                 Text(tr("这个区域的地址里带 WorkspaceId，填上才能用（在模型服务控制台的工作空间详情里）。",
                         "This region puts your workspace ID in the URL - fill it in (you will find it in the Model Studio console)."))
+                    .font(.caption)
+                    .foregroundColor(.orange)
+            }
+            // 区域是「AI」与「识别」两页共用的同一条设置：在这里改成东京/香港，云端识别
+            // 就没有接入点了（下一次按热键会被挡下）。告警必须出现在动手的那一页上，
+            // 不能只挂在识别页——判据与识别页同源（CloudASRSettings.regionSupported）
+            if !cloudASRRegionOK {
+                Text(tr("注意：你正在用云端·阿里云做识别，而这个区域没有云端识别的接入点。改成国际站/新加坡、美国或中国·北京，否则下一次听写会被挡下。",
+                        "Heads up: your recognition engine is Cloud · Alibaba, and this region has no cloud-recognition endpoint. Switch to International/Singapore, United States or China (Beijing), or your next dictation will be blocked."))
                     .font(.caption)
                     .foregroundColor(.orange)
             }
@@ -1135,16 +1181,24 @@ private struct AITab: View {
             .font(.caption)
             .foregroundColor(.secondary)
 
-        Toggle(tr("多花钱换低延迟（Fast 档）", "Pay more for lower latency (Fast tier)"), isOn: $fastTier)
+        // 名字不能再叫「Fast」：上面那个质量选择器已经有一档叫「快 / Fast」，两个都在
+        // 「行为」段里、都在说速度，却一个是省钱（换小模型）一个是多花钱（换服务档位）。
+        // 同名同屏就会被读成"同一件事的两种说法"或"选了快就得把它打开"。
+        Toggle(tr("优先处理（token 单价 2 倍）", "Priority processing (2x token price)"), isOn: $fastTier)
             .disabled(selected != .openai)
         Text(LLMCatalog.fastTierPriceNote
              + (selected == .openai ? "" : tr("　只有 OpenAI 有这个档位。", " Only OpenAI offers this tier.")))
             .font(.caption)
             .foregroundColor(.secondary)
-        if let tier = lastServiceTier {
-            Text(tr("上一次请求实际跑在：", "Last request actually ran at: ") + tier)
+        // 这一行的用途是揭发"勾了优先处理却被服务商降回普通档"。开关关着的时候它无事可揭：
+        // OpenAI 对普通请求照样回传 service_tier: "default"，照旧渲染就成了一条常驻橙字，
+        // 说的还是用户自己选的状态——读起来像出了错。所以只在开关开着时出现。
+        if fastTier, let tier = lastServiceTier {
+            let ranFast = LLMCatalog.servedPriorityTier(tier)
+            Text(tr("上一次请求实际跑在：", "Last request actually ran at: ")
+                 + LLMCatalog.serviceTierName(tier))
                 .font(.caption)
-                .foregroundColor(tier == "fast" ? .secondary : .orange)
+                .foregroundColor(ranFast ? .secondary : .orange)
         }
 
         Text(tr("语音指令（按住快捷键）：选中文字后按住开口，AI 自动判断意图——要求加工这段文字（改写/翻译）→ 直接替换选区；要求回复对方（「回复他…」「跟他说…」）→ 草稿进剪贴板按 ⌘V；要求写新东西 → 结果输出到光标处。什么都没选就是自由指令（草拟邮件、翻译、提问）。",
@@ -1507,11 +1561,14 @@ private struct AboutTab: View {
                 .foregroundColor(.accentColor)
             Text("MicType")
                 .font(.title2.bold())
-            Text(tr("版本 \(UpdateChecker.currentVersion) · Qwen3-ASR 引擎 + 语音指令",
-                    "Version \(UpdateChecker.currentVersion) · Qwen3-ASR engine + voice commands"))
+            // 这两行别写死服务商：v4.0 起润色/指令有五档（OpenAI / DeepSeek / Qwen /
+            // 自定义端点 / 本机模型），识别也多了可选的云端引擎。写成 "GPT / DeepSeek"，
+            // 选了别的档的人读到的就是错的——而且正下方的隐私说明已经在讲云端上传了
+            Text(tr("版本 \(UpdateChecker.currentVersion) · 语音识别 + 语音指令",
+                    "Version \(UpdateChecker.currentVersion) · speech recognition + voice commands"))
                 .foregroundColor(.secondary)
-            Text(tr("本地 Qwen3-ASR 语音识别 + GPT / DeepSeek 智能润色\n轻点快捷键语音输入；按住快捷键说指令——改写、回复、草拟、翻译。",
-                    "On-device Qwen3-ASR speech recognition + GPT / DeepSeek polish.\nTap the hotkey to dictate; hold it to speak commands — rewrite, reply, draft, translate."))
+            Text(tr("默认本地 Qwen3-ASR 语音识别（也可选云端引擎）+ 由你选择的服务商做润色与语音指令\n轻点快捷键语音输入；按住快捷键说指令——改写、回复、草拟、翻译。",
+                    "On-device Qwen3-ASR speech recognition by default (cloud engines optional), with polish and voice commands through the provider you choose.\nTap the hotkey to dictate; hold it to speak commands — rewrite, reply, draft, translate."))
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
                 .font(.callout)

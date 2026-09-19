@@ -170,7 +170,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let item = NSMenuItem(title: tr("处理中…", "Processing…"), action: nil, keyEquivalent: "")
             item.isEnabled = false
             menu.addItem(item)
-            menu.addItem(makeItem(tr("取消（Esc）", "Cancel (Esc)"), #selector(cancelDictation)))
+            // 分段识别到一半时这一项其实是"停掉后面、把已经转好的插入"——写成「取消」
+            // 就是在骗人（点它会往文档里打字）。判据与悬浮窗胶囊、与 cancel() 同源。
+            menu.addItem(makeItem(
+                dictation.escFinishesEarlyNow
+                    ? tr("收尾并输入（Esc）", "Finish & Insert (Esc)")
+                    : tr("取消（Esc）", "Cancel (Esc)"),
+                #selector(cancelDictation)))
         }
 
         // 「换回识别原文」（P9）：只在刚插入过一次被润色改动的听写、且还在 60 秒内时出现。

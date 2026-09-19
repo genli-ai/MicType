@@ -58,6 +58,48 @@ final class RecordingClockTests: XCTestCase {
         }
     }
 
+    /// 「边说边转」那半句只对本机引擎成立（云端是松手之后才分段上传）。
+    /// 两个版本都得把三个常量说全，而且不能互相抄成同一句话
+    func testRecordingCopyDistinguishesCloudFromLocal() {
+        for language in AppLanguage.allCases {
+            let saved = L10n.shared.language
+            L10n.shared.language = language
+            defer { L10n.shared.language = saved }
+            let local = DictationController.recordingLimitCopy(progressive: true)
+            let cloud = DictationController.recordingLimitCopy(progressive: false)
+            XCTAssertNotEqual(local, cloud, "\(language)：云端那一档必须换一句话")
+            for copy in [local, cloud] {
+                XCTAssertTrue(copy.contains(DictationController.minutesLabel(
+                    DictationController.maxRecordingSeconds)), "\(language): \(copy)")
+                XCTAssertTrue(copy.contains(DictationController.secondsLabel(
+                    AudioSegmenter.targetSeconds)), "\(language): \(copy)")
+            }
+        }
+        L10n.shared.language = .en
+        XCTAssertTrue(DictationController.recordingLimitCopy(progressive: true)
+            .contains("while you speak"))
+        XCTAssertFalse(DictationController.recordingLimitCopy(progressive: false)
+            .contains("while you speak"), "云端档不能承诺录音过程中就转写")
+    }
+
+    // MARK: 处理中按 Esc 到底是什么意思
+
+    /// 胶囊/菜单项的字与 cancel() 的行为必须由同一个判据决定——
+    /// 这条判据一旦和文案脱节，用户点的就是一颗写着"取消"、点下去却往文档里打字的按钮
+    func testEscFinishesEarlyOnlyWhenSomethingCanBeDelivered() {
+        // 已经转出段落 / 录音中预转写过 → 第一次 Esc 是"收尾并输入"
+        XCTAssertTrue(DictationController.escFinishesEarly(
+            completedSegments: 2, hasLiveParts: false, isSkillSession: false))
+        XCTAssertTrue(DictationController.escFinishesEarly(
+            completedSegments: 0, hasLiveParts: true, isSkillSession: false))
+        // 手上什么都没有 → 就是普通取消
+        XCTAssertFalse(DictationController.escFinishesEarly(
+            completedSegments: 0, hasLiveParts: false, isSkillSession: false))
+        // 指令会话永远不部分交付：半句指令绝不能拿去执行
+        XCTAssertFalse(DictationController.escFinishesEarly(
+            completedSegments: 3, hasLiveParts: true, isSkillSession: true))
+    }
+
     func testDurationLabels() {
         L10n.shared.language = .en
         XCTAssertEqual(DictationController.minutesLabel(600), "10 minutes")

@@ -372,9 +372,28 @@ enum LLMCatalog {
     static var webSearchPriceNote: String { tr("每次搜索约 $0.01（OpenAI 按 $10 / 1000 次计）外加 token 费用，默认关闭。",
                                        "About $0.01 per search (OpenAI bills $10 per 1000 calls) plus tokens. Off by default.") }
 
-    /// Fast 档同样要把代价写在开关旁：token 单价翻倍
-    static var fastTierPriceNote: String { tr("延迟更低更稳，token 单价约 2 倍，默认关闭。实际档位由服务商决定，可能被降回 default。",
-                                      "Lower and steadier latency at about 2x the token price, off by default. The provider decides the actual tier and may fall back to default.") }
+    /// 优先处理档同样要把代价写在开关旁：token 单价翻倍
+    static var fastTierPriceNote: String { tr("延迟更低更稳，token 单价约 2 倍，默认关闭。实际档位由服务商决定，可能被降回普通档。",
+                                      "Lower and steadier latency at about 2x the token price, off by default. The provider decides the actual tier and may fall back to the standard one.") }
+
+    /// 服务商回传的 service_tier 原值算不算"真的跑在优先档上"。
+    /// OpenAI 回 "fast"，别的兼容端点习惯叫 "priority"——后者也得算数，
+    /// 否则真跑在优先档上的那一次会被染成橙色的"被降级了"。纯函数。
+    static func servedPriorityTier(_ raw: String) -> Bool {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return value == "fast" || value == "priority"
+    }
+
+    /// service_tier 原值 → 界面说法。认不出的档位**原样显示**：硬翻成"普通档"是在编，
+    /// 原值摆出来用户至少能拿去问服务商。纯函数。
+    static func serviceTierName(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "fast", "priority": return tr("优先档", "the priority tier")
+        case "default": return tr("普通档", "the standard tier")
+        case "flex": return tr("弹性档（更慢、更便宜）", "the flex tier (slower and cheaper)")
+        default: return raw
+        }
+    }
 
     /// 悬浮窗/历史里那句「已联网 · 3 来源」。0 条来源也要说「已联网」——
     /// Qwen 那档压根不回传来源，用户仍该知道这次调用花了搜索的钱。

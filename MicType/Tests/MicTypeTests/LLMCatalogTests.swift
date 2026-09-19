@@ -414,6 +414,29 @@ final class LLMCatalogTests: XCTestCase {
         XCTAssertNil(location["city"])
     }
 
+    // MARK: - service_tier 回显
+
+    /// 「上一次请求实际跑在：…」那一行的两条判据。
+    /// 关键是别把真跑在优先档上的那一次染成橙色告警：OpenAI 回 "fast"，
+    /// 其它兼容端点习惯叫 "priority"，两个都算数
+    func testServedPriorityTierAcceptsBothSpellings() {
+        XCTAssertTrue(LLMCatalog.servedPriorityTier("fast"))
+        XCTAssertTrue(LLMCatalog.servedPriorityTier(" Priority "))
+        XCTAssertFalse(LLMCatalog.servedPriorityTier("default"))
+        XCTAssertFalse(LLMCatalog.servedPriorityTier(""))
+    }
+
+    /// 认得的档位翻成人话，不认得的**原样显示**（硬翻是在编）
+    func testServiceTierNameTranslatesKnownTiersOnly() {
+        L10n.shared.language = .en
+        XCTAssertEqual(LLMCatalog.serviceTierName("default"), "the standard tier")
+        XCTAssertEqual(LLMCatalog.serviceTierName("fast"), "the priority tier")
+        XCTAssertEqual(LLMCatalog.serviceTierName("scale"), "scale")
+        L10n.shared.language = .zh
+        XCTAssertEqual(LLMCatalog.serviceTierName("default"), "普通档")
+        XCTAssertEqual(LLMCatalog.serviceTierName("scale"), "scale")
+    }
+
     // MARK: - 新增文案的双语纪律
 
     /// 英文界面下新加的这些文案同样不能混进中文或全角标点
@@ -421,7 +444,10 @@ final class LLMCatalogTests: XCTestCase {
         L10n.shared.language = .en
         var texts = [LLMCatalog.webSearchPriceNote, LLMCatalog.fastTierPriceNote,
                      LLMCatalog.webSearchNote(citationCount: 0),
-                     LLMCatalog.webSearchNote(citationCount: 2)]
+                     LLMCatalog.webSearchNote(citationCount: 2),
+                     LLMCatalog.serviceTierName("default"),
+                     LLMCatalog.serviceTierName("fast"),
+                     LLMCatalog.serviceTierName("flex")]
         texts += LLMCatalog.QwenRegion.allCases.map(\.displayName)
         texts += LLMProvider.allCases.map(\.displayName)
         texts += LLMProvider.allCases.map(\.shortName)

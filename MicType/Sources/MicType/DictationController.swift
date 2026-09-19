@@ -443,10 +443,14 @@ final class DictationController {
             // 「有东西可交付」有两种来源：这一遍已经转出来的段落，或者录音中预转写好的部分
             // （尾巴通常只有一段，handle.completedSegments 还是 0，但前面几分钟的字已经在手上了）
             if let handle = inflightTranscription, !handle.isCancelled,
-               handle.completedSegments > 0 || !liveParts.isEmpty, !skillSession {
+               Self.escFinishesEarly(completedSegments: handle.completedSegments,
+                                     hasLiveParts: !liveParts.isEmpty,
+                                     isSkillSession: skillSession) {
                 Log.info("Transcription stopped by user after \(handle.completedSegments) segment(s)"
                          + " live=\(liveParts.count)")
                 handle.cancel()
+                // 这一下之后再按 Esc 就是彻底丢弃了：胶囊得跟着改回「取消」
+                overlay.setCancelFinishes(false)
                 // 手上这些字**立刻**落一条历史保底。当前这一段停不下来（MLX 一次解码到底），
                 // 「收尾中…」可能还要好几秒；用户以为没生效再按一次 Esc 就走 endSession()，
                 // 结果被代数挡掉——在这之前它们没有任何持久化，几分钟口述会一个字不剩。
@@ -463,6 +467,36 @@ final class DictationController {
             overlay.flashNotice(tr("已取消", "Cancelled"))
             Sounds.playCancel()
         }
+    }
+
+    /// 处理中按 Esc 到底是"收尾并输入"还是"彻底丢弃"——同一个键在这一刻有两个意思，
+    /// 而用户看不见判据。纯函数抽出来只为一件事：cancel() 的行为和胶囊/菜单项上的字
+    /// 由**同一个判据**决定，不会一边改了另一边没跟上（那正是"点了取消却被插入"的来源）。
+    static func escFinishesEarly(completedSegments: Int, hasLiveParts: Bool,
+                                 isSkillSession: Bool) -> Bool {
+        // 半句指令绝不能拿去执行：指令会话一律走彻底取消
+        guard !isSkillSession else { return false }
+        return completedSegments > 0 || hasLiveParts
+    }
+
+    /// 菜单栏「处理中」那一项该写什么——与胶囊、与 cancel() 同一个判据，
+    /// 不能菜单里写「取消」而点下去其实是插入（AppDelegate 读它）
+    var escFinishesEarlyNow: Bool {
+        guard phase == .processing, let handle = inflightTranscription, !handle.isCancelled else {
+            return false
+        }
+        return Self.escFinishesEarly(completedSegments: handle.completedSegments,
+                                     hasLiveParts: !liveParts.isEmpty,
+                                     isSkillSession: skillSession)
+    }
+
+    /// 把上面那条判据推给悬浮窗（胶囊的字跟着它变）。在飞的那次识别没了 = 没什么可收尾的
+    private func syncCancelAffordance() {
+        let finishes = Self.escFinishesEarly(
+            completedSegments: inflightTranscription?.completedSegments ?? 0,
+            hasLiveParts: !liveParts.isEmpty,
+            isSkillSession: skillSession)
+        overlay.setCancelFinishes(finishes && !(inflightTranscription?.isCancelled ?? true))
     }
 
     /// Esc 部分交付那一刻的保底记录：把此刻手上的文字（预转写好的前半段 + 已经报上来的段落）
@@ -584,17 +618,33 @@ final class DictationController {
     /// 这句话自己跟着变。这一条是被"界面上说 5 分钟、代码里其实是 10 分钟"坑出来的规矩
     /// （用户唯一能查到上限的地方就是这行字，它和代码对不上等于骗人）。
     /// 纯函数、可单测。
+    /// 这一句里「边说边转」那半句只对本机引擎成立：录音中的预转写是 QwenEngine 在跑
+    /// （resetLiveSegments(active: !sessionUsesCloud)），云端档要松手之后才分段上传。
+    /// 所以按当前引擎给两个版本，别让只用云端的人去等一个永远不会出现的逐段进度。
     static var recordingLimitCopy: String {
+        recordingLimitCopy(progressive: !Settings.shared.recognitionEngine.isCloud)
+    }
+
+    /// 纯函数版（单测直接喂 progressive，不碰 UserDefaults）
+    static func recordingLimitCopy(progressive: Bool) -> String {
         let limit = minutesLabel(maxRecordingSeconds)
         let warn = secondsLabel(preFinishWarningSeconds)
         let segment = secondsLabel(AudioSegmenter.targetSeconds)
-        return tr("单次录音上限 \(limit)：接近上限时悬浮窗会显示已录时长与上限，"
-                  + "到点前 \(warn) 先提醒一次。长段口述在录音过程中就按每段约 \(segment) 边说边转，"
-                  + "每转完一段就显示一段；到上限时 MicType 会收尾，把你已经说的内容全部识别、全部插入。",
-                  "A single take is capped at \(limit). As you get close, the overlay shows how long you have "
-                  + "been recording against the cap and warns you \(warn) before the end. Long dictation is "
-                  + "transcribed while you speak, in segments of about \(segment), each shown as soon as it is "
-                  + "ready; at the cap MicType wraps up and inserts everything you have said.")
+        let head = tr("单次录音上限 \(limit)：接近上限时悬浮窗会显示已录时长与上限，"
+                      + "到点前 \(warn) 先提醒一次。",
+                      "A single take is capped at \(limit). As you get close, the overlay shows how long you have "
+                      + "been recording against the cap and warns you \(warn) before the end. ")
+        let segmenting = progressive
+            ? tr("长段口述在录音过程中就按每段约 \(segment) 边说边转，每转完一段就显示一段；",
+                 "Long dictation is transcribed while you speak, in segments of about \(segment), each shown as "
+                 + "soon as it is ready; ")
+            : tr("长段口述在松手之后按每段约 \(segment) 分段上传识别，每转完一段就显示一段（云端引擎不在录音过程中上传）；",
+                 "Long dictation is uploaded and transcribed in segments of about \(segment) after you release the "
+                 + "hotkey, each shown as soon as it is ready — a cloud engine uploads nothing while you are still "
+                 + "speaking; ")
+        let tail = tr("到上限时 MicType 会收尾，把你已经说的内容全部识别、全部插入。",
+                      "at the cap MicType wraps up and inserts everything you have said.")
+        return head + segmenting + tail
     }
 
     /// 「10 分钟」/「10 minutes」。不足整分钟的按秒说（常量以后改成 90 s 也不会读成 2 分钟）
@@ -1253,6 +1303,11 @@ final class DictationController {
                 guard let self = self, self.isCurrent(generation) else { return }
                 // Esc 那条保底路要的是"到此为止已经转出来的字"，和进度条显不显示无关
                 self.deliveredDraft = draft
+                // 手上有段落可交付了：Esc 这会儿是"收尾并输入"，胶囊必须当场改口
+                self.overlay.setCancelFinishes(
+                    Self.escFinishesEarly(completedSegments: done,
+                                          hasLiveParts: !self.liveParts.isEmpty,
+                                          isSkillSession: self.skillSession))
                 guard total > 1 else { return }
                 self.overlay.updateProcessing(
                     label: Self.segmentLabel(usesCloud: usesCloud, done: done, total: total),
@@ -1263,6 +1318,8 @@ final class DictationController {
             // 它是下面那道回落判据的最后一道保险，见 userStopped
             let userStopped = self.inflightTranscription?.isCancelled ?? false
             self.inflightTranscription = nil
+            // 识别这一段结束了，后面是润色/指令：那里按 Esc 是真取消，胶囊改回「取消」
+            self.overlay.setCancelFinishes(false)
             // 云端炸了先想退路：本地模型在就整段重跑一遍本地识别，用户一个字都不丢。
             // 判据是纯函数（CloudFallbackDecision），引擎自己不做这个决定。
             // userStopped 让「用户停止」永远优先于「自动回落」：用户按了 Esc 之后在飞的那一段
@@ -1423,6 +1480,9 @@ final class DictationController {
                 }
             }
         }
+        // 录音中已经预转写好几分钟的那种会话：句柄刚拿到手，第一次 Esc 就已经是
+        // "收尾并输入"了（committed 不是空的）。胶囊得从一开始就写对
+        syncCancelAffordance()
     }
 
     /// 分段识别的结果 → 这一轮该怎么走。
