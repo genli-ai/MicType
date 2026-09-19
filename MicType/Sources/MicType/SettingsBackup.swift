@@ -320,8 +320,22 @@ enum SettingsBackup {
 
 extension SettingsBackup {
 
-    private static func describe(_ error: Error) -> String {
-        (error as? MTError)?.message ?? error.localizedDescription
+    /// 失败原因的显示文字。MTError 的 message 本来就走 tr()；系统错误的 localizedDescription
+    /// 跟的是 **macOS 的语言**，和 MicType 的界面语言没关系——中文界面里会突然冒出一句英文
+    /// （反过来也一样）。所以先给一句本界面语言的说明，系统原文降级成后面括号里的细节
+    /// （细节还是要给：真正的失败原因在里面，"没有写入权限"和"磁盘已满"得能分辨）。
+    static func describe(_ error: Error) -> String {
+        if let known = error as? MTError { return known.message }
+        return failureDetail(systemMessage: error.localizedDescription)
+    }
+
+    /// 纯函数，便于单测：拼「本语言的说明（系统原文）」
+    static func failureDetail(systemMessage: String) -> String {
+        let detail = systemMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !detail.isEmpty else {
+            return tr("系统报错，但没有给出原因", "The system reported an error without a reason")
+        }
+        return tr("系统报错", "The system reported an error") + tr("（", " (") + detail + tr("）", ")")
     }
 
     private static func defaultFileName() -> String {

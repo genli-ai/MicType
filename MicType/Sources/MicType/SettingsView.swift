@@ -79,6 +79,8 @@ private struct GeneralTab: View {
     var body: some View {
         Form {
             Section {
+                // 故意双语（CJKUIStringGuardTests 里唯一的按行白名单）：语言选择器是切回
+                // 母语的唯一入口，界面已经是看不懂的那一种语言时，它必须还认得出来
                 Picker(tr("界面语言 / Language:", "Language / 界面语言:"), selection: $l10n.language) {
                     ForEach(AppLanguage.allCases, id: \.self) { lang in
                         Text(lang.displayName).tag(lang)
@@ -456,7 +458,7 @@ private struct RecognitionTab: View {
         let base = tr("系统默认", "System default")
         guard let uid = InputDevices.defaultUID,
               let device = inputDevices.first(where: { $0.uid == uid }) else { return base }
-        return base + "（\(device.name)）"
+        return base + tr("（\(device.name)）", " (\(device.name))")
     }
 
     /// 存着的麦克风此刻不在（没插上 / 换了台机器）。**不自动改设置**：插回来还要照旧用，
@@ -621,11 +623,11 @@ private struct RecognitionTab: View {
             QwenEngine.shared.unloadModel()
             refreshTick += 1
         }
-        // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言
+        // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言。
+        // 下载状态不在其列：它现在存的是语言中性的 phase，文字由 tr() 现场渲染，下载中也跟着切
         .onChange(of: l10n.language) { _, _ in
             updateMessage = ""
             micTest.clearMessage()
-            if !downloader.isDownloading { downloader.statusText = "" }
         }
     }
 }
@@ -823,7 +825,7 @@ private struct PolishTab: View {
         refreshSavedStates()
         LLMClient.testModel(model) { _, message in
             testing = false
-            testResult = name + "（\(model)）" + tr("：", ": ") + message
+            testResult = name + tr("（\(model)）", " (\(model))") + tr("：", ": ") + message
         }
     }
 }

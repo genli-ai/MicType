@@ -216,6 +216,12 @@ struct HistoryView: View {
         }
         .frame(minWidth: 520, minHeight: 360)
         .sheet(isPresented: $showVocabSheet) { vocabSheet }
+        // 底部状态条是一次性生成的语言快照，切语言不会自己刷新（CLAUDE.md「i18n 快照字符串」
+        // 那个老坑）→ 切换时清空，顺手让还没到点的那次清空定时器作废
+        .onChange(of: l10n.language) { _, _ in
+            status = ""
+            statusToken += 1
+        }
     }
 
     private var searchBar: some View {

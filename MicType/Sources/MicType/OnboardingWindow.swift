@@ -413,9 +413,6 @@ private struct ModelPage: View {
             QwenEngine.shared.unloadModel()
             refreshTick += 1
         }
-        .onChange(of: l10n.language) { _, _ in
-            if !downloader.isDownloading { downloader.statusText = "" }
-        }
     }
 }
 

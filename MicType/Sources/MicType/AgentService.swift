@@ -57,7 +57,10 @@ enum LLMClient {
             return
         }
         let start = Date()
-        chat(messages: [["role": "user", "content": "请只回复一个字：好"]],
+        // 测试用的提示词也要跟界面语言走：模型的回答会原样显示在「测试」结果里
+        //（"✓ 1.2s · 返回：好"），中文提示会让英文界面的用户收到一个看不懂的中文字
+        let probe = tr("请只回复一个字：好", "Reply with exactly one word: OK")
+        chat(messages: [["role": "user", "content": probe]],
              temperature: nil, timeout: 30, model: model) { result, failure in
             let secs = String(format: "%.1f", Date().timeIntervalSince(start))
             if let r = result {
@@ -167,7 +170,8 @@ enum LLMClient {
                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let err = json["error"] as? [String: Any],
                    let msg = err["message"] as? String {
-                    detail = "：" + String(msg.prefix(60))
+                    // 分隔号也要跟界面语言走：英文界面下 "Invalid API key (401)：…" 会突然冒出个全角冒号
+                    detail = tr("：", ": ") + String(msg.prefix(60))
                 }
                 switch http.statusCode {
                 case 401: failure = tr("API Key 无效 (401)", "Invalid API key (401)") + detail

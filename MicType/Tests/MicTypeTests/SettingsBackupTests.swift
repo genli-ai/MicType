@@ -88,6 +88,41 @@ final class SettingsBackupTests: XCTestCase {
         }
     }
 
+    // MARK: 失败文案（系统错误不能把界面语言带跑偏）
+
+    /// describe() 里系统错误走的是 localizedDescription——那跟的是 macOS 的语言，
+    /// 不是 MicType 的界面语言。所以前面必须先给一句本语言的说明，系统原文只当细节。
+    func testFailureDetailLeadsWithInterfaceLanguage() {
+        let saved = L10n.shared.language
+        defer { L10n.shared.language = saved }
+
+        L10n.shared.language = .en
+        let english = SettingsBackup.failureDetail(systemMessage: "No such file or directory")
+        XCTAssertEqual(english, "The system reported an error (No such file or directory)")
+
+        L10n.shared.language = .zh
+        let chinese = SettingsBackup.failureDetail(systemMessage: "No such file or directory")
+        XCTAssertEqual(chinese, "系统报错（No such file or directory）")
+    }
+
+    func testFailureDetailWithoutSystemMessage() {
+        let saved = L10n.shared.language
+        defer { L10n.shared.language = saved }
+
+        L10n.shared.language = .en
+        XCTAssertEqual(SettingsBackup.failureDetail(systemMessage: "   "),
+                       "The system reported an error without a reason")
+        L10n.shared.language = .zh
+        XCTAssertEqual(SettingsBackup.failureDetail(systemMessage: ""),
+                       "系统报错，但没有给出原因")
+    }
+
+    func testDescribeKeepsOwnErrorMessageAsIs() {
+        // MTError 的文字本来就是 tr() 出来的，不该再被包一层
+        XCTAssertEqual(SettingsBackup.describe(MTError("文件内容不是 JSON 对象")),
+                       "文件内容不是 JSON 对象")
+    }
+
     func testExportDocumentHasSchemaAndSettings() {
         let doc = SettingsBackup.makeDocument()
         XCTAssertEqual(doc["schemaVersion"] as? Int, SettingsBackup.schemaVersion)
