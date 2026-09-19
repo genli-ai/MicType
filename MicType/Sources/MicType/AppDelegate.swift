@@ -43,6 +43,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
+        // 缺系统权限时同样去引导（OWNER 规则 2026-09-20：三件必办的事都在引导里办完）。
+        // 那一页两项权限各一行、各一颗按钮，勾上之后自己变绿并往下走
+        dictation.onNeedPermissions = {
+            OnboardingWindowController.shared.show(startAt: .permissions)
+        }
+
         // 悬浮窗上的「去配置」：直接落到「云端 AI」那一页，不让用户自己从概览点进去
         dictation.onNeedAISettings = {
             SettingsWindowController.shared.show(tab: .cloud)
@@ -114,21 +120,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 判据用"当前这一档识别引擎就绪 + 辅助功能已授权"——这两项齐了说明他早就在用了，
     /// 弹引导只会像退步。**引擎按用户选的那一档判**：选了云端的人明确决定不下那 860MB，
     /// 每次启动还把他拽到下载页就是在跟他较劲。
+    ///
+    /// 没走完的引导会**接着走**（用户 2026-09-20 拍板）：落在第一件没办完的事那一屏，
+    /// 而不是每次都从第一屏重来一遍。点过「先跳过」的人 onboardingCompleted 已经是真，
+    /// 从此不再被拦——缺的那几项改由设置概览上的徽章提醒。
     private func routeFirstLaunch() {
         let ready = RecognitionEngineReadiness.current().isReady && Permissions.isAccessibilityTrusted
 
         if !Settings.shared.onboardingCompleted {
             if ready {
                 Settings.shared.onboardingCompleted = true
+                // 他早就在用某一颗键了，"确认快捷键"这一步对他没有意义
+                Settings.shared.hotkeyConfirmed = true
                 Log.info("Onboarding skipped: already configured")
             } else {
                 // 引导自己有权限页，这里不要抢先弹系统授权框（用户还没看清这是什么应用）
-                OnboardingWindowController.shared.show()
+                let essentials = FirstRunEssentials.current()
+                Log.info("Onboarding resumes at page=\(essentials.resumePage.rawValue) "
+                         + essentials.logSummary)
+                OnboardingWindowController.shared.show(startAt: essentials.resumePage)
                 return
             }
-        } else if RecognitionEngineReadiness.current() == .localModelMissing {
+        } else if RecognitionEngineReadiness.current() == .localModelMissing,
+                  !Settings.shared.onboardingSkippedEssentials {
             // 走过引导但模型没了（换了模型 / 被删）：仍然带去下载页，而不是把人扔进设置页。
-            // 只对本地档成立——云端档缺 Key 不抢启动，按下热键时悬浮窗上那个「去设置」胶囊接住他
+            // 只对本地档成立——云端档缺 Key 不抢启动，按下热键时悬浮窗上那个「去设置」胶囊接住他。
+            // 点过「先跳过」的人例外：他已经知道模型没下，每次启动再弹一遍就成了催促
             OnboardingWindowController.shared.show(startAt: .permissions)
             return
         }

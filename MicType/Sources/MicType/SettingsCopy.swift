@@ -365,8 +365,11 @@ enum SettingsCopy {
 
     // MARK: - 预算表（单测按这几张表逐条量）
 
+    /// 引导那几行也走同一条预算线（文字本身住在 OnboardingCopy 里，那是引导的文案出处）：
+    /// 第一次打开 MicType 的人最没耐心读字，凭什么反而不受这 16 字的约束。
     static var allCaptions: [String] {
         inputCaptions + recognitionCaptions + cloudCaptions + overviewCaptions
+            + OnboardingCopy.captions
     }
 
     static var allInfos: [String] {

@@ -43,6 +43,15 @@ enum QwenDownloadPhase: Equatable {
         Double(bytes) / 1_048_576
     }
 
+    /// 上一次下载没走到头（失败了，或者用户自己取消了）。按钮上写「重试下载」而不是
+    /// 「下载模型」就靠它：对刚看着进度条掉下来的人，「下载模型」像是什么都没发生过。
+    var didNotFinish: Bool {
+        switch self {
+        case .failed, .cancelled: return true
+        case .idle, .fetchingList, .startingFile, .downloading, .completed: return false
+        }
+    }
+
     /// 界面上那一行状态文字。**每次读都重新渲染**，所以它永远跟着当前界面语言
     var statusText: String {
         switch self {

@@ -149,15 +149,80 @@ final class OnboardingCopyTests: XCTestCase {
         XCTAssertTrue(en.contains("Settings"), en)
     }
 
+    // MARK: - 三件必办的事：出口那两句
+
+    /// 「先跳过」与「听写暂不可用」是**一对**：出口和它的代价必须同时说出来。
+    /// 少了后面那句，用户不知道自己刚刚跳过了什么；少了前面那句，他就被关在引导里了。
+    func testSkipLinkAndItsConsequenceAreBothSpelledOut() {
+        L10n.shared.language = .zh
+        XCTAssertEqual(OnboardingCopy.skipForNow, "先跳过")
+        XCTAssertEqual(OnboardingCopy.dictationUnavailable, "听写暂不可用")
+
+        L10n.shared.language = .en
+        XCTAssertEqual(OnboardingCopy.skipForNow, "Skip for now")
+        XCTAssertEqual(OnboardingCopy.dictationUnavailable, "Dictation will not work yet")
+    }
+
+    /// 那一行只说事实，不许写成一段劝告——它出现的时刻用户已经做完决定了
+    func testConsequenceLineIsOneShortLine() {
+        for language in [AppLanguage.zh, .en] {
+            L10n.shared.language = language
+            XCTAssertFalse(OnboardingCopy.dictationUnavailable.contains("\n"))
+            XCTAssertFalse(OnboardingCopy.dictationUnavailable.contains("。"))
+            XCTAssertFalse(OnboardingCopy.dictationUnavailable.contains("."))
+        }
+    }
+
+    /// 第一屏那颗选择器下面**只有一行**，而且要说清"默认是哪颗、以后能不能改"
+    func testHotkeyChoiceCaptionNamesTheDefaultAndSaysItIsChangeable() {
+        L10n.shared.language = .zh
+        let zh = OnboardingCopy.hotkeyChoice
+        XCTAssertTrue(zh.contains(HotkeyChoice.rightOption.plainName), zh)
+        XCTAssertTrue(zh.contains("改"), zh)
+        XCTAssertFalse(zh.contains("\n"), zh)
+
+        L10n.shared.language = .en
+        let en = OnboardingCopy.hotkeyChoice
+        XCTAssertTrue(en.contains(HotkeyChoice.rightOption.plainName), en)
+        XCTAssertTrue(en.lowercased().contains("change"), en)
+    }
+
+    /// 下载掉下来之后那颗按钮写的是「重试」，不是「下载」：
+    /// 对刚看着进度条归零的人，「下载模型」像是什么都没发生过
+    func testRetryDownloadSaysRetry() {
+        L10n.shared.language = .zh
+        XCTAssertTrue(OnboardingCopy.retryDownload.contains("重试"), OnboardingCopy.retryDownload)
+        L10n.shared.language = .en
+        XCTAssertTrue(OnboardingCopy.retryDownload.lowercased().contains("retry"),
+                      OnboardingCopy.retryDownload)
+    }
+
+    /// 按钮上那颗字的状态判据：取消过 / 失败过才叫「重试」
+    func testRetryLabelFollowsTheDownloadPhase() {
+        XCTAssertTrue(QwenDownloadPhase.cancelled.didNotFinish)
+        XCTAssertTrue(QwenDownloadPhase.failed(.allMirrorsFailed).didNotFinish)
+        XCTAssertFalse(QwenDownloadPhase.idle.didNotFinish)
+        XCTAssertFalse(QwenDownloadPhase.fetchingList.didNotFinish)
+        XCTAssertFalse(QwenDownloadPhase.completed(fileCount: 3).didNotFinish)
+        XCTAssertFalse(QwenDownloadPhase.downloading(fileIndex: 0, fileCount: 3,
+                                                     doneBytes: 1, totalBytes: 2).didNotFinish)
+    }
+
+    /// 引导里现在有文字的每一处（按钮、链接、那几行说明）
+    private var everyLine: [String] {
+        [OnboardingCopy.usageHeadline, OnboardingCopy.usageExplanation,
+         OnboardingCopy.aiSkipReassurance, OnboardingCopy.hotkeyChoice,
+         OnboardingCopy.skipForNow, OnboardingCopy.dictationUnavailable,
+         OnboardingCopy.retryDownload,
+         OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥"),
+         OnboardingCopy.doneAIStatus(status: .commandsOnly, hotkey: "⌥"),
+         OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")]
+    }
+
     /// 这一屏的每一句在英文界面下都不许夹中文
     func testEveryOnboardingCopyIsCleanInEnglish() {
         L10n.shared.language = .en
-        let all = [OnboardingCopy.usageHeadline, OnboardingCopy.usageExplanation,
-                   OnboardingCopy.aiSkipReassurance,
-                   OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥"),
-                   OnboardingCopy.doneAIStatus(status: .commandsOnly, hotkey: "⌥"),
-                   OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")]
-        for copy in all {
+        for copy in everyLine {
             XCTAssertFalse(copy.isEmpty)
             XCTAssertFalse(containsCJKOrFullWidth(copy), copy)
         }
@@ -166,11 +231,19 @@ final class OnboardingCopyTests: XCTestCase {
     /// 中英两侧不能是同一串（漏写一侧的典型表现）
     func testCopyActuallyDiffersBetweenLanguages() {
         L10n.shared.language = .zh
-        let zh = [OnboardingCopy.usageHeadline, OnboardingCopy.usageExplanation,
-                  OnboardingCopy.aiSkipReassurance]
+        let zh = everyLine
         L10n.shared.language = .en
-        let en = [OnboardingCopy.usageHeadline, OnboardingCopy.usageExplanation,
-                  OnboardingCopy.aiSkipReassurance]
+        let en = everyLine
         for (a, b) in zip(zh, en) { XCTAssertNotEqual(a, b, a) }
+    }
+
+    /// 计入预算的那两行确实被挂进了设置页那张总表——挂漏了，16 字那条线就量不到引导
+    func testGuideCaptionsAreCountedByTheCopyBudget() {
+        for language in [AppLanguage.zh, .en] {
+            L10n.shared.language = language
+            for caption in OnboardingCopy.captions {
+                XCTAssertTrue(SettingsCopy.allCaptions.contains(caption), caption)
+            }
+        }
     }
 }

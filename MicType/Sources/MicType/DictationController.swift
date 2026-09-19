@@ -55,6 +55,9 @@ final class DictationController {
     var onNeedAISettings: (() -> Void)?
     /// 需要打开「设置 → 云端 AI」的回调（开了云端识别却没填 Key 时的「去设置」胶囊）
     var onNeedRecognitionSettings: (() -> Void)?
+    /// 缺系统权限时的回调：带去引导的权限页（那一页两颗按钮各管一项，授权后自己变绿往下走）。
+    /// 4.0.1 这里是直接把系统设置甩到用户脸上——他还没看清这是什么应用，也不知道该勾哪一条
+    var onNeedPermissions: (() -> Void)?
 
     private let recorder = AudioRecorder()
     let overlay = OverlayController()
@@ -386,14 +389,17 @@ final class DictationController {
         }
     }
 
-    /// 没有辅助功能权限时的统一提示：说清在哪儿开，并把那一页直接打开。
-    /// 不提"重启 MicType"——现在的 macOS 授权即时生效，让用户白重启一次只会更迷惑。
+    /// 没有辅助功能权限时的统一提示：一行话说清怎么回事，然后把**引导的权限页**打开。
+    ///
+    /// 为什么不再直接弹系统设置（4.0.1 是那样做的）：辅助功能面板上是一长串应用和一排开关，
+    /// 没人告诉他该勾哪一条、勾完要不要重启。引导那一页两项权限各一行、各一颗按钮，
+    /// 勾上之后自己变绿并往下走——三件必办的事本来就都该在那里办（OWNER 规则 2026-09-20）。
+    /// 不提"重启 MicType"：现在的 macOS 授权即时生效，让用户白重启一次只会更迷惑。
     private func promptAccessibilityNeeded() {
-        Permissions.promptAccessibility()
-        overlay.flashError(tr("请在 系统设置 → 隐私与安全性 → 辅助功能 中开启 MicType",
-                              "Enable MicType in System Settings → Privacy & Security → Accessibility"))
         Sounds.playError()
-        Permissions.openAccessibilitySettings()
+        overlay.flashError(tr("辅助功能还没授权——已为你打开引导",
+                              "Accessibility is not granted - opening the guide"))
+        onNeedPermissions?()
     }
 
     /// 按住满 0.6s：把正在录的这一段就地升级为指令模式，并让它现身。
@@ -1102,10 +1108,13 @@ final class DictationController {
             guard let self = self else { return }
             guard granted else {
                 self.pressSession = false
-                self.overlay.flashError(tr("没有麦克风权限，请在 系统设置 → 隐私 中开启",
-                                           "No microphone access — enable it in System Settings → Privacy"))
+                // 走到这里说明系统不会再弹授权框了（拒过一次 / 被管控），只能人工去勾。
+                // 和辅助功能同一个落点：引导的权限页，那里两项各一行、各一颗按钮，
+                // 勾上之后自己变绿——比把一长串应用的系统面板甩给他强
+                self.overlay.flashError(tr("麦克风还没授权——已为你打开引导",
+                                           "Microphone is not granted - opening the guide"))
                 Sounds.playError()
-                Permissions.openMicrophoneSettings()
+                self.onNeedPermissions?()
                 return
             }
             // 首次授权会弹系统窗口并打断焦点，授权期间这一次输入不可靠；

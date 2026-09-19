@@ -68,6 +68,8 @@ final class SettingsCopyBudgetTests: XCTestCase {
             ("输入", SettingsCopy.inputCaptions),
             ("本地识别", SettingsCopy.recognitionCaptions),
             ("云端 AI", SettingsCopy.cloudCaptions),
+            // 首启动引导走同一条线，而且该更紧：第一次打开 MicType 的人最没耐心读字
+            ("引导", OnboardingCopy.captions),
         ]
         for (name, captions) in pages {
             let total = captions.reduce(0) { $0 + $1.count }

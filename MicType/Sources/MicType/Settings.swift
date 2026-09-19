@@ -369,6 +369,8 @@ enum SettingsKeys {
     static let fastTier = "fastTier"                        // service_tier:"fast"（贵一倍换低延迟，默认关）
     static let webSearchEnabled = "webSearchEnabled"        // 指令模式联网搜索（按次计费，默认关）
     static let onboardingCompleted = "onboardingCompleted"  // 首启动引导是否走过（老用户按"已配置好"自动置真）
+    static let hotkeyConfirmed = "hotkeyConfirmed"          // 用户在引导第一屏确认过用哪颗键（直接「继续」也算）
+    static let onboardingSkippedEssentials = "onboardingSkippedEssentials"  // 他点过「先跳过」：引导不再每次启动拦他，但概览上的徽章照常挂着
     /// 4.0.1 的默认型号迁移真的改掉了哪几处（"旧型号>新型号" 编码，见 LLMCatalog.encodeModelChanges）。
     /// 只存型号名、不存句子：文案按当时的语言现拼（见 CLAUDE.md「i18n 快照字符串」）。
     /// 用户在 AI 页点过「知道了」就清空。
@@ -436,6 +438,8 @@ final class Settings {
             SettingsKeys.fastTier: false,
             SettingsKeys.webSearchEnabled: false,
             SettingsKeys.onboardingCompleted: false,
+            SettingsKeys.hotkeyConfirmed: false,
+            SettingsKeys.onboardingSkippedEssentials: false,
         ])
 
         // 一次性迁移：产品由 VoiceFlow 改名 MicType，defaults 域随 Bundle ID 变更，
@@ -577,6 +581,17 @@ final class Settings {
                 Log.info("CloudASR model migrated to=\(AlibabaASRModel.qwen3Flash.rawValue)")
             }
             d.set(true, forKey: "migratedCloudASRModelTo3")
+        }
+
+        // 一次性迁移（4.1.0）：hotkeyConfirmed 是这一版新增的"三件必办的事"之一，
+        // 老设置里当然没有。引导早就走过的人不该被要求再确认一次快捷键——否则他从
+        // 设置里重新打开引导（或被模型缺失带回去）时，最后一屏的「完成」会卡在一件
+        // 他几百次听写之前就做过的事上，而界面上没有任何东西说得清卡在哪儿。
+        if !d.bool(forKey: "migratedHotkeyConfirmed") {
+            if d.bool(forKey: SettingsKeys.onboardingCompleted) {
+                d.set(true, forKey: SettingsKeys.hotkeyConfirmed)
+            }
+            d.set(true, forKey: "migratedHotkeyConfirmed")
         }
     }
 
@@ -937,10 +952,27 @@ final class Settings {
         }
     }
 
-    /// 首启动引导是否已经走过（或被用户关掉）。为假时启动会自动弹引导。
+    /// 首启动引导是否已经走完。**只有两种情况会写真**：在最后一屏把三件必办的事都办完了，
+    /// 或者用户点过「先跳过」。中途关窗口不算——关掉窗口的人多半正卡在某一步上，
+    /// 下次启动要把他接回没走完的那一屏（见 AppDelegate.routeFirstLaunch）。
     var onboardingCompleted: Bool {
         get { d.bool(forKey: SettingsKeys.onboardingCompleted) }
         set { d.set(newValue, forKey: SettingsKeys.onboardingCompleted) }
+    }
+
+    /// 引导第一屏确认过快捷键。默认值（右 Option）也要他点一下「继续」才算数——
+    /// 这一屏教的就是"按哪颗键"，没看过它的人后面每一句「轻点 XX」都无从照做。
+    var hotkeyConfirmed: Bool {
+        get { d.bool(forKey: SettingsKeys.hotkeyConfirmed) }
+        set { d.set(newValue, forKey: SettingsKeys.hotkeyConfirmed) }
+    }
+
+    /// 用户带着没办完的事走出了引导（点过「先跳过」）。
+    /// 它只管一件事：**别每次启动都再拦他一次**。缺的那几项照常在设置概览上挂着徽章，
+    /// 办齐之后从引导点「完成」会把这一位清掉。
+    var onboardingSkippedEssentials: Bool {
+        get { d.bool(forKey: SettingsKeys.onboardingSkippedEssentials) }
+        set { d.set(newValue, forKey: SettingsKeys.onboardingSkippedEssentials) }
     }
 
     /// Qwen 模型 HF 仓库 ID

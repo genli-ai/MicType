@@ -17,6 +17,12 @@ import Combine
 ///   • 模型下载不阻塞界面，可取消；进度条一直挂在底部，走到哪一屏都看得见；
 ///   • 结尾必须能就地试一次——引导窗口自己是前台 App，正常插入链路原样可用；
 ///   • AI 那一段**必须能整屏跳过**：轻点听写不需要 Key，把它做成一道关卡等于骗人。
+///
+/// **三件必办的事**（用户 2026-09-20 拍板，见 FirstRunEssentials）：快捷键确认过、
+/// 两项权限都给了、识别模型下好了——办不完就走不完这份引导。4.0.1 四屏全都能一路
+/// 「继续」点到底，于是"走完引导"和"能用"是两回事：用户回到自己的文档里轻点，什么都
+/// 没发生，而他不会认为是权限没给，他会认为这个 App 坏了。唯一的出口是那条写明代价的
+/// 「先跳过」；中途关窗口不算走完，下次启动接在第一件没办完的事那一屏。AI 仍然可选。
 enum OnboardingPage: Int, CaseIterable {
     case welcome
     case permissions
@@ -29,8 +35,9 @@ final class OnboardingModel: ObservableObject {
     @Published var page: OnboardingPage = .welcome
     @Published var micOK = Permissions.microphoneGranted
     @Published var axOK = Permissions.isAccessibilityTrusted
-    /// 权限页被用户明确跳过（跳过后 Continue 放行，但警告一直留着）
-    @Published var skippedPermissions = false
+    /// 用户点过那条「先跳过」（跳过后「继续」/「完成」放行，但那一行警告一直留着）。
+    /// 权限页和「试一下」那一页共用这一位：两处跳的是同一件事——带着缺口走出引导。
+    @Published var skippedEssentials = false
     /// 权限齐了自动往下翻，但**只翻一次**：翻回来再看一眼的人不该被又推走
     @Published var autoAdvanced = false
     /// AI 现在真的跑得起来吗（不是"点过没点过"）。最后一屏的三种收尾读这一个值。
@@ -56,6 +63,23 @@ final class OnboardingModel: ObservableObject {
 
     /// 「配好了而且润色开着」。footer 里那颗「跳过（只用本地）」按钮按它决定露不露面。
     var aiReady: Bool { aiStatus == .ready }
+
+    /// 三件必办的事此刻办到哪一步。权限读的是这里轮询到的那两位（界面上看到什么，
+    /// 判据就是什么），模型/云端 Key 现问一次。判断本身全在 FirstRunEssentials 里。
+    func essentials() -> FirstRunEssentials {
+        FirstRunEssentials(hotkeyConfirmed: Settings.shared.hotkeyConfirmed,
+                           microphone: micOK,
+                           accessibility: axOK,
+                           modelReady: RecognitionEngineReadiness.current().isReady)
+    }
+
+    /// 第一屏点「继续」= 他确认了用这颗键。默认值（右 Option）也必须点这一下：
+    /// 这一屏教的就是"按哪颗键"，没看过它的人后面每一句「轻点 右 Option」都无从照做。
+    static func confirmHotkey() {
+        guard !Settings.shared.hotkeyConfirmed else { return }
+        Settings.shared.hotkeyConfirmed = true
+        Log.info("Onboarding hotkey confirmed=\(Settings.shared.hotkey.rawValue)")
+    }
 
     /// 重算 aiStatus。凭据的判断一律走 LLMClient.credential（本机模型没有 Key 才是正常状态）；
     /// **润色档位也要看**——选了「只用本地」的人钥匙串里那把 Key 还在，只看凭据的话
@@ -89,6 +113,31 @@ final class OnboardingModel: ObservableObject {
 /// 引导里那几句"要按状态二选一"的话，抽成纯函数只为一件事：单测钉得住
 /// ——英文侧不许出现中文字符或全角标点，而且有 Key / 没 Key 两种收尾不能串台。
 enum OnboardingCopy {
+
+    /// 第一屏那颗热键选择器下面**唯一**那一行。选择器本身已经把三颗键的名字写全了，
+    /// 这一行只回答他此刻真正会问的那个问题：现在不想选行不行。
+    static var hotkeyChoice: String {
+        tr("默认右 Option，随时能改", "Right Option by default; change it any time")
+    }
+
+    /// 唯一的出口（用户 2026-09-20 拍板）。做成一条链接而不是按钮：它不是「继续」的同级选项，
+    /// 而是"我知道会怎样，先这样"——按钮会让人以为这是两条一样正当的路。
+    static var skipForNow: String { tr("先跳过", "Skip for now") }
+
+    /// 点过「先跳过」之后露出来的那一行。只说事实，不劝也不吓唬——
+    /// 他已经做了决定，这一行是为了让他以后看到"轻点没反应"时知道是怎么回事。
+    static var dictationUnavailable: String {
+        tr("听写暂不可用", "Dictation will not work yet")
+    }
+
+    /// 下载失败或被取消之后那颗按钮。对刚看着进度条掉下来的人，
+    /// 「下载模型」像是什么都没发生过，「重试下载」才对得上他看见的事。
+    static var retryDownload: String { tr("重试下载", "Retry download") }
+
+    /// 引导里计入文案预算的那几行（SettingsCopy.allCaptions 把它们并进同一张表逐条量：
+    /// 设置页那条 16 字的线对引导同样成立，两处不该各有一套尺子）。
+    static var captions: [String] { [hotkeyChoice, dictationUnavailable] }
+
     /// 第三屏的标题。这一屏就是设置页那一个决定的首配版本，名字必须和那里一致。
     static var usageHeadline: String {
         tr("使用方式（可选，随时能改）", "How you use MicType (optional, changeable any time)")
@@ -138,9 +187,9 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         model.page = page
         model.micOK = Permissions.microphoneGranted
         model.axOK = Permissions.isAccessibilityTrusted
-        // 上一轮点过「暂时跳过」的标记不能跨次留着：回头重走一遍引导的人，多半正是因为
+        // 上一轮点过「先跳过」的标记不能跨次留着：回头重走一遍引导的人，多半正是因为
         // 上次跳过导致热键不工作——第二遍不拦他，他很容易又一路点过去
-        model.skippedPermissions = false
+        model.skippedEssentials = false
         // 上一遍试出来的那几句同样不留：重走一遍引导的人看到的应该是一个空框，
         // 而不是上次（很可能是没配好时）留下的半句话
         model.tryItText = ""
@@ -150,9 +199,14 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         // show(startAt: .permissions) 时页码没变，两件事一件都不做——模型不下，
         // 还会被留在视图里的那个 1 秒 Timer 在 1.8 秒后推到第三屏去。所以挪到这里。
         model.autoAdvanced = page == .permissions && model.micOK && model.axOK
-        if page == .permissions { OnboardingModel.startModelDownloadIfNeeded(force: false) }
+        // 「试一下」也要触发：上次没走完、这次从最后一屏接着走的人（模型没下好正是他被接回来的
+        // 原因），不该还得自己去点一次「下载模型」
+        if page == .permissions || page == .tryIt {
+            OnboardingModel.startModelDownloadIfNeeded(force: false)
+        }
         model.refreshAIReady()
-        Log.info("Onboarding show page=\(page.rawValue) aiStatus=\(model.aiStatus)")
+        Log.info("Onboarding show page=\(page.rawValue) aiStatus=\(model.aiStatus) "
+                 + model.essentials().logSummary)
 
         if window == nil {
             let hosting = NSHostingController(rootView: OnboardingView(model: model))
@@ -212,20 +266,44 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         return true
     }
 
+    /// 最后一屏的「完成」。**只有这一下和「先跳过」会把 onboardingCompleted 写真**
+    /// （用户 2026-09-20 拍板）。
     func finish() {
+        let essentials = model.essentials()
+        // 按钮在三件事齐活之前是灰的，走到这里只可能是齐了、或者他点过「先跳过」。
+        // 仍然守一道：⌘⏎ 那个默认动作不该绕过这条规则
+        guard essentials.canFinish || model.skippedEssentials else {
+            Log.warn("Onboarding finish blocked \(essentials.logSummary)")
+            return
+        }
         Settings.shared.onboardingCompleted = true
-        Log.info("Onboarding finished")
+        // 齐活之后收尾：把"带着缺口走的"那一位清掉，概览上那几个徽章也就该跟着消失
+        if essentials.canFinish { Settings.shared.onboardingSkippedEssentials = false }
+        Log.info("Onboarding finished \(essentials.logSummary) skipped=\(model.skippedEssentials)")
         window?.close()
     }
 
-    /// 中途点红叉也算"看过了"：不纠缠用户，设置页里随时能重新打开。
+    /// 「先跳过」：走出引导的**唯一**出口。
+    ///
+    /// 写两处状态：引导从此不再每次启动拦他（onboardingCompleted），以及"他是带着没办完的事走的"
+    /// （onboardingSkippedEssentials）——后者不催他，只让设置概览上那几个徽章继续挂着。
+    /// 不替他补任何东西，也不再劝一次：他已经在那一行字下面做了决定。
+    func skipEssentials() {
+        model.skippedEssentials = true
+        Settings.shared.onboardingSkippedEssentials = true
+        Settings.shared.onboardingCompleted = true
+        Log.warn("Onboarding essentials skipped at page=\(model.page.rawValue) "
+                 + model.essentials().logSummary)
+    }
+
+    /// 中途点红叉**不算走完**（用户 2026-09-20 拍板）：关掉窗口的人多半正卡在某一步上，
+    /// 下次启动会把他接回没走完的那一屏。4.0.1 这里顺手把 onboardingCompleted 写真，
+    /// 于是"关掉引导"成了一条悄悄绕过权限和模型的路，而他自己并不知道绕过了什么。
     func windowWillClose(_ notification: Notification) {
         // 窗口没了就别再截留文字：摘干净，之后的听写照常粘到光标处
         TranscriptSink.unregister()
-        if !Settings.shared.onboardingCompleted {
-            Settings.shared.onboardingCompleted = true
-            Log.info("Onboarding dismissed at page=\(model.page.rawValue)")
-        }
+        Log.info("Onboarding closed at page=\(model.page.rawValue) "
+                 + "completed=\(Settings.shared.onboardingCompleted)")
     }
 }
 
@@ -297,11 +375,14 @@ struct OnboardingView: View {
             Spacer()
             dots
             Spacer()
-            if model.page == .permissions && !bothGranted && !model.skippedPermissions {
-                Button(tr("暂时跳过", "Skip for now")) {
-                    model.skippedPermissions = true
-                    Log.warn("Onboarding permissions skipped mic=\(model.micOK) ax=\(model.axOK)")
+            // 唯一的出口：一条小链接，不是一颗和「继续」平起平坐的按钮。
+            // 点下去当场露出「听写暂不可用」那一行，然后才放行（见 skipEssentials）
+            if showsSkipLink {
+                Button(OnboardingCopy.skipForNow) {
+                    OnboardingWindowController.shared.skipEssentials()
                 }
+                .buttonStyle(.link)
+                .font(.caption)
             }
             // 「怎么用」那一屏的跳过 = 明确选「只用本地」（不配 AI 是正当选择，不留任何警告）。
             // 已经配通的人不需要这个按钮——那会让他怀疑自己刚配的东西是不是没生效。
@@ -314,11 +395,13 @@ struct OnboardingView: View {
                     step(1)
                 }
             }
-            Button(model.page == .tryIt ? tr("开始使用", "Start Using MicType")
+            Button(model.page == .tryIt ? tr("完成", "Done")
                                         : tr("继续", "Continue")) {
                 if model.page == .tryIt {
                     OnboardingWindowController.shared.finish()
                 } else {
+                    // 第一屏的「继续」就是"这颗键我认了"（默认值也算，见 confirmHotkey）
+                    if model.page == .welcome { OnboardingModel.confirmHotkey() }
                     step(1)
                 }
             }
@@ -341,17 +424,34 @@ struct OnboardingView: View {
         }
     }
 
-    private var bothGranted: Bool { model.micOK && model.axOK }
+    /// 三件必办的事此刻办到哪一步。这一层在观察 model（权限每秒轮询）和 downloader
+    /// （下完时 isDownloading 翻面），所以该重算的时候界面自己会重算。
+    private var essentials: FirstRunEssentials { model.essentials() }
 
-    /// 两处会拦人：
-    ///   • 权限没齐——后面的「试一下」必然失败，先拦住比让他白试一次好；
-    ///   • 模型还在下（且用的是本机识别）——「开始使用」点下去只会得到一句"模型未下载"。
-    ///     取消下载按钮就在进度条上，所以这不是死路。
+    /// 两处拦人，拦的都是"点下去必然失败"的那一步（用户 2026-09-20 拍板：
+    /// 引导办不完这三件事就不能算走完）：
+    ///   • 权限没齐——热键和插入文字都不工作，后面的「试一下」必然是空的；
+    ///   • 模型没就绪——「完成」点下去只换来一句"模型未下载"。
+    /// 两处都由那条「先跳过」放行，别的出口一个都没有。
     private var continueDisabled: Bool {
-        if model.page == .permissions, !bothGranted, !model.skippedPermissions { return true }
-        if model.page == .tryIt, QwenModelDownloader.shared.isDownloading,
-           !RecognitionEngineChoice.parse(recognitionEngine).isCloud { return true }
-        return false
+        guard !model.skippedEssentials else { return false }
+        switch model.page {
+        case .permissions: return !essentials.permissionsGranted
+        case .tryIt: return !essentials.modelReady
+        // AI 那一屏永远不拦：轻点听写压根不需要 Key，把它做成关卡等于骗人
+        case .welcome, .howYouUse: return false
+        }
+    }
+
+    /// 出口只在"确实卡住了"的那两屏露面。下载正在跑的时候不摆：进度条就在上面，
+    /// 等一等比跳过好；他真不想等，进度条右边就有「取消」，取消完这条链接自然出现。
+    private var showsSkipLink: Bool {
+        guard !model.skippedEssentials else { return false }
+        switch model.page {
+        case .permissions: return !essentials.permissionsGranted
+        case .tryIt: return !essentials.modelReady && !downloader.isDownloading
+        case .welcome, .howYouUse: return false
+        }
     }
 
     private func step(_ delta: Int) {
@@ -365,49 +465,82 @@ struct OnboardingView: View {
 
 private struct WelcomePage: View {
     @ObservedObject private var l10n = L10n.shared
+    /// 直接绑设置本身：选完这一屏的每一句话（以及菜单栏第一行）当场换成新键名。
+    /// 第一屏就把这个决定做掉，是因为后面每一句操作说明都要念出这颗键的名字——
+    /// 4.0.1 把它留在设置页里，于是第一次上手的人先按着右 Option 学了一遍，
+    /// 想换键时还得自己去设置里找，而引导里的每一句话都还写着旧名字。
+    @AppStorage(SettingsKeys.hotkey) private var hotkey = HotkeyChoice.rightOption.rawValue
 
-    private var key: String { Settings.shared.hotkey.plainName }
+    private var choice: HotkeyChoice { HotkeyChoice(rawValue: hotkey) ?? .rightOption }
+    private var key: String { choice.plainName }
 
     var body: some View {
-        VStack(spacing: 18) {
-            Image(systemName: "mic.circle.fill")
-                .font(.system(size: 44))
-                .foregroundColor(.accentColor)
-            Text(tr("用一个键说话，文字直接落在光标处。",
-                    "Press one key, speak, and the text lands at your cursor."))
-                .font(.system(size: 16, weight: .medium))
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+        // ScrollView 是保险绳（与后面三屏同一个理由）：这一屏多了一个选择器，
+        // 英文界面下两张手势卡各要三行，窗口高度是写死的 470——挤爆时宁可能滚，
+        // 也不要把底部那句隐私文案裁掉。
+        ScrollView {
+            VStack(spacing: 16) {
+                Image(systemName: "mic.circle.fill")
+                    .font(.system(size: 40))
+                    .foregroundColor(.accentColor)
+                Text(tr("用一个键说话，文字直接落在光标处。",
+                        "Press one key, speak, and the text lands at your cursor."))
+                    .font(.system(size: 16, weight: .medium))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            HStack(alignment: .top, spacing: 14) {
-                GestureCard(symbol: "hand.tap",
-                            gesture: tr("轻点 \(key)", "Tap \(key)"),
-                            title: tr("本地听写", "Dictate"),
-                            detail: tr("说什么，打什么。识别全在本机完成。",
-                                       "Exactly what you said, typed out, recognized on this Mac."))
-                GestureCard(symbol: "hand.tap.fill",
-                            gesture: tr("按住 \(key) 说", "Hold \(key)"),
-                            title: tr("语音指令", "Command"),
-                            detail: tr("改写选中的文字、帮你起草回复、或直接下一条指令；松手执行。",
-                                       "Rewrite the selection, draft a reply, or just give an instruction; release to run."))
+                VStack(spacing: 5) {
+                    // 只摆右侧三颗（与设置页同一张表 HotkeyChoice.offered）：Fn 要先去系统设置里
+                    // 让系统放手，左侧几颗天天参与 ⌘C / ⌥← ——两类都得先上一课。
+                    // 老设置里存着的那一颗照常列出来，否则控件是空白的，看着像设置被弄丢了。
+                    Picker("", selection: $hotkey) {
+                        ForEach(HotkeyChoice.offered, id: \.rawValue) { option in
+                            Text(option.displayName).tag(option.rawValue)
+                        }
+                        if !HotkeyChoice.offered.contains(choice) {
+                            Text(choice.displayName).tag(choice.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Text(OnboardingCopy.hotkeyChoice)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .onChange(of: hotkey) { _, next in
+                    Log.info("Onboarding hotkey picked=\(next)")
+                }
+
+                HStack(alignment: .top, spacing: 14) {
+                    GestureCard(symbol: "hand.tap",
+                                gesture: tr("轻点 \(key)", "Tap \(key)"),
+                                title: tr("本地听写", "Dictate"),
+                                detail: tr("说什么，打什么。识别全在本机完成。",
+                                           "Exactly what you said, typed out, recognized on this Mac."))
+                    GestureCard(symbol: "hand.tap.fill",
+                                gesture: tr("按住 \(key) 说", "Hold \(key)"),
+                                title: tr("语音指令", "Command"),
+                                detail: tr("改写选中的文字、帮你起草回复、或直接下一条指令；松手执行。",
+                                           "Rewrite the selection, draft a reply, or just give an instruction; release to run."))
+                }
+
+                Text(tr("两种手势泾渭分明——MicType 从不猜你想要哪一种。",
+                        "Two gestures, no guessing — MicType never infers which one you meant."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+
+                // 引导里**唯一**一句隐私文案（Plan C：那六句只在关于页逐句摆出来，这里只说
+                // 第一次打开的人最该知道的那一条——默认不上传）。fixedSize：句子换行时必须
+                // 让它把高度撑开，否则窄窗口下后半句会被直接截掉。
+                Text(PrivacyCopy.audioStaysLocal)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            Text(tr("两种手势泾渭分明——MicType 从不猜你想要哪一种。",
-                    "Two gestures, no guessing — MicType never infers which one you meant."))
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-
-            // 引导里**唯一**一句隐私文案（Plan C：那六句只在关于页逐句摆出来，这里只说
-            // 第一次打开的人最该知道的那一条——默认不上传）。fixedSize：这一屏没有
-            // ScrollView，句子换行时必须让它把高度撑开，否则窄窗口下后半句会被直接截掉。
-            Text(PrivacyCopy.audioStaysLocal)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
     }
 }
 
@@ -514,8 +647,13 @@ private struct PermissionsPage: View {
                             .font(.caption)
                             .foregroundColor(.orange)
                         Spacer()
-                        Button(tr("下载模型", "Download model")) { startDownloadIfNeeded(force: true) }
-                            .controlSize(.small)
+                        // 刚看着进度条掉下来的人，「下载模型」像是什么都没发生过
+                        Button(downloader.phase.didNotFinish
+                               ? OnboardingCopy.retryDownload
+                               : tr("下载模型", "Download model")) {
+                            startDownloadIfNeeded(force: true)
+                        }
+                        .controlSize(.small)
                     }
                 }
 
@@ -526,9 +664,9 @@ private struct PermissionsPage: View {
                         .foregroundColor(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if model.skippedPermissions && !(model.micOK && model.axOK) {
-                    Text(tr("已跳过：在权限补齐之前，快捷键和文字插入都不会工作。",
-                            "Skipped: the hotkey and text insertion will not work until both are granted."))
+                // 点过「先跳过」之后露出来的那一行：一句话，没有第二句，也不再劝他回头
+                if model.skippedEssentials && !(model.micOK && model.axOK) {
+                    Text(OnboardingCopy.dictationUnavailable)
                         .font(.caption)
                         .foregroundColor(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -874,7 +1012,11 @@ private struct TryItPage: View {
             && !localModelMissing && !downloader.isDownloading && !modelReady
     }
 
-    private var key: String { Settings.shared.hotkey.plainName }
+    /// 第一屏选的那颗键。绑设置本身而不是读一次快照：用户从这一屏点「上一步」回去换一颗键，
+    /// 回来时这一页的每一句话都要跟着改名字
+    @AppStorage(SettingsKeys.hotkey) private var hotkey = HotkeyChoice.rightOption.rawValue
+
+    private var key: String { (HotkeyChoice(rawValue: hotkey) ?? .rightOption).plainName }
 
     var body: some View {
         // 这一页把「试一次」和原来的收尾页合在一起，内容不短：套上滚动才不会有一句是看不见的
@@ -924,11 +1066,22 @@ private struct TryItPage: View {
                             .foregroundColor(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer()
-                        Button(tr("下载模型", "Download model")) {
+                        // 取消过或失败过就写「重试下载」：这一屏的「完成」正等着它下好
+                        Button(downloader.phase.didNotFinish
+                               ? OnboardingCopy.retryDownload
+                               : tr("下载模型", "Download model")) {
                             OnboardingModel.startModelDownloadIfNeeded(force: true)
                         }
                         .controlSize(.small)
                     }
+                }
+
+                // 点过「先跳过」：说清他带着什么走。这一行和权限页那一行是同一句——
+                // 缺的是权限还是模型，对用户来说结果完全一样：轻点没反应
+                if model.skippedEssentials && !model.essentials().modelReady {
+                    Text(OnboardingCopy.dictationUnavailable)
+                        .font(.caption)
+                        .foregroundColor(.orange)
                 }
 
                 HStack {
