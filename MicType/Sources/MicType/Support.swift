@@ -76,6 +76,9 @@ enum TextPostProcessor {
         // 命中时还会把尾巴静默丢掉。必须排在下面两条之前：单字符复读会被 `(.{2,24}?)\1{2,}`
         // 按"两个字符一组"折叠成两个字，轮到官方那条单字符规则时已经不足 20 次了。
         t = collapseRepetitions(t)
+        // 词级复读的止损（探针实测的那条失败路径：语言漂移 → 开始翻译 → 掉进短语循环，
+        // 一直烧到 token 预算耗尽）。字符级那两条规则盖不住它——循环的那个短语往往超过 24 字符。
+        t = cutPhraseRepetition(t)
         // 折叠"复读机"式重复：同一短语连续出现 3 次以上时只保留一次
         t = replaceAll(t, "(.{2,24}?)\\1{2,}", "$1", options: [.dotMatchesLineSeparators])
         // 整大段内容被原样复述一遍也只保留一次
@@ -133,6 +136,47 @@ enum TextPostProcessor {
         return t
     }
 
+    /// 短语级复读的止损：同一个短语**连着重复 3 次、跨度到 4 个词**就在第一次出现之后截断，
+    /// 后面全部丢掉。
+    ///
+    /// 为什么需要它：mlx-swift-asr 的 maxRepetition 只数"同一个 token 连续 10 次"，
+    /// 而这个模型真实的跑飞长相是词级循环（探针录到的原话是 "the day of the day of the day…"
+    /// ——注意循环节是 3 个词，不是 4 个），上面那条字符级折叠又只认 ≤24 字符的片段。
+    /// 循环一旦开始，后面的内容全是垃圾，留着只会被原样插进用户的输入框——截断才是对的。
+    ///
+    /// 判据写成"循环节 period ≤ 8 个词、连着重复 repeats 次、且 period × repeats ≥ minWords"：
+    ///   • 循环节长度不写死，因为真实的循环节可长可短（"the day of" 是 3）；
+    ///   • 跨度门槛（默认 4 个词）挡住"好 好 好"「no no no」这种正常说话里的强调重复，
+    ///     那类单词重复由上面的字符级规则负责。
+    ///
+    /// 只处理靠空格断词的文字（英语、阿语……）：中日韩没有词边界，字符级那两条已经管住了。
+    /// 纯函数，可单测。
+    static func cutPhraseRepetition(_ text: String, minWords: Int = 4, repeats: Int = 3,
+                                    maxPeriod: Int = 8) -> String {
+        guard minWords > 0, repeats > 1, maxPeriod > 0 else { return text }
+        let words = text.split(whereSeparator: { $0.isWhitespace })
+        guard words.count >= minWords else { return text }
+        let keys = words.map { $0.lowercased() }
+        for start in 0..<words.count {
+            for period in 1...maxPeriod {
+                let span = period * repeats
+                guard span >= minWords, start + span <= words.count else { continue }
+                var isLoop = true
+                for offset in 0..<(period * (repeats - 1))
+                where keys[start + offset] != keys[start + offset + period] {
+                    isLoop = false
+                    break
+                }
+                guard isLoop else { continue }
+                // 留下第一份循环节，从第二份开始整段砍掉（Substring 带着它在原串里的位置，
+                // 所以截断点是原文里的真实位置，不用把词重新拼一遍、不动原有的空白与标点）
+                let cut = words[start + period - 1].endIndex
+                return String(text[text.startIndex..<cut])
+            }
+        }
+        return text
+    }
+
     // MARK: 分段拼接
 
     /// 分段识别结果的拼接（brief §3.3）。官方 `" ".join(...)` 对中文是错的——
@@ -157,19 +201,36 @@ enum TextPostProcessor {
         return out
     }
 
-    /// 缝上要不要空格。默认给空格，只有"两侧都是 CJK"这一种情况不给——
-    /// 判不准时多一个空格顶多难看，少一个空格会把两个西文/阿语词粘成一个不存在的词。
+    /// 缝上要不要空格。默认给空格，只有两种情况不给：
+    ///   • **两侧都是 CJK**（中日韩字形自带间距，插空格是排版错误）；
+    ///   • 右侧以收尾标点开头（", world" / "." / "」"）——那是上一句的尾巴被切到了下一段，
+    ///     标点前面不该有空格。
+    /// 其余一律一个空格：阿语和西文一样靠空格断词，判不准时多一个空格顶多难看，
+    /// 少一个空格会把两个词粘成一个不存在的词。
     static func needsSegmentSpace(after left: Unicode.Scalar, before right: Unicode.Scalar) -> Bool {
-        !(isCJKScalar(left) && isCJKScalar(right))
+        if isTrailingPunctuationScalar(right) { return false }
+        return !(isCJKScalar(left) && isCJKScalar(right))
     }
 
-    /// 中日韩文字与全角句读：这些字形自带间距，中间再插空格就是排版错误
+    /// 只会跟在前一个词屁股后面的标点：句读、收尾的括号引号。中英阿三套都算上。
+    private static func isTrailingPunctuationScalar(_ scalar: Unicode.Scalar) -> Bool {
+        ",.!?;:)]}\"'".unicodeScalars.contains(scalar)
+            || "，。！？、；：）」』”’…".unicodeScalars.contains(scalar)
+            || "،؟؛".unicodeScalars.contains(scalar)
+    }
+
+    /// 中日韩文字与全角句读：这些字形自带间距，中间再插空格就是排版错误。
+    /// **韩文也算**（谚文同样不靠空格断词组）——漏了它，韩语段落缝上会多出一个空格。
     private static func isCJKScalar(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
-        case 0x3000...0x303F,        // CJK 标点（。、！？…—）
+        case 0x1100...0x11FF,        // 谚文字母
+             0x3000...0x303F,        // CJK 标点（。、！？…—）
              0x3040...0x30FF,        // 平假名 / 片假名
+             0x3130...0x318F,        // 兼容谚文字母
              0x3400...0x4DBF,        // 扩展 A
              0x4E00...0x9FFF,        // 统一汉字
+             0xA960...0xA97F,        // 谚文字母扩展 A
+             0xAC00...0xD7AF,        // 谚文音节
              0xF900...0xFAFF,        // 兼容汉字
              0xFF01...0xFF65:        // 全角形式（，：；！？）
             return true
@@ -263,17 +324,26 @@ enum TextPostProcessor {
     /// 返回 nil = 通过；否则返回失败原因（写日志用，不直接给用户看）。
     /// 三条判据都是"模型跑飞"的强信号——数字被改、否定被吞、内容被大段砍掉，
     /// 正是语音输入里代价最高的三种错。宁可多回退一次原文，也不让改错的稿子进用户的输入框。
+    ///
+    /// 两条**刻意的容差**，都是阿语实测逼出来的（否则阿语等于用不上润色）：
+    ///   • 只动了标点/空白 → 直接放行。模型对阿语基本不吐标点（短句一个都没有），
+    ///     补标点正是润色在阿语上最主要的工作，不能被自己的保真校验判成跑飞；
+    ///   • 阿语里"数字变成数字符号" → 放行。阿语数字是**词**（خمسة 而不是 5），ITN 只能由润色做，
+    ///     所以纯新增数字算正常；但凡有一个数字被删或被改，照样拦（见 digitsOnlyAdded）。
     static func polishDriftCheck(raw: String, polished: String) -> String? {
         let r = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let p = polished.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !r.isEmpty else { return nil }
         if p.isEmpty { return "polished text is empty" }
 
+        // 0) 去掉标点与空白之后一模一样 → 这次润色只动了标点，不可能是跑飞
+        if strippedOfPunctuation(r) == strippedOfPunctuation(p) { return nil }
+
         // 1) 数字多重集：只看数字字符本身，所以 1,000 / 1000 / 1 000 视为一致；全角数字先折半角。
-        //    金额、日期、房号改错一位就是事故，这里不留容差。
+        //    金额、日期、房号改错一位就是事故，这里不留容差（阿语 ITN 那条容差见下）。
         let rawDigits = digitMultiset(r)
         let polDigits = digitMultiset(p)
-        if rawDigits != polDigits {
+        if rawDigits != polDigits, !(isMostlyArabic(r) && digitsOnlyAdded(raw: rawDigits, polished: polDigits)) {
             // **只报个数，绝不报数字本身**：这句话会被 Log.warn 写进日志，而「复制诊断信息」
             // 把今天日志的尾巴整段放进剪贴板，用户会把它贴进 issue。原样带上数字等于把他刚说的
             // 验证码 / 电话 / 金额漏出去（四位数按多重集也就 24 种排列）。
@@ -293,6 +363,44 @@ enum TextPostProcessor {
             return "too short raw=\(r.count) polished=\(p.count)"
         }
         return nil
+    }
+
+    /// 去掉标点与空白（数字、字母、汉字、阿语字母都留着）。
+    /// 只给 drift guard 的"只动了标点"那条容差用——**绝不进日志**，它带着用户说的原话。
+    private static func strippedOfPunctuation(_ text: String) -> String {
+        String(text.unicodeScalars.filter { scalar in
+            !(CharacterSet.punctuationCharacters.contains(scalar)
+              || CharacterSet.whitespacesAndNewlines.contains(scalar)
+              || CharacterSet.symbols.contains(scalar)
+              || "،؟؛۔".unicodeScalars.contains(scalar))
+        }.map(Character.init))
+    }
+
+    /// 这段文字是不是主要由阿语字母组成（阿语字母比西文字母 + 汉字都多）。
+    /// 判"要不要放过 ITN"这一件事用，宁可判严：判错的代价是阿语少一次润色，不是插入错数字。
+    static func isMostlyArabic(_ text: String) -> Bool {
+        var arabic = 0
+        var other = 0
+        for scalar in text.unicodeScalars {
+            switch scalar.value {
+            case 0x0620...0x06FF, 0x0750...0x077F, 0x08A0...0x08FF,
+                 0xFB50...0xFDFF, 0xFE70...0xFEFF:
+                arabic += 1
+            case 0x41...0x5A, 0x61...0x7A, 0xC0...0x24F,
+                 0x3040...0x30FF, 0x3400...0x4DBF, 0x4E00...0x9FFF:
+                other += 1
+            default:
+                break
+            }
+        }
+        return arabic > 0 && arabic > other
+    }
+
+    /// 润色只**新增**了数字（一个都没删、没改）。阿语口述里的数字是词，
+    /// 「خمسة」→「5」属于正常的 ITN；而「٢٠٢٦」→「2027」会在这里被挡住（6 没了）。
+    static func digitsOnlyAdded(raw: [Character: Int], polished: [Character: Int]) -> Bool {
+        for (digit, count) in raw where polished[digit, default: 0] < count { return false }
+        return true
     }
 
     private static func digitMultiset(_ text: String) -> [Character: Int] {

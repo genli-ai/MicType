@@ -592,13 +592,24 @@ final class CloudASRTests: XCTestCase {
         XCTAssertEqual(CloudTextJoiner.join(["one", "two", "three"]), "one two three")
     }
 
-    func testJoinerMixedScriptsPreferNoSpace() {
-        XCTAssertEqual(CloudTextJoiner.join(["中文结尾", "English start"]), "中文结尾English start")
-        XCTAssertEqual(CloudTextJoiner.join(["English end", "中文开头"]), "English end中文开头")
+    /// 只有"两侧都是中日韩"不加分隔符；中英混缝要一个空格，否则两个词会粘住
+    func testJoinerMixedScriptsGetOneSpace() {
+        XCTAssertEqual(CloudTextJoiner.join(["中文结尾", "English start"]), "中文结尾 English start")
+        XCTAssertEqual(CloudTextJoiner.join(["English end", "中文开头"]), "English end 中文开头")
     }
 
-    func testJoinerArabicNeighboursGetNoSeparator() {
-        XCTAssertEqual(CloudTextJoiner.join(["مرحبا", "بالعالم"]), "مرحبابالعالم")
+    /// 阿语靠空格断词：阿|阿、阿|西 都是一个空格（老实现把它当成"不加空格"的文字，
+    /// 会把两个阿语词粘成一个不存在的词）
+    func testJoinerArabicNeighboursGetOneSpace() {
+        XCTAssertEqual(CloudTextJoiner.join(["مرحبا", "بالعالم"]), "مرحبا بالعالم")
+        XCTAssertEqual(CloudTextJoiner.join(["الاجتماع", "Power BI"]), "الاجتماع Power BI")
+    }
+
+    /// 云端与本地两条链路必须拼出**逐字相同**的文本：云端失败会退回本地重跑一遍，
+    /// 同一段录音在两条路上拼法不同的话，用户会看到"重试之后空格变了"
+    func testJoinerMatchesTheLocalPipeline() {
+        let parts = ["الاجتماع غدا", "Power BI", "今天下午", "三点开会。", "done", ", and then"]
+        XCTAssertEqual(CloudTextJoiner.join(parts), TextPostProcessor.joinSegments(parts))
     }
 
     func testJoinerDropsEmptyPartsAndTrims() {
@@ -614,13 +625,13 @@ final class CloudASRTests: XCTestCase {
     }
 
     func testJoinerScriptDetection() {
-        XCTAssertTrue(CloudTextJoiner.isNoSpaceScript("中"))
-        XCTAssertTrue(CloudTextJoiner.isNoSpaceScript("。"))
-        XCTAssertTrue(CloudTextJoiner.isNoSpaceScript("ア"))
-        XCTAssertTrue(CloudTextJoiner.isNoSpaceScript("م"))
-        XCTAssertFalse(CloudTextJoiner.isNoSpaceScript("a"))
-        XCTAssertFalse(CloudTextJoiner.isNoSpaceScript("é"))
-        XCTAssertFalse(CloudTextJoiner.isNoSpaceScript("1"))
+        XCTAssertFalse(TextPostProcessor.needsSegmentSpace(after: "中", before: "文"))
+        XCTAssertFalse(TextPostProcessor.needsSegmentSpace(after: "。", before: "下"))
+        XCTAssertFalse(TextPostProcessor.needsSegmentSpace(after: "ア", before: "イ"))
+        XCTAssertTrue(TextPostProcessor.needsSegmentSpace(after: "م", before: "ب"))
+        XCTAssertTrue(TextPostProcessor.needsSegmentSpace(after: "a", before: "b"))
+        XCTAssertTrue(TextPostProcessor.needsSegmentSpace(after: "é", before: "a"))
+        XCTAssertTrue(TextPostProcessor.needsSegmentSpace(after: "1", before: "2"))
     }
 
     // MARK: - 上下文

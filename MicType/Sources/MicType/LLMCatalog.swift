@@ -367,7 +367,8 @@ enum LLMCatalog {
         }
     }
 
-    /// 搜索的钱是按次花的，开关旁必须写清单价（$10 / 1000 次 tool call，另计 token）
+    /// 联网搜索的单价——**全 App 唯一出处**。设置页开关旁与隐私说明（PrivacyCopy.webSearchBilled）
+    /// 都引用它，不许各写各的：两处价钱对不上的时候，用户没法知道哪句算数。
     static var webSearchPriceNote: String { tr("每次搜索约 $0.01（OpenAI 按 $10 / 1000 次计）外加 token 费用，默认关闭。",
                                        "About $0.01 per search (OpenAI bills $10 per 1000 calls) plus tokens. Off by default.") }
 

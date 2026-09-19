@@ -126,9 +126,31 @@ final class ModelCatalogTests: XCTestCase {
         XCTAssertEqual(models.count, 2)
         XCTAssertEqual(models.filter { $0.recommended }.count, 1)
         XCTAssertEqual(ModelCatalog.builtIn.recommendedModel?.repo, QwenModels.defaultRepo)
-        XCTAssertTrue(models.contains { $0.repo == QwenModels.largeRepo })
+        XCTAssertTrue(models.contains { $0.repo == "mlx-community/Qwen3-ASR-1.7B-4bit" })
         XCTAssertTrue(models.allSatisfy { $0.sizeBytes > 0 })
-        XCTAssertTrue(models.contains { $0.isRecommended(forLanguage: "ar") })
+    }
+
+    /// 实测推翻了「阿语该换 1.7B」：0.6B + 词汇表热词 12.5% → 4.0%，1.7B 基本不吃热词（16.8%）。
+    /// 所以目录里**不许**有任何语言专用推荐——那会让 ModelUpgrader 停止劝用户回到推荐档，
+    /// 也会在设置页劝他下 1.6 GB 去解决一个词汇表就能解决的问题。
+    func testNoModelIsRecommendedForASpecificLanguage() {
+        for model in ModelCatalog.builtIn.models {
+            XCTAssertTrue(model.recommendedFor.isEmpty,
+                          "\(model.repo) 不该带 recommendedFor：\(model.recommendedFor)")
+        }
+        XCTAssertFalse(ModelCatalog.builtIn.models.contains { $0.isRecommended(forLanguage: "ar") })
+    }
+
+    /// 5-bit 那两档**不进目录**：实测它把中文数字随手改写成阿拉伯数字，阿语一个标点都不吐
+    func testCatalogShipsNoFiveBitModels() {
+        XCTAssertFalse(ModelCatalog.builtIn.models.contains { $0.quant.contains("5bit") })
+    }
+
+    /// 1.7B 那一档的体量必须是真实的 1.61 GB（历史上写过「约 1.1 GB」，差了 500 MB）
+    func testLargeModelSizeIsAccurate() {
+        let large = ModelCatalog.builtIn.models.first { $0.repo.contains("1.7B") }
+        XCTAssertEqual(large?.sizeBytes, 1_607_630_579)
+        XCTAssertTrue(QwenModels.sizeNote(bytes: large?.sizeBytes ?? 0).contains("1.61 GB"))
     }
 
     /// 三份同源的清单必须逐字一致：仓库根的 model-catalog.json（远端取的就是它）、
@@ -183,7 +205,9 @@ final class ModelCatalogTests: XCTestCase {
     func testSizeNote() {
         // 十进制口径，和 HF 页面 / Finder 一致
         XCTAssertTrue(QwenModels.sizeNote(bytes: 861_775_040).contains("862 MB"))
-        XCTAssertTrue(QwenModels.sizeNote(bytes: 1_607_630_579).contains("1.6 GB"))
+        XCTAssertTrue(QwenModels.sizeNote(bytes: 1_607_630_579).contains("1.61 GB"))
+        // 1.01 GB 和 1.61 GB 在界面上必须分得出来（两位小数的理由）
+        XCTAssertTrue(QwenModels.sizeNote(bytes: 1_010_800_000).contains("1.01 GB"))
         // 目录漏写 sizeBytes 时不显示「约 0 MB」
         XCTAssertEqual(QwenModels.sizeNote(bytes: 0), "")
         XCTAssertEqual(QwenModels.sizeNote(bytes: -5), "")

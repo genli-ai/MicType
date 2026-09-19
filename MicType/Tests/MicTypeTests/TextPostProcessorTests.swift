@@ -221,6 +221,41 @@ final class TextPostProcessorTests: XCTestCase {
         XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "الموعد ٢٠٢٦", polished: "الموعد 2027."))
     }
 
+    /// 只补了标点（阿语最需要的那种润色）→ 一定放行。
+    /// 模型对阿语短句一个标点都不吐，补标点正是润色在这门语言上的主要工作。
+    func testDriftCheckAllowsPunctuationOnlyChanges() {
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(
+            raw: "الاجتماع غدا في الساعة التاسعة",
+            polished: "الاجتماع غدا، في الساعة التاسعة."))
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(raw: "今天下午三点开会 地点在二楼",
+                                                        polished: "今天下午三点开会，地点在二楼。"))
+    }
+
+    /// 阿语的数字是**词**（خمسة 而不是 5）：润色把它写成数字属于 ITN，不是改数字
+    func testDriftCheckAllowsArabicNumeralWordsBecomingDigits() {
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(
+            raw: "لدينا خمسة اجتماعات اليوم",
+            polished: "لدينا 5 اجتماعات اليوم."))
+    }
+
+    /// 但"新增"以外的一律照拦：删掉一个数字、改掉一位，在阿语里同样是事故
+    func testDriftCheckStillRejectsChangedDigitsInArabic() {
+        // 214 → 215：多重集不同（4 没了、5 冒出来）→ 拦住。
+        // （214 → 241 这种纯换位按设计算同一组数字，见 digitMultiset 的注释）
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "الغرفة 214", polished: "الغرفة 215."))
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "الغرفة 214", polished: "الغرفة."))
+        XCTAssertTrue(TextPostProcessor.digitsOnlyAdded(raw: [:], polished: ["5": 1]))
+        XCTAssertFalse(TextPostProcessor.digitsOnlyAdded(raw: ["6": 1], polished: ["7": 1]))
+    }
+
+    /// 非阿语文本不吃这条容差：英文/中文的数字是模型直接听出来的，凭空多一个就是跑飞
+    func testDriftCheckKeepsTheStrictDigitRuleForOtherScripts() {
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "we need five seats",
+                                                           polished: "we need 5 seats"))
+        XCTAssertFalse(TextPostProcessor.isMostlyArabic("we need five seats"))
+        XCTAssertTrue(TextPostProcessor.isMostlyArabic("لدينا خمسة اجتماعات"))
+    }
+
     // MARK: 复读折叠（Qwen 官方阈值）
 
     /// 上游 issue #129 式的样本：同一个字重复约 2000 次。
@@ -285,5 +320,86 @@ final class TextPostProcessorTests: XCTestCase {
         XCTAssertEqual(TextPostProcessor.joinSegments(["前半句", "", "后半句"]), "前半句后半句")
         XCTAssertEqual(TextPostProcessor.joinSegments(["", ""]), "")
         XCTAssertEqual(TextPostProcessor.joinSegments([]), "")
+    }
+
+    /// 阿语与西文混缝也是一个空格：阿语靠空格断词，和中日韩不是一回事
+    func testJoinsArabicAndLatinWithOneSpace() {
+        XCTAssertEqual(TextPostProcessor.joinSegments(["الاجتماع", "Power BI"]),
+                       "الاجتماع Power BI")
+        XCTAssertEqual(TextPostProcessor.joinSegments(["Power BI", "الاجتماع"]),
+                       "Power BI الاجتماع")
+        XCTAssertEqual(TextPostProcessor.joinSegments(["مرحبا", "بالعالم"]), "مرحبا بالعالم")
+    }
+
+    /// 只有"两侧都是中日韩"这一种情况不加分隔符
+    func testOnlyCJKNeighboursJoinWithoutASeparator() {
+        XCTAssertEqual(TextPostProcessor.joinSegments(["これは", "テスト"]), "これはテスト")
+        XCTAssertEqual(TextPostProcessor.joinSegments(["안녕", "하세요"]), "안녕하세요")
+        XCTAssertEqual(TextPostProcessor.joinSegments(["今天天气", "不错啊"]), "今天天气不错啊")
+    }
+
+    /// 下一段以收尾标点开头（上一句的尾巴被切过来了）→ 标点前不加空格
+    func testJoinDoesNotSpaceBeforeTrailingPunctuation() {
+        XCTAssertEqual(TextPostProcessor.joinSegments(["hello", ", world"]), "hello, world")
+        XCTAssertEqual(TextPostProcessor.joinSegments(["done", "."]), "done.")
+        XCTAssertEqual(TextPostProcessor.joinSegments(["الاجتماع", "، غدا"]), "الاجتماع، غدا")
+    }
+
+    /// 缝上永远不会出现两个空格（每段先去首尾空白再拼）
+    func testJoinNeverProducesDoubleSpaces() {
+        let joined = TextPostProcessor.joinSegments(["  one  ", " two ", "", "  three  "])
+        XCTAssertEqual(joined, "one two three")
+        XCTAssertFalse(joined.contains("  "))
+    }
+
+    // MARK: 短语级复读的止损
+
+    /// 短语连着出现 3 次 = 模型掉进循环了：留第一份循环节，后面全砍掉。
+    /// 探针录到的真实样本就是这个形状（语言漂移 → 开始翻译 → 循环到烧完 token），
+    /// 循环节是 "the day of" 这三个词。
+    func testCutsPhraseLevelRepetition() {
+        let text = "we will meet the day of the day of the day of the day of the"
+        XCTAssertEqual(TextPostProcessor.cutPhraseRepetition(text), "we will meet the day of")
+    }
+
+    /// 四词循环节同样要认（探针之外最常见的另一种形状）
+    func testCutsFourWordPhraseLoop() {
+        let text = "please send the report please send the report please send the report ok"
+        XCTAssertEqual(TextPostProcessor.cutPhraseRepetition(text), "please send the report")
+    }
+
+    /// 单词重复不归它管（跨度不足 4 个词）：正常说话里的强调重复不许被砍
+    func testKeepsShortEmphaticRepeats() {
+        XCTAssertEqual(TextPostProcessor.cutPhraseRepetition("no no no we are not going"),
+                       "no no no we are not going")
+    }
+
+    /// 阿语同样按词处理（阿语也靠空格断词）
+    func testCutsPhraseLevelRepetitionInArabic() {
+        let loop = "في الساعة التاسعة صباحا "
+        let text = "الاجتماع " + String(repeating: loop, count: 4)
+        let cut = TextPostProcessor.cutPhraseRepetition(text)
+        XCTAssertEqual(cut, "الاجتماع في الساعة التاسعة صباحا")
+    }
+
+    /// 只重复两次不算循环：真实口述里"再说一遍"很常见，砍掉就是丢字
+    func testKeepsPhraseRepeatedOnlyTwice() {
+        let text = "the day of the the day of the and then we go"
+        XCTAssertEqual(TextPostProcessor.cutPhraseRepetition(text), text)
+    }
+
+    /// 正常长文一个字都不许动
+    func testPhraseCutLeavesNormalTextAlone() {
+        let text = "we start at nine and finish by noon, then the review begins"
+        XCTAssertEqual(TextPostProcessor.cutPhraseRepetition(text), text)
+        XCTAssertEqual(TextPostProcessor.cutPhraseRepetition("短句"), "短句")
+        XCTAssertEqual(TextPostProcessor.cutPhraseRepetition(""), "")
+    }
+
+    /// 清理管线里也要真的生效（按段做、拼接之前）
+    func testCleanTranscriptCutsPhraseLoops() {
+        let text = "the meeting is on the day of the day of the day of the day of the"
+        let cleaned = TextPostProcessor.cleanTranscript(text, fillerWords: [])
+        XCTAssertFalse(cleaned.contains("the day of the day of the day"))
     }
 }

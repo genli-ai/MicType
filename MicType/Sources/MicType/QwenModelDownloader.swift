@@ -114,6 +114,11 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
         progress = 0
         phase = .fetchingList
         try? FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
+        // 下载一开始就把目录标成"没下完"：逐文件写入意味着中途的目录里可能已经有了
+        // model.safetensors，而 tokenizer/config 还没到。带着这个标记的目录一律不算"已装"
+        // （QwenModels.isFullyDownloaded），所以半份模型永远不会被拿去加载。
+        // 取消 / 失败时**故意留着**标记：那份目录确实还不完整，下次点下载会续传并在完成时清掉。
+        markIncomplete()
         fetchFileList()
     }
 
@@ -124,6 +129,22 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
         session = nil
         isDownloading = false
         phase = .cancelled
+    }
+
+    // MARK: - 「没下完」标记
+
+    /// 写标记。写不进去（磁盘满 / 权限）不算错误路径：最坏只是回到没有标记的老行为，
+    /// 绝不能因为一个标记文件写不了就让整次下载失败。
+    private func markIncomplete() {
+        guard let dir = destDir else { return }
+        let marker = dir.appendingPathComponent(QwenModels.incompleteMarkerName)
+        try? Data().write(to: marker, options: .atomic)
+    }
+
+    private func clearIncomplete() {
+        guard let dir = destDir else { return }
+        try? FileManager.default.removeItem(
+            at: dir.appendingPathComponent(QwenModels.incompleteMarkerName))
     }
 
     // MARK: - 文件清单
@@ -224,6 +245,8 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
     private func downloadNextFile() {
         guard !cancelled else { return }
         guard fileIndex < files.count else {
+            // 清单里的文件一个不少地落盘了，这一刻才算"下完"——标记删掉，模型这才对外可用
+            clearIncomplete()
             isDownloading = false
             progress = 1
             phase = .completed(fileCount: files.count)
@@ -277,8 +300,7 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
             let defaults = UserDefaults.standard
             let localSHA = defaults.string(forKey: remoteSHAKey(repo))
             let localModified = defaults.string(forKey: remoteModifiedKey(repo))
-            let modelPath = QwenModels.localDirectory(for: repo).appendingPathComponent("model.safetensors").path
-            let hasLocalModel = FileManager.default.fileExists(atPath: modelPath)
+            let hasLocalModel = QwenModels.isFullyDownloaded(repo: repo)
 
             if let remoteSHA = remote.sha, let localSHA = localSHA {
                 if remoteSHA == localSHA {

@@ -9,11 +9,13 @@ import Combine
 // 因此这里只做三件事，且顺序不许换：
 //   1. **提示**（目录里有更好的 / 已装仓库有新修订）——非模态横幅 + 菜单栏一条，永不弹窗打断；
 //   2. **一键装**（下到新仓库自己的目录 → 校验 → 原子切换设置）——换不换永远是用户点的；
-//   3. **清理**（删旧模型）——只在新模型**真实听写成功过一次之后**才动手。
+//   3. **清理**（删旧模型）——要同时满足：新模型**真实听写成功过一次**，且换模型之后
+//      **至少完整重启过一次**。
 //
-// 为什么第 3 步要等：旧模型是用户唯一的退路。下载完整、能加载，都不等于在他的机器上、他的
-// 麦克风上真的出字。等一次真实成功再删，最坏情况只是多占一次磁盘；反过来最坏情况是他明天
-// 开会前发现听写坏了、而旧模型已经被我们删了。
+// 为什么第 3 步要等这两件事：旧模型是用户唯一的退路。下载完整、能加载，都不等于在他的机器上、
+// 他的麦克风上真的出字；而一次成功的听写也只证明"这一刻它能跑"——权重冷加载、Metal 管线重建
+// 这些只有重启之后才会重走一遍。两个条件都过了再删，最坏情况只是多占一天磁盘；反过来最坏情况
+// 是他明天开会前发现听写坏了、而旧模型已经被我们删了。
 //
 // 失败一律回滚：校验不过 → 设置一个字不改（新文件留在旁边，下次重试能续传），横幅如实说明原因。
 
@@ -43,8 +45,8 @@ enum ModelUpgradeLogic {
     /// - dismissedRepo: 用户点过「以后再说」的那个仓库（只压提示，菜单栏入口仍在）
     ///
     /// 两条克制原则写在判断里：
-    ///   • 用户为某语言专门选了一档（如阿语选 1.7B，目录里标着 recommendedFor: ["ar"]），
-    ///     就**不再**拿通用推荐档去劝他换回来——那是替用户做主；
+    ///   • 用户为某语言专门选了一档（目录里给那一档标了 recommendedFor），就**不再**拿通用
+    ///     推荐档去劝他换回来——那是替用户做主。当前目录里没有任何语言专用档（见 CatalogModel）；
     ///   • 目标模型要求更高的 App 版本时，只说「需要更新 MicType」，绝不假装能装。
     static func decide(installedRepo: String,
                        catalog: [CatalogModel],
@@ -110,6 +112,20 @@ enum ModelUpgradeLogic {
             if file.size > 0 && local != file.size { return file.path }
             return nil
         }
+    }
+
+    /// 能不能删旧模型了。**两个条件都要满足**，顺序不限：
+    ///   ① 新模型在真实听写里成功出过一次字（succeeded）；
+    ///   ② 换模型之后 App 至少完整重启过一次（currentLaunch > switchLaunch）。
+    ///
+    /// 为什么非要加第二条：一次成功的听写只证明"这一刻它能跑"。真正会咬人的是冷启动——
+    /// 权重从磁盘加载、Metal 管线重建、内存不够时的那条路，全都只在重新启动之后才走一遍。
+    /// 旧模型是用户唯一的退路，多留一天几百 MB，换的是"明天开会前它起不来"时还有东西可退。
+    /// switchLaunch <= 0（老版本升上来、状态丢了）按"没记录"处理：宁可再等一次重启，也不冒险删。
+    static func mayCleanup(switchLaunch: Int, currentLaunch: Int, succeeded: Bool) -> Bool {
+        guard succeeded else { return false }
+        guard switchLaunch > 0 else { return false }
+        return currentLaunch > switchLaunch
     }
 
     /// 校验用的合成音频：1 秒 16 kHz 的低幅正弦。
@@ -317,9 +333,8 @@ final class ModelUpgrader: ObservableObject {
             .sink { [weak self] downloading in
                 guard let self = self, !downloading, self.inFlightRepo == repo else { return }
                 self.downloadObserver = nil
-                let dir = QwenModels.localDirectory(for: repo)
-                guard FileManager.default.fileExists(
-                    atPath: dir.appendingPathComponent("model.safetensors").path) else {
+                // 「下完了」= 权重在 + 下载器已经把 .incomplete 标记删掉（QwenModels.isFullyDownloaded）
+                guard QwenModels.isFullyDownloaded(repo: repo) else {
                     self.fail(tr("下载没有完成（已下好的文件保留，可以再点一次继续）",
                                  "The download did not finish - files already fetched are kept, click again to resume"))
                     return
@@ -417,8 +432,8 @@ final class ModelUpgrader: ObservableObject {
         QwenEngine.shared.preload()
         phase = .done
         statusText = tr("已切换到 ", "Now using ") + displayName(for: repo)
-            + tr("，旧模型会在下一次成功听写后自动清理",
-                 " - the old model is removed automatically after your next successful dictation")
+            + tr("，旧模型会在下一次成功听写并重启之后自动清理",
+                 " - the old model is removed automatically after your next successful dictation and a restart")
         Log.info("Model switch complete repo=\(repo) old=\(old) pendingCleanup=\(pendingCleanup.count)")
         apply(.none)
     }
@@ -444,19 +459,59 @@ final class ModelUpgrader: ObservableObject {
         set { d.set(newValue, forKey: SettingsKeys.pendingModelCleanup) }
     }
 
+    /// 换模型发生在第几次启动（0 = 没有待清理的换代）
+    private var switchLaunch: Int {
+        get { d.integer(forKey: SettingsKeys.pendingCleanupLaunch) }
+        set { d.set(newValue, forKey: SettingsKeys.pendingCleanupLaunch) }
+    }
+
+    /// 新模型真实听写成功过没有（跨重启保留，所以是 UserDefaults 而不是内存标志）
+    private var cleanupSucceeded: Bool {
+        get { d.bool(forKey: SettingsKeys.pendingCleanupSucceeded) }
+        set { d.set(newValue, forKey: SettingsKeys.pendingCleanupSucceeded) }
+    }
+
+    /// 本次是第几次启动。AppDelegate 启动时调一次 noteAppLaunch() 把它 +1。
+    var launchCount: Int { d.integer(forKey: SettingsKeys.appLaunchCount) }
+
+    /// App 启动时调一次：启动计数 +1，然后看看上一次换的模型现在够不够条件删旧的。
+    /// 「至少重启过一次」这条门槛就是靠这个计数实现的（见 ModelUpgradeLogic.mayCleanup）。
+    func noteAppLaunch() {
+        d.set(launchCount + 1, forKey: SettingsKeys.appLaunchCount)
+        cleanupIfAllowed()
+    }
+
     private func addPendingCleanup(_ repo: String) {
         let repo = repo.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !repo.isEmpty, repo != Settings.shared.qwenModelRepo else { return }
+        // 这一轮换代的两个前提从头记：发生在第几次启动、还没有成功听写过
+        switchLaunch = max(1, launchCount)
+        cleanupSucceeded = false
         var list = pendingCleanup
         guard !list.contains(repo) else { return }
         list.append(repo)
         pendingCleanup = list
     }
 
-    /// 新模型在真实听写里成功出字过一次 → 现在可以删旧的了。
-    /// 由 QwenEngine 的成功路径调用（主线程）。没有待清理项时什么都不做，开销为零。
+    /// 新模型在真实听写里成功出字过一次。由 QwenEngine 的成功路径调用（主线程）。
+    /// **记下来不等于立刻删**：还要等至少一次重启（见 ModelUpgradeLogic.mayCleanup）。
+    /// 没有待清理项时什么都不做，开销为零。
     func noteSuccessfulTranscription() {
         guard !pendingCleanup.isEmpty else { return }
+        if !cleanupSucceeded { cleanupSucceeded = true }
+        cleanupIfAllowed()
+    }
+
+    /// 两个条件都满足了才真删。够不着就安静留着，下一次启动 / 下一次成功听写会再问一遍。
+    private func cleanupIfAllowed() {
+        guard !pendingCleanup.isEmpty else { return }
+        guard ModelUpgradeLogic.mayCleanup(switchLaunch: switchLaunch,
+                                           currentLaunch: launchCount,
+                                           succeeded: cleanupSucceeded) else {
+            Log.info("Model cleanup deferred switchLaunch=\(switchLaunch) launch=\(launchCount)"
+                     + " succeeded=\(cleanupSucceeded) pending=\(pendingCleanup.count)")
+            return
+        }
         runCleanup()
     }
 
@@ -473,6 +528,8 @@ final class ModelUpgrader: ObservableObject {
                                                            catalogRepos: catalogRepos,
                                                            pendingRepos: pendingCleanup)
         pendingCleanup = []
+        switchLaunch = 0
+        cleanupSucceeded = false
         guard !victims.isEmpty else {
             Log.info("Model cleanup: nothing to remove selected=\(selected)")
             return

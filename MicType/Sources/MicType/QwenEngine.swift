@@ -45,11 +45,15 @@ enum QwenModels {
 
     /// 字节数 → 界面上那句「约 862 MB」。十进制口径（和 HF 页面、Finder 一致）。
     /// 0 / 负数（目录漏写 sizeBytes）→ 空字符串，绝不显示「约 0 MB」。
+    ///
+    /// GB 保留两位小数：这一行是用户决定要不要花流量的唯一依据，1.7B 那一档是 1.61 GB，
+    /// 按一位小数写成「1.6 GB」会和 0.6B 的 8bit 档（1.01 GB）一样含糊——差了 600 MB 的两档
+    /// 在界面上必须看得出来。（历史上这里还写死过一句「约 1.1 GB」，比四舍五入更糟。）
     static func sizeNote(bytes: Int64) -> String {
         guard bytes > 0 else { return "" }
         if bytes >= 1_000_000_000 {
             let gb = Double(bytes) / 1_000_000_000
-            return tr("约 ", "~") + String(format: "%.1f GB", gb)
+            return tr("约 ", "~") + String(format: "%.2f GB", gb)
         }
         let mb = Double(bytes) / 1_000_000
         return tr("约 ", "~") + String(format: "%.0f MB", mb)
@@ -65,12 +69,21 @@ enum QwenModels {
             .map { $0.lastPathComponent.replacingOccurrences(of: "__", with: "/") }
     }
 
-    /// 已经下载完（目录里有 model.safetensors）的仓库 ID
-    static func installedRepos() -> [String] {
+    /// 下载进行中的标记文件名。为什么需要它：下载是逐文件写进最终位置的，
+    /// model.safetensors 写完、tokenizer/config 还没下完的那几十秒里，
+    /// 「目录里有 model.safetensors」就已经成立了——这一刻按热键，引擎会去加载一个缺文件的模型，
+    /// 报一句看不懂的错。下载一开始就写这个标记、全部下完才删，带标记的目录一律不算"已装"。
+    static let incompleteMarkerName = ".incomplete"
+
+    /// 这个仓库目录里是不是一份**下完整**的模型。
+    /// 老用户（这个标记出现之前装好的模型）目录里没有标记 → 照样算完整，不会被判成要重下。
+    static func isFullyDownloaded(repo: String) -> Bool {
+        let dir = localDirectory(for: repo)
         let fm = FileManager.default
-        return repoDirectories().filter { repo in
-            fm.fileExists(atPath: localDirectory(for: repo).appendingPathComponent("model.safetensors").path)
+        guard !fm.fileExists(atPath: dir.appendingPathComponent(incompleteMarkerName).path) else {
+            return false
         }
+        return fm.fileExists(atPath: dir.appendingPathComponent("model.safetensors").path)
     }
 
     /// 一个模型目录占了多少字节（日志用；算不出来给 0）
@@ -84,15 +97,16 @@ enum QwenModels {
     }
 
     static let defaultRepo = "mlx-community/Qwen3-ASR-0.6B-6bit"
-    /// 更大的那一档。阿语上的差距远大于中英：Fleurs-ar 词错率 25.5%（0.6B）→ 17.0%（1.7B），
-    /// Common Voice ar 46.0% → 38.0%（技术报告）。所以选阿语时要主动推荐它，而不是默默用小模型。
-    static let largeRepo = "mlx-community/Qwen3-ASR-1.7B-4bit"
 
-    /// 「该不该推荐换大模型」的判定：只在**用户显式选了阿语**且当前还是小模型时为真。
-    /// 纯函数、可单测；只推荐不自动换——换模型要下载 1.1 GB，这种事永远由用户点。
-    static func recommendsLargeModel(languageCode: String, currentRepo: String) -> Bool {
-        languageCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ar"
-            && currentRepo != largeRepo
+    /// 一段音频该给多少 token 预算：**秒数 × 8 + 64**。
+    ///
+    /// 为什么必须显式传：库的默认值是 4096，而它内部又取 min(maxTokens, ceil(秒数*20)+64)——
+    /// 密集语音超过约 3.4 分钟（4096/20）就会**静默截断且不报错**。
+    /// 为什么是 8 不是 20：探针实测峰值出字速率 英语 3.5 字/秒、阿语 2.9、中文 2.7，
+    /// 8 已经是两倍余量；留的余量越大，一段跑飞的复读就烧得越久（4096 那次就是这么烧完的）。
+    /// 纯函数，可单测。
+    static func segmentMaxTokens(seconds: Double) -> Int {
+        Int(ceil(max(0, seconds) * 8)) + 64
     }
 
     /// 模型仓库在本地的存放目录
@@ -118,9 +132,11 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
         QwenModels.localDirectory(for: Settings.shared.qwenModelRepo)
     }
 
+    /// 模型能不能用。三个条件缺一不可：权重在、config.json 在、**没有 .incomplete 标记**——
+    /// 下到一半的目录里 model.safetensors 可能已经就位，按这个去加载只会在用户开口之后报错。
     var isModelAvailable: Bool {
         let dir = modelDirectory
-        return FileManager.default.fileExists(atPath: dir.appendingPathComponent("model.safetensors").path)
+        return QwenModels.isFullyDownloaded(repo: Settings.shared.qwenModelRepo)
             && FileManager.default.fileExists(atPath: dir.appendingPathComponent("config.json").path)
     }
 
@@ -235,6 +251,56 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
         }
     }
 
+    /// 录音**还在继续**时，把已经切好的一整段音频转成最终文字（预转写 / progressive）。
+    ///
+    /// 和 transcribePartial（悬浮窗灰字）完全是两回事：那一遍是给眼睛看的草稿，这一遍的结果
+    /// 会进最终文本，所以逐字走和松手后那一遍相同的口径——同样的 maxTokens 公式、同样的
+    /// cleanTranscript、同样的热词复读丢弃。松手时只剩最后一小截要转（3 分钟口述从等约 10 s
+    /// 变成等约 1 s），而峰值内存永远只是"一段"。
+    ///
+    /// 纪律与预览一致：模型没就绪就不跑（返回 nil，调用方安静退场，绝不替用户等加载），
+    /// 返回的 Task 可取消。completion 在主线程：(文字, 这一段检测到的语言)，失败给 (nil, nil)。
+    @discardableResult
+    func transcribeLiveSegment(samples: [Float],
+                               language: String?,
+                               previousText: String,
+                               completion: @escaping (String?, String?) -> Void) -> Task<Void, Never>? {
+        guard isModelReady, let load = loadTask else { return nil }
+        let vocabTerms = Settings.shared.vocabularyTerms
+        let languageCode = Settings.shared.recognitionLanguage
+        let context = RecognitionLanguages.segmentContext(terms: vocabTerms,
+                                                          languageCode: languageCode,
+                                                          previousText: previousText)
+        let seconds = Double(samples.count) / 16000.0
+        let maxTokens = QwenModels.segmentMaxTokens(seconds: seconds)
+        return Task {
+            guard let stt = try? await load.value else {
+                DispatchQueue.main.async { completion(nil, nil) }
+                return
+            }
+            if Task.isCancelled { return }
+            let started = DispatchTime.now()
+            do {
+                let result = try await stt.transcribe(audio: samples, language: language,
+                                                      context: context, maxTokens: maxTokens,
+                                                      temperature: 0.0)
+                if Task.isCancelled { return }
+                let cleaned = TextPostProcessor.cleanTranscript(result.text)
+                let text = TextPostProcessor.isVocabEcho(cleaned, terms: vocabTerms) ? "" : cleaned
+                let detected = RecognitionLanguages.lockableModelLanguage(result.language)
+                Log.info("Live segment ms=\(Log.ms(since: started))"
+                         + " audio=\(String(format: "%.1f", seconds))s chars=\(text.count)")
+                // 这一段的 mask / KV 立刻还回去：录音还在继续，内存要一直停在"一段"的量级
+                Qwen3ASRSTT.flushMemoryPool()
+                DispatchQueue.main.async { completion(text, detected) }
+            } catch {
+                if Task.isCancelled { return }
+                Log.warn("Live segment failed: " + String(error.localizedDescription.prefix(80)))
+                DispatchQueue.main.async { completion(nil, nil) }
+            }
+        }
+    }
+
     func preload() {
         guard isModelAvailable, ensureTokenizerFile() == nil else { return }
         _ = ensureLoadTask()
@@ -259,8 +325,12 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
             let started = DispatchTime.now()
             do {
                 let stt = try await Qwen3ASRSTT.loadWithWarmup(from: directory)
+                // temperature > 0 是**校验的关键**，不是随手填的：贪心解码（0.0）对着一段
+                // 没有内容的合成音会立刻吐 EOS，一个采样步都不走，等于只验了"模型加载得起来"。
+                // 给一点温度才会真的走完采样循环，把解码那几个 kernel 也跑一遍——
+                // 而"敢不敢删旧模型"正是押在这一遍上。
                 let result = try await stt.transcribe(audio: samples, language: nil,
-                                                     context: nil, temperature: 0.0)
+                                                     context: nil, temperature: 0.3)
                 // 只看「跑通了」，不看它把这段合成音听成了什么——合成音本来就没有内容。
                 // 长度进日志（不进内容），便于排查「加载成功但解码空转」这类怪事。
                 Log.info("Model verify transcription ok ms=\(Log.ms(since: started)) chars=\(result.text.count)")
@@ -350,25 +420,36 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
             var parts: [String] = []
             var joined = ""
             var failure: MTError?
+            // 语言锁：第一段自动检测出什么语言，后面几段就**显式**按那个语言转。
+            // 探针里那次 11 分钟的失败就是从语言漂移开始的——模型锁在英语上，开始把阿语
+            // 翻译成英语，翻着翻着掉进复读循环，直到烧完 token 预算。用户显式选过语言时
+            // （language != nil）本来就每段都传，这里只管"自动"那一档。
+            var lockedLanguage = language
             for (index, range) in plan.enumerated() {
                 // 取消的语义是"不再开新段"：正在解码的这一段停不下来（MLX 一次解码到底）
                 if handle.isCancelled { break }
                 let chunk = total == 1 ? samples : Array(samples[range])
                 let seconds = Double(chunk.count) / 16000.0
-                let maxTokens = Int(ceil(seconds * 20)) + 64
+                let maxTokens = QwenModels.segmentMaxTokens(seconds: seconds)
                 let context = RecognitionLanguages.segmentContext(terms: vocabTerms,
                                                                   languageCode: languageCode,
                                                                   previousText: joined)
                 let started = DispatchTime.now()
                 do {
-                    // language 为 nil 时走模型自动检测（默认）；用户显式选过就传英文全名
+                    // language 为 nil 时走模型自动检测（默认）；用户显式选过、或第一段已经
+                    // 检测出语言（语言锁）就传英文全名
                     let result = try await stt.transcribe(
                         audio: chunk,
-                        language: language,
+                        language: lockedLanguage,
                         context: context,
                         maxTokens: maxTokens,
                         temperature: 0.0
                     )
+                    if lockedLanguage == nil, total > 1,
+                       let detected = RecognitionLanguages.lockableModelLanguage(result.language) {
+                        lockedLanguage = detected
+                        Log.info("Segment language locked to \(detected)")
+                    }
                     // 复读折叠等清理**按段做、拼接之前**：一段跑飞不该污染整篇
                     let cleaned = TextPostProcessor.cleanTranscript(result.text)
                     let text = TextPostProcessor.isVocabEcho(cleaned, terms: vocabTerms) ? "" : cleaned
@@ -427,6 +508,9 @@ final class QwenEngine: SpeechEngine {
     func preload() {}
     func transcribePartial(samples: [Float],
                            completion: @escaping (String?, Int) -> Void) -> Task<Void, Never>? { nil }
+    @discardableResult
+    func transcribeLiveSegment(samples: [Float], language: String?, previousText: String,
+                               completion: @escaping (String?, String?) -> Void) -> Task<Void, Never>? { nil }
     func unloadModel() {}
     /// Intel 上没有引擎可验：直接失败，绝不让升级流程以为「验过了」而去删旧模型
     func verifyModel(directory: URL, samples: [Float], completion: @escaping (MTError?) -> Void) {

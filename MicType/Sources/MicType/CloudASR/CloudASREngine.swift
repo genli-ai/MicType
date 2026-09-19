@@ -77,68 +77,17 @@ struct CloudASRTranscription {
 
 // MARK: - 分段文本拼接
 
-/// 段与段之间要不要插空格，看两侧的文字系统。
-/// 与 DictationController 里"前一个字符是 ASCII 字母才补空格"的既有做法同源：
-/// 中日韩 / 阿拉伯语这些不靠空格断词的文字，插空格反而多一道伤口。
+/// 云端分段结果的拼接。**故意不自己实现**：本地分段用的是 TextPostProcessor.joinSegments，
+/// 两条链路缝出来的文本必须逐字一致（云端失败会原样退回本地重跑一遍，同一段录音在两条路上
+/// 拼法不同的话，用户会看到"重试之后空格变了"）。
+///
+/// 规则本身见 TextPostProcessor.needsSegmentSpace：只有两侧都是中日韩时不加分隔符；
+/// 阿拉伯语和西文一样靠空格断词，所以 阿|阿、阿|西、西|西 都是**一个**空格
+/// （老实现把阿语当成"不靠空格断词"，会把两个阿语词粘成一个不存在的词）。
 enum CloudTextJoiner {
 
-    /// 拼接分段结果：逐段去首尾空白、丢掉空段，按两侧文字系统决定分隔符
     static func join(_ parts: [String]) -> String {
-        var out = ""
-        for raw in parts {
-            let part = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !part.isEmpty else { continue }
-            if out.isEmpty {
-                out = part
-                continue
-            }
-            out += separator(leftEnd: out.last, rightStart: part.first) + part
-        }
-        return out
-    }
-
-    /// 两个相邻字符之间的分隔符：不靠空格断词的文字 → 空串；其余（西文等）→ 一个空格
-    static func separator(leftEnd: Character?, rightStart: Character?) -> String {
-        guard let left = leftEnd, let right = rightStart else { return "" }
-        // 任一侧已经是空白 / 换行 → 不再加
-        if left.isWhitespace || right.isWhitespace { return "" }
-        // 右侧以标点起头（句读、收尾括号引号）→ 不加空格
-        if isTrailingPunctuation(right) { return "" }
-        if isNoSpaceScript(left) || isNoSpaceScript(right) { return "" }
-        return " "
-    }
-
-    /// 不靠空格断词的文字系统：中日韩（含全角标点）与阿拉伯语系
-    static func isNoSpaceScript(_ ch: Character) -> Bool {
-        for scalar in ch.unicodeScalars {
-            let v = scalar.value
-            switch v {
-            case 0x1100...0x11FF,           // 韩文字母
-                 0x2E80...0xA4CF,           // 中日韩部首 / 假名 / 汉字 / 注音（含 CJK 标点）
-                 0xA960...0xA97F,           // 韩文字母扩展 A
-                 0xAC00...0xD7FF,           // 韩文音节
-                 0xF900...0xFAFF,           // 兼容汉字
-                 0xFE30...0xFE4F,           // 中日韩兼容形式
-                 0xFF00...0xFF60,           // 全角形式
-                 0xFFE0...0xFFE6,
-                 0x20000...0x3FFFF:         // 汉字扩展 B 及以后
-                return true
-            case 0x0600...0x06FF,           // 阿拉伯语
-                 0x0750...0x077F,           // 阿拉伯语补充
-                 0x08A0...0x08FF,           // 阿拉伯语扩展 A
-                 0xFB50...0xFDFF,           // 阿拉伯语表现形式 A
-                 0xFE70...0xFEFF:           // 阿拉伯语表现形式 B
-                return true
-            default:
-                continue
-            }
-        }
-        return false
-    }
-
-    /// 只可能贴在左边的标点（西文句读与收尾符号）
-    private static func isTrailingPunctuation(_ ch: Character) -> Bool {
-        ",.!?;:)]}\"'".contains(ch)
+        TextPostProcessor.joinSegments(parts)
     }
 }
 

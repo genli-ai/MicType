@@ -203,9 +203,6 @@ enum LLMProvider: String, CaseIterable {
         case .local: return LLMCatalog.LocalRuntime.ollama.baseURL
         }
     }
-    /// 该服务商的默认润色/指令型号（型号名一律来自 LLMCatalog，换代只改那一处）
-    var defaultPolishModel: String { LLMCatalog.polishDefault(for: self) }
-    var defaultCommandModel: String { LLMCatalog.commandDefault(for: self) }
 }
 
 // MARK: - 设置键
@@ -237,6 +234,9 @@ enum SettingsKeys {
     static let cloudAlibabaModel = "cloudAlibabaModel"      // 云端·阿里云用哪个识别模型
     static let modelCatalogLastCheck = "modelCatalogLastCheck"      // 上次查模型目录的时间（epoch 秒，0 = 没查过）
     static let pendingModelCleanup = "pendingModelCleanup"          // 等着删的旧模型仓库（升级后、首次成功听写前）
+    static let pendingCleanupLaunch = "pendingModelCleanupLaunch"   // 换模型发生在第几次启动（删旧模型要求之后至少重启过一次）
+    static let pendingCleanupSucceeded = "pendingModelCleanupSucceeded"  // 新模型已经真实听写成功过一次
+    static let appLaunchCount = "appLaunchCount"                    // App 启动过多少次（只用来判"换模型之后有没有重启过"）
     static let dismissedModelUpgradeRepo = "dismissedModelUpgradeRepo"  // 用户点过「以后再说」的那个模型仓库
     static let llmProvider = "llmProvider"
     static let appLanguage = "appLanguage"
@@ -293,6 +293,9 @@ final class Settings {
             // 模型目录 / 升级的本机状态（不进设置导出：跟这台机器的磁盘绑定）
             SettingsKeys.modelCatalogLastCheck: 0.0,
             SettingsKeys.pendingModelCleanup: [String](),
+            SettingsKeys.pendingCleanupLaunch: 0,
+            SettingsKeys.pendingCleanupSucceeded: false,
+            SettingsKeys.appLaunchCount: 0,
             SettingsKeys.dismissedModelUpgradeRepo: "",
             SettingsKeys.llmProvider: LLMProvider.openai.rawValue,
             SettingsKeys.deepseekBaseURL: LLMProvider.deepseek.defaultBaseURL,
@@ -645,11 +648,6 @@ final class Settings {
     /// 当前服务商的联网写法（各家形状不同，对外只有一个开关）
     var webSearchStyle: LLMCatalog.WebSearchStyle {
         LLMCatalog.searchStyle(provider: llmProvider, baseURL: currentBaseURL)
-    }
-
-    /// 这次调用到底要不要带搜索：开关开着 + 这个端点支持 + 是指令路径（由调用方保证）
-    var webSearchActive: Bool {
-        webSearchEnabled && webSearchStyle != .unsupported
     }
 
     var openaiCommandModel: String {

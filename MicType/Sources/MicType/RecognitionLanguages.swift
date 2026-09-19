@@ -85,6 +85,24 @@ enum RecognitionLanguages {
         return all.first { $0.code == trimmed }?.modelName
     }
 
+    /// 模型回报的「这一段是什么语言」→ 可以放心回传给模型的英文全名。
+    ///
+    /// 用在分段识别的**语言锁**上：第一段自动检测出语言，后面几段显式传它，防止中途漂移
+    /// （漂移 → 开始翻译 → 复读循环，探针里 11 分钟那次就是这么废的）。
+    /// 认不出来一律 nil = 后面几段继续自动检测：宁可不锁，也不能把一个模型没见过的字符串
+    /// 原样拼进 prompt（prompt 里写的就是 `language <这里>`）。纯函数，可单测。
+    static func lockableModelLanguage(_ detected: String?) -> String? {
+        guard let raw = detected?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty, raw.lowercased() != "auto" else { return nil }
+        let wanted = raw.lowercased()
+        // 英文全名优先（config.json 的 support_languages 就是这个口径）；
+        // 库有时把它 normalize 成语言代码，所以代码也认一次，但送出去的永远是全名
+        if let byName = all.first(where: { $0.modelName.lowercased() == wanted }) {
+            return byName.modelName
+        }
+        return all.first(where: { $0.code.lowercased() == wanted })?.modelName
+    }
+
     // MARK: 热词上下文
 
     /// 热词上下文的前缀跟着**会话语言**走，而不是永远中文。
@@ -96,6 +114,11 @@ enum RecognitionLanguages {
     ///   • 明确选了中文 / 粤语 → 中文前缀；
     ///   • Auto → 看词表本身有没有 CJK（用户的词表是中文的，会话大概率也是中文）；
     ///   • 其余语言（英语、阿语……）→ 英文前缀。
+    ///
+    /// **前缀永远不会是阿语**，这一条是实测钉死的（2026-09-19，阿英混说的那段素材）：
+    /// 英文前缀 "Common terms: " CER 4.04%、中文前缀「常用词汇：」4.38%，两者都行；
+    /// 换成阿语前缀反而涨到 13.8%，而且模型连标点都不吐了。所以阿语会话走英文前缀这一支，
+    /// 别再"贴心地"给它本地化一个阿语前缀。
     static func hotwordPrefix(languageCode: String, terms: [String]) -> String {
         if usesChinesePrefix(languageCode: languageCode, terms: terms) { return "常用词汇：" }
         return "Common terms: "

@@ -443,8 +443,7 @@ private struct ModelPage: View {
 
     private var modelExists: Bool {
         _ = refreshTick
-        let dir = QwenModels.localDirectory(for: repo)
-        return FileManager.default.fileExists(atPath: dir.appendingPathComponent("model.safetensors").path)
+        return QwenModels.isFullyDownloaded(repo: repo)
     }
 
     var body: some View {
@@ -515,8 +514,7 @@ private struct ModelPage: View {
             refreshTick += 1
             guard !downloading, downloadStarted else { return }
             // 下完了才继续：顺手预热模型，下一页"现场试一次"就不用干等冷启动
-            let dir = QwenModels.localDirectory(for: repo)
-            guard FileManager.default.fileExists(atPath: dir.appendingPathComponent("model.safetensors").path) else { return }
+            guard QwenModels.isFullyDownloaded(repo: repo) else { return }
             downloadStarted = false
             QwenEngine.shared.preload()
             Log.info("Onboarding model download complete, advancing")
@@ -795,7 +793,8 @@ private struct DonePage: View {
     private var key: String { Settings.shared.hotkey.shortSymbol }
 
     var body: some View {
-        // 这一页现在还带着 Key 与费用四句：窗口是固定 420 高，套上滚动才不会有一句是看不见的
+        // 这一页现在还带着 Key 与费用四句：窗口是固定 470 高（见 show() 里的 setContentSize，
+        // 为最挤的 AI 那一屏从 420 抬上来的），套上滚动才不会有一句是看不见的
         ScrollView {
             VStack(spacing: 14) {
                 Image(systemName: "checkmark.circle.fill")

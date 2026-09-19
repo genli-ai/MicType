@@ -65,36 +65,43 @@ final class AudioSegmenterTests: XCTestCase {
 
     // MARK: 有静音
 
-    /// 目标点附近有一个 ≥500ms 的停顿 → 刀落在停顿正中间，而不是 60 s 那个整数点
+    /// 目标点（45 s）附近有一个 ≥500ms 的停顿 → 刀落在停顿正中间，而不是 45 s 那个整数点
     func testCutsAtTheSilenceNearestTheTarget() {
         let total = samples(120)
-        let plan = AudioSegmenter.plan(frameRMS: frames(seconds: 120, silences: [(50.0, 50.8)]),
+        let plan = AudioSegmenter.plan(frameRMS: frames(seconds: 120, silences: [(44.0, 44.8)]),
                                        totalSamples: total)
         assertWellFormed(plan, total: total)
-        XCTAssertEqual(plan.count, 2)
-        // 停顿 50.0–50.8 s 的正中间 = 50.4 s
-        XCTAssertEqual(plan[0].upperBound, samples(50.4))
+        // 停顿 44.0–44.8 s 的正中间 = 44.4 s
+        XCTAssertEqual(plan[0].upperBound, samples(44.4))
     }
 
     /// 窗口里有两个停顿时取离目标点近的那个（不是第一个）
     func testPrefersTheSilenceClosestToTheTarget() {
         let total = samples(120)
         let plan = AudioSegmenter.plan(
-            frameRMS: frames(seconds: 120, silences: [(46.0, 46.8), (58.0, 58.8)]),
+            frameRMS: frames(seconds: 120, silences: [(42.2, 43.0), (44.6, 45.4)]),
             totalSamples: total)
-        XCTAssertEqual(plan.count, 2)
-        XCTAssertEqual(plan[0].upperBound, samples(58.4))
+        XCTAssertEqual(plan[0].upperBound, samples(45.0))
     }
 
     /// 太短的停顿（300ms，说话中的换气）不算下刀点
     func testIgnoresSilenceShorterThanTheMinimum() {
         let total = samples(120)
         let plan = AudioSegmenter.plan(
-            frameRMS: frames(seconds: 120, silences: [(50.0, 50.3), (62.0, 62.9)]),
+            frameRMS: frames(seconds: 120, silences: [(44.0, 44.3), (46.0, 46.9)]),
             totalSamples: total)
-        XCTAssertEqual(plan.count, 2)
-        // 62.0–62.9 s 这个停顿覆盖第 3100…3144 帧，正中间是第 3122 帧
-        XCTAssertEqual(plan[0].upperBound, 3122 * AudioSegmenter.frameSamples)
+        // 46.0–46.9 s 这个停顿覆盖第 2300…2344 帧，正中间是第 2322 帧
+        XCTAssertEqual(plan[0].upperBound, 2322 * AudioSegmenter.frameSamples)
+    }
+
+    /// 搜索窗口就是 ±3 s：窗口外的停顿（哪怕很长）一律不用，段长才可预期
+    func testSilenceOutsideTheSearchWindowIsIgnored() {
+        let total = samples(120)
+        let plan = AudioSegmenter.plan(
+            frameRMS: frames(seconds: 120, silences: [(30.0, 32.0)]),
+            totalSamples: total)
+        assertWellFormed(plan, total: total)
+        XCTAssertEqual(plan[0].upperBound, samples(AudioSegmenter.targetSeconds))
     }
 
     // MARK: 全程无静音
@@ -105,31 +112,47 @@ final class AudioSegmenterTests: XCTestCase {
         let total = samples(120)
         let plan = AudioSegmenter.plan(frameRMS: frames(seconds: 120), totalSamples: total)
         assertWellFormed(plan, total: total)
-        XCTAssertEqual(plan.count, 2)
-        XCTAssertEqual(plan[0].upperBound, samples(60))
+        XCTAssertEqual(plan[0].upperBound, samples(AudioSegmenter.targetSeconds))
     }
 
-    /// 没有真正的停顿，但目标点 ±3 s 内有一帧明显更安静 → 切在那一帧
+    /// 没有真正的停顿，但目标点 ±3 s 内有一帧**真的**安静（低于中位电平的 2%）→ 切在那一帧
     func testFallsBackToTheQuietestFrameNearTheTarget() {
         var frameRMS = frames(seconds: 120)
-        let quiet = Int(61.0 * Double(framesPerSecond))
-        frameRMS[quiet] = 0.05                       // 比静音线高，够不上"停顿"，但是窗口里最安静的
+        let quiet = Int(46.0 * Double(framesPerSecond))
+        frameRMS[quiet] = 0.001                      // 中位 0.3 的 0.33%：够安静，但不成"一个停顿"
         let total = samples(120)
         let plan = AudioSegmenter.plan(frameRMS: frameRMS, totalSamples: total)
-        XCTAssertEqual(plan.count, 2)
-        XCTAssertEqual(plan[0].upperBound, samples(61))
+        XCTAssertEqual(plan[0].upperBound, samples(46))
+    }
+
+    /// "最安静的一帧"只是稍微小声（高于中位电平的 2%）→ 这一带整片都在说话，切目标点。
+    /// 探针的原话：切在一个 RMS 3750 的"较安静帧"和硬切没有区别，段长可预期更值钱。
+    func testQuietFrameThatIsStillSpeechFallsBackToTheNominalPoint() {
+        var frameRMS = frames(seconds: 120)
+        frameRMS[Int(46.0 * Double(framesPerSecond))] = 0.05   // 中位 0.3 的 16%
+        let total = samples(120)
+        let plan = AudioSegmenter.plan(frameRMS: frameRMS, totalSamples: total)
+        XCTAssertEqual(plan[0].upperBound, samples(AudioSegmenter.targetSeconds))
     }
 
     // MARK: 长音频
 
-    /// 恰好 120 s（硬上限段长）：切成两段，每段都在合理区间里
-    func testExactlyOneHundredTwentySeconds() {
+    /// 目标段长 45 s（探针实测的平坦最优区间中点）——改了它就要重新跑一遍探针
+    func testTargetSegmentLengthIsFortyFiveSeconds() {
+        XCTAssertEqual(AudioSegmenter.targetSeconds, 45)
+        XCTAssertEqual(AudioSegmenter.searchWindowSeconds, 3)
+        XCTAssertEqual(AudioSegmenter.minSegmentSeconds, 10)
+    }
+
+    /// 120 s：按 45 s 切，最后一段并掉了不足 10 s 的尾巴
+    func testTwoMinutesSplitsIntoTargetSizedSegments() {
         let total = samples(120)
         let plan = AudioSegmenter.plan(frameRMS: frames(seconds: 120), totalSamples: total)
         assertWellFormed(plan, total: total)
-        XCTAssertEqual(plan.count, 2)
-        XCTAssertEqual(plan[0].count, samples(60))
-        XCTAssertEqual(plan[1].count, samples(60))
+        XCTAssertEqual(plan.count, 3)
+        XCTAssertEqual(plan[0].count, samples(45))
+        XCTAssertEqual(plan[1].count, samples(45))
+        XCTAssertEqual(plan[2].count, samples(30))
     }
 
     /// 8 分钟：段数与段长都必须可预期，且一个采样都不能丢
@@ -137,30 +160,75 @@ final class AudioSegmenterTests: XCTestCase {
         let total = samples(480)
         let plan = AudioSegmenter.plan(frameRMS: frames(seconds: 480), totalSamples: total)
         assertWellFormed(plan, total: total)
-        XCTAssertEqual(plan.count, 8)
         XCTAssertEqual(plan.reduce(0) { $0 + $1.count }, total)
         for range in plan {
-            XCTAssertGreaterThanOrEqual(Double(range.count) / Double(rate), 10)
-            XCTAssertLessThanOrEqual(Double(range.count) / Double(rate), 75)
+            XCTAssertGreaterThanOrEqual(Double(range.count) / Double(rate),
+                                        AudioSegmenter.minSegmentSeconds)
+            XCTAssertLessThanOrEqual(Double(range.count) / Double(rate),
+                                     AudioSegmenter.hardCapSeconds)
         }
     }
 
     /// 尾巴永远不会短于 10 s：宁可最后一段长一点，也不要一个 2 秒的碎片单独跑一次 encoder
     func testTailIsNeverShorterThanTheMinimumSegment() {
-        let total = samples(125)
-        let plan = AudioSegmenter.plan(frameRMS: frames(seconds: 125), totalSamples: total)
+        let total = samples(100)
+        let plan = AudioSegmenter.plan(frameRMS: frames(seconds: 100), totalSamples: total)
         assertWellFormed(plan, total: total)
         XCTAssertEqual(plan.count, 2)
         XCTAssertGreaterThanOrEqual(Double(plan[1].count) / Double(rate),
                                     AudioSegmenter.minSegmentSeconds)
     }
 
-    /// 10 分钟（新的录音上限）：段数有限、每段都在硬上限以内
+    /// 10 分钟（录音上限）：每段都在硬上限以内，总长一个采样不差
     func testTenMinutesStaysWithinTheHardCap() {
         let total = samples(600)
         let plan = AudioSegmenter.plan(frameRMS: frames(seconds: 600), totalSamples: total)
         assertWellFormed(plan, total: total)
-        XCTAssertEqual(plan.count, 10)
+        XCTAssertEqual(plan.reduce(0) { $0 + $1.count }, total)
+    }
+
+    // MARK: 录音中的预转写切点
+
+    /// 录够"目标段长 + 搜索窗口"才切：切点必须落在不会再变的音频上
+    func testLiveCutWaitsForTheWholeSearchWindow() {
+        let available = samples(47)
+        XCTAssertNil(AudioSegmenter.nextLiveCut(frameRMS: frames(seconds: 47),
+                                                consumed: 0, available: available))
+        let enough = samples(48)
+        XCTAssertNotNil(AudioSegmenter.nextLiveCut(frameRMS: frames(seconds: 48),
+                                                   consumed: 0, available: enough))
+    }
+
+    /// 切点规则与 plan() 同源：附近有停顿就切停顿正中间
+    func testLiveCutUsesTheSilenceNearTheTarget() {
+        let range = AudioSegmenter.nextLiveCut(
+            frameRMS: frames(seconds: 60, silences: [(44.0, 44.8)]),
+            consumed: 0, available: samples(60))
+        XCTAssertEqual(range, 0..<samples(44.4))
+    }
+
+    /// 第二段从上一段的末尾接着来，中间一个采样都不漏
+    func testLiveCutsAreContiguous() {
+        let framesRMS = frames(seconds: 200)
+        var consumed = 0
+        var cuts: [Range<Int>] = []
+        while let range = AudioSegmenter.nextLiveCut(frameRMS: framesRMS, consumed: consumed,
+                                                     available: samples(200)) {
+            XCTAssertEqual(range.lowerBound, consumed)
+            cuts.append(range)
+            consumed = range.upperBound
+        }
+        XCTAssertEqual(cuts.count, 4)                      // 45 × 4 = 180，剩下 20 s 是尾巴
+        XCTAssertEqual(consumed, samples(180))
+        XCTAssertEqual(samples(200) - consumed, samples(20))
+    }
+
+    func testLiveCutRejectsNonsenseInput() {
+        XCTAssertNil(AudioSegmenter.nextLiveCut(frameRMS: [], consumed: 0, available: 0))
+        XCTAssertNil(AudioSegmenter.nextLiveCut(frameRMS: frames(seconds: 60),
+                                                consumed: samples(60), available: samples(60)))
+        XCTAssertNil(AudioSegmenter.nextLiveCut(frameRMS: frames(seconds: 60),
+                                                consumed: -5, available: samples(60)))
     }
 
     // MARK: RMS 帧

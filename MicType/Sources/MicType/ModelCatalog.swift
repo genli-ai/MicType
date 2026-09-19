@@ -46,8 +46,11 @@ struct CatalogModel: Codable, Equatable, Identifiable {
     let languagesNote: LocalizedText
     /// 干净安装 / 一般用户的首选。目录里应当只有一个 recommended。
     let recommended: Bool
-    /// 「只在这些语言上更好」的语言代码（如 ["ar"]）。用户为某语言选了它之后，
+    /// 「只在这些语言上更好」的语言代码。用户为某语言选了它之后，
     /// 就不要再拿 recommended 那一档去劝他换回来——那属于替用户做主。
+    /// **当前目录里这一项恒为空**：2026-09-19 的实测推翻了「阿语该换 1.7B」这个推断——
+    /// 阿英混说的那一档，0.6B 加词汇表热词把 CER 从 12.5% 压到 4.0%，而 1.7B 基本不吃热词
+    /// （16.8%）。机制留着给将来真出现「某语言专用档」的时候用，别再凭跑分往里填语言。
     let recommendedFor: [String]
     /// 运行这个模型所需的最低 App 版本。比当前版本高 → 只提示「需要更新 MicType」，绝不假装能装。
     let minAppVersion: String
@@ -170,23 +173,23 @@ struct ModelCatalog: Codable, Equatable {
                 sizeBytes: 861_775_040,
                 quant: "6bit",
                 languagesNote: LocalizedText(
-                    zh: "30 种语言 + 22 种中文方言；中英文最稳，识别全程在本机。",
-                    en: "30 languages + 22 Chinese dialects; strongest on Chinese and English, fully on-device."),
+                    zh: "30 种语言 + 22 种中文方言；中英文最稳，阿语可用，识别全程在本机。",
+                    en: "30 languages + 22 Chinese dialects; strongest on Chinese and English, usable on Arabic, fully on-device."),
                 recommended: true,
                 recommendedFor: [],
                 minAppVersion: "4.0.0",
                 revision: nil),
             CatalogModel(
                 repo: "mlx-community/Qwen3-ASR-1.7B-4bit",
-                displayName: LocalizedText(zh: "Qwen3-ASR 1.7B 4bit（更准，稍慢）",
+                displayName: LocalizedText(zh: "Qwen3-ASR 1.7B 4bit（更准、更慢）",
                                            en: "Qwen3-ASR 1.7B 4-bit (more accurate, slower)"),
                 sizeBytes: 1_607_630_579,
                 quant: "4bit",
                 languagesNote: LocalizedText(
-                    zh: "阿拉伯语等语言明显更准（Fleurs-ar 词错率 25.5% → 17.0%）；方言仍不承诺。",
-                    en: "Clearly better on Arabic and similar languages (Fleurs-ar WER 25.5% to 17.0%); dialects are still not promised."),
+                    zh: "参数更大，整体更准，但实测慢约一倍、内存占用也更高；它对词汇表热词的响应不如 0.6B，夹英文专名的口述建议仍用推荐档加词汇表。",
+                    en: "A larger model: more accurate overall, but measured about twice as slow and heavier on memory. It responds to vocabulary hotwords less than the 0.6B model, so for speech with embedded English names the recommended model plus a vocabulary is still the better route."),
                 recommended: false,
-                recommendedFor: ["ar"],
+                recommendedFor: [],
                 minAppVersion: "4.0.0",
                 revision: nil),
         ])

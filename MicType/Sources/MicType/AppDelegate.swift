@@ -73,6 +73,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         routeFirstLaunch()
         reportPreviousUpdateResult()
+        // 启动计数 +1。它只有一个用途：换过模型之后「至少重启过一次」才允许删旧模型
+        // （顺带在这里问一次够不够条件删——上一轮换代的成功听写可能发生在上一次启动里）。
+        ModelUpgrader.shared.noteAppLaunch()
         // 模型目录：最多 24 小时查一次，查到更好的模型只在菜单栏和设置页里「摆出来」，
         // 绝不自动下载、绝不弹窗——启动这一刻用户想的是说话，不是换模型。
         ModelUpgrader.shared.refreshDecisionAtLaunch()

@@ -23,10 +23,6 @@ extension KeychainHelper {
     /// 那条旧条目要搬过来再删掉：否则用户在识别页填过的 Key 会凭空消失一次。
     static let legacyDashScopeAccount = "dashscope_api_key"
 
-    static func loadDashScopeKey() -> String? { loadAPIKey(account: dashScopeAccount) }
-    static func saveDashScopeKey(_ value: String) { saveAPIKey(value, account: dashScopeAccount) }
-    static func deleteDashScopeKey() { deleteAPIKey(account: dashScopeAccount) }
-
     /// 启动时调一次：把旧账号里的 Key 搬到统一账号上。
     /// **只在统一账号还空着时搬**——已经有值的那把是用户后来填的，绝不拿旧值盖掉它
     /// （"永不用空值/旧值覆盖已存 Key" 是 623d603 起的老规矩）。

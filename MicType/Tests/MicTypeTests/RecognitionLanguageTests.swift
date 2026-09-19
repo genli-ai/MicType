@@ -114,19 +114,44 @@ final class RecognitionLanguageTests: XCTestCase {
         XCTAssertTrue(TextPostProcessor.isVocabEcho("Common terms: Rappel", terms: ["Rappel"]))
     }
 
-    // MARK: 阿语模型推荐
+    // MARK: 热词前缀永远不是阿语
 
-    /// 只在「显式选了阿语 + 还在小模型」时推荐；推荐是一条可点的建议，不是自动切换
-    func testArabicRecommendsTheLargeModel() {
-        XCTAssertTrue(QwenModels.recommendsLargeModel(languageCode: "ar",
-                                                      currentRepo: QwenModels.defaultRepo))
-        XCTAssertFalse(QwenModels.recommendsLargeModel(languageCode: "ar",
-                                                       currentRepo: QwenModels.largeRepo))
-        XCTAssertFalse(QwenModels.recommendsLargeModel(languageCode: "zh",
-                                                       currentRepo: QwenModels.defaultRepo))
-        // Auto 不推荐：用户没说他要说阿语，我们就不替他判
-        XCTAssertFalse(QwenModels.recommendsLargeModel(languageCode: RecognitionLanguages.autoCode,
-                                                       currentRepo: QwenModels.defaultRepo))
+    /// 实测（2026-09-19）：英文前缀 4.04%、中文前缀 4.38%、**阿语前缀 13.8% 且不吐标点**。
+    /// 所以阿语会话必须走英文前缀这一支——这条测试就是拦住"好心给阿语本地化一个前缀"的。
+    func testArabicSessionsUseTheEnglishHotwordPrefix() {
+        XCTAssertEqual(RecognitionLanguages.hotwordPrefix(languageCode: "ar", terms: ["Power BI"]),
+                       "Common terms: ")
+        // 阿语词表 + 阿语会话也一样：前缀跟着"会话语言不是中文"走，不跟着词表的文字走
+        XCTAssertEqual(RecognitionLanguages.hotwordPrefix(languageCode: "ar", terms: ["الاجتماع"]),
+                       "Common terms: ")
+        XCTAssertEqual(RecognitionLanguages.hotwordSeparator(languageCode: "ar", terms: ["الاجتماع"]),
+                       ", ")
+        // 前缀只有两种可能，永远不含阿语字母
+        for code in RecognitionLanguages.all.map({ $0.code }) + [RecognitionLanguages.autoCode] {
+            let prefix = RecognitionLanguages.hotwordPrefix(languageCode: code, terms: ["Power BI"])
+            XCTAssertTrue(prefix == "Common terms: " || prefix == "常用词汇：", "prefix=\(prefix)")
+            XCTAssertFalse(prefix.unicodeScalars.contains { (0x0600...0x06FF).contains($0.value) })
+        }
+    }
+
+    // MARK: 语言锁
+
+    /// 第一段检测出的语言要能原样回传给模型（英文全名，逐字对齐 support_languages）
+    func testLockableModelLanguageAcceptsNamesAndCodes() {
+        XCTAssertEqual(RecognitionLanguages.lockableModelLanguage("Arabic"), "Arabic")
+        XCTAssertEqual(RecognitionLanguages.lockableModelLanguage("arabic"), "Arabic")
+        // 库有时给的是代码，送回去的仍然必须是全名（传 "ar" 等于往 prompt 里塞一句它没见过的话）
+        XCTAssertEqual(RecognitionLanguages.lockableModelLanguage("ar"), "Arabic")
+        XCTAssertEqual(RecognitionLanguages.lockableModelLanguage("Chinese"), "Chinese")
+    }
+
+    /// 认不出来一律不锁：宁可后面几段继续自动检测，也不能把乱码拼进 prompt
+    func testLockableModelLanguageRejectsGarbage() {
+        XCTAssertNil(RecognitionLanguages.lockableModelLanguage(nil))
+        XCTAssertNil(RecognitionLanguages.lockableModelLanguage(""))
+        XCTAssertNil(RecognitionLanguages.lockableModelLanguage("   "))
+        XCTAssertNil(RecognitionLanguages.lockableModelLanguage("auto"))
+        XCTAssertNil(RecognitionLanguages.lockableModelLanguage("Klingon"))
     }
 
     // MARK: 分段上下文

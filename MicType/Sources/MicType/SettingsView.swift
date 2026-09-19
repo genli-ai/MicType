@@ -204,15 +204,14 @@ private struct GeneralTab: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
             Toggle(tr("录音时显示实时识别草稿", "Show live transcript while recording"), isOn: $livePreview)
-            Text(tr("草稿只出现在悬浮窗里，永远不会输入到光标处；最终结果仍是松手后整段重新识别的那一版。",
-                    "The draft only appears in the floating window and never reaches your cursor; the final text is still the full re-transcription made when you finish."))
+            Text(tr("草稿只出现在悬浮窗里，永远不会输入到光标处；最终结果始终是识别管线自己转出来的那一版，与草稿无关。",
+                    "The draft only appears in the floating window and never reaches your cursor; the final text always comes from the recognition pipeline itself, never from the draft."))
                 .font(.caption)
                 .foregroundColor(.secondary)
             // 时长上限此前在界面上无处可查，用户第一次知道它存在就是被自动收尾那一刻。
-            // 具体秒数故意不写死在这段文案里：上限归识别链路（DictationController）管，
-            // 数字改了而这里忘了改，比不写数字更糟。
-            Text(tr("单次录音有时长上限：接近上限时悬浮窗会显示已录时长与上限，到点前会先提醒一次。长段口述按分段转写，每转完一段就显示一段；到上限时 MicType 会收尾，把你已经说的内容全部识别、全部插入。",
-                    "A single take has a length limit; as you get close, the overlay shows how long you have been recording against it and warns you shortly before the end. Long dictation is transcribed in segments, each shown as soon as it is ready, and at the limit MicType finishes up and inserts everything you have said."))
+            // 这句话连同里面的数字都由识别链路自己给（DictationController.recordingLimitCopy
+            // 读的是上限 / 预警提前量 / 分段长度这三个常量），界面这边一个数字都不写死。
+            Text(DictationController.recordingLimitCopy)
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -388,25 +387,19 @@ private struct RecognitionTab: View {
 
     private var modelExists: Bool {
         _ = refreshTick
-        let dir = QwenModels.localDirectory(for: qwenRepo)
-        return FileManager.default.fileExists(atPath: dir.appendingPathComponent("model.safetensors").path)
+        // 下到一半的目录不算"已就绪"（QwenModels.isFullyDownloaded 认 .incomplete 标记）
+        return QwenModels.isFullyDownloaded(repo: qwenRepo)
     }
 
-    /// 选了阿语却还在小模型上：出一条推荐行（只推荐，不自动换——1.1 GB 的下载由用户点）
-    private var showsArabicModelHint: Bool {
-        QwenModels.recommendsLargeModel(languageCode: recognitionLanguage, currentRepo: qwenRepo)
-    }
-
-    /// 1.7B 这一档的体量（字节）。目录里没有这一档（被下架）就给 0 → 按钮上不显示体量
-    private var largeModelSizeBytes: Int64 {
-        catalogStore.catalog.model(repo: QwenModels.largeRepo)?.sizeBytes ?? 0
-    }
-
-    /// 1.7B 是否已经下载过（决定推荐行的按钮是「切换并下载」还是「切换到」）
-    private var largeModelExists: Bool {
-        _ = refreshTick
-        let dir = QwenModels.localDirectory(for: QwenModels.largeRepo)
-        return FileManager.default.fileExists(atPath: dir.appendingPathComponent("model.safetensors").path)
+    /// 选了阿语：给一条**词汇表**提示。
+    ///
+    /// 这里原本是「阿拉伯语建议换 1.7B 模型」那条推荐行，2026-09-19 的实测把它推翻了：
+    /// 同一段阿英混说的素材，默认的 0.6B 无上下文 CER 12.5%，把英文专名加进词汇表（热词）
+    /// 之后降到 4.0%；而 1.7B 基本不吃热词，反而是 16.8%。所以对用户最有用的动作不是
+    /// 下 1.6 GB 换模型，而是把 Microsoft Excel、Power BI 这些词填进词汇表。
+    /// 1.7B 仍然在模型下拉框里，想换的人随时能换——只是不再由我们劝他换。
+    private var showsArabicVocabularyTip: Bool {
+        recognitionLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ar"
     }
 
     /// 当前选中模型的语言能力说明（来自模型目录；没写就不占一行）
@@ -479,9 +472,7 @@ private struct RecognitionTab: View {
 
     /// 升级按钮的标题：把体量写在按钮上（已经下载过就不必再提体量）
     private func upgradeButtonTitle(repo: String) -> String {
-        if FileManager.default.fileExists(
-            atPath: QwenModels.localDirectory(for: repo)
-                .appendingPathComponent("model.safetensors").path) {
+        if QwenModels.isFullyDownloaded(repo: repo) {
             return tr("升级并切换", "Upgrade and switch")
         }
         let size = upgrader.sizeNote(for: repo)
@@ -630,32 +621,19 @@ private struct RecognitionTab: View {
 
     @ViewBuilder
     private var localModelSection: some View {
-        if showsArabicModelHint {
+        if showsArabicVocabularyTip {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: "lightbulb")
                         .foregroundColor(.orange)
-                    Text(tr("阿拉伯语建议换 1.7B 模型", "Arabic works noticeably better on the 1.7B model"))
+                    Text(tr("阿拉伯语：把英文专名加进词汇表",
+                            "Arabic: put English product names in your vocabulary"))
                         .fontWeight(.medium)
                 }
-                Text(tr("阿语上 1.7B 比 0.6B 准得多（Fleurs 词错率 25.5% → 17.0%，Common Voice 46.0% → 38.0%）。\n能用的是现代标准阿语和朗读级内容；海湾、埃及等方言**不承诺**能用——那是模型的已知短板，不是设置问题。",
-                        "On Arabic the 1.7B model is far more accurate than the 0.6B one (Fleurs WER 25.5% to 17.0%, Common Voice 46.0% to 38.0%).\nModern Standard Arabic and read-aloud speech are usable. Gulf, Egyptian and other dialects are NOT promised - that is a known weakness of the model, not a setting you can fix."))
+                Text(tr("阿语口述里夹的英文品牌 / 产品名会被写成阿语字母（Microsoft Excel → معرفة أكسيل）。把它们加进「设置 → AI → 词汇表」，识别时会作为热词直接送进模型：实测字错率从 12.5% 降到 4.0%，比换更大的模型有效得多。\n能用的是现代标准阿语和朗读级内容；海湾、埃及等方言不承诺能用——那是模型的已知短板，不是设置问题。",
+                        "English brand and product names spoken inside Arabic come back transliterated into Arabic letters (Microsoft Excel becomes an Arabic spelling). Add them under Settings > AI > Vocabulary and they are fed to the model as hotwords: measured character error rate went from 12.5% down to 4.0%, far more than a bigger model buys you.\nModern Standard Arabic and read-aloud speech are usable. Gulf, Egyptian and other dialects are not promised - that is a known weakness of the model, not a setting you can fix."))
                     .font(.caption)
                     .foregroundColor(.secondary)
-                // 体量从模型目录取，不写死：模型换版、量化改了，这句话不该还是旧数字
-                Button(largeModelExists
-                        ? tr("切换到 1.7B 模型", "Switch to the 1.7B model")
-                        : tr("切换并下载 1.7B 模型（\(QwenModels.sizeNote(bytes: largeModelSizeBytes))）",
-                             "Switch and download the 1.7B model (\(QwenModels.sizeNote(bytes: largeModelSizeBytes)))")) {
-                    updateMessage = ""
-                    QwenEngine.shared.unloadModel()
-                    qwenRepo = QwenModels.largeRepo
-                    if !largeModelExists {
-                        downloader.download(repo: QwenModels.largeRepo, force: false)
-                    }
-                    refreshTick += 1
-                }
-                .disabled(downloader.isDownloading)
             }
         }
         // 升级横幅：非模态、可忽略，永不自动换模型（换代要下几百 MB，这种事只由用户点）

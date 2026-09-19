@@ -27,6 +27,19 @@ final class PrivacyCopyTests: XCTestCase {
         XCTAssertEqual(PrivacyCopy.keyAndCostLines.count, 4)
     }
 
+    /// 联网搜索的单价只有一个出处：隐私那句必须原样引用 LLMCatalog 的那一句。
+    /// 以前两处各写各的价钱，改一次价就会有两句话打架，用户不知道哪句算数。
+    func testWebSearchPriceHasASingleSource() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            XCTAssertTrue(PrivacyCopy.webSearchBilled.contains(LLMCatalog.webSearchPriceNote),
+                          "\(language) 下隐私文案没有引用 LLMCatalog.webSearchPriceNote")
+            // 价钱只出现一次（引用而不是复述）
+            XCTAssertEqual(PrivacyCopy.webSearchBilled.components(separatedBy: "10").count - 1,
+                           LLMCatalog.webSearchPriceNote.components(separatedBy: "10").count - 1)
+        }
+    }
+
     func testEveryLineIsPresentAndDistinctInBothLanguages() {
         for language in AppLanguage.allCases {
             L10n.shared.language = language
@@ -95,7 +108,8 @@ final class PrivacyCopyTests: XCTestCase {
         XCTAssertTrue(PrivacyCopy.noRetention.contains("store:false"))
         XCTAssertTrue(PrivacyCopy.keyInKeychain.contains("Keychain"))
         XCTAssertTrue(PrivacyCopy.youPayProvider.contains("pay the provider directly"))
-        XCTAssertTrue(PrivacyCopy.webSearchBilled.contains("off by default"))
+        // 单价那句由 LLMCatalog 提供（唯一出处），所以只认意思、不认大小写
+        XCTAssertTrue(PrivacyCopy.webSearchBilled.lowercased().contains("off by default"))
 
         L10n.shared.language = .zh
         XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("默认本地识别"))

@@ -118,6 +118,23 @@ final class DictationController {
     private var previewCommitted = ""
     /// 本轮跑成功的预览解码遍数（进性能指标：预览跑得越多，最终识别越可能在排队等 GPU）
     private var partialCount = 0
+    /// 录音中的预转写（progressive）状态，全部只在主线程读写。
+    /// 一句话说清它在干什么：录满一段（AudioSegmenter.targetSeconds）就**立刻**把那一段转成
+    /// 最终文字，松手时只剩最后一小截要转——3 分钟口述的等待从约 10 s 掉到约 1 s，
+    /// 峰值内存永远只是"一段"。草稿归草稿（灰字预览），这里出来的是要进输入框的字。
+    private var liveParts: [String] = []
+    /// 已经交给预转写的采样数（下一段从这里开始）
+    private var liveConsumed = 0
+    /// 每 20 ms 一帧的电平（增量算，别每次都扫整条缓冲）与已经算成帧的采样数
+    private var liveFrames: [Float] = []
+    private var liveFramedSamples = 0
+    /// 在飞的那一段预转写（可取消：松手/取消时立刻让出 GPU）
+    private var liveTask: Task<Void, Never>?
+    /// 第一段检测出的语言（语言锁）；用户显式选过语言时从一开始就是它
+    private var liveLanguage: String?
+    /// 预转写这一轮还作不作数。任何一段失败就置 false 并丢掉已转的部分——
+    /// 松手后照老路子把整段重转一遍。宁可白跑一次 GPU，也不交付一段来路不明的拼接文本。
+    private var liveActive = false
     /// 本轮的耗时草稿（P20 性能指标）：识别/润色各阶段算完填一格，插入完成时提交进 Metrics。
     /// 只在主线程读写。取消 / 识别失败的那些轮不提交——它们没有完整的一条耗时可记。
     private var pendingMetric: SessionMetricDraft?
@@ -151,9 +168,11 @@ final class DictationController {
     /// 而是按 60 s 分段顺序识别（AudioSegmenter），峰值内存与单段成正比、和总长无关；
     /// 模型本身支持 1200 s，这里只用一半，留足余量。
     private static let softHintSeconds: Double = 120
-    private static let maxRecordingSeconds: Double = 600
+    /// 单次录音硬上限。internal 而不是 private：设置页那句说明必须**读这个常量**，
+    /// 不许自己写一个数字（写死的数字改了这里就对不上，用户读到的就是假的）
+    static let maxRecordingSeconds: Double = 600
     /// 自动收尾前多久给预警：到点才知道有上限对用户毫无帮助，30 s 够说完一句话
-    private static let preFinishWarningSeconds: Double = 30
+    static let preFinishWarningSeconds: Double = 30
     /// 静音判据的电平阈值（AudioRecorder 送来的是 min(1, rms*14)）。比"没听到内容"的
     /// 闸门宽松些：这里只是判断"还在说吗"，判错的代价只是提前收尾。
     private static let silenceLevelThreshold: Float = 0.08
@@ -170,6 +189,11 @@ final class DictationController {
     /// 两遍预览之间的最小空闲间隙，以及"按实测耗时成比例"的那条下限（半个解码时长）
     private static let previewMinIdleSeconds: Double = 0.4
     private static let previewIdleLatencyRatio: Double = 0.5
+
+    /// 预转写最早从什么时候开始：录音超过"该分段"的门槛（AudioSegmenter.segmentThresholdSeconds）
+    /// 才动手。90 s 以内的录音行为与分段之前**完全一致**（一次过，一个字不差），
+    /// 这条门槛就是那句承诺的实现方式。
+    private static var liveSegmentAfterSeconds: Double { AudioSegmenter.segmentThresholdSeconds }
 
     /// 「换回识别原文」的有效期：过了就忘掉。撤销依赖目标应用的 undo 栈，
     /// 时间一长用户早就编辑过别的东西了，那时候再 ⌘Z 会撤错东西。
@@ -409,9 +433,12 @@ final class DictationController {
             // "之前的语音都保留不下来"——一段三分钟的口述里前两分钟是真东西，不是垃圾。
             // 三条限制：必须已经出过至少一段（没有就是普通取消）、必须是纯听写
             // （半句指令绝不能拿去执行）、同一轮只认第一次（再按一次就是彻底取消）。
+            // 「有东西可交付」有两种来源：这一遍已经转出来的段落，或者录音中预转写好的部分
+            // （尾巴通常只有一段，handle.completedSegments 还是 0，但前面几分钟的字已经在手上了）
             if let handle = inflightTranscription, !handle.isCancelled,
-               handle.completedSegments > 0, !skillSession {
-                Log.info("Transcription stopped by user after \(handle.completedSegments) segment(s)")
+               handle.completedSegments > 0 || !liveParts.isEmpty, !skillSession {
+                Log.info("Transcription stopped by user after \(handle.completedSegments) segment(s)"
+                         + " live=\(liveParts.count)")
                 handle.cancel()
                 overlay.updateProcessing(label: tr("收尾中…", "Wrapping up…"))
                 Sounds.playCancel()
@@ -454,6 +481,7 @@ final class DictationController {
         // 彻底取消时连后续段落也别跑了：结果反正会被代数挡掉，白占 GPU
         inflightTranscription?.cancel()
         inflightTranscription = nil
+        resetLiveSegments(active: false)
         // 云端那一路还要把在飞的 HTTP 请求真的掐掉（取消之后引擎不再回调，与 LLMClient 同约定）：
         // 只叫停"后续段落"的话，用户按了 Esc 还得等当前这一段传完、转完
         if sessionUsesCloud { cloudEngine?.cancel() }
@@ -524,6 +552,38 @@ final class DictationController {
         return String(format: "%d:%02d", whole / 60, whole % 60)
     }
 
+    /// 设置 → 录音 里那句说明。**数字全部来自常量**：上限、预警提前量、分段长度改了，
+    /// 这句话自己跟着变。这一条是被"界面上说 5 分钟、代码里其实是 10 分钟"坑出来的规矩
+    /// （用户唯一能查到上限的地方就是这行字，它和代码对不上等于骗人）。
+    /// 纯函数、可单测。
+    static var recordingLimitCopy: String {
+        let limit = minutesLabel(maxRecordingSeconds)
+        let warn = secondsLabel(preFinishWarningSeconds)
+        let segment = secondsLabel(AudioSegmenter.targetSeconds)
+        return tr("单次录音上限 \(limit)：接近上限时悬浮窗会显示已录时长与上限，"
+                  + "到点前 \(warn) 先提醒一次。长段口述在录音过程中就按每段约 \(segment) 边说边转，"
+                  + "每转完一段就显示一段；到上限时 MicType 会收尾，把你已经说的内容全部识别、全部插入。",
+                  "A single take is capped at \(limit). As you get close, the overlay shows how long you have "
+                  + "been recording against the cap and warns you \(warn) before the end. Long dictation is "
+                  + "transcribed while you speak, in segments of about \(segment), each shown as soon as it is "
+                  + "ready; at the cap MicType wraps up and inserts everything you have said.")
+    }
+
+    /// 「10 分钟」/「10 minutes」。不足整分钟的按秒说（常量以后改成 90 s 也不会读成 2 分钟）
+    static func minutesLabel(_ seconds: Double) -> String {
+        guard seconds >= 60, seconds.truncatingRemainder(dividingBy: 60) == 0 else {
+            return secondsLabel(seconds)
+        }
+        let minutes = Int(seconds / 60)
+        return tr("\(minutes) 分钟", "\(minutes) minutes")
+    }
+
+    /// 「30 秒」/「30s」
+    static func secondsLabel(_ seconds: Double) -> String {
+        let whole = Int(seconds.rounded())
+        return tr("\(whole) 秒", "\(whole)s")
+    }
+
     /// 整秒变了才去动悬浮窗（电平回调每 85ms 来一次）
     private func updateRecordingClock(elapsed: Double) {
         let second = Int(elapsed)
@@ -557,6 +617,9 @@ final class DictationController {
             softHintShown = true
             Log.info("Recording soft hint shown at \(Int(elapsed))s")
         }
+        // 录音中的预转写：够一段就转一段（闸门都在 updateLiveSegments 里）
+        updateLiveSegments()
+
         if softHintShown {
             if !finishWarningShown, elapsed >= Self.maxRecordingSeconds - Self.preFinishWarningSeconds {
                 finishWarningShown = true
@@ -690,6 +753,96 @@ final class DictationController {
         let needsSpace = (prefix.last?.isLetter == true && prefix.last?.isASCII == true)
             && (text.first?.isLetter == true && text.first?.isASCII == true)
         return prefix + (needsSpace ? " " : "") + text
+    }
+
+    // MARK: - 录音中的预转写（progressive）
+
+    /// 每一轮录音开始时复位。是否真的会跑还要看 updateLiveSegments 里那三道闸门。
+    private func resetLiveSegments(active: Bool) {
+        liveTask?.cancel()
+        liveTask = nil
+        liveParts = []
+        liveConsumed = 0
+        liveFrames = []
+        liveFramedSamples = 0
+        // 用户显式选了语言就从第一段开始锁着它；"自动"那一档由第一段的检测结果来填
+        liveLanguage = Settings.shared.recognitionModelLanguage
+        liveActive = active
+    }
+
+    /// 预转写这一轮作废：已经转好的部分全部丢掉，松手后按老路子整段重转。
+    private func abandonLiveSegments(_ reason: String) {
+        guard liveActive || !liveParts.isEmpty else { return }
+        Log.warn("Live segmentation abandoned (\(reason)) parts=\(liveParts.count)")
+        liveTask?.cancel()
+        liveTask = nil
+        liveActive = false
+        liveParts = []
+        liveConsumed = 0
+    }
+
+    /// 录音电平回调里顺手调一次（主线程，约每 85 ms）。够一段就切一段送去转写。
+    ///
+    /// 三道闸门，缺一不可：
+    ///   1. 这一轮开了预转写（本机引擎 + 纯听写 + 模型已就绪）；
+    ///   2. 录音已经过了"该分段"的门槛——90 s 以内一次过，行为和分段之前一模一样；
+    ///   3. 目标点之后的整个搜索窗口都已经录进来了（AudioSegmenter.nextLiveCut 判的就是这个），
+    ///      所以切点永远落在不会再变的音频上。
+    /// 同一时刻只允许一段在飞：GPU 由 Qwen3ASRSTT 这个 actor 串行，排队只会让松手等得更久。
+    private func updateLiveSegments() {
+        guard liveActive, phase == .recording, !skillSession, liveTask == nil else { return }
+        guard recorder.recordedDuration >= Self.liveSegmentAfterSeconds else { return }
+        updateLiveFrames()
+        guard let range = AudioSegmenter.nextLiveCut(frameRMS: liveFrames,
+                                                     consumed: liveConsumed,
+                                                     available: liveFramedSamples) else { return }
+        let chunk = recorder.snapshot(fromSampleIndex: range.lowerBound, maxCount: range.count)
+        guard chunk.count == range.count else { return }
+        let generation = self.generation
+        let previous = TextPostProcessor.joinSegments(liveParts)
+        liveTask = QwenEngine.shared.transcribeLiveSegment(
+            samples: chunk, language: liveLanguage, previousText: previous) { [weak self] text, detected in
+            guard let self = self else { return }
+            self.liveTask = nil
+            guard self.liveActive, self.phase == .recording, self.isCurrent(generation) else { return }
+            guard let text = text else {
+                // 一段没转出来就整轮作废：拼接文本里少一段是用户看不见的丢字，
+                // 比"松手后多等几秒重转一遍"严重得多
+                self.abandonLiveSegments("segment failed")
+                return
+            }
+            self.liveConsumed = range.upperBound
+            self.liveParts.append(text)
+            // 语言锁：第一段检测出什么，后面几段就按那个转（防漂移 → 翻译 → 复读）
+            if self.liveLanguage == nil, let detected = detected {
+                self.liveLanguage = detected
+                Log.info("Live segmentation language locked to \(detected)")
+            }
+            Log.info("Live segment landed parts=\(self.liveParts.count)"
+                     + " consumed=\(String(format: "%.0f", Double(self.liveConsumed) / 16000.0))s")
+            // 灰字预览接着从这一段的末尾往后看，已定稿的部分换成预转写的权威文本，
+            // 免得草稿把同一句话显示两遍。**关了草稿的人一个字都不该看到**：
+            // 预转写是为了快，不是偷偷把他关掉的东西打开（previewEnabled 才是那个开关的结论）。
+            guard self.previewEnabled else { return }
+            self.previewWindowStart = self.liveConsumed
+            self.previewCommitted = TextPostProcessor.joinSegments(self.liveParts)
+            self.overlay.showDraft(self.previewCommitted)
+        }
+        // 模型还没加载好（或刚被换掉）：这一段等下一次电平回调再试。切点不会变（永远是
+        // consumed + 目标段长），所以重试是幂等的；始终等不到就按老路子在松手后整段转。
+    }
+
+    /// 增量算帧电平：只对"新录进来的整帧"算一遍 RMS，绝不每次都扫整条缓冲
+    /// （10 分钟录音有 960 万个采样，每 85 ms 扫一遍主线程就别想干别的了）。
+    private func updateLiveFrames() {
+        let available = recorder.recordedSampleCount
+        let wholeFrames = (available - liveFramedSamples) / AudioSegmenter.frameSamples
+        guard wholeFrames > 0 else { return }
+        let count = wholeFrames * AudioSegmenter.frameSamples
+        let chunk = recorder.snapshot(fromSampleIndex: liveFramedSamples, maxCount: count)
+        guard chunk.count == count else { return }
+        liveFrames.append(contentsOf: AudioSegmenter.frameRMS(chunk))
+        liveFramedSamples += count
     }
 
     // MARK: - 换回识别原文（P9）
@@ -885,6 +1038,9 @@ final class DictationController {
             self.lastLoudAt = nil
             self.partialCount = 0
             self.pendingMetric = nil
+            // 录音中的预转写：只给本机引擎开（云端那一路有它自己的分段与计费口径，
+            // 录音中就开始上传会把"按秒计费"变成用户没预期的样子）。
+            self.resetLiveSegments(active: !self.sessionUsesCloud)
             // 上面刚响过的开始音会被这只麦克风录进去 → 开一道回声闸门。
             // 「按下即录」的那一声推迟到 revealPressSession()，闸门也在那里开。
             self.levelGateUntil = nil
@@ -910,6 +1066,14 @@ final class DictationController {
         // 先掐预览再往下走：最终那一遍识别要用的 GPU（actor）就在预览手上，
         // 越早取消，用户松手后等得越短
         stopLivePreview()
+        // 预转写同样就地封口：在飞的那一段作废（它的音频原样留在尾巴里，一个采样都不丢），
+        // liveActive 立刻置 false，已经排到主队列上的回调据此安静退场。
+        // **必须在下面那几条 early return 之前做**，否则一条迟到的回调会在 .idle 状态下
+        // 往悬浮窗上画草稿、还把 liveConsumed 推到尾巴后面去。
+        liveTask?.cancel()
+        liveTask = nil
+        let liveWasActive = liveActive
+        liveActive = false
         recordingStartedAt = nil
         // 录音已结束，这一段再也不会被"当成修饰键用"而作废了
         pressSession = false
@@ -928,6 +1092,7 @@ final class DictationController {
         case .tooShort:
             // 太短当作误触
             Log.info("Recording stop discarded \(levelLog) (<0.4s)")
+            resetLiveSegments(active: false)
             phase = .idle
             // 是设备变更把录音打断的就说清楚，别让用户以为是自己按错了
             if let fault = takeSessionNote() {
@@ -940,6 +1105,7 @@ final class DictationController {
         case .silent:
             // 几乎无声（误触或没说话）：不送识别——空音频会诱发模型把热词上下文"复读"成识别结果
             Log.info("Recording stop silence-gated \(levelLog)")
+            resetLiveSegments(active: false)
             phase = .idle
             // 有故障附注（设备被拔/切走、到最长时长自动收尾）＝真出了事，必须出声——
             // 眼睛不在屏幕底部的人只有这一声能提醒他这一轮被丢了。
@@ -974,9 +1140,21 @@ final class DictationController {
                                            partialCount: partialCount,
                                            cold: isColdStart)
 
-        startTranscription(engine: sessionEngine, usesCloud: sessionUsesCloud, samples: samples,
-                           faintAudio: faintAudio, isColdStart: isColdStart, tASR: tASR,
-                           generation: generation)
+        // 录音中已经转好的那些段落在这里收口：松手后只剩最后一小截要转。
+        // 任何一环不对劲（预转写作废 / 下标越界）都退回"整段重转"，绝不交付来路不明的拼接。
+        var pending = samples
+        var committed = ""
+        if liveWasActive, !liveParts.isEmpty, liveConsumed > 0, liveConsumed < samples.count {
+            committed = TextPostProcessor.joinSegments(liveParts)
+            pending = Array(samples[liveConsumed...])
+            Log.info("Live segmentation delivered parts=\(liveParts.count)"
+                     + " tail=\(String(format: "%.1f", Double(pending.count) / 16000.0))s"
+                     + " chars=\(committed.count)")
+        }
+
+        startTranscription(engine: sessionEngine, usesCloud: sessionUsesCloud, samples: pending,
+                           committed: committed, faintAudio: faintAudio, isColdStart: isColdStart,
+                           tASR: tASR, generation: generation)
     }
 
     /// 悬浮窗上"处理中"那句话。云端那一档必须当面写明音频正在上传——
@@ -995,7 +1173,10 @@ final class DictationController {
 
     /// 把这段音频交给某个引擎跑一遍。抽出来是为了云端失败之后能**原样再跑一遍本地引擎**
     /// （同一条交付链路、同一套提示），而不是在回调里复制一份下游逻辑。
+    /// - committed: 录音中已经预转写好的前半段文字（没开预转写就是空串）。它**只在这里**
+    ///   与尾巴拼起来——resolve 之后的所有下游（润色、指令、历史、插入）拿到的都是完整文本。
     private func startTranscription(engine: SpeechEngine, usesCloud: Bool, samples: [Float],
+                                    committed: String = "",
                                     faintAudio: Bool, isColdStart: Bool, tASR: DispatchTime,
                                     generation: Int) {
         // 长音频一段一段来：每完成一段就把已识别的文字贴到悬浮窗上（用户看得见进度），
@@ -1022,7 +1203,8 @@ final class DictationController {
                     self.addSessionNote(CloudFallbackDecision.fallbackNote(reason: failure.message))
                     self.overlay.showProcessing(Self.transcribingLabel(usesCloud: false))
                     self.startTranscription(engine: QwenEngine.shared, usesCloud: false,
-                                            samples: samples, faintAudio: faintAudio,
+                                            samples: samples, committed: committed,
+                                            faintAudio: faintAudio,
                                             // 本地这一遍多半是冷的（云端用户不会预加载模型）
                                             isColdStart: !QwenEngine.shared.isModelReady,
                                             tASR: DispatchTime.now(), generation: generation)
@@ -1033,7 +1215,7 @@ final class DictationController {
                     break
                 }
             }
-            switch self.resolve(outcome) {
+            switch self.resolve(outcome, committed: committed) {
             case .failure(let error):
                 Log.error("Transcription failed: \(error.message)")
                 self.phase = .idle
@@ -1163,13 +1345,15 @@ final class DictationController {
     /// 核心规矩：**尾巴没转完不等于这一轮作废**。第 3 段炸了、或者用户在第 2 段之后按了 Esc，
     /// 前面那些段是用户实打实说过的话，照常交付，只在提示里说清尾巴没转。
     /// 两个例外：一个字都没有（和从前一样按失败处理）；指令模式（半条指令绝不能拿去执行）。
-    private func resolve(_ outcome: TranscriptionOutcome) -> Result<String, MTError> {
+    private func resolve(_ outcome: TranscriptionOutcome, committed: String = "") -> Result<String, MTError> {
         if skillSession, !outcome.isComplete {
             return .failure(outcome.failure
                             ?? MTError(tr("指令没说完就停了，请重新按住说一次",
                                           "The command was cut short — hold the key and say it again")))
         }
-        if outcome.text.isEmpty {
+        // 录音中预转写好的前半段 + 松手后转的尾巴。拼接规则与引擎内部分段逐字同源。
+        let text = TextPostProcessor.joinSegments([committed, outcome.text])
+        if text.isEmpty {
             if let failure = outcome.failure { return .failure(failure) }
             if outcome.cancelled { return .failure(MTError(tr("已取消", "Cancelled"))) }
             // 真的什么都没识别出来：交给下游那句"没有听到内容"，别在这里另起一套提示
@@ -1179,14 +1363,25 @@ final class DictationController {
             let done = outcome.completedSegments
             let total = outcome.totalSegments
             Log.warn("Partial transcript delivered segments=\(done)/\(total)"
+                     + " committed=\(committed.count)chars"
                      + " reason=\(outcome.cancelled ? "cancelled" : "failed")")
+            // 录音中已经转好了前面几段、只有尾巴没转出来：段号对用户毫无意义（他看到的是
+            // 一整段口述），说清"结尾那一小截没转出来"就够了
+            if !committed.isEmpty, done == 0 {
+                addSessionNote(outcome.cancelled
+                    ? tr("已停在结尾那一小段之前，最后一截没有转写",
+                         "Stopped before the final part - the tail was not transcribed")
+                    : tr("结尾那一小段识别失败，前面的内容已输入",
+                         "The final part failed to transcribe - everything before it was inserted"))
+                return .success(text)
+            }
             addSessionNote(outcome.cancelled
                 ? tr("已停在第 \(done)/\(total) 段，后面的没有转写",
                      "Stopped after part \(done) of \(total) — the rest was not transcribed")
                 : tr("第 \(done + 1) 段识别失败，已输入前 \(done) 段",
                      "Part \(done + 1) failed to transcribe — parts 1-\(done) were inserted"))
         }
-        return .success(outcome.text)
+        return .success(text)
     }
 
     // MARK: - V3 语音技能（仅指令模式进入）

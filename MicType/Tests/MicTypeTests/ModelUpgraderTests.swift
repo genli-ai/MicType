@@ -25,6 +25,25 @@ final class ModelUpgraderTests: XCTestCase {
                      minAppVersion: minAppVersion)
     }
 
+    // MARK: 删旧模型的两道门
+
+    /// 两个条件都满足才删：真实听写成功过一次 **且** 换模型之后至少重启过一次。
+    /// 顺序不限——成功在重启前或重启后发生，结论一样。
+    func testCleanupNeedsBothASuccessAndARestart() {
+        // 成功了但还没重启（同一次启动）→ 不删
+        XCTAssertFalse(ModelUpgradeLogic.mayCleanup(switchLaunch: 7, currentLaunch: 7, succeeded: true))
+        // 重启了但还没成功听写过 → 不删（下载完整 ≠ 这台机器上真的出字）
+        XCTAssertFalse(ModelUpgradeLogic.mayCleanup(switchLaunch: 7, currentLaunch: 9, succeeded: false))
+        // 两个都满足 → 删
+        XCTAssertTrue(ModelUpgradeLogic.mayCleanup(switchLaunch: 7, currentLaunch: 8, succeeded: true))
+    }
+
+    /// 没有换代记录（老版本升上来、状态丢了）一律不删：宁可多占一次磁盘
+    func testCleanupWithoutASwitchRecordNeverRuns() {
+        XCTAssertFalse(ModelUpgradeLogic.mayCleanup(switchLaunch: 0, currentLaunch: 5, succeeded: true))
+        XCTAssertFalse(ModelUpgradeLogic.mayCleanup(switchLaunch: -1, currentLaunch: 5, succeeded: true))
+    }
+
     /// 当前这份目录（推荐档 = 已装的那一档）：没什么可提示的
     func testNothingToOfferWhenInstalledIsRecommended() {
         let catalog = [model(small, recommended: true), model(large, recommendedFor: ["ar"])]

@@ -46,10 +46,11 @@ enum PrivacyCopy {
            "You pay the provider directly; MicType never proxies your requests and never adds a markup.")
     }
 
-    /// 联网搜索是显式付费开关，默认关（调研 §1.6：OpenAI 约 $10 / 1000 次）
+    /// 联网搜索是显式付费开关，默认关。
+    /// **单价不在这里写**：它只有一个出处 LLMCatalog.webSearchPriceNote（设置页开关旁用的是
+    /// 同一句）。以前这里自己写了一遍「约每 1000 次 10 美元」，改一次价就会有两句话打架。
     static var webSearchBilled: String {
-        tr("联网搜索默认关闭，打开后由服务商按次计费（约每 1000 次 10 美元）。",
-           "Web search is off by default; when on, the provider bills it per search (about $10 per 1,000).")
+        tr("联网搜索：", "Web search: ") + LLMCatalog.webSearchPriceNote
     }
 
     /// 数据流向那两句：讲"东西去了哪里"，引导第一屏用
