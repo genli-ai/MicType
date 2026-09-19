@@ -16,7 +16,7 @@
       },
       "recommended": true,
       "recommendedFor": [],
-      "minAppVersion": "3.3.0",
+      "minAppVersion": "4.0.0",
       "revision": null
     },
     {
@@ -33,7 +33,7 @@
       },
       "recommended": false,
       "recommendedFor": [],
-      "minAppVersion": "3.3.0",
+      "minAppVersion": "4.0.0",
       "revision": null
     }
   ]
