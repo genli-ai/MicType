@@ -22,10 +22,15 @@ public sealed class AppSettings
     public LlmProvider LlmProvider { get; set; } = LlmProvider.OpenAi;
     public string OpenAiBaseUrl { get; set; } = "https://api.openai.com/v1";
     public string DeepSeekBaseUrl { get; set; } = "https://api.deepseek.com";
-    public string OpenAiPolishModel { get; set; } = "gpt-5.5";
-    public string OpenAiCommandModel { get; set; } = "gpt-5.4-mini";
-    public string DeepSeekPolishModel { get; set; } = "deepseek-v4-flash";
-    public string DeepSeekCommandModel { get; set; } = "deepseek-v4-flash";
+    // 出厂型号全部引 LlmModels 的常量，别在这里另写一份——两处值不一样的时候，
+    // 用户看到的默认和代码里认的"自动默认"对不上，迁移就会把他手填的值当成默认值改掉。
+    public string OpenAiPolishModel { get; set; } = LlmModels.OpenAiPolishDefault;
+    public string OpenAiCommandModel { get; set; } = LlmModels.OpenAiCommandDefault;
+    public string DeepSeekPolishModel { get; set; } = LlmModels.DeepSeekPolishDefault;
+    public string DeepSeekCommandModel { get; set; } = LlmModels.DeepSeekCommandDefault;
+    /// v4.0 型号迁移记账位。老 settings.json 里没有这个键 → 反序列化得 false → 迁移跑一次。
+    /// 所以它**必须**默认 false；出厂新设置走 Factory() 直接置 true。
+    public bool ModelsMigratedTo56 { get; set; }
     public double PolishTemperature { get; set; } = 0.5;
     public double CommandTemperature { get; set; } = 1.0;
     public string AboutMe { get; set; } = "";
@@ -103,6 +108,9 @@ public sealed class AppSettings
             .ToList();
     }
 
+    /// 出厂新设置：型号已经是 v4.0 的了，不需要再迁移（标记直接置位，免得首启动多写一遍文件）
+    internal static AppSettings Factory() => new() { ModelsMigratedTo56 = true };
+
     private static AppLanguage CultureDefaultLanguage()
     {
         var name = Thread.CurrentThread.CurrentUICulture.Name;
@@ -141,6 +149,9 @@ public sealed class SettingsStore
     private SettingsStore()
     {
         Current = Load();
+        // v4.0 一次性型号迁移：旧版写进设置的 deepseek-v4-flash 等型号已经下线（调用直接 404/400），
+        // 不改名的话用户每次润色 / 指令都失败，而错误只说「模型名不存在」，他无从知道是默认值死了。
+        if (LlmModels.ApplyMigration(Current)) Save();
     }
 
     public AppSettings Current { get; private set; }
@@ -159,6 +170,7 @@ public sealed class SettingsStore
     public void Reload()
     {
         Current = Load();
+        if (LlmModels.ApplyMigration(Current)) Save();
     }
 
     private static AppSettings Load()
@@ -167,19 +179,19 @@ public sealed class SettingsStore
         {
             if (!File.Exists(AppPaths.SettingsPath))
             {
-                var fresh = new AppSettings();
+                var fresh = AppSettings.Factory();
                 File.WriteAllText(AppPaths.SettingsPath, JsonSerializer.Serialize(fresh, JsonOptions));
                 return fresh;
             }
 
             var json = File.ReadAllText(AppPaths.SettingsPath);
-            return JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
+            return JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? AppSettings.Factory();
         }
         catch (Exception ex)
         {
             Log.Error(ex, "Failed to load settings");
             SelfHealCorruptFile();
-            return new AppSettings();
+            return AppSettings.Factory();
         }
     }
 
@@ -194,7 +206,7 @@ public sealed class SettingsStore
                 File.Move(path, path.Replace("settings.json", "settings.corrupt.json"), overwrite: true);
                 Log.Warn("Corrupt settings backed up to settings.corrupt.json and reset to defaults");
             }
-            File.WriteAllText(path, JsonSerializer.Serialize(new AppSettings(), JsonOptions));
+            File.WriteAllText(path, JsonSerializer.Serialize(AppSettings.Factory(), JsonOptions));
         }
         catch (Exception ex)
         {

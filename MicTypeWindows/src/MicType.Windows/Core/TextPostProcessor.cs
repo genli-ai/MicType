@@ -9,6 +9,9 @@ public static partial class TextPostProcessor
     private const string LatinOrDigit = "([A-Za-z0-9\\u00C0-\\u024F])";
     /// 西文"词内字符"类：只有西文词条才需要词边界，CJK 不需要
     private const string LatinClass = "[A-Za-z0-9\\u00C0-\\u024F]";
+    /// 西文字母（不含数字）的**内容**，用来拼进别的字符类。
+    /// 显式码点近似 Swift 的 \p{Latin}：基本拉丁 + Latin-1/扩展 A、B（À–ɏ）+ 扩展附加（Ḁ–ỿ，越南语）。
+    private const string LatinLetterClass = "A-Za-z\\u00C0-\\u024F\\u1E00-\\u1EFF";
     /// 阿语"词内字符"类：字母 + tatweel + 音符 + 阿拉伯-印度数字 + 扩展/表现形式区，
     /// **刻意排除** U+0600–061F（含读点 ، 分号 ؛ 问号 ؟）与 U+06D4 阿语句号 ۔ ——那些是词的边界。
     /// 写成显式码点区间而不是 \p{IsArabic}：后者是**区块**，会把上面那些句读一起算进词内字符。
@@ -104,7 +107,7 @@ public static partial class TextPostProcessor
     /// 中英混合标点修正。阿语三条纪律（与 Mac 端同源）：
     ///   1. ، ؟ ؛ **永远不转** ASCII——它们是阿语正字法的一部分，换掉就是改写用户说的话；
     ///   2. 全角句读后面紧跟阿语时也不转：那是一句阿语，句读不归西文一侧管；
-    ///   3. 补空格的"后随文字"类里排除阿语——往 RTL 文本里插空格只会插错位置。
+    ///   3. 补空格的"后随文字"类只含西文与汉字（白名单），阿语天然在外——往 RTL 文本里插空格只会插错位置。
     public static string FixMixedPunctuation(string text)
     {
         var value = text;
@@ -120,8 +123,12 @@ public static partial class TextPostProcessor
                 "$1" + half);
         }
 
-        // \p{L} 含阿语字母，所以这里要显式把阿语挡在外面（Mac 端用的是只含西文的 \p{Latin}）
-        return Regex.Replace(value, $"([.,!?;:])(?!{ArabicClass})([\\p{{L}}\\u4e00-\\u9fff])", "$1 $2");
+        // 后随文字类**只含西文字母与汉字**，和 Mac 端的 [\p{Latin}一-鿿] 同源。
+        // 别写成 \p{L}：那是"所有 Unicode 字母"，假名 / 谚文 / 西里尔 / 希伯来全都会命中，
+        // Mac 不补空格而 Windows 补（「API，はい」→ Mac "API,はい"、Windows "API, はい"），
+        // 而且每冒出一种新文字就得再加一条负向预查。白名单把阿语天然挡在外面，
+        // 原来那条 (?!阿语) 随之冗余，删掉。
+        return Regex.Replace(value, $"([.,!?;:])([{LatinLetterClass}\\u4e00-\\u9fff])", "$1 $2");
     }
 
     /// 阿拉伯-印度数字（٠١٢٣…）要不要归一成西文数字（0123…）

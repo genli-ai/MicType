@@ -64,7 +64,10 @@ public static class LlmClient
         CancellationToken cancellationToken = default)
     {
         var first = await PerformAsync(messages, temperature, timeout, model, cancellationToken);
+        // 去参重试只对"这一趟确实发了 temperature"有意义：已经被 RejectsCustomTemperature 挡掉的
+        // 请求里压根没有这个参数，重试等于把同一个请求原样再发一遍，白花一趟往返。
         if (first.Text is null && temperature is not null &&
+            !LlmModels.RejectsCustomTemperature(model) &&
             first.Error?.Contains("temperature", StringComparison.OrdinalIgnoreCase) == true)
         {
             return await PerformAsync(messages, null, timeout, model, cancellationToken);
@@ -147,10 +150,13 @@ public static class LlmClient
         IReadOnlyList<ChatMessage> messages,
         double? temperature)
     {
+        // 推理系型号收到自定义 temperature 直接 400，而 5.6 / 6 线与 deepseek-v4-pro 全是推理模型 →
+        // 在这个唯一的出口上干脆不发。指令那三条路径（AgentService）都传着 CommandTemperature，
+        // 挡在这里比在每个调用点各写一遍可靠。（与 Mac 端 LLMClient.chatBody 同源）
         var body = new ChatRequest(
             model,
             messages.Select(m => new WireMessage(m.Role, m.Content)).ToList(),
-            temperature);
+            LlmModels.RejectsCustomTemperature(model) ? null : temperature);
         var request = new HttpRequestMessage(HttpMethod.Post, uri);
         request.Headers.Authorization = new("Bearer", key);
         request.Content = JsonContent.Create(body, options: JsonOptions);

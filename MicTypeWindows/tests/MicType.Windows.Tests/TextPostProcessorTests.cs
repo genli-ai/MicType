@@ -253,4 +253,28 @@ public sealed class TextPostProcessorTests
             TextPostProcessor.CollapseRepetitions("谢谢，今天的会议就到这里。"));
         Assert.Equal("hello hello", TextPostProcessor.CollapseRepetitions("hello hello"));
     }
+
+    /// 补空格只认西文与汉字：假名 / 谚文前不补，否则 Mac 出 "API,はい"、Windows 出 "API, はい"
+    [Fact]
+    public void NoSpaceIsInsertedBeforeKanaOrHangul()
+    {
+        Assert.Equal("API,はい", TextPostProcessor.FixMixedPunctuation("API，はい"));
+        Assert.Equal("API,네", TextPostProcessor.FixMixedPunctuation("API，네"));
+    }
+
+    /// 西里尔 / 希伯来同理（引擎现在产不出来，但规则不该按"哪天被咬到再打补丁"写）
+    [Fact]
+    public void NoSpaceIsInsertedBeforeNonLatinLetters()
+    {
+        Assert.Equal("test,привет", TextPostProcessor.FixMixedPunctuation("test,привет"));
+        Assert.Equal("test,שלום", TextPostProcessor.FixMixedPunctuation("test,שלום"));
+    }
+
+    /// 带变音符的西文照旧补空格（café / Việt 都在 \p{Latin} 里）
+    [Fact]
+    public void SpaceIsStillInsertedBeforeAccentedLatin()
+    {
+        Assert.Equal("ok, café", TextPostProcessor.FixMixedPunctuation("ok,café"));
+        Assert.Equal("ok, Việt", TextPostProcessor.FixMixedPunctuation("ok,Việt"));
+    }
 }
