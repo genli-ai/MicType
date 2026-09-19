@@ -601,11 +601,31 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
         return Self.failure(status: status, code: code, message: message)
     }
 
+    /// HTTP 200 的 body 里报上来的错误码 → 它**本该**是的那个状态码。
+    /// nil = 这个码我们不认识，照 200 处理（文案会落到"意外状态码"那一条，但至少会写出原码）。
+    /// 纯函数，单测钉住每一条映射。
+    static func syntheticStatus(code: String) -> Int? {
+        let c = code.lowercased()
+        if c.contains("datainspection") { return 400 }          // 内容审核拦截 → 那条"可改用本地引擎"
+        if c.contains("throttling") { return 429 }              // 限流 → 值得重试那一条
+        if c.contains("arrear") { return 403 }                  // 欠费 → 去充值
+        if c.contains("invalidapikey") || c.contains("invalidapi-key")
+            || c.contains("unauthorized") { return 401 }
+        if c.contains("modelnotfound") || c.contains("invalidparameter.model")
+            || c.contains("model.not.exist") { return 404 }
+        return nil
+    }
+
     /// 状态码 + 错误码 → 双语文案（含"怎么办"）+ 是否值得重试。
     /// 铁律：401 绝不清掉已存的 Key（可能只是接入地址还没试对）。
     /// 每一条都必须给**一句下一步**：屏幕上只写"失败了"等于把排查工作全推给用户。
     static func failure(status: Int, code: String?, message: String?) -> CloudASRFailure {
         let raw = (code ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        // DashScope 有时把错误塞在 HTTP 200 的 body 里（parse 会带着 code 走到这里）。
+        // 200 这个数字在那种形状下不含任何信息：照着它派发的话，内容审核拦截、限流、
+        // Key 不对全都落进最后那条"意外状态码"，一句下一步都没有（违反本段开头那条纪律），
+        // 限流还会因为 retryable=false 连那一次重试都不发。所以先按错误码合成一个状态码。
+        let effective = status == 200 ? (syntheticStatus(code: raw) ?? status) : status
         // 冒号用 ASCII：这串会直接接在 tail 的 ASCII 括号后面，英文界面下混一个全角「：」
         // 就是一处中文泄漏（CJKUIStringGuardTests 拦的正是 U+FF01–FF60）。中文界面下也不突兀。
         let detail = message.map { ": " + String($0.prefix(80)) } ?? ""
@@ -616,11 +636,13 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
         }()
 
         func made(_ zh: String, _ en: String, retryable: Bool = false) -> CloudASRFailure {
+            // tail 写**真实**的 HTTP 状态码（200 裹着错误码时就写 200 + 那个码），
+            // 存进 failure 的却是合成后的那个：下游按它判重试与模型回落
             CloudASRFailure(tr(zh, en) + tail + detail, retryable: retryable, code: raw.isEmpty ? nil : raw,
-                            status: status)
+                            status: effective)
         }
 
-        switch status {
+        switch effective {
         case 0:
             return made("连不上阿里云：网络不通，或这个接入地址根本不存在。把百炼控制台里的「接入地址（apiHost）」粘到 设置 → AI 的「接入地址」里",
                         "Could not reach Alibaba: no network, or that API host does not exist. Paste the API host from the Model Studio console into the API host field in Settings → AI")
@@ -635,10 +657,11 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
             return made("这个模型还没在阿里云百炼开通（或免费额度已用完、子工作空间无权）。请到百炼控制台 → 模型广场把该模型开通一次",
                         "This model is not enabled for your account (or the free quota is used up, or the sub-workspace lacks access). Enable it once in the Model Studio console → Model Gallery")
         case 404:
-            // 4.0.0 的默认模型 qwen-audio-3.0-asr-flash 打这个同步端点必 404，所以这条
-            // 一定要说清"qwen3-asr-flash 也已经试过了"，否则用户会去改模型名——那条路走不通
-            return made("这个接入地址上没有这个识别模型（qwen3-asr-flash 也已经自动试过）。请到百炼控制台 → 模型广场开通 qwen3-asr-flash，或把控制台里的「接入地址」粘到 设置 → AI",
-                        "This endpoint has no such speech model (qwen3-asr-flash was tried too). Enable qwen3-asr-flash in the Model Studio console → Model Gallery, or paste the API host from the console into Settings → AI")
+            // 别写成"qwen3-asr-flash 也已经试过了"：自动换模型只发生在「测试识别」/ 粘 Key
+            // 那一趟上（见 CloudASRProbe.runTryingModels），日常听写这条路不换模型。
+            // 说成已经试过，用户就不会再去按那颗真能救他的按钮。
+            return made("这个接入地址上没有这个识别模型。请到百炼控制台 → 模型广场开通 qwen3-asr-flash，或在 设置 → AI 里按一次「测试识别」让 MicType 自动换到它",
+                        "This endpoint has no such speech model. Enable qwen3-asr-flash in the Model Studio console → Model Gallery, or hit Test recognition under Settings → AI so MicType switches to it")
         case 429:
             // 只认 AllocationQuota：Throttling.RateQuota 里也有 "quota" 字样，但那是限流，该重试
             if raw.localizedCaseInsensitiveContains("allocation") {
@@ -656,7 +679,7 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
             return made("云端拒绝了这个请求（参数/音频不合规）。若是长录音请分段后重试；反复出现请反馈",
                         "The provider rejected the request (invalid parameter or audio). For long recordings try again in shorter pieces; please report it if it keeps happening")
         default:
-            if status >= 500 {
+            if effective >= 500 {
                 return made("云端服务暂时出错，已重试一次。稍后再试，或改用本地引擎",
                             "The provider had a server error (already retried once). Try again later or switch back to the local engine",
                             retryable: true)

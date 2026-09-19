@@ -348,11 +348,18 @@ enum SettingsBackup {
         /// 「这台机器没配这一档时天然就是空」的字段（自定义端点 / 本机模型的型号名）：
         /// **空值一律跳过**。导入是合并不是覆盖——导出方没用这一档而写出来的 ""，
         /// 不该把导入方已经填好的型号名抹掉；也不该记成一条"被忽略的键"（那是留给格式错误的）。
-        func nonEmptyString(_ key: String, notable: Bool = false, _ assign: (String) -> Void) {
+        func nonEmptyString(_ key: String, notable: Bool = false,
+                            isValid: ((String) -> Bool)? = nil,
+                            _ assign: (String) -> Void) {
             guard let raw = settings[key] else { return }
             guard let value = raw as? String else { summary.ignoredKeys.append(key); return }
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
+            if let isValid = isValid, !isValid(trimmed) {
+                summary.ignoredKeys.append(key)
+                Log.warn("Settings import: rejected \(key) (failed validation)")
+                return
+            }
             assign(trimmed)
             summary.updatedKeys.append(key)
             if notable { summary.notableChanges.append("\(key) = \(trimmed)") }
@@ -448,8 +455,12 @@ enum SettingsBackup {
         }
         // 接入地址 = 收信主机，也就是 Key 与音频落在哪个司法辖区。一个字段就能把它们
         // 从新加坡搬到北京，所以必须当面念出来，而且只接受一个像样的主机名。
-        checkedString(Key.qwenApiHost, notable: true,
-                      isValid: { $0.isEmpty || AlibabaEndpoint.normalizeHost($0) != nil }) {
+        // 空值一律跳过（nonEmptyString 而不是 checkedString）：4.0.1 的常态就是空着
+        // （地址自己试出来），而导出端总是写出这个键。照 checkedString 收的话，导入任何一份
+        // 没用过百炼的设置文件，都会抹掉导入方已经探测成功的主机缓存，还会在摘要里
+        // 记一条空的 notable，触发那句"这份文件改了接入地址"的假警报。
+        nonEmptyString(Key.qwenApiHost, notable: true,
+                       isValid: { AlibabaEndpoint.normalizeHost($0) != nil }) {
             Settings.shared.qwenAPIHost = $0
             // 地址被文件改了，上一次试通的那台就不再算数
             Settings.shared.qwenResolvedHost = ""

@@ -33,14 +33,38 @@ final class OnboardingModel: ObservableObject {
     @Published var skippedPermissions = false
     /// 权限齐了自动往下翻，但**只翻一次**：翻回来再看一眼的人不该被又推走
     @Published var autoAdvanced = false
-    /// AI 现在真的跑得起来吗（不是"点过没点过"）。最后一屏的两种收尾读这一个值。
-    @Published var aiReady = false
+    /// AI 现在真的跑得起来吗（不是"点过没点过"）。最后一屏的三种收尾读这一个值。
+    @Published var aiStatus: LLMCatalog.AIStatus = .off
 
-    /// 重算 aiReady。凭据的判断一律走 LLMClient.credential（本机模型没有 Key 才是正常状态）。
+    /// 「配好了而且润色开着」。footer 里那颗「跳过（只用本地）」按钮按它决定露不露面。
+    var aiReady: Bool { aiStatus == .ready }
+
+    /// 重算 aiStatus。凭据的判断一律走 LLMClient.credential（本机模型没有 Key 才是正常状态）；
+    /// **润色档位也要看**——选了「只用本地」的人钥匙串里那把 Key 还在，只看凭据的话
+    /// 最后一屏会写「AI 润色…就绪了」，而此刻轻点听写一个字都不润色。
     func refreshAIReady() {
-        aiReady = LLMCatalog.aiReady(hasCredential: LLMClient.isConfigured,
-                                     baseURL: Settings.shared.currentBaseURL,
-                                     polishModel: Settings.shared.currentPolishModel)
+        aiStatus = LLMCatalog.aiStatus(hasCredential: LLMClient.isConfigured,
+                                       baseURL: Settings.shared.currentBaseURL,
+                                       polishModel: Settings.shared.currentPolishModel,
+                                       polishEnabled: Settings.shared.polishLevel != .off)
+    }
+
+    /// 模型下载：本地识别这一档缺模型就在后台开始下。
+    ///
+    /// 为什么挂在这里而不是权限页里：用户在第三屏把识别从云端改回本地之后也要能触发，
+    /// 而那一页早就不在屏幕上了（4.0.1 里这个函数只在权限页的 onAppear / 按钮上，
+    /// 于是改完档的人一路走到最后一屏都不会被告知模型没下）。
+    /// 三种情况不下——已经有了、正在下、或者他明确选了云端识别（那一档不需要这 860MB）。
+    /// - force: 用户自己点的那颗按钮。自动那一次只在"还没试过"时发生（取消过就不再自动开始）。
+    static func startModelDownloadIfNeeded(force: Bool) {
+        guard !Settings.shared.recognitionEngine.isCloud else { return }
+        let repo = Settings.shared.qwenModelRepo
+        let downloader = QwenModelDownloader.shared
+        guard !QwenModels.isFullyDownloaded(repo: repo), !downloader.isDownloading else { return }
+        guard force || downloader.statusText.isEmpty else { return }
+        Log.info("Onboarding starts model download repo=\(repo) force=\(force)")
+        QwenEngine.shared.unloadModel()
+        downloader.download(repo: repo)
     }
 }
 
@@ -49,7 +73,7 @@ final class OnboardingModel: ObservableObject {
 enum OnboardingCopy {
     /// 第三屏的标题。这一屏就是设置页那一个决定的首配版本，名字必须和那里一致。
     static var usageHeadline: String {
-        tr("怎么用（可选，随时能改）", "How you'll use it (optional, changeable any time)")
+        tr("使用方式（可选，随时能改）", "How you use MicType (optional, changeable any time)")
     }
 
     /// 两句话说清一把 Key 到底买到什么。写清边界比写得漂亮重要：
@@ -70,15 +94,22 @@ enum OnboardingCopy {
            "The strongest model of that provider is picked for you; change it any time in Settings → AI.")
     }
 
-    /// 最后一屏按「AI 到底配好了没有」给两种收尾。ready 由 LLMCatalog.aiReady 判——
-    /// 用"点过跳过没有"来判会在用户中途去设置页配好 Key 时说反话。
-    static func doneAIStatus(ready: Bool, hotkey: String) -> String {
-        if ready {
+    /// 最后一屏按「AI 到底配到哪一步」给**三种**收尾（LLMCatalog.aiStatus 判，纯函数）。
+    /// 用"点过跳过没有"来判会在用户中途去设置页配好 Key 时说反话；
+    /// 只看凭据不看润色档位，则会对选了「只用本地」的人宣告"润色就绪"——他手上那把 Key 还在，
+    /// 但轻点听写此刻一个字都不润色，他会白等一个不会发生的润色。
+    static func doneAIStatus(status: LLMCatalog.AIStatus, hotkey: String) -> String {
+        switch status {
+        case .ready:
             return tr("AI 润色和语音指令都就绪了：按住 \(hotkey) 说「把这段写正式一点」。",
                       "AI polish and voice commands are ready. Hold \(hotkey) and say \"make this more formal\".")
+        case .commandsOnly:
+            return tr("你选了只用本地：轻点听写不润色。钥匙串里那把 Key 还在，按住 \(hotkey) 说指令仍然会用它（按次计费）。",
+                      "You picked local only, so tap-to-dictate does not polish. Your stored key is still there: holding \(hotkey) to command still uses it, and is still billed.")
+        case .off:
+            return tr("你现在是纯本机听写，完整可用。想要润色和语音指令，去 设置 → AI 填一把 Key。",
+                      "You're on pure on-device dictation. Add a key under Settings → AI.")
         }
-        return tr("你现在是纯本机听写，完整可用。想要润色和语音指令，去 设置 → AI 填一把 Key。",
-                  "You're on pure on-device dictation. Add a key under Settings → AI.")
     }
 }
 
@@ -94,9 +125,17 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         model.page = page
         model.micOK = Permissions.microphoneGranted
         model.axOK = Permissions.isAccessibilityTrusted
-        model.autoAdvanced = false
+        // 上一轮点过「暂时跳过」的标记不能跨次留着：回头重走一遍引导的人，多半正是因为
+        // 上次跳过导致热键不工作——第二遍不拦他，他很容易又一路点过去
+        model.skippedPermissions = false
+        // 「权限已经齐了就别再把他推走」和「开始下模型」原先都挂在权限页的 onAppear 上，
+        // 而 onAppear 只在页码**变化**时才跑：上次就停在权限页关掉的窗口，再次
+        // show(startAt: .permissions) 时页码没变，两件事一件都不做——模型不下，
+        // 还会被留在视图里的那个 1 秒 Timer 在 1.8 秒后推到第三屏去。所以挪到这里。
+        model.autoAdvanced = page == .permissions && model.micOK && model.axOK
+        if page == .permissions { OnboardingModel.startModelDownloadIfNeeded(force: false) }
         model.refreshAIReady()
-        Log.info("Onboarding show page=\(page.rawValue) aiReady=\(model.aiReady)")
+        Log.info("Onboarding show page=\(page.rawValue) aiStatus=\(model.aiStatus)")
 
         if window == nil {
             let hosting = NSHostingController(rootView: OnboardingView(model: model))
@@ -169,6 +208,11 @@ struct OnboardingView: View {
             footer
         }
         .frame(width: 560, height: 470)
+        // 第三屏把使用方式改回「只用本地」= 识别从云端换回本机，这时才轮到那 860MB。
+        // 权限页早就翻过去了，没有这一处的话，模型缺不缺要等到他真的轻点一次才发现
+        .onChange(of: recognitionEngine) { _, _ in
+            OnboardingModel.startModelDownloadIfNeeded(force: false)
+        }
     }
 
     private var downloadBar: some View {
@@ -457,15 +501,9 @@ private struct PermissionsPage: View {
     }
 
     /// 模型在这一屏后台开始下：用户接下来要点的是系统设置里的两个开关，那几十秒正好用来下载。
-    /// 三种情况不下——已经有了、正在下、或者他明确选了云端识别（那一档不需要这 860MB）。
+    /// 判据与触发都在 OnboardingModel 里——第三屏改档、以及"被模型缺失带回这一屏"也要触发同一件事。
     private func startDownloadIfNeeded(force: Bool) {
-        guard !RecognitionEngineChoice.parse(recognitionEngine).isCloud else { return }
-        guard !modelExists, !downloader.isDownloading else { return }
-        // force = 用户自己点的那颗按钮；自动那一次只在进页时发生一回
-        guard force || downloader.statusText.isEmpty else { return }
-        Log.info("Onboarding starts model download repo=\(repo) force=\(force)")
-        QwenEngine.shared.unloadModel()
-        downloader.download(repo: repo)
+        OnboardingModel.startModelDownloadIfNeeded(force: force)
     }
 
     /// 权限刚刚齐活：自己往下翻一页。**只翻一次**——从下一屏点「上一步」回来的人
@@ -523,14 +561,32 @@ private struct HowYouUsePage: View {
     @ObservedObject var model: OnboardingModel
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKeys.polishLevel) private var polishLevel = PolishLevel.smart.rawValue
-    @AppStorage(SettingsKeys.llmProvider) private var provider = LLMProvider.openai.rawValue
     @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
     /// 阿里云那一档的接入地址由 MicType 自己试出来（4.0.1 拿掉了区域选择器）。
     /// 这一屏只留一个**可选**输入框，给自动没试对的人——首配的人不该在这里做地理选择题。
     @AppStorage(SettingsKeys.qwenAPIHost) private var qwenAPIHost = ""
+    /// 「模型」下拉写的是这两个键之一。必须是 @AppStorage 而不是裸 UserDefaults：
+    /// 这一屏没有任何东西盯着型号键的话，选完 body 不重算，下拉框还停在旧的那一项，
+    /// 用户会以为没点上（设置页那个同名控件走的就是 @AppStorage 投影，立刻重绘）。
+    @AppStorage(SettingsKeys.chatModel) private var openaiModel = LLMCatalog.defaultModel(for: .openai)
+    @AppStorage(SettingsKeys.openaiCommandModel) private var openaiCommandModel = LLMCatalog.defaultModel(for: .openai)
+    @AppStorage(SettingsKeys.deepseekModel) private var deepseekModel = LLMCatalog.defaultModel(for: .deepseek)
+    @AppStorage(SettingsKeys.deepseekCommandModel) private var deepseekCommandModel = LLMCatalog.defaultModel(for: .deepseek)
+    @AppStorage(SettingsKeys.qwenModel) private var qwenModel = LLMCatalog.defaultModel(for: .qwen)
+    @AppStorage(SettingsKeys.qwenCommandModel) private var qwenCommandModel = LLMCatalog.defaultModel(for: .qwen)
+    @AppStorage(SettingsKeys.customModel) private var customModel = ""
+    @AppStorage(SettingsKeys.customCommandModel) private var customCommandModel = ""
+    @AppStorage(SettingsKeys.localModel) private var localModel = ""
+    @AppStorage(SettingsKeys.localCommandModel) private var localCommandModel = ""
     @State private var keyStatus: KeyVerifier.Status = .idle
+    /// 选择器上**正在看**的那一档，不是生效的那一档。
+    ///
+    /// 4.0.1 这里直接绑 @AppStorage(llmProvider)，于是点一下选择器就已经把生效服务商换掉了
+    /// ——adoptIfUsable 那道"只有真能用才换过去"的护栏里，`Settings.shared.llmProvider != provider`
+    /// 永远不成立，护栏是死代码。点着看看的人很多，而原来那一档可能正配着一把好 Key。
+    @State private var pendingProvider: LLMProvider = Settings.shared.llmProvider
 
-    private var selected: LLMProvider { LLMProvider(rawValue: provider) ?? .openai }
+    private var selected: LLMProvider { pendingProvider }
     private var currentPolishLevel: PolishLevel { PolishLevel(rawValue: polishLevel) ?? .smart }
     private var engineChoice: RecognitionEngineChoice { RecognitionEngineChoice.parse(recognitionEngine) }
     private var usageMode: AIUsageMode {
@@ -567,20 +623,31 @@ private struct HowYouUsePage: View {
                 .pickerStyle(.segmented)
 
                 if usageMode == .withAI {
-                    Picker(tr("服务商：", "Provider:"), selection: $provider) {
+                    Picker(tr("服务商：", "Provider:"), selection: $pendingProvider) {
                         ForEach(offered, id: \.rawValue) { provider in
-                            Text(provider.segmentName).tag(provider.rawValue)
+                            Text(provider.segmentName).tag(provider)
                         }
                     }
                     .pickerStyle(.segmented)
-                    .onChange(of: provider) { _, _ in
+                    .onChange(of: pendingProvider) { _, _ in
                         // 上一档的验证结论对这一档毫无意义（KeyEntryView 自己也会重载钥匙串里的 Key）
                         keyStatus = .idle
                         adoptIfUsable(selected)
                         model.refreshAIReady()
                     }
 
-                    if selected == .qwen { qwenHostField }
+                    // 看着的这一档还没配好 Key：生效的仍是原来那一档，这件事必须写出来，
+                    // 否则他以为自己已经换过去了，回头发现润色还是老样子
+                    if selected.requiresAPIKey, Settings.shared.llmProvider != selected,
+                       KeychainHelper.loadAPIKey(account: selected.keychainAccount) == nil {
+                        Text(tr("这一档还没有 Key：粘一把验证通过才会真的换过去，在此之前 MicType 仍用 \(Settings.shared.llmProvider.segmentName)。",
+                                "No key for this provider yet: MicType switches over only once one is pasted and verified, and keeps using \(Settings.shared.llmProvider.segmentName) until then."))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if selected == .qwen { QwenHostField.field(host: $qwenAPIHost) }
 
                     KeyEntryView(provider: selected,
                                  model: polishModel(for: selected),
@@ -595,7 +662,7 @@ private struct HowYouUsePage: View {
                     // 本机模型 / 其他兼容服务没有内置型号，型号名只有用户自己知道。
                     // 不说这一句的话，这一档看着像配好了，实际每次调用都是"型号名是空的"。
                     if LLMCatalog.modelMenu(for: selected).isEmpty,
-                       storedPolishModel(for: selected).isEmpty {
+                       polishModelBinding.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Text(tr("这一档还要填一个模型名才跑得起来（填好之前 MicType 仍用原来的服务商）：去 设置 → AI → 高级 填上你本机已经下载好的那个，例如 llama3.1:8b。",
                                 "This provider needs a model name before it works, and MicType keeps using the previous provider until then: name the one you have downloaded, such as llama3.1:8b, under Settings → AI → Advanced."))
                             .font(.caption)
@@ -618,7 +685,11 @@ private struct HowYouUsePage: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .onAppear { model.refreshAIReady() }
+        .onAppear {
+            // 回头再走一遍引导的人：选择器要停在他**正在用**的那一档上
+            pendingProvider = Settings.shared.llmProvider
+            model.refreshAIReady()
+        }
         // 接入地址一改，阿里云的地址就变了，能不能连得上也跟着变
         .onChange(of: qwenAPIHost) { _, _ in model.refreshAIReady() }
     }
@@ -638,19 +709,6 @@ private struct HowYouUsePage: View {
                     model.refreshAIReady()
                     Log.info("Onboarding usage mode=\(newMode.rawValue)")
                 })
-    }
-
-    // MARK: 阿里云的接入地址（可选）
-
-    @ViewBuilder
-    private var qwenHostField: some View {
-        TextField(tr("接入地址（可选）", "API host (optional)"), text: $qwenAPIHost)
-            .textFieldStyle(.roundedBorder)
-        Text(tr("留空就行：粘 Key 的时候 MicType 会自己把接入地址试出来。只有自动没试对时，才到阿里云百炼控制台复制「接入地址」粘进来。",
-                "Leave it empty: when you paste the key, MicType finds the right endpoint itself. Only if that fails, copy the API host from the Alibaba Model Studio console and paste it here."))
-            .font(.caption)
-            .foregroundColor(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: 模型（验证通过后才出现）
@@ -681,20 +739,38 @@ private struct HowYouUsePage: View {
             .foregroundColor(.secondary)
     }
 
-    /// 选中即写回两个型号字段（哪两个键由 LLMCatalog.modelKeys 说，界面不认识型号名）
+    /// 这一档的两个型号字段（与设置页同一种写法：@AppStorage 投影出来的 Binding，
+    /// 写下去界面立刻重绘）
+    private var polishModelBinding: Binding<String> {
+        switch selected {
+        case .openai: return $openaiModel
+        case .deepseek: return $deepseekModel
+        case .qwen: return $qwenModel
+        case .custom: return $customModel
+        case .local: return $localModel
+        }
+    }
+    private var commandModelBinding: Binding<String> {
+        switch selected {
+        case .openai: return $openaiCommandModel
+        case .deepseek: return $deepseekCommandModel
+        case .qwen: return $qwenCommandModel
+        case .custom: return $customCommandModel
+        case .local: return $localCommandModel
+        }
+    }
+
+    /// 选中即写回两个型号字段（润色与指令一起改，见 LLMCatalog.modelWrites）
     private var modelSelection: Binding<String> {
         Binding(get: {
-                    let d = UserDefaults.standard
-                    let keys = LLMCatalog.modelKeys(for: selected)
-                    return LLMCatalog.selectedMenuModel(
-                        provider: selected,
-                        polish: d.string(forKey: keys.polish) ?? LLMCatalog.polishDefault(for: selected),
-                        command: d.string(forKey: keys.command) ?? LLMCatalog.commandDefault(for: selected)) ?? ""
+                    LLMCatalog.selectedMenuModel(provider: selected,
+                                                 polish: polishModelBinding.wrappedValue,
+                                                 command: commandModelBinding.wrappedValue) ?? ""
                 },
                 set: { newValue in
-                    for (key, value) in LLMCatalog.modelWrites(provider: selected, model: newValue) {
-                        UserDefaults.standard.set(value, forKey: key)
-                    }
+                    guard !LLMCatalog.modelWrites(provider: selected, model: newValue).isEmpty else { return }
+                    polishModelBinding.wrappedValue = newValue
+                    commandModelBinding.wrappedValue = newValue
                     Log.info("Onboarding model provider=\(selected.rawValue) model=\(newValue)")
                 })
     }
@@ -726,6 +802,12 @@ private struct HowYouUsePage: View {
         guard Settings.shared.llmProvider != provider else { return }
         Settings.shared.llmProvider = provider
         Log.info("Onboarding adopted provider=\(provider.rawValue)")
+        // 换走之后音频不能还在往阿里云传，而 AI 页上那个开关这时已经不渲染了。
+        // 判据与设置页那处换服务商同源（AISetup.engineAfterProviderChange），两处不各写一份
+        if let engine = AISetup.engineAfterProviderChange(current: engineChoice, next: provider) {
+            recognitionEngine = engine.rawValue
+            Log.info("Onboarding cloud recognition off: provider=\(provider.rawValue)")
+        }
     }
 }
 
@@ -735,8 +817,19 @@ private struct TryItPage: View {
     @ObservedObject var model: OnboardingModel
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var downloader = QwenModelDownloader.shared
+    @AppStorage(SettingsKeys.qwenModelRepo) private var repo = QwenModels.defaultRepo
+    @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
     @State private var text = ""
     @FocusState private var editorFocused: Bool
+
+    /// 这一屏让他"轻点试一次"，那就得先说清这一次能不能成。
+    /// 4.0.1 只在"正在下"时提醒，于是在第二屏取消过下载、或者在第三屏把识别从云端
+    /// 改回本机的人，这里什么都读不到——轻点下去才被悬浮窗告知模型没下，然后被弹回第二屏。
+    private var localModelMissing: Bool {
+        !RecognitionEngineChoice.parse(recognitionEngine).isCloud
+            && !downloader.isDownloading
+            && !QwenModels.isFullyDownloaded(repo: repo)
+    }
 
     private var key: String { Settings.shared.hotkey.plainName }
 
@@ -757,6 +850,23 @@ private struct TryItPage: View {
                     .focused($editorFocused)
                     .frame(height: 96)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.35)))
+
+                if localModelMissing {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(downloader.statusText.isEmpty
+                             ? tr("识别模型还没下载好，现在轻点是说不出字的。",
+                                  "The speech model is not downloaded yet, so tapping now will not produce any text.")
+                             : downloader.statusText)
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        Button(tr("下载模型", "Download model")) {
+                            OnboardingModel.startModelDownloadIfNeeded(force: true)
+                        }
+                        .controlSize(.small)
+                    }
+                }
 
                 HStack {
                     Text(downloader.isDownloading
@@ -784,7 +894,7 @@ private struct TryItPage: View {
                     // 有 Key / 没 Key 两种收尾：这一行是用户离开引导时对"我现在有什么"的最后印象，
                     // 说反了他要么白等一个不会发生的润色，要么以为自己还没配好
                     TipRow(symbol: model.aiReady ? "wand.and.stars" : "cpu",
-                           text: OnboardingCopy.doneAIStatus(ready: model.aiReady, hotkey: key))
+                           text: OnboardingCopy.doneAIStatus(status: model.aiStatus, hotkey: key))
                     TipRow(symbol: "menubar.arrow.up.rectangle",
                            text: tr("菜单栏的麦克风图标里有历史记录、润色档位和设置。",
                                     "The menu-bar mic icon holds your history, polish mode and settings."))

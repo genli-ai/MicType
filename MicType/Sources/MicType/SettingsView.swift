@@ -178,6 +178,24 @@ private struct GeneralTab: View {
                     "While a long take is still being transcribed, Esc means finish and insert: later parts are dropped and what is already transcribed goes in as usual (the overlay chip says so). Press it again to discard everything."))
                 .font(.caption)
                 .foregroundColor(.secondary)
+            // Fn / 🌐 不在可选那三档里了，但老设置和导入的设置文件仍然能把它存进来——
+            // 存着它的人**必须**先去系统设置里让系统放手，否则每次轻点都被系统抢去切输入法。
+            // 4.0.1 把这段说明连同那颗按钮一起删了（Support.openKeyboardSettings 从此没有调用方），
+            // 于是唯一还需要这一课的人反而读不到它。
+            if selectedHotkey == .fn {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(tr("用 Fn / 🌐 当热键要先去 系统设置 → 键盘，把「按下🌐键」改成「不执行任何操作」，否则这一颗键会被系统拿去切输入法或弹表情面板。",
+                            "To use Fn / 🌐 as the hotkey, open System Settings → Keyboard and set “Press 🌐 key to” to “Do Nothing”; otherwise the system takes that key for input switching or the emoji panel."))
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button(tr("打开键盘设置", "Open Keyboard Settings")) {
+                        Permissions.openKeyboardSettings()
+                    }
+                    .fixedSize()
+                }
+            }
             if selectedHotkey.isLeftSideModifier {
                 Text(tr("左侧修饰键天天参与组合键（⌘C、⌥←…）。单独轻点才会触发，按住它敲别的键不会——但误触概率仍比右侧高，建议先试用几天。",
                         "Left-side modifiers are used in everyday shortcuts (⌘C, ⌥←…). Only a clean tap triggers MicType — holding it while pressing another key never does — but mistaps are still likelier than on the right side."))
@@ -818,7 +836,17 @@ private struct AITab: View {
     /// 同一个账号、同一把 Key、同一台主机只在这里选一次。
     @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
     @AppStorage(SettingsKeys.cloudAlibabaModel) private var cloudAlibabaModel = AlibabaASRModel.qwen3Flash.rawValue
+    /// 4.0.1 的默认型号迁移改掉了什么（"旧>新"，见 LLMCatalog.encodeModelChanges）。
+    /// 点过「知道了」就清空——一次性提示，不留在页面上碍事。
+    @AppStorage(SettingsKeys.modelMigrationNotice) private var modelMigrationNotice = ""
     @State private var testResult = ""
+    /// 「探测接入地址」那一趟的状态与结论（快照：切语言 / 改配置就清）
+    @State private var hostProbing = false
+    @State private var hostProbeResult = ""
+    @State private var hostProbeOK = false
+    /// 钥匙串不是 @AppStorage，删掉一把 Key 之后这一页不会自己重算。
+    /// 这个计数器就是那一下"手动推一把"（只影响显示，不落盘）。
+    @State private var keychainTick = 0
     @State private var testing = false
     /// 「刷新模型列表」从端点取回来的型号（只在内存里，切服务商就丢——上一个端点的清单
     /// 放到下一个端点上纯属误导）
@@ -842,6 +870,12 @@ private struct AITab: View {
     private var selected: LLMProvider { LLMProvider(rawValue: provider) ?? .openai }
     private var currentPolishLevel: PolishLevel { PolishLevel(rawValue: polishLevel) ?? .smart }
     private var engineChoice: RecognitionEngineChoice { RecognitionEngineChoice.parse(recognitionEngine) }
+    /// 当前这一档的钥匙串里有没有一把 Key。判的是"按住说指令会不会真的发出去"，
+    /// 所以看的是这一档自己的那把，而不是 LLMClient.isConfigured（本机模型那一档没 Key 也算配好）
+    private var hasStoredKey: Bool {
+        _ = keychainTick
+        return KeychainHelper.loadAPIKey(account: selected.keychainAccount) != nil
+    }
     private var usageMode: AIUsageMode {
         AISetup.mode(polishLevel: currentPolishLevel, engine: engineChoice)
     }
@@ -931,6 +965,7 @@ private struct AITab: View {
         .onChange(of: l10n.language) { _, _ in
             testResult = ""
             refreshStatus = ""
+            hostProbeResult = ""
             invalidateCloudTest()
         }
     }
@@ -946,12 +981,45 @@ private struct AITab: View {
         }
         .pickerStyle(.segmented)
         Text(usageMode == .localOnly
-             ? tr("识别和输入全在这台 Mac 上：不联网、不花钱、不用填 Key。\n按住快捷键说指令需要 AI，选「本地 + AI」才有。",
-                  "Recognition and typing all happen on this Mac: no network, no cost, no key.\nHold-to-command needs AI - pick Local + AI to get it.")
+             ? tr("识别和输入全在这台 Mac 上：不联网、不花钱，也不需要填 Key。\n按住快捷键说指令需要 AI，选「本地 + AI」才有。",
+                  "Recognition and typing all happen on this Mac: no network, no cost, and no key to fill in.\nHold-to-command needs AI - pick Local + AI to get it.")
              : tr("轻点听写照旧在本机识别，识别完的文字交给你选的服务商润色；按住说指令也走这家。\n费用由服务商直接结给你，MicType 不经手。",
                   "Tap-to-dictate still recognizes on this Mac; the text is then polished by the provider you pick, and hold-to-command uses the same one.\nYou pay that provider directly - MicType never takes a cut."))
             .font(.caption)
             .foregroundColor(.secondary)
+        // 「只用本地」只写回"润色关掉 + 识别回本机"两条，**钥匙串里那把 Key 不动**
+        // （删 Key 是破坏性动作，只能由用户自己点）。可指令路径不看档位：按住说指令照样
+        // 会把选区和这句话发给服务商、照样计费。这一段又把服务商/Key/模型整段藏起来，
+        // 所以这句话不说，他既看不到那把 Key，也不知道它还在花钱。
+        if usageMode == .localOnly,
+           AISetup.showsStoredKeyNotice(mode: usageMode, hasCredential: hasStoredKey) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(tr("注意：钥匙串里还存着 \(selected.segmentName) 的 Key。按住快捷键说指令仍然会用它调用云端并计费（轻点听写不会）。",
+                        "Note: a \(selected.segmentName) key is still in your Keychain. Hold-to-command keeps using it, and keeps billing you (tap-to-dictate does not)."))
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(tr("删掉这把 Key", "Remove that key")) {
+                    KeychainHelper.deleteAPIKey(account: selected.keychainAccount)
+                    Log.info("API key removed provider=\(selected.rawValue) reason=local only")
+                    // 删完这一页要立刻不再显示上面那句：@AppStorage 管不着钥匙串，自己推一下
+                    keychainTick &+= 1
+                }
+                .fixedSize()
+            }
+        }
+        // 4.0.1 的默认型号迁移可能悄悄把型号换贵了（4.0.0 的「快」档和出厂默认一字不差，
+        // 分不出"停在默认"和"明确选过便宜档"）。分不出就当面说，并给一颗「知道了」。
+        if let notice = LLMCatalog.modelChangeNotice(modelMigrationNotice) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(tr("知道了", "Got it")) { modelMigrationNotice = "" }
+                    .fixedSize()
+            }
+        }
         // 从菜单栏把润色关掉、云端识别却还开着：这一页会显示「本地 + AI」，
         // 而轻点听写其实不润色。说出来，并给一颗打开的按钮——不替他改
         if usageMode == .withAI, currentPolishLevel == .off {
@@ -979,6 +1047,24 @@ private struct AITab: View {
                 Button(tr("改回本机识别", "Switch back to on-device recognition")) {
                     recognitionEngine = RecognitionEngineChoice.local.rawValue
                     Log.info("Legacy cloudOpenAI recognition switched back to local")
+                }
+                .fixedSize()
+            }
+        }
+        // 云端识别停在阿里云、服务商却不是阿里云：下面那个开关只在阿里云档渲染，于是音频
+        // 一直在上传、界面上却没有关掉它的控件（4.0.0 的识别页有独立引擎选择器，设置导入
+        // 也能写出这种组合）。和上面那条同样处理：当面说 + 一颗按钮，绝不替他改。
+        if AISetup.showsStrandedAlibabaCloudNotice(engine: engineChoice, provider: selected) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(tr("这台 Mac 的识别还走着阿里云（每段录音都会上传、按秒计费），但 AI 服务商已经不是阿里云了——所以下面没有那个开关。",
+                        "Speech recognition on this Mac still goes to Alibaba (every take is uploaded and billed per second), but your AI provider is no longer Alibaba, so the switch for it is not shown below."))
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(tr("改回本机识别", "Switch back to on-device recognition")) {
+                    recognitionEngine = RecognitionEngineChoice.local.rawValue
+                    invalidateCloudTest()
+                    Log.info("Stranded cloudAlibaba recognition switched back to local")
                 }
                 .fixedSize()
             }
@@ -1020,10 +1106,10 @@ private struct AITab: View {
             refreshStatus = ""
             customModelChosen = false
             let next = LLMProvider(rawValue: newValue) ?? .openai
-            // 换走之后音频不能还在往阿里云传——而且界面上已经没有那个开关可以关了
-            if engineChoice == .cloudAlibaba,
-               AISetup.engine(provider: next, cloudRecognition: true) != .cloudAlibaba {
-                recognitionEngine = RecognitionEngineChoice.local.rawValue
+            // 换走之后音频不能还在往阿里云传——而且界面上已经没有那个开关可以关了。
+            // 判据是纯函数，引导页那处换服务商走的是同一条（两处各写一份就一定会走散）
+            if let engine = AISetup.engineAfterProviderChange(current: engineChoice, next: next) {
+                recognitionEngine = engine.rawValue
                 Log.info("Cloud recognition off: provider=\(next.rawValue)")
             }
             invalidateCloudTest()
@@ -1185,31 +1271,42 @@ private struct AITab: View {
     /// 这个框只留给"我就是知道地址"的人，空着才是常态。
     @ViewBuilder
     private var qwenHostField: some View {
-        TextField(tr("接入地址（可选）", "API host (optional)"), text: $qwenAPIHost)
-            .textFieldStyle(.roundedBorder)
-            .onChange(of: qwenAPIHost) { _, _ in invalidateCloudTest() }
-        Text(tr("留空即可：粘 Key 的时候 MicType 会自己把接入地址试出来，试通之后就记住，以后不再探测。\n只有自动没试对时才需要填——到阿里云百炼控制台复制「接入地址」那一串（apiHost 或整条 URL 都行）。",
-                "Leave it empty: when you paste the key, MicType finds the right endpoint itself and remembers it, so it never probes again.\nFill it in only if that fails - copy the API host from the Alibaba Model Studio console (the bare host or the full URL both work)."))
-            .font(.caption)
-            .foregroundColor(.secondary)
-        if !qwenAPIHost.isEmpty, AlibabaEndpoint.normalizeHost(qwenAPIHost) == nil {
-            Text(tr("这串不像一个接入地址（主机名里不能有空格或中文）。清空它就交回给自动探测。",
-                    "That does not look like a host name (no spaces or non-ASCII characters). Clear it to hand the job back to auto-detection."))
+        // 输入框 / 说明 / 格式提示三样与引导页共用一份（见 QwenHostField）
+        QwenHostField.field(host: $qwenAPIHost)
+            .onChange(of: qwenAPIHost) { _, _ in
+                invalidateCloudTest()
+                hostProbeResult = ""
+            }
+        // 「探测接入地址」这一行**在地址还没定下来时也要有**：钥匙串里已经有 Key 的人
+        // （从 4.0.0 升上来、或导入过设置）不会再粘一次 Key，而粘 Key 是原先唯一的探测入口。
+        // 于是中国站账号一直被打到 dashscope-intl，401 的文案还让他去查 Key。
+        if !qwenAPIHost.isEmpty {
+            Text(tr("已经填了接入地址，MicType 就只用它，不再自己试。", "With an API host filled in, MicType uses only that one and never probes."))
                 .font(.caption)
-                .foregroundColor(.orange)
-        }
-        if !qwenResolvedHost.isEmpty {
+                .foregroundColor(.secondary)
+        } else {
             HStack(alignment: .firstTextBaseline) {
-                Text(tr("已试通的接入地址：", "Endpoint in use: ") + qwenResolvedHost)
+                Text(qwenResolvedHost.isEmpty
+                     ? tr("接入地址还没试出来。", "The endpoint has not been detected yet.")
+                     : tr("已试通的接入地址：", "Endpoint in use: ") + qwenResolvedHost)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(qwenResolvedHost.isEmpty ? .orange : .secondary)
                     .textSelection(.enabled)
                 Spacer()
-                Button(tr("重新探测", "Detect again")) {
-                    qwenResolvedHost = ""
-                    invalidateCloudTest()
+                Button(hostProbing ? tr("探测中…", "Detecting…")
+                                   : (qwenResolvedHost.isEmpty ? tr("探测接入地址", "Detect endpoint")
+                                                               : tr("重新探测", "Detect again"))) {
+                    runHostProbe()
                 }
                 .fixedSize()
+                .disabled(hostProbing)
+            }
+            if !hostProbeResult.isEmpty {
+                Text(hostProbeResult)
+                    .font(.caption)
+                    .foregroundColor(hostProbeOK ? .green : .orange)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         if engineChoice == .cloudAlibaba {
@@ -1256,6 +1353,44 @@ private struct AITab: View {
         cloudTestGeneration &+= 1
         cloudTestResult = ""
         cloudTesting = false
+    }
+
+    /// 探一次接入地址：拿钥匙串里那把 Key 逐台试 `GET /compatible-mode/v1/models`（不花钱、不传音频）。
+    ///
+    /// 为什么非有这颗按钮不可：粘 Key 曾是唯一的探测入口，而从 4.0.0 升上来 / 导入过设置的人
+    /// 钥匙串里已经有 Key，永远不会再粘一次——于是中国站账号一直被打到国际站，
+    /// 401 的文案还让他去查 Key。**成败都进日志。**
+    private func runHostProbe() {
+        let key = KeychainHelper.loadAPIKey(account: LLMProvider.qwen.keychainAccount) ?? ""
+        guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            hostProbeOK = false
+            hostProbeResult = tr("先在上面粘一把阿里云 Key，再探测接入地址",
+                                 "Paste an Alibaba key above first, then detect the endpoint")
+            Log.warn("Qwen host probe skipped: no key")
+            return
+        }
+        CloudASRSettings.rememberWorkspace(fromKey: key)
+        // 重新探测 = 忘掉上一次那台（否则它排在第一位，"重新"就成了摆设）
+        qwenResolvedHost = ""
+        hostProbing = true
+        hostProbeResult = ""
+        invalidateCloudTest()
+        Log.info("Qwen host probe started")
+        AlibabaHostResolver.resolve(apiKey: key,
+                                    candidates: CloudASRSettings.currentHostCandidates(apiKey: key)) { result in
+            hostProbing = false
+            switch result {
+            case .success(let host):
+                CloudASRSettings.rememberResolution(host: host, model: nil)
+                hostProbeOK = true
+                hostProbeResult = tr("已试通的接入地址：", "Endpoint in use: ") + host
+            case .failure(let failure):
+                hostProbeOK = false
+                hostProbeResult = failure.message
+                Log.warn("Qwen host probe failed status=\(failure.status) code=\(failure.code ?? "-") "
+                         + "copy=" + String(failure.message.prefix(200)))
+            }
+        }
     }
 
     /// 发一次 1 秒合成音，报往返毫秒数。失败时把云端的原话摆出来（它本来就带"下一步怎么办"）。
@@ -1309,8 +1444,11 @@ private struct AITab: View {
             case .success(let success):
                 // 记住这台主机与真正能用的那个模型。两条设置都是 @AppStorage 绑着的，
                 // 界面会自己跟上，不必在这里再赋一遍（赋一遍反而会触发 onChange 把刚得到的
-                // 结论作废掉——这一行结论正是用户在等的东西）
-                CloudASRSettings.rememberResolution(host: success.host, model: success.model)
+                // 结论作废掉——这一行结论正是用户在等的东西）。
+                // 代数对不上 = 这几秒里配置被改过：那这条结论属于旧配置，连地址带模型都不许落盘
+                if generation == cloudTestGeneration {
+                    CloudASRSettings.rememberResolution(host: success.host, model: success.model)
+                }
                 settle(.success(success.outcome))
             case .failure(let failure):
                 settle(.failure(failure))
@@ -1548,13 +1686,21 @@ private struct AITab: View {
                     .foregroundColor(.secondary)
             }
         case .qwen:
-            Text(effectiveBaseURL.isEmpty
-                 ? tr("接口地址还拼不出来：粘一次 Key，MicType 会把它试出来。",
-                      "The endpoint is not known yet: paste your key once and MicType will find it.")
+            // 判据是"这台主机到底定下来了没有"，不是"字符串是不是空的"——候选表永远给得出
+            // 第一项，所以地址**永远**非空。照空串判的话，那条橙色提示一次都不会出现，
+            // 还没验过 Key 的人读到的是一句笃定的「接口地址（自动试出来的）」。
+            let settledHost = AlibabaEndpoint.normalizeHost(qwenAPIHost)
+                ?? AlibabaEndpoint.normalizeHost(qwenResolvedHost)
+            Text(settledHost == nil
+                 ? tr("接入地址还没定下来，会先试：", "The endpoint is not settled yet; MicType will try: ")
+                     + effectiveBaseURL
+                     + tr("。粘一次 Key，或按「探测接入地址」，MicType 会把真正那台试出来。",
+                          ". Paste your key once, or hit Detect endpoint, and MicType will find the right one.")
                  : tr("接口地址（自动试出来的）：", "Endpoint (detected): ") + effectiveBaseURL)
                 .font(.caption)
-                .foregroundColor(effectiveBaseURL.isEmpty ? .orange : .secondary)
+                .foregroundColor(settledHost == nil ? .orange : .secondary)
                 .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
         case .custom:
             TextField(tr("Base URL（要带版本段，如 https://api.moonshot.ai/v1）",
                          "Base URL (include the version segment, e.g. https://api.moonshot.ai/v1)"),

@@ -651,4 +651,63 @@ final class FakeCloudSender: @unchecked Sendable {
         lock.unlock()
         waiting.forEach { $0(result) }
     }
+
+    // MARK: - 老设置（4.0.0 的区域选择器）搬过来
+
+    /// 候选表必须盖住 4.0.0 那个选择器能选的每一档。少一条 = 那一档的老用户升上来之后
+    /// 永远试不到自己真正那台主机，表现是"Key 怎么都不对"
+    func testWorkspaceSuffixesCoverEveryLegacyRegion() {
+        let slugs = LLMCatalog.QwenRegion.allCases.compactMap { $0.regionSlug }
+        XCTAssertFalse(slugs.isEmpty)
+        for slug in slugs {
+            XCTAssertTrue(AlibabaEndpoint.workspaceSuffixes.contains { $0.hasPrefix(slug + ".") },
+                          "候选表里没有 \(slug)")
+        }
+        let candidates = AlibabaEndpoint.candidates(workspace: "ws-abc", legacyRegionSlug: "ap-northeast-1")
+        XCTAssertEqual(candidates.first, "ws-abc.ap-northeast-1.maas.aliyuncs.com")
+        XCTAssertTrue(candidates.contains("ws-abc.cn-hongkong.maas.aliyuncs.com"))
+    }
+
+    /// 东京 / 香港 / US 这三档 4.0.1 的候选表原本一台都拼不出来，靠这一次性迁移把老地址
+    /// 种进"上一次试通的那台"，升级当天照常能用
+    func testLegacyHostSeedMovesTheOldRegionIntoTheResolvedHost() {
+        XCTAssertEqual(AlibabaEndpoint.legacyHostSeed(region: .tokyo, workspaceID: "llm-abc",
+                                                      pastedHost: "", resolvedHost: ""),
+                       "llm-abc.ap-northeast-1.maas.aliyuncs.com")
+        XCTAssertEqual(AlibabaEndpoint.legacyHostSeed(region: .hongkong, workspaceID: "llm-abc",
+                                                      pastedHost: "", resolvedHost: ""),
+                       "llm-abc.cn-hongkong.maas.aliyuncs.com")
+        // US 没有 WorkspaceId，主机名是另一台共享主机——它在任何候选表里都不出现
+        XCTAssertEqual(AlibabaEndpoint.legacyHostSeed(region: .us, workspaceID: "",
+                                                      pastedHost: "", resolvedHost: ""),
+                       "dashscope-us.aliyuncs.com")
+    }
+
+    /// 不该种的几种：国际站是出厂默认（种进去只会让探测被白白跳过）、
+    /// 已经有答案了（粘过 / 试通过）、以及 WorkspaceId 拼不出合法主机名
+    func testLegacyHostSeedStaysOutOfTheWay() {
+        XCTAssertNil(AlibabaEndpoint.legacyHostSeed(region: .international, workspaceID: "",
+                                                    pastedHost: "", resolvedHost: ""))
+        XCTAssertNil(AlibabaEndpoint.legacyHostSeed(region: .tokyo, workspaceID: "llm-abc",
+                                                    pastedHost: "my.host.example.com", resolvedHost: ""))
+        XCTAssertNil(AlibabaEndpoint.legacyHostSeed(region: .tokyo, workspaceID: "llm-abc",
+                                                    pastedHost: "", resolvedHost: "dashscope.aliyuncs.com"))
+        // 带下划线的 WorkspaceId 拼出来的主机连 DNS 都不通：不种，留给区域兜底与"粘地址"那条路
+        XCTAssertNil(AlibabaEndpoint.legacyHostSeed(region: .beijing, workspaceID: "llm_abc",
+                                                    pastedHost: "", resolvedHost: ""))
+        // 工作空间区域但没填 WorkspaceId：老设置本来就拼不出地址
+        XCTAssertNil(AlibabaEndpoint.legacyHostSeed(region: .beijing, workspaceID: "",
+                                                    pastedHost: "", resolvedHost: ""))
+    }
+
+    /// WorkspaceId 的字符集必须和 normalizeHost 那张表对得上：放行一个拼出来过不了
+    /// normalizeHost 的字符，等于生成几条永远拼不出 URL 的候选，然后静默跳过
+    func testWorkspaceIDUsesTheSameCharacterSetAsTheHostName() {
+        XCTAssertTrue(AlibabaEndpoint.isWorkspaceID("ws-e9548i71rc13pul7"))
+        XCTAssertFalse(AlibabaEndpoint.isWorkspaceID("llm_abc"))
+        XCTAssertTrue(AlibabaEndpoint.candidates(workspace: "llm_abc").allSatisfy {
+            AlibabaEndpoint.normalizeHost($0) != nil
+        })
+        XCTAssertNil(AlibabaEndpoint.workspaceID(fromKey: "sk-ws-llm_abc.zzzz"))
+    }
 }

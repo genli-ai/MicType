@@ -770,4 +770,36 @@ final class CloudASRTests: XCTestCase {
         XCTAssertNotEqual(KeychainHelper.legacyDashScopeAccount, KeychainHelper.dashScopeAccount,
                           "旧账号名留着只为迁移，不能和统一账号同名")
     }
+
+    /// DashScope 有时在 HTTP 200 的 body 里报错。照 200 派发的话，内容审核、限流、
+    /// Key 不对全都落进"意外状态码"那条兜底——一句下一步都没有，限流还不会重试
+    func testBodyLevelErrorCodesAreMappedToTheStatusTheyReallyAre() {
+        XCTAssertEqual(AlibabaASRClient.syntheticStatus(code: "DataInspectionFailed"), 400)
+        XCTAssertEqual(AlibabaASRClient.syntheticStatus(code: "Throttling.RateQuota"), 429)
+        XCTAssertEqual(AlibabaASRClient.syntheticStatus(code: "InvalidApiKey"), 401)
+        XCTAssertEqual(AlibabaASRClient.syntheticStatus(code: "Arrearage"), 403)
+        XCTAssertEqual(AlibabaASRClient.syntheticStatus(code: "ModelNotFound"), 404)
+        XCTAssertNil(AlibabaASRClient.syntheticStatus(code: "SomethingNew"))
+        XCTAssertNil(AlibabaASRClient.syntheticStatus(code: ""))
+    }
+
+    /// 200 裹着的限流要走"值得重试"那一条，而且文案必须带一句下一步
+    func testTwoHundredWrappedThrottlingGetsTheRateLimitCopy() {
+        let saved = L10n.shared.language
+        defer { L10n.shared.language = saved }
+        L10n.shared.language = .zh
+
+        let throttled = AlibabaASRClient.failure(status: 200, code: "Throttling.RateQuota",
+                                                 message: "Requests rate limit exceeded")
+        XCTAssertTrue(throttled.retryable)
+        XCTAssertEqual(throttled.status, 429)
+        XCTAssertFalse(throttled.message.contains("意外状态码"), throttled.message)
+        // 真实的那个 HTTP 状态码仍然如实写在括号里
+        XCTAssertTrue(throttled.message.contains("(200 Throttling.RateQuota)"), throttled.message)
+
+        let blocked = AlibabaASRClient.failure(status: 200, code: "DataInspectionFailed", message: nil)
+        XCTAssertEqual(blocked.status, 400)
+        XCTAssertTrue(blocked.message.contains("本地引擎"), blocked.message)
+        XCTAssertFalse(blocked.retryable)
+    }
 }

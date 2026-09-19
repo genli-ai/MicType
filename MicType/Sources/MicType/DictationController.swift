@@ -1398,7 +1398,9 @@ final class DictationController {
                     // 本机模型（Ollama / LM Studio）那一档不需要 Key，照样能跑指令 → 判"配没配"
                     // 一律走 LLMClient.isConfigured，别再直接看钥匙串
                     if !LLMClient.isConfigured {
-                        let keyName = Settings.shared.hotkey.displayName
+                        // 句子里的键名一律用 plainName（全名、不带括号里的符号）：
+                        // 菜单栏和引导都这么写，这一条用 displayName 的话，英文那句里会冒出两对括号
+                        let keyName = Settings.shared.hotkey.plainName
                         self.phase = .idle
                         // 提示里多一个可点的「去配置」：话还是那句"纯输入请轻点"，
                         // 但别让用户读完之后还得自己去菜单栏找设置页。

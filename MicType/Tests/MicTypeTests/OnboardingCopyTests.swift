@@ -45,12 +45,12 @@ final class OnboardingCopyTests: XCTestCase {
     /// 有 Key：点名「按住 + 快捷键 + 一句真能照着说的话」
     func testDoneStatusWithAKeyNamesTheHoldGesture() {
         L10n.shared.language = .zh
-        let zh = OnboardingCopy.doneAIStatus(ready: true, hotkey: "⌥")
+        let zh = OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥")
         XCTAssertTrue(zh.contains("按住"), zh)
         XCTAssertTrue(zh.contains("⌥"), zh)
 
         L10n.shared.language = .en
-        let en = OnboardingCopy.doneAIStatus(ready: true, hotkey: "⌥")
+        let en = OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥")
         XCTAssertTrue(en.contains("Hold ⌥"), en)
         XCTAssertTrue(en.lowercased().contains("more formal"), en)
         XCTAssertFalse(containsCJKOrFullWidth(en), en)
@@ -59,24 +59,55 @@ final class OnboardingCopyTests: XCTestCase {
     /// 没 Key：必须说清"现在这样也完整可用"，并指路 设置 → AI
     func testDoneStatusWithoutAKeyPointsAtSettings() {
         L10n.shared.language = .zh
-        let zh = OnboardingCopy.doneAIStatus(ready: false, hotkey: "⌥")
+        let zh = OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")
         XCTAssertTrue(zh.contains("设置"), zh)
         XCTAssertFalse(zh.contains("按住"), zh)
 
         L10n.shared.language = .en
-        let en = OnboardingCopy.doneAIStatus(ready: false, hotkey: "⌥")
+        let en = OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")
         XCTAssertTrue(en.contains("Settings"), en)
         XCTAssertTrue(en.contains("on-device"), en)
         XCTAssertFalse(containsCJKOrFullWidth(en), en)
     }
 
-    /// 两种收尾不能串台（复制粘贴写错一处就会一模一样）
+    /// 三种收尾不能串台（复制粘贴写错一处就会一模一样）
     func testDoneStatusVariantsDiffer() {
         for language in [AppLanguage.zh, .en] {
             L10n.shared.language = language
-            XCTAssertNotEqual(OnboardingCopy.doneAIStatus(ready: true, hotkey: "⌥"),
-                              OnboardingCopy.doneAIStatus(ready: false, hotkey: "⌥"))
+            let all = [OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥"),
+                       OnboardingCopy.doneAIStatus(status: .commandsOnly, hotkey: "⌥"),
+                       OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")]
+            XCTAssertEqual(Set(all).count, 3, "\(all)")
         }
+    }
+
+    /// 选了「只用本地」却还留着一把 Key：**不许**宣告"润色就绪"——此刻轻点听写
+    /// 一个字都不润色，而按住说指令仍然会用那把 Key 计费。两件事都要说出来。
+    func testDoneStatusForLocalOnlyWithAStoredKey() {
+        L10n.shared.language = .zh
+        let zh = OnboardingCopy.doneAIStatus(status: .commandsOnly, hotkey: "右 Option")
+        XCTAssertTrue(zh.contains("不润色"), zh)
+        XCTAssertTrue(zh.contains("Key"), zh)
+        XCTAssertTrue(zh.contains("按住"), zh)
+
+        L10n.shared.language = .en
+        let en = OnboardingCopy.doneAIStatus(status: .commandsOnly, hotkey: "Right Option")
+        XCTAssertTrue(en.contains("does not polish"), en)
+        XCTAssertTrue(en.lowercased().contains("billed"), en)
+        XCTAssertFalse(containsCJKOrFullWidth(en), en)
+    }
+
+    /// 判据本身：钥匙串里有 Key 但润色关着 → commandsOnly，不是 ready
+    func testAIStatusNeedsPolishOnToCallItReady() {
+        XCTAssertEqual(LLMCatalog.aiStatus(hasCredential: true, baseURL: "https://api.openai.com/v1",
+                                           polishModel: "gpt-5.6-sol", polishEnabled: true), .ready)
+        XCTAssertEqual(LLMCatalog.aiStatus(hasCredential: true, baseURL: "https://api.openai.com/v1",
+                                           polishModel: "gpt-5.6-sol", polishEnabled: false), .commandsOnly)
+        XCTAssertEqual(LLMCatalog.aiStatus(hasCredential: false, baseURL: "https://api.openai.com/v1",
+                                           polishModel: "gpt-5.6-sol", polishEnabled: true), .off)
+        // 型号名是空的（自定义端点 / 本机模型没填）同样不算配好
+        XCTAssertEqual(LLMCatalog.aiStatus(hasCredential: true, baseURL: "http://localhost:11434/v1",
+                                           polishModel: "  ", polishEnabled: true), .off)
     }
 
     // MARK: - 「怎么用」那一屏的文案
@@ -95,12 +126,17 @@ final class OnboardingCopyTests: XCTestCase {
         XCTAssertTrue(en.lowercased().contains("hold-to-command"), en)
     }
 
-    /// 标题要写明这一步是可选的——不写就是把一道可跳过的屏做成了关卡
-    func testUsageHeadlineSaysItIsOptional() {
+    /// 标题要写明这一步是可选的——不写就是把一道可跳过的屏做成了关卡。
+    /// 名字还得和设置页那一段（「使用方式」/ How you use MicType）对得上：
+    /// 同一个决定在两处叫两个名字，用户按第四屏指的路去设置页时认不出来。
+    func testUsageHeadlineSaysItIsOptionalAndMatchesSettings() {
         L10n.shared.language = .zh
         XCTAssertTrue(OnboardingCopy.usageHeadline.contains("可选"), OnboardingCopy.usageHeadline)
+        XCTAssertTrue(OnboardingCopy.usageHeadline.hasPrefix("使用方式"), OnboardingCopy.usageHeadline)
         L10n.shared.language = .en
         XCTAssertTrue(OnboardingCopy.usageHeadline.lowercased().contains("optional"),
+                      OnboardingCopy.usageHeadline)
+        XCTAssertTrue(OnboardingCopy.usageHeadline.hasPrefix("How you use MicType"),
                       OnboardingCopy.usageHeadline)
     }
 
@@ -125,8 +161,9 @@ final class OnboardingCopyTests: XCTestCase {
         L10n.shared.language = .en
         let all = [OnboardingCopy.usageHeadline, OnboardingCopy.usageExplanation,
                    OnboardingCopy.aiSkipReassurance, OnboardingCopy.modelHint,
-                   OnboardingCopy.doneAIStatus(ready: true, hotkey: "⌥"),
-                   OnboardingCopy.doneAIStatus(ready: false, hotkey: "⌥")]
+                   OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥"),
+                   OnboardingCopy.doneAIStatus(status: .commandsOnly, hotkey: "⌥"),
+                   OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")]
         for copy in all {
             XCTAssertFalse(copy.isEmpty)
             XCTAssertFalse(containsCJKOrFullWidth(copy), copy)

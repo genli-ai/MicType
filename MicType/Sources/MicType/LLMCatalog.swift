@@ -148,6 +148,28 @@ enum LLMCatalog {
         return !polishModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// 引导收尾那一行到底该说哪一种话。**三档，不是两档**：
+    /// 「配好了但润色关着」（选了「只用本地」却留着一把 Key）既不是 ready 也不是没配——
+    /// 此刻轻点听写一个字都不润色，而按住说指令照常会调用云端并计费。
+    /// 只用 aiReady 判的话，这一档会被说成「AI 润色和语音指令都就绪了」，用户白等一个
+    /// 不会发生的润色。
+    enum AIStatus: Equatable {
+        /// 凭据、地址、型号齐了，润色也开着
+        case ready
+        /// 配齐了，但润色档位是关的：只有按住说指令还走 AI
+        case commandsOnly
+        /// 还没配 AI（或者这一档缺型号名 / 拼不出地址）
+        case off
+    }
+
+    static func aiStatus(hasCredential: Bool, baseURL: String,
+                         polishModel: String, polishEnabled: Bool) -> AIStatus {
+        guard aiReady(hasCredential: hasCredential, baseURL: baseURL, polishModel: polishModel) else {
+            return .off
+        }
+        return polishEnabled ? .ready : .commandsOnly
+    }
+
     // MARK: - 去哪儿申请 Key / 固定的 Key 与费用说法
 
     /// 「去申请 Key ↗」指向的页面。nil = 我们没有一条可以打包票的地址
@@ -549,22 +571,68 @@ enum LLMCatalog {
         .qwen: ("qwen3.8-flash", "qwen3.8-max"),
     ]
 
-    /// 迁移规则（**纯函数**，单测钉死「手选过的一个都不动」这条铁律）。
+    /// 一处被迁移改掉的型号：改的是哪个键、从什么改成什么。
+    /// 有了 from 才说得出那句"我把你的型号换了"——只报新值等于让用户自己去猜原来是什么。
+    struct ModelChange: Equatable {
+        let key: String
+        let from: String
+        let to: String
+    }
+
+    /// 迁移规则的**真身**（纯函数，单测钉死「手选过的一个都不动」这条铁律）。
     /// 入参：当前存着什么（key = SettingsKeys，值为 nil / 空白表示没存过）。
-    /// 返回：需要写回的键值；空字典 = 什么都不用改。
-    static func migrationToBestDefault(current: [String: String?]) -> [String: String] {
-        var writes: [String: String] = [:]
-        for (provider, auto) in autoPairs40 {
+    /// 返回：要改哪几处，顺序稳定（openai → deepseek → qwen），好让提示里那几行不会每次不一样。
+    static func migrationToBestDefaultChanges(current: [String: String?]) -> [ModelChange] {
+        var changes: [ModelChange] = []
+        for provider in [LLMProvider.openai, .deepseek, .qwen] {
+            guard let auto = autoPairs40[provider] else { continue }
             let keys = modelKeys(for: provider)
             // 没存过 = 出厂默认，和"停在自动默认上"是同一件事
             let polish = storedValue(current, keys.polish) ?? auto.polish
             let command = storedValue(current, keys.command) ?? auto.command
             guard polish == auto.polish, command == auto.command else { continue }
             let target = defaultModel(for: provider)
-            if polish != target { writes[keys.polish] = target }
-            if command != target { writes[keys.command] = target }
+            if polish != target { changes.append(ModelChange(key: keys.polish, from: polish, to: target)) }
+            if command != target { changes.append(ModelChange(key: keys.command, from: command, to: target)) }
+        }
+        return changes
+    }
+
+    /// 要写回的键值；空字典 = 什么都不用改。
+    static func migrationToBestDefault(current: [String: String?]) -> [String: String] {
+        var writes: [String: String] = [:]
+        for change in migrationToBestDefaultChanges(current: current) {
+            writes[change.key] = change.to
         }
         return writes
+    }
+
+    /// 把改动编码成一行存进设置：**只存型号名，不存句子**——句子要按看的时候那一刻的语言拼
+    /// （见 CLAUDE.md「i18n 快照字符串」）。同一对只留一份（润色和指令往往换成同一个）。
+    static func encodeModelChanges(_ changes: [ModelChange]) -> String {
+        var pairs: [String] = []
+        for change in changes {
+            let pair = change.from + ">" + change.to
+            if !pairs.contains(pair) { pairs.append(pair) }
+        }
+        return pairs.joined(separator: ",")
+    }
+
+    /// AI 页上那条一次性提示。nil = 没有可说的（没迁移过、或者用户已经点过「知道了」）。
+    ///
+    /// 为什么非说不可：4.0.0 的「快」档写进去的那一对，和出厂默认一字不差，迁移分不出
+    /// 「停在默认」与「明确选过便宜档」。分不出就只能把改动摆在明面上——
+    /// OpenAI 那一档 luna → sol 是约 20 倍的输入价差，而润色每句话都要跑一次。
+    static func modelChangeNotice(_ raw: String) -> String? {
+        let pairs = raw.split(separator: ",").compactMap { pair -> String? in
+            let parts = pair.split(separator: ">", maxSplits: 1)
+            guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+            return parts[0] + " → " + parts[1]
+        }
+        guard !pairs.isEmpty else { return nil }
+        let list = pairs.joined(separator: tr("、", ", "))
+        return tr("这次升级把默认型号换成了各家最好的那一档：\(list)。你没有手动选过型号，所以它跟着默认走了。想省钱就在上面的「模型」里选便宜的那一项。",
+                  "This update moved the default model up to each provider's best tier: \(list). You had never picked a model by hand, so it followed the default. Pick a cheaper one under Model above to spend less.")
     }
 
     // MARK: - 错误话术

@@ -57,6 +57,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 云端识别的 Key 统一到润色那把（qwen_api_key）：开发期存过旧账号的搬过来再删
         KeychainHelper.migrateLegacyDashScopeKey()
 
+        // 识别停在阿里云、服务商却已经不是阿里云：AI 页上那个开关这时根本不渲染。
+        // **不替他改**（音频出不出这台 Mac 永远由用户自己点），但要留一行日志——
+        // 那一页现在会当面说这件事，用户抄来问的时候日志里得找得到。
+        if AISetup.showsStrandedAlibabaCloudNotice(engine: Settings.shared.recognitionEngine,
+                                                   provider: Settings.shared.llmProvider) {
+            Log.warn("Cloud recognition stranded: engine=cloudAlibaba provider="
+                     + Settings.shared.llmProvider.rawValue)
+        }
+
         hotkeys.onTapToggle = { [weak self] in self?.dictation.toggle() }
         hotkeys.onPressStart = { [weak self] in self?.dictation.pressStart() }
         hotkeys.onPressTapConfirm = { [weak self] in self?.dictation.pressTapConfirm() }

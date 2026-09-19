@@ -559,4 +559,50 @@ final class LLMCatalogTests: XCTestCase {
             XCTAssertNil(text.rangeOfCharacter(from: forbidden), text)
         }
     }
+
+    /// 迁移改掉了什么要说得出来（旧型号 → 新型号）：4.0.0 的「快」档写进去的那一对
+    /// 和出厂默认一字不差，分不出"停在默认"与"明确选过便宜档"——分不出就只能当面说
+    func testBestDefaultMigrationReportsWhatItChanged() {
+        var current: [String: String?] = [:]
+        for provider in [LLMProvider.openai, .deepseek, .qwen] {
+            let keys = LLMCatalog.modelKeys(for: provider)
+            let settled = LLMCatalog.defaultModel(for: provider)
+            current.updateValue(settled, forKey: keys.polish)
+            current.updateValue(settled, forKey: keys.command)
+        }
+        current.updateValue("gpt-5.6-luna", forKey: SettingsKeys.chatModel)
+        current.updateValue("gpt-5.6-terra", forKey: SettingsKeys.openaiCommandModel)
+
+        let changes = LLMCatalog.migrationToBestDefaultChanges(current: current)
+        XCTAssertEqual(changes, [
+            LLMCatalog.ModelChange(key: SettingsKeys.chatModel, from: "gpt-5.6-luna", to: "gpt-5.6-sol"),
+            LLMCatalog.ModelChange(key: SettingsKeys.openaiCommandModel, from: "gpt-5.6-terra", to: "gpt-5.6-sol"),
+        ])
+        // writes 由 changes 推出来：两者永远说同一件事
+        let writes = LLMCatalog.migrationToBestDefault(current: current)
+        XCTAssertEqual(writes[SettingsKeys.chatModel], "gpt-5.6-sol")
+        XCTAssertEqual(writes.count, changes.count)
+    }
+
+    /// 存的是型号名、不是句子（句子按看的时候那一刻的语言拼），同一对只留一份
+    func testModelChangeNoticeNamesBothTheOldAndTheNewModel() {
+        let encoded = LLMCatalog.encodeModelChanges([
+            LLMCatalog.ModelChange(key: SettingsKeys.chatModel, from: "gpt-5.6-luna", to: "gpt-5.6-sol"),
+            LLMCatalog.ModelChange(key: SettingsKeys.openaiCommandModel, from: "gpt-5.6-luna", to: "gpt-5.6-sol"),
+        ])
+        XCTAssertEqual(encoded, "gpt-5.6-luna>gpt-5.6-sol")
+
+        let saved = L10n.shared.language
+        defer { L10n.shared.language = saved }
+        for language in [AppLanguage.zh, .en] {
+            L10n.shared.language = language
+            let notice = LLMCatalog.modelChangeNotice(encoded)
+            XCTAssertNotNil(notice)
+            XCTAssertTrue(notice!.contains("gpt-5.6-luna"), notice!)
+            XCTAssertTrue(notice!.contains("gpt-5.6-sol"), notice!)
+        }
+        // 没迁移过 / 已经点过「知道了」→ 这一行根本不显示
+        XCTAssertNil(LLMCatalog.modelChangeNotice(""))
+        XCTAssertNil(LLMCatalog.modelChangeNotice("坏值"))
+    }
 }

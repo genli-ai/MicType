@@ -368,4 +368,35 @@ final class AISetupTests: XCTestCase {
             XCTAssertFalse(containsCJKOrFullWidth(name), name)
         }
     }
+
+    /// 识别停在阿里云、服务商却不是阿里云：AI 页上那个开关这时根本不渲染，
+    /// 所以音频在传、界面上却没有关掉它的控件。和 cloudOpenAI 那条同样要当面说
+    func testStrandedAlibabaCloudRecognitionIsSurfaced() {
+        XCTAssertTrue(AISetup.showsStrandedAlibabaCloudNotice(engine: .cloudAlibaba, provider: .openai))
+        XCTAssertTrue(AISetup.showsStrandedAlibabaCloudNotice(engine: .cloudAlibaba, provider: .local))
+        // 服务商就是阿里云 = 那个开关就在下面，不必多话
+        XCTAssertFalse(AISetup.showsStrandedAlibabaCloudNotice(engine: .cloudAlibaba, provider: .qwen))
+        XCTAssertFalse(AISetup.showsStrandedAlibabaCloudNotice(engine: .local, provider: .openai))
+        XCTAssertFalse(AISetup.showsStrandedAlibabaCloudNotice(engine: .cloudOpenAI, provider: .openai))
+    }
+
+    /// 换服务商时识别引擎跟不跟着回本机——设置页与引导页共用这一条，两处不许各写一份
+    func testEngineAfterProviderChange() {
+        XCTAssertEqual(AISetup.engineAfterProviderChange(current: .cloudAlibaba, next: .openai), .local)
+        XCTAssertEqual(AISetup.engineAfterProviderChange(current: .cloudAlibaba, next: .local), .local)
+        // 还在阿里云：那个开关照常在，不动它
+        XCTAssertNil(AISetup.engineAfterProviderChange(current: .cloudAlibaba, next: .qwen))
+        // 本来就没在用阿里云识别：换谁都与识别无关（cloudOpenAI 由那条 legacy 提示管）
+        XCTAssertNil(AISetup.engineAfterProviderChange(current: .local, next: .openai))
+        XCTAssertNil(AISetup.engineAfterProviderChange(current: .cloudOpenAI, next: .openai))
+    }
+
+    /// 「只用本地」只关润色、只把识别改回本机——**钥匙串里那把 Key 一个字节都不动**，
+    /// 而按住说指令并不看档位，照样会调用云端、照样计费。所以这一档里有 Key 就必须当面说
+    func testLocalOnlyStillWarnsAboutAStoredKey() {
+        XCTAssertTrue(AISetup.showsStoredKeyNotice(mode: .localOnly, hasCredential: true))
+        XCTAssertFalse(AISetup.showsStoredKeyNotice(mode: .localOnly, hasCredential: false))
+        // 「本地 + AI」这一档本来就该有 Key，没什么可提醒的
+        XCTAssertFalse(AISetup.showsStoredKeyNotice(mode: .withAI, hasCredential: true))
+    }
 }

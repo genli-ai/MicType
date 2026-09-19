@@ -87,6 +87,9 @@ final class KeyVerifier: ObservableObject {
         }
 
         status = .verifying
+        // 这把 Key 里带着 WorkspaceId 的话，趁这一刻落盘：润色那条路不读钥匙串，
+        // 只能从设置里拿它——两边拼出来的候选主机必须是同一张表（见 rememberWorkspace）
+        if provider == .qwen { CloudASRSettings.rememberWorkspace(fromKey: trimmed) }
         let hadPrevious = KeychainHelper.loadAPIKey(account: provider.keychainAccount) != nil
         /// 两条探针回来之后做的事一模一样：过了就写钥匙串，没过就一个字节都不动
         let settle: (Bool, String, String, String) -> Void = { [weak self] ok, label, model, message in
@@ -110,7 +113,12 @@ final class KeyVerifier: ObservableObject {
         case .llm:
             // Qwen 这一档的接入地址是试出来的：先用最便宜的那趟（GET /models）把主机定下来，
             // 再照常走 testModel。定不下来就直接报那一趟的原因——它比"型号不对"准得多。
-            guard provider == .qwen, Settings.shared.qwenResolvedHost.isEmpty,
+            //
+            // **每换一把 Key 都要重新试一遍**：缓存的那台是"上一把 Key 的答案"，换了账号
+            // （国际站 → 北京工作空间）之后拿它去打只会得到一个 401，而那句话指向的是 Key，
+            // 用户翻不到头上。缓存的主机仍排在候选表第一位，所以没换端点时这一趟只多一个请求。
+            // 粘过接入地址的人例外：他已经把答案给了，不该再拿他的 Key 去试别的主机。
+            guard provider == .qwen,
                   AlibabaEndpoint.normalizeHost(Settings.shared.qwenAPIHost) == nil else {
                 LLMClient.testModel(model, provider: provider, candidateKey: trimmed) { ok, message in
                     settle(ok, provider.segmentName, model, message)
@@ -119,12 +127,16 @@ final class KeyVerifier: ObservableObject {
             }
             AlibabaHostResolver.resolve(
                 apiKey: trimmed,
-                candidates: CloudASRSettings.currentHostCandidates(apiKey: trimmed)) { result in
+                candidates: CloudASRSettings.currentHostCandidates(apiKey: trimmed)) { [weak self] result in
                 switch result {
                 case .failure(let failure):
                     settle(false, provider.segmentName, model, failure.message)
                 case .success(let host):
-                    CloudASRSettings.rememberResolution(host: host, model: nil)
+                    // 和 settle 同一道闸：这几秒里用户可能又粘了一把别的 Key，
+                    // 让上一把的答案把接入地址写掉，下一把就被钉在一台不属于它的主机上
+                    if self?.generation == gen {
+                        CloudASRSettings.rememberResolution(host: host, model: nil)
+                    }
                     LLMClient.testModel(model, provider: provider, candidateKey: trimmed) { ok, message in
                         settle(ok, provider.segmentName, model, message)
                     }
@@ -134,7 +146,11 @@ final class KeyVerifier: ObservableObject {
             // 识别页：直接打识别端点，1 秒合成音。阿里云那一档还要先把接入主机试出来、
             // 模型 404 时自动换 qwen3-asr-flash（见 CloudASRSetup）。
             guard var config = CloudASRSettings.currentConfig(), config.provider == cloudProvider else {
-                // 走到这里只可能是识别引擎在这半秒里被改回了本地档
+                // 走到这里只可能是识别引擎在这半秒里被改回了本地档。
+                // 这一支不经过 settle，所以日志要自己记：用户看得见的每一句失败都要落盘，
+                // 否则他抄着这句话来问，日志里一个字都找不到（4.0.1 立的规矩）。
+                Log.warn("API key verification skipped provider=\(provider.rawValue) "
+                         + "reason=cloud recognition not on this provider")
                 status = .failed(reason: tr("云端识别没有开在这一档上，请先在 设置 → AI 里打开",
                                             "Cloud recognition is not set to this provider - turn it on first under Settings → AI"),
                                  keptPrevious: hadPrevious)
@@ -154,10 +170,13 @@ final class KeyVerifier: ObservableObject {
                 return
             }
             CloudASRSetup.verifyAlibaba(apiKey: trimmed, config: config,
-                                        candidates: CloudASRSettings.currentHostCandidates(apiKey: trimmed)) { result in
+                                        candidates: CloudASRSettings.currentHostCandidates(apiKey: trimmed)) { [weak self] result in
                 switch result {
                 case .success(let success):
-                    CloudASRSettings.rememberResolution(host: success.host, model: success.model)
+                    // 同一道代数闸：放弃掉的那一次验证不许改写接入地址与识别模型
+                    if self?.generation == gen {
+                        CloudASRSettings.rememberResolution(host: success.host, model: success.model)
+                    }
                     settle(true, cloudProvider.displayName, success.model.rawValue, "")
                 case .failure(let failure):
                     settle(false, cloudProvider.displayName,
@@ -312,5 +331,43 @@ struct KeyEntryView: View {
         }
         guard verifier.needsVerification(trimmed), !verifier.isVerifying else { return }
         verifier.verify(key: trimmed, provider: provider, model: model, probe: probe)
+    }
+}
+
+// MARK: - 阿里云的「接入地址（可选）」
+
+/// 设置页与引导页共用的那个可选输入框（含说明与格式校验）。
+///
+/// 为什么非共用不可：4.0.1 里这是两份手抄本，引导那一份漏了格式校验，说明文字也另写了一版
+/// ——于是在引导里把「接入地址：xxx」连中文标签一起粘进去的人，什么提示都得不到，
+/// 那串被 normalizeHost 静默丢弃（等于没填）。同一个事实只写一处（见 keyStorageNote 的做法）。
+///
+/// 写成 @ViewBuilder 静态函数而不是 View：调用处在 Form / VStack 里，这三样要各占一行，
+/// 包成一个 View 会被挤成一行。
+/// 「已试通的那台 + 重新探测」只在设置页出现：首配的人手上还没有"上一次"。
+enum QwenHostField {
+
+    /// 这串填得像不像一个主机名。空着是常态（交给自动探测），不算错。
+    static func isMalformed(_ raw: String) -> Bool {
+        !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && AlibabaEndpoint.normalizeHost(raw) == nil
+    }
+
+    @ViewBuilder
+    static func field(host: Binding<String>) -> some View {
+        TextField(tr("接入地址（可选）", "API host (optional)"), text: host)
+            .textFieldStyle(.roundedBorder)
+        Text(tr("留空即可：粘 Key 的时候 MicType 会自己把接入地址试出来，试通之后就记住，以后不再探测。\n只有自动没试对时才需要填——到阿里云百炼控制台复制「接入地址」那一串（apiHost 或整条 URL 都行）。",
+                "Leave it empty: when you paste the key, MicType finds the right endpoint itself and remembers it, so it never probes again.\nFill it in only if that fails - copy the API host from the Alibaba Model Studio console (the bare host or the full URL both work)."))
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        if isMalformed(host.wrappedValue) {
+            Text(tr("这串不像一个接入地址（主机名里不能有空格或中文）。清空它就交回给自动探测。",
+                    "That does not look like a host name (no spaces or non-ASCII characters). Clear it to hand the job back to auto-detection."))
+                .font(.caption)
+                .foregroundColor(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

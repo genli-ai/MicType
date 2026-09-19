@@ -30,9 +30,14 @@ enum AlibabaEndpoint {
     static let sharedChinaHost = "dashscope.aliyuncs.com"
 
     /// 工作空间专属主机后缀：{WorkspaceId}.{后缀}
+    ///
+    /// 这张表必须盖住 4.0.0 那个区域选择器能选的每一档（见 LLMCatalog.QwenRegion）：
+    /// 少一条，那一档的老用户升级之后就再也试不到自己真正那台主机，表现是"Key 一直不对"。
     static let workspaceSuffixes = [
         "cn-beijing.maas.aliyuncs.com",
         "ap-southeast-1.maas.aliyuncs.com",
+        "ap-northeast-1.maas.aliyuncs.com",
+        "cn-hongkong.maas.aliyuncs.com",
         "us-east-1.maas.aliyuncs.com",
     ]
 
@@ -66,13 +71,30 @@ enum AlibabaEndpoint {
         return s
     }
 
-    /// 这串像不像一个 WorkspaceId（它会被拼进主机名第一段，乱字符拼出来的地址连 DNS 都不通）
+    /// 这串像不像一个 WorkspaceId（它会被拼进主机名第一段，乱字符拼出来的地址连 DNS 都不通）。
+    /// 字符集必须和 normalizeHost 的那张表对得上（**不含下划线**）：放行一个拼出来
+    /// 过不了 normalizeHost 的字符，等于生成三条永远拼不出 URL 的候选，然后静默跳过。
     static func isWorkspaceID(_ raw: String) -> Bool {
         let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard id.count >= 3, id.count <= 64 else { return false }
         let allowed = CharacterSet(charactersIn:
-            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")
         return id.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+    /// 老设置（区域 + WorkspaceId）该种进 `qwenResolvedHost` 的那台主机。
+    /// nil = 没有可搬的东西，交给正常的探测流程。
+    ///
+    /// 只搬"用户明确选过区域"的那几位：国际站是出厂默认，把它种成"已试通"只会让探测
+    /// 被白白跳过（见 KeyEntryView 的 .llm 分支）。拼不出合法主机名（WorkspaceId 带下划线、
+    /// 或者压根没填）同样不种——种一个连 DNS 都不通的地址比不种更糟。
+    static func legacyHostSeed(region: LLMCatalog.QwenRegion, workspaceID: String,
+                               pastedHost: String, resolvedHost: String) -> String? {
+        guard normalizeHost(pastedHost) == nil, normalizeHost(resolvedHost) == nil else { return nil }
+        guard region != .international else { return nil }
+        let legacy = LLMCatalog.qwenBaseURL(region: region, workspaceID: workspaceID)
+        guard !legacy.isEmpty else { return nil }
+        return normalizeHost(legacy)
     }
 
     /// 从 Key 里认出 WorkspaceId：工作空间的 Key 长成 `sk-ws-xxxx.<密文>`，
@@ -187,9 +209,17 @@ enum AlibabaHostResolver {
     }
 
     /// 逐台试。completion 在主线程。成功 = 这台主机认这把 Key。
+    ///
+    /// - timeout: 单台的超时。这一趟问的是最便宜的那个问题（GET /models），答得出来的主机
+    ///   都是秒回；6 秒还没动静基本就是 DNS 不通或被墙，再等下去只是让状态行一直停在
+    ///   「正在验证…」上。
+    /// - budget: 整趟的总预算。候选最多 7 台（5 个工作空间后缀 + 2 台共享主机），
+    ///   逐台串行又没有总时限的话，UAE→阿里云这种慢链路上能把人晾将近两分钟。
+    ///   到点就用目前最好的那次尝试报结论——报得出原因，比无限等下去强。
     static func resolve(apiKey: String,
                         candidates: [String],
-                        timeout: TimeInterval = 15,
+                        timeout: TimeInterval = 6,
+                        budget: TimeInterval = 30,
                         send: @escaping (URLRequest, @escaping (Int, String?, String?) -> Void) -> Void = defaultSend,
                         completion: @escaping (Result<String, CloudASRFailure>) -> Void) {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -205,10 +235,14 @@ enum AlibabaHostResolver {
             return
         }
 
+        let started = DispatchTime.now()
         func attempt(_ index: Int, last: Attempt?) {
-            guard index < candidates.count else {
+            let elapsed = Double(Log.ms(since: started)) / 1000
+            let outOfTime = elapsed >= budget
+            guard index < candidates.count, !outOfTime else {
                 let a = last ?? Attempt(host: candidates[0], status: 0, code: nil)
-                Log.warn("Qwen host resolve exhausted tried=\(candidates.count) "
+                Log.warn("Qwen host resolve \(outOfTime ? "out of time" : "exhausted") "
+                         + "tried=\(index) of=\(candidates.count) seconds=\(Int(elapsed)) "
                          + "lastStatus=\(a.status) lastCode=\(a.code ?? "-")")
                 finish(.failure(AlibabaASRClient.failure(status: a.status, code: a.code, message: nil)))
                 return

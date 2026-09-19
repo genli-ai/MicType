@@ -82,7 +82,7 @@ enum HotkeyChoice: String, CaseIterable {
         case .leftOption: return tr("左 Option (⌥)", "Left Option (⌥)")
         case .leftCommand: return tr("左 Command (⌘)", "Left Command (⌘)")
         case .leftControl: return tr("左 Control (⌃)", "Left Control (⌃)")
-        case .fn: return tr("Fn / 🌐 地球键", "Fn / 🌐 Globe key")
+        case .fn: return tr("Fn 地球键 (🌐)", "Fn Globe key (🌐)")
         }
     }
 
@@ -100,7 +100,9 @@ enum HotkeyChoice: String, CaseIterable {
         case .leftOption: return tr("左 Option", "Left Option")
         case .leftCommand: return tr("左 Command", "Left Command")
         case .leftControl: return tr("左 Control", "Left Control")
-        case .fn: return tr("Fn / 🌐 地球键", "Fn / 🌐 Globe key")
+        // 和别的键一样：句子里读得顺的全名。4.0.1 这里是「Fn / 🌐 地球键」，
+        // 嵌进菜单栏第一行就成了 "Tap Fn / 🌐 Globe key to dictate"——一句话里夹一个斜杠和一个表情
+        case .fn: return tr("Fn 地球键", "Fn Globe key")
         }
     }
 
@@ -273,6 +275,37 @@ enum AISetup {
     static func showsLegacyOpenAICloudNotice(engine: RecognitionEngineChoice) -> Bool {
         engine == .cloudOpenAI
     }
+
+    /// 云端识别停在阿里云、服务商却不是阿里云——这一状态下 AI 页上那个开关**根本不渲染**
+    /// （它只在 provider == .qwen 时出现），于是音频一直在上传，界面上却没有关掉它的控件。
+    ///
+    /// 怎么走到这一步：4.0.0 的识别页有独立的引擎选择器（与服务商无关），以及设置导入
+    /// 直接写 recognitionEngine 不做交叉校验。和 cloudOpenAI 那一条同一个处理：
+    /// 当面说 + 给一颗回本机的按钮，**绝不替他改**。
+    static func showsStrandedAlibabaCloudNotice(engine: RecognitionEngineChoice,
+                                                provider: LLMProvider) -> Bool {
+        engine == .cloudAlibaba && provider != .qwen
+    }
+
+    /// 换服务商时识别引擎要不要跟着回本机。nil = 不用动。
+    ///
+    /// 设置页与引导页各有一处换服务商的入口，两处必须做同一件事——4.0.1 里只有设置页做了，
+    /// 于是从引导里换走服务商的人，音频还在往阿里云传，而 AI 页上已经没有那个开关了。
+    static func engineAfterProviderChange(current: RecognitionEngineChoice,
+                                          next: LLMProvider) -> RecognitionEngineChoice? {
+        guard current == .cloudAlibaba,
+              engine(provider: next, cloudRecognition: true) != .cloudAlibaba else { return nil }
+        return .local
+    }
+
+    /// 「只用本地」这一档里，钥匙串里还躺着一把能用的 Key：必须当面说一句。
+    ///
+    /// 这一档写回的只有"润色关掉 + 识别回本机"（见 localOnlyWrites），**指令路径不看档位**
+    /// ——按住说指令照样会把选区和这句话发给服务商并计费。不说的话，用户读到的是
+    /// 「不联网、不花钱」，而账单上是另一回事。
+    static func showsStoredKeyNotice(mode: AIUsageMode, hasCredential: Bool) -> Bool {
+        mode == .localOnly && hasCredential
+    }
 }
 
 // MARK: - 设置键
@@ -336,6 +369,10 @@ enum SettingsKeys {
     static let fastTier = "fastTier"                        // service_tier:"fast"（贵一倍换低延迟，默认关）
     static let webSearchEnabled = "webSearchEnabled"        // 指令模式联网搜索（按次计费，默认关）
     static let onboardingCompleted = "onboardingCompleted"  // 首启动引导是否走过（老用户按"已配置好"自动置真）
+    /// 4.0.1 的默认型号迁移真的改掉了哪几处（"旧型号>新型号" 编码，见 LLMCatalog.encodeModelChanges）。
+    /// 只存型号名、不存句子：文案按当时的语言现拼（见 CLAUDE.md「i18n 快照字符串」）。
+    /// 用户在 AI 页点过「知道了」就清空。
+    static let modelMigrationNotice = "modelMigrationNotice"
 }
 
 // MARK: - 设置
@@ -493,7 +530,53 @@ final class Settings {
             for (key, value) in LLMCatalog.migrationToBestDefault(current: current) {
                 d.set(value, forKey: key)
             }
+            // 4.0.0 的「快」档写进去的那一对，和出厂默认一字不差（见 autoPairs40 的注释），
+            // 所以这一步分不出「停在默认」和「明确选过便宜档」。分不出就**说出来**：
+            // 改了哪个型号、改成了什么，记一行日志，并在 AI 页上给一次可关掉的提示。
+            // OpenAI 那一档 luna → sol 按其自身注释是约 20 倍输入价差，而润色每句话都要跑一次。
+            let changes = LLMCatalog.migrationToBestDefaultChanges(current: current)
+            if !changes.isEmpty {
+                for change in changes {
+                    Log.info("Model default migrated from=\(change.from) to=\(change.to)")
+                }
+                d.set(LLMCatalog.encodeModelChanges(changes), forKey: SettingsKeys.modelMigrationNotice)
+            }
             d.set(true, forKey: LLMCatalog.bestDefaultMigrationFlagKey)
+        }
+
+        // 一次性迁移（4.0.1）：老设置里的「区域 + WorkspaceId」→ 试通主机缓存。
+        //
+        // 4.0.1 拿掉了区域选择器，接入地址改成 App 自己试。但候选表只认三个工作空间后缀，
+        // 4.0.0 里能选的东京 / 香港 / US 三档一台都拼不出来——这几位用户升上来之后，
+        // 润色和识别会被静默改发到北京站或国际站，而探测器永远试不到他真正那台。
+        // 把老设置推出来的主机种进缓存，等于"上一次试通的就是它"，升级当天照常能用。
+        // 拼不出合法主机名时（WorkspaceId 带下划线）不种：那一支仍然退回区域兜底 + 提示粘地址。
+        if !d.bool(forKey: "migratedQwenLegacyHost") {
+            let region = LLMCatalog.QwenRegion(rawValue: d.string(forKey: SettingsKeys.qwenRegion) ?? "")
+                ?? .international
+            if let seed = AlibabaEndpoint.legacyHostSeed(
+                region: region,
+                workspaceID: d.string(forKey: SettingsKeys.qwenWorkspaceID) ?? "",
+                pastedHost: d.string(forKey: SettingsKeys.qwenAPIHost) ?? "",
+                resolvedHost: d.string(forKey: SettingsKeys.qwenResolvedHost) ?? "") {
+                d.set(seed, forKey: SettingsKeys.qwenResolvedHost)
+                Log.info("Qwen legacy host seeded host=\(AlibabaEndpoint.redacted(seed))")
+            }
+            d.set(true, forKey: "migratedQwenLegacyHost")
+        }
+
+        // 一次性迁移（4.0.1）：云端识别模型 qwen-audio-3.0-asr-flash → qwen3-asr-flash。
+        //
+        // 3.0 只活在异步端点上，打同步端点必然 404（见 AlibabaASRModel）。4.0.0 把它设成了
+        // 默认值，所以老设置里存着它的人不在少数；而 4.0.1 已经把识别模型选择器删掉了，
+        // 他在界面上无从改回来。404 之后那条自动换模型的路只在「测试识别」那一趟上跑，
+        // 日常听写每一次都要白白上传一整段音频再回落本地——所以必须在启动时就改过来。
+        if !d.bool(forKey: "migratedCloudASRModelTo3") {
+            if d.string(forKey: SettingsKeys.cloudAlibabaModel) == AlibabaASRModel.qwenAudio30Flash.rawValue {
+                d.set(AlibabaASRModel.qwen3Flash.rawValue, forKey: SettingsKeys.cloudAlibabaModel)
+                Log.info("CloudASR model migrated to=\(AlibabaASRModel.qwen3Flash.rawValue)")
+            }
+            d.set(true, forKey: "migratedCloudASRModelTo3")
         }
     }
 
@@ -705,6 +788,12 @@ final class Settings {
     /// Qwen 的 Base URL 永远是推出来的，没有 URL 输入框。
     /// 优先用试通/粘贴的那台主机——**润色与云端识别同一台主机**，一处试通两边都对；
     /// 都还没有就退回老设置那条（区域 + WorkspaceId），老用户升级上来第一次仍然能用。
+    ///
+    /// 这里**不读钥匙串**（每次界面重算、每次请求都会走到这个属性，Security 框架那一趟
+    /// 不能挂在这种地方）。可云端识别那条路是带着 Key 去拼候选主机的：工作空间那几台
+    /// 是从 `sk-ws-xxxx` 这个形状认出来的，两边喂的东西不一样就会一个发去工作空间主机、
+    /// 一个发去 dashscope-intl，必有一边 401。所以 Key 里的 WorkspaceId 在**验证那一刻**
+    /// 就落盘（CloudASRSettings.rememberWorkspace），这条路从设置里读它，两边同源。
     var qwenBaseURL: String {
         let host = CloudASRSettings.alibabaHost(pastedHost: qwenAPIHost,
                                                 resolvedHost: qwenResolvedHost,

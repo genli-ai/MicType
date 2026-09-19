@@ -123,6 +123,20 @@ enum CloudASRSettings {
                                           apiKey: apiKey)
     }
 
+    /// 把 Key 里认出来的 WorkspaceId 落盘一次（只在验证 / 探测那一刻调用）。
+    ///
+    /// 为什么非落盘不可：候选主机里工作空间那几台是**从 Key 的形状**认出来的，而润色那条路
+    /// （Settings.qwenBaseURL）手上没有 Key，也不该为此去读钥匙串——不落盘的话，识别把音频
+    /// 发去工作空间主机、润色把文字发去 dashscope-intl，两边必有一边 401，而
+    /// 「一条主机同时决定两件事」正是这一版要立的规矩（见 AlibabaEndpoint 顶部）。
+    /// 已经存着一个就不动：用户/老设置里的那个才是权威。
+    static func rememberWorkspace(fromKey key: String) {
+        guard Settings.shared.qwenWorkspaceID.isEmpty,
+              let workspace = AlibabaEndpoint.workspaceID(fromKey: key) else { return }
+        Settings.shared.qwenWorkspaceID = workspace
+        Log.info("Qwen workspace remembered from the key shape")
+    }
+
     /// 试通之后记下来：主机 + 那个真的能用的识别模型。正常使用从此一次都不再探测。
     /// 也因此润色/指令的 Base URL 跟着一起对了（同一台主机的 compatible-mode）。
     static func rememberResolution(host: String, model: AlibabaASRModel?) {
