@@ -37,10 +37,19 @@ enum TextPostProcessor {
 
     /// 西文"词内字符"类（含带变音符的西文字母）：只有西文词条才需要词边界，CJK 不需要
     private static let latinClass = "[A-Za-z0-9\u{00C0}-\u{024F}]"
+    /// 阿语"词内字符"类：字母 + tatweel + 音符 + 阿拉伯-印度数字 + 扩展/表现形式区，
+    /// **刻意排除** U+0600–061F（含读点 ، 分号 ؛ 问号 ؟）与 U+06D4 阿语句号 ۔ ——那些是词的边界。
+    /// 写成显式码点区间而不是 \p{Arabic}：脚本类会把 ، ؟ 之外的句读也算进去，而且 .NET 那边
+    /// 只有按**区块**的 \p{IsArabic}（含标点），显式区间是两端行为逐字一致的唯一写法。
+    /// 阿语靠前后缀粘连成词（الذكاء 就出现在 بالذكاء 内部），没有这一类词表替换会退化成子串匹配。
+    private static let arabicClass =
+        "[\\u0620-\\u06D3\\u06D5-\\u06FF\\u0750-\\u077F\\u08A0-\\u08FF\\uFB50-\\uFDFF\\uFE70-\\uFEFF]"
+    /// 阿语句读：读点 ، (U+060C)、问号 ؟ (U+061F)、分号 ؛ (U+061B)
+    private static let arabicPunct = "،؟؛"
     /// 句读 / 空白：判断一个中文口水词是否"独立成分"的边界字符集
-    private static let boundaryClass = "\\s，。！？、；：…—,.!?;:"
+    private static let boundaryClass = "\\s，。！？、；：…—,.!?;:" + arabicPunct
     /// 收尾清理会碰的句读（删词后留下的重复标点、句首孤儿标点）
-    private static let punctClass = "，。！？、；：,.!?;:"
+    private static let punctClass = "，。！？、；：,.!?;:" + arabicPunct
 
     // MARK: 清理识别原文
 
@@ -62,11 +71,18 @@ enum TextPostProcessor {
                         "[♪♫♬]+"] {                 // 音乐符号：非语音段的常见幻觉
             t = replaceAll(t, pattern, "")
         }
+        // Qwen 官方后处理的两级阈值（brief §3.1）：复读是这个模型公认的故障模式（上游 issue #129
+        // 见过同一 token 重复约 2000 次），而库里那道闸门只数"同一 token 连续 10 次"，
+        // 命中时还会把尾巴静默丢掉。必须排在下面两条之前：单字符复读会被 `(.{2,24}?)\1{2,}`
+        // 按"两个字符一组"折叠成两个字，轮到官方那条单字符规则时已经不足 20 次了。
+        t = collapseRepetitions(t)
         // 折叠"复读机"式重复：同一短语连续出现 3 次以上时只保留一次
         t = replaceAll(t, "(.{2,24}?)\\1{2,}", "$1", options: [.dotMatchesLineSeparators])
         // 整大段内容被原样复述一遍也只保留一次
         t = replaceAll(t, "(.{12,400}?)\\1+", "$1", options: [.dotMatchesLineSeparators])
         t = removeFillerWords(t, fillerWords: fillerWords)
+        // 数字策略（当前 .keep，恒等）：位置在这里是为了实测后翻常量即生效，不必再改调用点
+        t = applyArabicIndicDigitsPolicy(t)
         return t.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -98,11 +114,68 @@ enum TextPostProcessor {
         }
         // 收尾：删词留下的空洞
         t = replaceAll(t, "([\(punctClass)])[ \\t]*\\1+", "$1")            // 、、 → 、
-        t = replaceAll(t, "[，、,][ \\t]*(?=[\(punctClass)])", "")           // ，。 → 。（逗号紧跟其他句读必是残留）
+        // ，。 → 。（逗号紧跟其他句读必是残留）。阿语读点 ، 同理
+        t = replaceAll(t, "[，、,،][ \\t]*(?=[\(punctClass)])", "")
         t = replaceAll(t, "[ \\t]{2,}", " ")
         t = replaceAll(t, "[ \\t]+([\(punctClass)])", "$1")
         t = replaceAll(t, "^[ \\t]*[\(punctClass)]+[ \\t]*", "")           // 句首孤儿标点
         return t
+    }
+
+    /// Qwen 官方的复读折叠（brief §3.1 末条）：单字符重复 **>20 次**压成 1 个；
+    /// 任意 **≤20 字符**的模式重复 **≥20 次**压成 1 份。两条阈值都照官方口径写死，
+    /// 不自己发明——它们是模型作者对自家故障模式的定义，两端（Mac / Windows）必须逐字一致。
+    ///
+    /// 分段识别下这一步**按段执行、拼接之前**：一段跑飞不该污染整篇的拼接。
+    static func collapseRepetitions(_ text: String) -> String {
+        var t = replaceAll(text, "(.)\\1{20,}", "$1", options: [.dotMatchesLineSeparators])
+        t = replaceAll(t, "(.{1,20}?)\\1{19,}", "$1", options: [.dotMatchesLineSeparators])
+        return t
+    }
+
+    // MARK: 分段拼接
+
+    /// 分段识别结果的拼接（brief §3.3）。官方 `" ".join(...)` 对中文是错的——
+    /// 中文段之间凭空多出空格；对阿语和西文又必须有空格，否则两个词会粘成一个词。
+    ///
+    /// 规则（缝两侧各看一个字符）：
+    ///   • 两侧都是中日韩文字（含全角句读）→ 不加分隔；
+    ///   • 任一侧是拉丁或阿语 → 一个空格；
+    ///   • 每段先去首尾空白再拼，所以永远不会出现两个连续空格；
+    ///   • 只去空白，**不动任何标点**——段末的句号是模型断句的结果，吞掉就是改写用户说的话。
+    static func joinSegments(_ parts: [String]) -> String {
+        var out = ""
+        for part in parts {
+            let piece = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !piece.isEmpty else { continue }
+            guard let left = out.unicodeScalars.last, let right = piece.unicodeScalars.first else {
+                out = piece
+                continue
+            }
+            out += needsSegmentSpace(after: left, before: right) ? " " + piece : piece
+        }
+        return out
+    }
+
+    /// 缝上要不要空格。默认给空格，只有"两侧都是 CJK"这一种情况不给——
+    /// 判不准时多一个空格顶多难看，少一个空格会把两个西文/阿语词粘成一个不存在的词。
+    static func needsSegmentSpace(after left: Unicode.Scalar, before right: Unicode.Scalar) -> Bool {
+        !(isCJKScalar(left) && isCJKScalar(right))
+    }
+
+    /// 中日韩文字与全角句读：这些字形自带间距，中间再插空格就是排版错误
+    private static func isCJKScalar(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x3000...0x303F,        // CJK 标点（。、！？…—）
+             0x3040...0x30FF,        // 平假名 / 片假名
+             0x3400...0x4DBF,        // 扩展 A
+             0x4E00...0x9FFF,        // 统一汉字
+             0xF900...0xFAFF,        // 兼容汉字
+             0xFF01...0xFF65:        // 全角形式（，：；！？）
+            return true
+        default:
+            return false
+        }
     }
 
     // MARK: 词汇表硬替换
@@ -163,14 +236,23 @@ enum TextPostProcessor {
         return out
     }
 
-    /// 西文词条两侧补词边界；中日韩词条不补（中文没有空格，补了就永远匹配不上）
+    /// 西文 / 阿语词条两侧补词边界；中日韩词条不补（中文没有空格，补了就永远匹配不上）。
+    /// 两侧各自判断：一侧阿语一侧西文的混排词条，前后可以各用各的类。
     private static func vocabPattern(for wrong: String) -> String {
         var pattern = NSRegularExpression.escapedPattern(for: wrong)
-        if let first = wrong.unicodeScalars.first, isLatinWordScalar(first) {
-            pattern = "(?<!\(latinClass))" + pattern
+        if let first = wrong.unicodeScalars.first {
+            if isLatinWordScalar(first) {
+                pattern = "(?<!\(latinClass))" + pattern
+            } else if isArabicWordScalar(first) {
+                pattern = "(?<!\(arabicClass))" + pattern
+            }
         }
-        if let last = wrong.unicodeScalars.last, isLatinWordScalar(last) {
-            pattern += "(?!\(latinClass))"
+        if let last = wrong.unicodeScalars.last {
+            if isLatinWordScalar(last) {
+                pattern += "(?!\(latinClass))"
+            } else if isArabicWordScalar(last) {
+                pattern += "(?!\(arabicClass))"
+            }
         }
         return pattern
     }
@@ -218,6 +300,10 @@ enum TextPostProcessor {
         for scalar in text.unicodeScalars {
             var value = scalar.value
             if (0xFF10...0xFF19).contains(value) { value -= 0xFF10 - 0x30 }  // 全角数字折半角
+            // 阿拉伯-印度数字折西文：润色把 ٢٠٢٦ 写成 2026 是"同一个数"，不是改数字。
+            // 不折的话阿语润色会次次被保真校验判成"数字被改"而整段回退，等于阿语用不上润色。
+            if (0x0660...0x0669).contains(value) { value -= 0x0660 - 0x30 }
+            if (0x06F0...0x06F9).contains(value) { value -= 0x06F0 - 0x30 }
             guard (0x30...0x39).contains(value), let half = Unicode.Scalar(value) else { continue }
             counts[Character(half), default: 0] += 1
         }
@@ -251,7 +337,9 @@ enum TextPostProcessor {
     /// 那段音频本来就接近没声音，词表只有一两条的用户（多数）在默认口径下一个都兜不住。
     static func isVocabEcho(_ text: String, terms: [String], minHits: Int = 3) -> Bool {
         guard !text.isEmpty else { return false }
-        if text.hasPrefix("常用词汇") { return true }
+        // 两种热词前缀都要认（RecognitionLanguages.hotwordPrefix）：英语/阿语会话的前缀是英文的，
+        // 只认中文那条会让非中文会话的复读整段漏过去
+        if text.hasPrefix("常用词汇") || text.hasPrefix("Common terms") { return true }
         guard terms.count >= minHits else { return false }
         var residue = text
         var hits = 0
@@ -260,7 +348,8 @@ enum TextPostProcessor {
             residue = residue.replacingOccurrences(of: term, with: "")
         }
         guard hits >= minHits else { return false }
-        residue = residue.filter { !"、，,。.；; ：:".contains($0) }
+        // 阿语句读也算"只是标点"（否则阿语词表的复读会因为剩下几个 ، 而漏判）
+        residue = residue.filter { !"、，,。.；; ：:،؟؛".contains($0) }
         return residue.count <= max(2, text.count / 10)
     }
 
@@ -268,18 +357,67 @@ enum TextPostProcessor {
 
     /// 中英混合标点修正：英文内容后面的全角标点改为半角（像豆包那样）
     /// 例：「to test。」→「to test.」  「iPhone，然后」→「iPhone, 然后」
+    ///
+    /// 阿语三条纪律（brief §3.4：模型实际吐哪种标点无官方说法，只能不动）：
+    ///   1. ، ؟ ؛ **永远不转** ASCII——它们是阿语正字法的一部分，换掉就是改写用户说的话；
+    ///   2. 全角句读后面紧跟阿语时也不转：那是一句阿语，句读该由阿语一侧决定，不是西文一侧；
+    ///   3. 补空格的"后随文字"类只含西文与汉字，**不含阿语**——阿语里句读与词的间距靠模型输出，
+    ///      我们自己往 RTL 文本里插空格只会插错位置。
     static func fixMixedPunctuation(_ text: String) -> String {
         var t = text
         let pairs: [(String, String)] = [
             ("。", "."), ("，", ","), ("？", "?"), ("！", "!"), ("：", ":"), ("；", ";"),
         ]
         for (full, half) in pairs {
-            // \p{Latin} 覆盖带变音符的西文字母（café、über 等）
-            t = replaceAll(t, "([\\p{Latin}0-9])" + full, "$1" + half)
+            // \p{Latin} 覆盖带变音符的西文字母（café、über 等）；
+            // (?!\s*阿语) = 后面是阿语（哪怕隔着空格）就放过——阿英混说的「board، غدا」不动
+            t = replaceAll(t, "([\\p{Latin}0-9])" + full + "(?!\\s*" + arabicClass + ")", "$1" + half)
         }
-        // 半角句读后若紧跟文字（字母或汉字），补一个空格
+        // 半角句读后若紧跟文字（字母或汉字），补一个空格。阿语一侧刻意不参与（见上第 3 条）
         t = replaceAll(t, "([.,!?;:])([\\p{Latin}\\u4e00-\\u9fff])", "$1 $2")
         return t
+    }
+
+    // MARK: 阿拉伯-印度数字
+
+    /// 阿拉伯-印度数字（٠١٢٣…）要不要归一成西文数字（0123…）。
+    enum ArabicIndicDigitsPolicy: Equatable {
+        /// 保持模型原样输出（当前策略）
+        case keep
+        /// 归一为西文数字
+        case toWestern
+    }
+
+    /// **当前策略：保持原样。**
+    /// 依据（brief §3.4 与「不确定项」第 7 条）：Qwen3-ASR 在阿语上到底吐阿拉伯-印度数字还是西文数字，
+    /// 官方没有任何说明，社区惯例（归一为西文）也不等于模型行为。在 mini 上跑完 §3.6 的
+    /// 数字/日期语料之前，任何归一都可能把模型本来正确的输出改错——所以先不动。
+    /// 实测之后要翻策略，**只改这一个常量**，`normalizeArabicIndicDigits` 已经就位。
+    static let arabicIndicDigitsPolicy: ArabicIndicDigitsPolicy = .keep
+
+    /// 按当前策略处理数字。.keep 时是恒等函数（原样返回），所以现在把它放在管线里不改变任何行为。
+    static func applyArabicIndicDigitsPolicy(_ text: String) -> String {
+        switch arabicIndicDigitsPolicy {
+        case .keep: return text
+        case .toWestern: return normalizeArabicIndicDigits(text)
+        }
+    }
+
+    /// ٠–٩ (U+0660–0669) 与扩展阿拉伯-印度数字 ۰–۹ (U+06F0–06F9，波斯/乌尔都) → 0–9。
+    /// 只动数字本身，不动任何别的字符。
+    static func normalizeArabicIndicDigits(_ text: String) -> String {
+        var out = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            switch scalar.value {
+            case 0x0660...0x0669:
+                out.append(Unicode.Scalar(scalar.value - 0x0660 + 0x30)!)
+            case 0x06F0...0x06F9:
+                out.append(Unicode.Scalar(scalar.value - 0x06F0 + 0x30)!)
+            default:
+                out.append(scalar)
+            }
+        }
+        return String(out)
     }
 
     // MARK: 小工具
@@ -295,6 +433,21 @@ enum TextPostProcessor {
     private static func isLatinWordScalar(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
         case 0x30...0x39, 0x41...0x5A, 0x61...0x7A, 0xC0...0x24F: return true
+        default: return false
+        }
+    }
+
+    /// 阿语"词内字符"：与上面 arabicClass 的码点区间**逐位一致**（一个改了另一个必须跟着改）。
+    /// U+0600–061F 的各种标记与读点（، ؛ ؟）、U+06D4 句号 ۔ 都不算词内字符——它们是边界。
+    private static func isArabicWordScalar(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x0620...0x06D3,        // 字母 / tatweel / 音符 / 阿拉伯-印度数字
+             0x06D5...0x06FF,        // 更多字母与标记（跳过 U+06D4 阿语句号）
+             0x0750...0x077F,        // Arabic Supplement
+             0x08A0...0x08FF,        // Arabic Extended-A
+             0xFB50...0xFDFF,        // Arabic Presentation Forms-A
+             0xFE70...0xFEFF:        // Arabic Presentation Forms-B
+            return true
         default: return false
         }
     }

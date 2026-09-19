@@ -60,6 +60,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         routeFirstLaunch()
         reportPreviousUpdateResult()
+        // 模型目录：最多 24 小时查一次，查到更好的模型只在菜单栏和设置页里「摆出来」，
+        // 绝不自动下载、绝不弹窗——启动这一刻用户想的是说话，不是换模型。
+        ModelUpgrader.shared.refreshDecisionAtLaunch()
     }
 
     /// 自更新是"App 把自己换掉"：失败时本进程早就退了，界面上的失败回调永远不会触发，
@@ -216,6 +219,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        // 有更好的识别模型时在菜单栏摆一条。点它是「带我去看」，不是「立刻下载 800 MB」——
+        // 那一下必须是设置页横幅上写着体量的那个按钮（菜单项点错的代价太大）。
+        switch ModelUpgrader.shared.decision {
+        case .none:
+            break
+        case .upgrade, .refresh:
+            menu.addItem(makeItem(tr("升级识别模型…", "Upgrade speech model…"), #selector(openModelUpgrade)))
+        case .needsAppUpdate:
+            menu.addItem(makeItem(tr("新识别模型需要更新 MicType…", "New speech model needs a MicType update…"),
+                                  #selector(openAppUpdate)))
+        }
+
         if QwenEngine.shared.isModelLoaded {
             menu.addItem(makeItem(tr("释放模型内存", "Free Model Memory"), #selector(unloadModel)))
         }
@@ -312,6 +327,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openSettings() {
         SettingsWindowController.shared.show()
+    }
+
+    /// 带去设置 → 识别：升级横幅在那里，按钮上写着这次要下多少
+    @objc private func openModelUpgrade() {
+        Log.info("Menu: open model upgrade banner")
+        SettingsWindowController.shared.show(tab: .recognition)
+    }
+
+    /// 新模型要求更新的 App 版本：这条路只能先更新 MicType（关于页有「检查更新」）
+    @objc private func openAppUpdate() {
+        Log.info("Menu: model needs newer app, routing to Check for Updates")
+        SettingsWindowController.shared.show(tab: .about)
     }
 
     @objc private func openLogsFolder() {

@@ -152,4 +152,138 @@ final class TextPostProcessorTests: XCTestCase {
         XCTAssertFalse(reason!.contains("4822"))
         XCTAssertTrue(reason!.contains("digits changed"))
     }
+
+    // MARK: 阿拉伯语安全（brief §3.4/§3.5）
+
+    /// 阿语句读 ، ؟ ؛ 一律保持原样：换成 ASCII 就是改写用户说的话
+    func testArabicPunctuationIsNeverConvertedToAscii() {
+        let text = "مرحبا، كيف حالك؟ نلتقي غدا؛ إن شاء الله."
+        XCTAssertEqual(TextPostProcessor.fixMixedPunctuation(text), text)
+    }
+
+    /// 阿英混说：全角标点后面跟的是阿语时不转半角——那是一句阿语，标点不归西文一侧管
+    func testFullWidthPunctuationBeforeArabicIsLeftAlone() {
+        XCTAssertEqual(TextPostProcessor.fixMixedPunctuation("اجتماع الـ board，غدا"),
+                       "اجتماع الـ board，غدا")
+        XCTAssertEqual(TextPostProcessor.fixMixedPunctuation("اجتماع الـ board， غدا"),
+                       "اجتماع الـ board， غدا")
+    }
+
+    /// 中英那条老规则不能被阿语守卫误伤（回归）
+    func testMixedPunctuationStillFixesLatinFollowedByChinese() {
+        XCTAssertEqual(TextPostProcessor.fixMixedPunctuation("Open API，然后测试。"), "Open API, 然后测试。")
+    }
+
+    /// 绝不往阿语里插空格：补空格的"后随文字"类里没有阿语
+    func testNoSpaceIsInsertedInsideArabic() {
+        XCTAssertEqual(TextPostProcessor.fixMixedPunctuation("مرحبا,العالم"), "مرحبا,العالم")
+    }
+
+    /// 阿语靠前后缀粘连成词：「الذكاء」在「بالذكاء」内部绝不能被词表替换命中
+    func testVocabReplacementRespectsArabicWordBoundary() {
+        XCTAssertEqual(TextPostProcessor.applyVocabReplacements(
+            "بالذكاء الاصطناعي", replacements: [("الذكاء", "AI")]), "بالذكاء الاصطناعي")
+    }
+
+    /// 独立成词时照常替换（词边界不能严到把真该替换的也挡掉）
+    func testVocabReplacementStillMatchesStandaloneArabicWord() {
+        XCTAssertEqual(TextPostProcessor.applyVocabReplacements(
+            "الذكاء الاصطناعي مهم", replacements: [("الذكاء", "AI")]), "AI الاصطناعي مهم")
+        // 阿语句读是边界，不是词的一部分
+        XCTAssertEqual(TextPostProcessor.applyVocabReplacements(
+            "نعم، الذكاء؟", replacements: [("الذكاء", "AI")]), "نعم، AI؟")
+    }
+
+    /// 口水词过滤把阿语句读当边界，删完的重复读点要合并
+    func testFillerRemovalTreatsArabicPunctuationAsBoundary() {
+        XCTAssertEqual(TextPostProcessor.cleanTranscript("مرحبا، يعني، العالم", fillerWords: ["يعني"]),
+                       "مرحبا، العالم")
+    }
+
+    // MARK: 阿拉伯-印度数字策略
+
+    /// 当前策略是「保持模型原样」——实测（brief §3.6 的数字语料）之前不归一
+    func testArabicIndicDigitsAreKeptAsIs() {
+        XCTAssertEqual(TextPostProcessor.arabicIndicDigitsPolicy, .keep)
+        XCTAssertEqual(TextPostProcessor.applyArabicIndicDigitsPolicy("الموعد ٢٠٢٦"), "الموعد ٢٠٢٦")
+        XCTAssertEqual(TextPostProcessor.cleanTranscript("الموعد ٢٠٢٦", fillerWords: []), "الموعد ٢٠٢٦")
+    }
+
+    /// 翻策略的那一天要用的转换已经就位：改常量即生效，不必再改调用点
+    func testArabicIndicDigitsNormalizerIsReadyForTheFlip() {
+        XCTAssertEqual(TextPostProcessor.normalizeArabicIndicDigits("٢٠٢٦ و ۵"), "2026 و 5")
+        XCTAssertEqual(TextPostProcessor.normalizeArabicIndicDigits("no digits"), "no digits")
+    }
+
+    /// 润色把 ٢٠٢٦ 写成 2026 是同一个数，不是"数字被改"——否则阿语永远用不上润色
+    func testDriftCheckTreatsArabicIndicDigitsAsTheSameNumber() {
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(raw: "الموعد ٢٠٢٦", polished: "الموعد 2026."))
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "الموعد ٢٠٢٦", polished: "الموعد 2027."))
+    }
+
+    // MARK: 复读折叠（Qwen 官方阈值）
+
+    /// 上游 issue #129 式的样本：同一个字重复约 2000 次。
+    /// 老实现会先被 `(.{2,24}?)\1{2,}` 按"两个字一组"折叠成两个字，官方那条单字符规则
+    /// 就再也够不着 20 次的门槛了——所以官方规则必须排在前面。
+    func testCollapsesTwoThousandRepeatsOfASingleCharacter() {
+        let text = "好" + String(repeating: "的", count: 2000)
+        XCTAssertEqual(TextPostProcessor.collapseRepetitions(text), "好的")
+        XCTAssertEqual(TextPostProcessor.cleanTranscript(text, fillerWords: []), "好的")
+    }
+
+    /// ≤20 字符的模式重复 ≥20 次 → 只留一份
+    func testCollapsesShortPatternRepeatedTwentyTimes() {
+        let text = String(repeating: "the day of ", count: 25)
+        XCTAssertEqual(TextPostProcessor.collapseRepetitions(text), "the day of ")
+    }
+
+    /// 正常文本一个字都不许动：叠词（"谢谢"）、重复的标点都不是复读
+    func testCollapseLeavesNormalTextAlone() {
+        XCTAssertEqual(TextPostProcessor.collapseRepetitions("谢谢，今天的会议就到这里。"),
+                       "谢谢，今天的会议就到这里。")
+        XCTAssertEqual(TextPostProcessor.collapseRepetitions("hello hello"), "hello hello")
+    }
+
+    // MARK: 分段拼接
+
+    /// 中文缝：不加空格（官方配方的 `" ".join` 对中文是错的）
+    func testJoinsChineseSegmentsWithoutSpace() {
+        XCTAssertEqual(TextPostProcessor.joinSegments(["今天下午三点开会。", "地点在二楼。"]),
+                       "今天下午三点开会。地点在二楼。")
+    }
+
+    /// 西文缝：一个空格，且不许变成两个
+    func testJoinsLatinSegmentsWithExactlyOneSpace() {
+        XCTAssertEqual(TextPostProcessor.joinSegments(["we start at nine", "and finish by noon"]),
+                       "we start at nine and finish by noon")
+        XCTAssertEqual(TextPostProcessor.joinSegments(["we start at nine ", "  and finish by noon"]),
+                       "we start at nine and finish by noon")
+    }
+
+    /// 阿语缝：同样要一个空格，否则两个词会粘成一个不存在的词
+    func testJoinsArabicSegmentsWithOneSpace() {
+        XCTAssertEqual(TextPostProcessor.joinSegments(["الاجتماع غدا", "في الساعة التاسعة"]),
+                       "الاجتماع غدا في الساعة التاسعة")
+    }
+
+    /// 中英混缝：任一侧是拉丁字母就给空格
+    func testJoinsMixedScriptsWithSpace() {
+        XCTAssertEqual(TextPostProcessor.joinSegments(["会议纪要", "draft"]), "会议纪要 draft")
+        XCTAssertEqual(TextPostProcessor.joinSegments(["draft", "会议纪要"]), "draft 会议纪要")
+    }
+
+    /// 段末的终止标点是模型断句的结果，拼接时一个都不许吞
+    func testJoinKeepsTerminalPunctuation() {
+        XCTAssertEqual(TextPostProcessor.joinSegments(["第一段。", "第二段！"]), "第一段。第二段！")
+        XCTAssertEqual(TextPostProcessor.joinSegments(["Part one.", "Part two?"]),
+                       "Part one. Part two?")
+    }
+
+    /// 空段（那一段全是静音）直接跳过，不许留下孤零零的空格
+    func testJoinSkipsEmptySegments() {
+        XCTAssertEqual(TextPostProcessor.joinSegments(["前半句", "", "后半句"]), "前半句后半句")
+        XCTAssertEqual(TextPostProcessor.joinSegments(["", ""]), "")
+        XCTAssertEqual(TextPostProcessor.joinSegments([]), "")
+    }
 }

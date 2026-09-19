@@ -9,10 +9,18 @@ public static partial class TextPostProcessor
     private const string LatinOrDigit = "([A-Za-z0-9\\u00C0-\\u024F])";
     /// 西文"词内字符"类：只有西文词条才需要词边界，CJK 不需要
     private const string LatinClass = "[A-Za-z0-9\\u00C0-\\u024F]";
+    /// 阿语"词内字符"类：字母 + tatweel + 音符 + 阿拉伯-印度数字 + 扩展/表现形式区，
+    /// **刻意排除** U+0600–061F（含读点 ، 分号 ؛ 问号 ؟）与 U+06D4 阿语句号 ۔ ——那些是词的边界。
+    /// 写成显式码点区间而不是 \p{IsArabic}：后者是**区块**，会把上面那些句读一起算进词内字符。
+    /// 与 Mac 端 Support.swift 的 arabicClass 逐位一致。
+    private const string ArabicClass =
+        "[\\u0620-\\u06D3\\u06D5-\\u06FF\\u0750-\\u077F\\u08A0-\\u08FF\\uFB50-\\uFDFF\\uFE70-\\uFEFF]";
+    /// 阿语句读：读点 ، (U+060C)、问号 ؟ (U+061F)、分号 ؛ (U+061B)
+    private const string ArabicPunct = "،؟؛";
     /// 句读 / 空白：判断一个中文口水词是否"独立成分"的边界字符集
-    private const string BoundaryClass = "\\s，。！？、；：…—,.!?;:";
+    private const string BoundaryClass = "\\s，。！？、；：…—,.!?;:" + ArabicPunct;
     /// 收尾清理会碰的句读
-    private const string PunctClass = "，。！？、；：,.!?;:";
+    private const string PunctClass = "，。！？、；：,.!?;:" + ArabicPunct;
 
     public static string CleanTranscript(string text)
     {
@@ -30,10 +38,25 @@ public static partial class TextPostProcessor
         value = BracketMarkerRegex().Replace(value, "");
         value = ParenthesesMarkerRegex().Replace(value, "");
         value = MusicMarkerRegex().Replace(value, "");
+        // Qwen 官方后处理的两级阈值（与 Mac 端 Support.swift 逐字同源）。必须排在下面两条之前：
+        // 单字符复读会被 `(.{2,24}?)\1{2,}` 按"两个字符一组"折叠成两个字，
+        // 轮到官方那条单字符规则时已经不足 20 次了。
+        value = CollapseRepetitions(value);
         value = ShortRepeatRegex().Replace(value, "$1");
         value = LongRepeatRegex().Replace(value, "$1");
         value = RemoveFillerWords(value, fillerWords);
+        // 数字策略（当前 Keep，恒等）：位置在这里是为了实测后翻常量即生效，不必再改调用点
+        value = ApplyArabicIndicDigitsPolicy(value);
         return value.Trim();
+    }
+
+    /// Qwen 官方的复读折叠：单字符重复 **>20 次**压成 1 个；任意 **≤20 字符**的模式
+    /// 重复 **≥20 次**压成 1 份。阈值照官方口径写死，不自己发明——它们是模型作者对
+    /// 自家故障模式的定义，两端（Mac / Windows）必须逐字一致。
+    public static string CollapseRepetitions(string text)
+    {
+        var value = SingleCharRepeatRegex().Replace(text, "$1");
+        return PatternRepeatRegex().Replace(value, "$1");
     }
 
     /// 本地口水词过滤：用户列出的词在本机就地删掉，不依赖云端润色（无 Key 的纯听写路径也能用）。
@@ -71,13 +94,17 @@ public static partial class TextPostProcessor
 
         // 收尾：删词留下的空洞
         value = Regex.Replace(value, $"([{PunctClass}])[ \\t]*\\1+", "$1");          // 、、 → 、
-        value = Regex.Replace(value, $"[，、,][ \\t]*(?=[{PunctClass}])", "");        // ，。 → 。
+        value = Regex.Replace(value, $"[，、,،][ \\t]*(?=[{PunctClass}])", "");       // ，。 → 。（阿语读点同理）
         value = Regex.Replace(value, "[ \\t]{2,}", " ");
         value = Regex.Replace(value, $"[ \\t]+([{PunctClass}])", "$1");
         value = Regex.Replace(value, $"^[ \\t]*[{PunctClass}]+[ \\t]*", "");         // 句首孤儿标点
         return value;
     }
 
+    /// 中英混合标点修正。阿语三条纪律（与 Mac 端同源）：
+    ///   1. ، ؟ ؛ **永远不转** ASCII——它们是阿语正字法的一部分，换掉就是改写用户说的话；
+    ///   2. 全角句读后面紧跟阿语时也不转：那是一句阿语，句读不归西文一侧管；
+    ///   3. 补空格的"后随文字"类里排除阿语——往 RTL 文本里插空格只会插错位置。
     public static string FixMixedPunctuation(string text)
     {
         var value = text;
@@ -88,10 +115,50 @@ public static partial class TextPostProcessor
 
         foreach (var (full, half) in pairs)
         {
-            value = Regex.Replace(value, LatinOrDigit + Regex.Escape(full), "$1" + half);
+            // (?!\s*阿语) = 后面是阿语（哪怕隔着空格）就放过——阿英混说的「board، غدا」不动
+            value = Regex.Replace(value, LatinOrDigit + Regex.Escape(full) + $"(?!\\s*{ArabicClass})",
+                "$1" + half);
         }
 
-        return Regex.Replace(value, "([.,!?;:])([\\p{L}\\u4e00-\\u9fff])", "$1 $2");
+        // \p{L} 含阿语字母，所以这里要显式把阿语挡在外面（Mac 端用的是只含西文的 \p{Latin}）
+        return Regex.Replace(value, $"([.,!?;:])(?!{ArabicClass})([\\p{{L}}\\u4e00-\\u9fff])", "$1 $2");
+    }
+
+    /// 阿拉伯-印度数字（٠١٢٣…）要不要归一成西文数字（0123…）
+    public enum ArabicDigitsPolicy
+    {
+        /// 保持模型原样输出（当前策略）
+        Keep,
+        /// 归一为西文数字
+        ToWestern
+    }
+
+    /// **当前策略：保持原样。**
+    /// 模型在阿语上到底吐阿拉伯-印度数字还是西文数字，官方没有任何说明，社区惯例不等于模型行为；
+    /// 实测之前任何归一都可能把本来正确的输出改错。要翻策略**只改这一个常量**。
+    /// 与 Mac 端 TextPostProcessor.arabicIndicDigitsPolicy 同源，两端必须同时翻。
+    public static readonly ArabicDigitsPolicy ArabicIndicDigitsPolicy = ArabicDigitsPolicy.Keep;
+
+    /// 按当前策略处理数字。Keep 时是恒等函数，所以现在把它放进管线不改变任何行为。
+    public static string ApplyArabicIndicDigitsPolicy(string text)
+    {
+        return ArabicIndicDigitsPolicy == ArabicDigitsPolicy.ToWestern
+            ? NormalizeArabicIndicDigits(text)
+            : text;
+    }
+
+    /// ٠–٩ (U+0660–0669) 与扩展阿拉伯-印度数字 ۰–۹ (U+06F0–06F9) → 0–9，别的字符一律不动
+    public static string NormalizeArabicIndicDigits(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        var buffer = text.ToCharArray();
+        for (var i = 0; i < buffer.Length; i++)
+        {
+            var c = buffer[i];
+            if (c >= '\u0660' && c <= '\u0669') buffer[i] = (char)(c - '\u0660' + '0');
+            else if (c >= '\u06F0' && c <= '\u06F9') buffer[i] = (char)(c - '\u06F0' + '0');
+        }
+        return new string(buffer);
     }
 
     public static string ApplyVocabReplacements(string text)
@@ -146,12 +213,15 @@ public static partial class TextPostProcessor
         });
     }
 
-    /// 西文词条两侧补词边界；中日韩词条不补（中文没有空格，补了就永远匹配不上）
+    /// 西文 / 阿语词条两侧补词边界；中日韩词条不补（中文没有空格，补了就永远匹配不上）。
+    /// 两侧各自判断，混排词条前后可以用不同的类。
     private static string VocabPattern(string wrong)
     {
         var pattern = Regex.Escape(wrong);
         if (IsLatinWordChar(wrong[0])) pattern = $"(?<!{LatinClass})" + pattern;
+        else if (IsArabicWordChar(wrong[0])) pattern = $"(?<!{ArabicClass})" + pattern;
         if (IsLatinWordChar(wrong[^1])) pattern += $"(?!{LatinClass})";
+        else if (IsArabicWordChar(wrong[^1])) pattern += $"(?!{ArabicClass})";
         return pattern;
     }
 
@@ -197,6 +267,10 @@ public static partial class TextPostProcessor
         {
             var c = ch;
             if (c >= '０' && c <= '９') c = (char)(c - '０' + '0');  // 全角数字折半角
+            // 阿拉伯-印度数字折西文：润色把 ٢٠٢٦ 写成 2026 是"同一个数"，不是改数字。
+            // 不折的话阿语润色会次次被保真校验判成"数字被改"而整段回退，等于阿语用不上润色。
+            if (c >= '\u0660' && c <= '\u0669') c = (char)(c - '\u0660' + '0');
+            if (c >= '\u06F0' && c <= '\u06F9') c = (char)(c - '\u06F0' + '0');
             if (c < '0' || c > '9') continue;
             counts[c] = counts.TryGetValue(c, out var n) ? n + 1 : 1;
         }
@@ -228,7 +302,10 @@ public static partial class TextPostProcessor
     public static bool IsVocabEcho(string text, IReadOnlyList<string> terms)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
+        // 两种热词前缀都要认（Mac 端 RecognitionLanguages.hotwordPrefix 按会话语言二选一）：
+        // 只认中文那条会让非中文会话的复读整段漏过去
         if (text.StartsWith("常用词汇", StringComparison.Ordinal)) return true;
+        if (text.StartsWith("Common terms", StringComparison.Ordinal)) return true;
         if (terms.Count < 3) return false;
 
         var residue = text;
@@ -241,7 +318,8 @@ public static partial class TextPostProcessor
         }
 
         if (hits < 3) return false;
-        residue = new string(residue.Where(c => !"、，,。.；; ：:".Contains(c)).ToArray());
+        // 阿语句读也算"只是标点"（否则阿语词表的复读会因为剩下几个 ، 而漏判）
+        residue = new string(residue.Where(c => !"、，,。.；; ：:،؟؛".Contains(c)).ToArray());
         return residue.Length <= Math.Max(2, text.Length / 10);
     }
 
@@ -249,6 +327,18 @@ public static partial class TextPostProcessor
     {
         return c is >= '0' and <= '9' or >= 'A' and <= 'Z' or >= 'a' and <= 'z'
             or >= 'À' and <= 'ɏ';
+    }
+
+    /// 阿语"词内字符"：与上面 ArabicClass 的码点区间**逐位一致**（一个改了另一个必须跟着改）。
+    /// U+0600–061F 的读点（، ؛ ؟）与 U+06D4 句号 ۔ 都是边界，不算词内字符。
+    private static bool IsArabicWordChar(char c)
+    {
+        return c is >= '\u0620' and <= '\u06D3'      // 字母 / tatweel / 音符 / 阿拉伯-印度数字
+            or >= '\u06D5' and <= '\u06FF'           // 更多字母与标记（跳过 U+06D4 阿语句号）
+            or >= '\u0750' and <= '\u077F'           // Arabic Supplement
+            or >= '\u08A0' and <= '\u08FF'           // Arabic Extended-A
+            or >= '\uFB50' and <= '\uFDFF'           // Arabic Presentation Forms-A
+            or >= '\uFE70' and <= '\uFEFF';          // Arabic Presentation Forms-B
     }
 
     /// 纯西文词条（允许词内的空格、连字符、撇号，如 "you know" / "kind-of" / "don't"）
@@ -272,6 +362,12 @@ public static partial class TextPostProcessor
 
     [GeneratedRegex("[♪♫♬]+")]
     private static partial Regex MusicMarkerRegex();
+
+    [GeneratedRegex("(.)\\1{20,}", RegexOptions.Singleline)]
+    private static partial Regex SingleCharRepeatRegex();
+
+    [GeneratedRegex("(.{1,20}?)\\1{19,}", RegexOptions.Singleline)]
+    private static partial Regex PatternRepeatRegex();
 
     [GeneratedRegex("(.{2,24}?)\\1{2,}", RegexOptions.Singleline)]
     private static partial Regex ShortRepeatRegex();

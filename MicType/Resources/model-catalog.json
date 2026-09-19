@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "updated": "2026-09-19",
+  "models": [
+    {
+      "repo": "mlx-community/Qwen3-ASR-0.6B-6bit",
+      "displayName": {
+        "zh": "Qwen3-ASR 0.6B 6bit（推荐，快）",
+        "en": "Qwen3-ASR 0.6B 6-bit (recommended, fast)"
+      },
+      "sizeBytes": 861775040,
+      "quant": "6bit",
+      "languagesNote": {
+        "zh": "30 种语言 + 22 种中文方言；中英文最稳，识别全程在本机。",
+        "en": "30 languages + 22 Chinese dialects; strongest on Chinese and English, fully on-device."
+      },
+      "recommended": true,
+      "recommendedFor": [],
+      "minAppVersion": "4.0.0",
+      "revision": null
+    },
+    {
+      "repo": "mlx-community/Qwen3-ASR-1.7B-4bit",
+      "displayName": {
+        "zh": "Qwen3-ASR 1.7B 4bit（更准，稍慢）",
+        "en": "Qwen3-ASR 1.7B 4-bit (more accurate, slower)"
+      },
+      "sizeBytes": 1607630579,
+      "quant": "4bit",
+      "languagesNote": {
+        "zh": "阿拉伯语等语言明显更准（Fleurs-ar 词错率 25.5% → 17.0%）；方言仍不承诺。",
+        "en": "Clearly better on Arabic and similar languages (Fleurs-ar WER 25.5% to 17.0%); dialects are still not promised."
+      },
+      "recommended": false,
+      "recommendedFor": ["ar"],
+      "minAppVersion": "4.0.0",
+      "revision": null
+    }
+  ]
+}

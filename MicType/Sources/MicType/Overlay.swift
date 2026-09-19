@@ -448,6 +448,21 @@ final class OverlayController {
         present(context: "processing")
     }
 
+    /// 分段识别的中途进度：换掉「识别中…」的阶段文案，并把已经识别出来的段落贴成灰字。
+    /// 不走 showProcessing：那会清掉草稿、重排并重新 present 面板，每出一段闪一下。
+    /// 已等待的秒数继续从整轮开始算（processingStartedAt 不动）。
+    func updateProcessing(label: String? = nil, draft: String? = nil) {
+        guard processingStartedAt != nil else { return }
+        if let label = label { processingLabel = label }
+        // 正在闪别的提示（flashOverProcessing）时不抢回显示，等它自己恢复成 .processing
+        if case .processing = state.mode {
+            state.mode = .processing(processingText())
+        }
+        if let draft = draft, state.draftText != draft {
+            state.draftText = draft
+        }
+    }
+
     /// 处理中被拒绝的手势（轻点/按住）：闪一句提示后回到「处理中」显示，
     /// 绝不用这条提示把进度显示擦掉
     func flashOverProcessing(_ label: String, duration: Double = 1.6) {

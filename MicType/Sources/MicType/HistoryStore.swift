@@ -55,6 +55,32 @@ final class HistoryStore: ObservableObject {
         save()
     }
 
+    /// **润色之前**先把识别原文落一条（brief §3.3「逐段落地」）。
+    /// 为什么：润色要等一次网络往返，插入还要等切前台——这中间任何一步失败、被 Esc 掐断、
+    /// 或者用户切走了窗口，在 3.3 之前都意味着刚说的那几分钟一个字都不剩。
+    /// 先落 raw，之后 complete(id:polished:) 把同一条补全，用户那边看到的永远只有一条。
+    /// 返回 nil = 用户关了历史记录（那就什么都别留，包括这条）。
+    @discardableResult
+    func addRaw(_ raw: String) -> UUID? {
+        guard Settings.shared.keepHistory else { return nil }
+        let item = HistoryItem(date: Date(), raw: raw, polished: raw)
+        items.insert(item, at: 0)
+        if items.count > maxCount {
+            items = Array(items.prefix(maxCount))
+        }
+        save()
+        return item.id
+    }
+
+    /// 把 addRaw 落下的那一条补成最终文字。条目已经被用户删掉 / 被 200 条上限挤掉就什么都不做。
+    func complete(id: UUID, polished: String) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        let old = items[index]
+        guard old.polished != polished else { return }
+        items[index] = HistoryItem(id: old.id, date: old.date, raw: old.raw, polished: polished)
+        save()
+    }
+
     /// 删掉单条。有了它，用户想抹掉一句含隐私内容的听写才不必把 200 条全清了。
     func remove(id: UUID) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }

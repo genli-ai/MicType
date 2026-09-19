@@ -5,10 +5,33 @@ import ServiceManagement
 
 // MARK: - 设置窗口
 
+/// 设置窗口的四个标签。有了它，别处（菜单栏、升级横幅）才能把用户送到**具体**那一页，
+/// 而不是丢给他一个「自己去找」的设置窗口。
+enum SettingsTab: Hashable {
+    case general
+    case recognition
+    case polish
+    case about
+}
+
+/// 当前选中的标签。窗口是复用的（isReleasedWhenClosed = false），所以选中项必须是外部可写的
+/// 共享状态，不能只是 SettingsView 内部的 @State——否则第二次 show(tab:) 就翻不动页。
+final class SettingsTabRouter: ObservableObject {
+    static let shared = SettingsTabRouter()
+    @Published var tab: SettingsTab = .general
+    private init() {}
+}
+
 final class SettingsWindowController {
     static let shared = SettingsWindowController()
     private var window: NSWindow?
     private var langObserver: AnyCancellable?
+
+    /// 打开设置窗口并翻到指定标签
+    func show(tab: SettingsTab) {
+        SettingsTabRouter.shared.tab = tab
+        show()
+    }
 
     func show() {
         if window == nil {
@@ -34,17 +57,22 @@ final class SettingsWindowController {
 
 struct SettingsView: View {
     @ObservedObject private var l10n = L10n.shared
+    @ObservedObject private var router = SettingsTabRouter.shared
 
     var body: some View {
-        TabView {
+        TabView(selection: $router.tab) {
             GeneralTab()
                 .tabItem { Label(tr("通用", "General"), systemImage: "gearshape") }
+                .tag(SettingsTab.general)
             RecognitionTab()
                 .tabItem { Label(tr("识别", "Recognition"), systemImage: "waveform") }
+                .tag(SettingsTab.recognition)
             PolishTab()
                 .tabItem { Label(tr("AI 润色", "AI Polish"), systemImage: "wand.and.stars") }
+                .tag(SettingsTab.polish)
             AboutTab()
                 .tabItem { Label(tr("关于", "About"), systemImage: "info.circle") }
+                .tag(SettingsTab.about)
         }
         .frame(width: 560, height: 500)
     }
@@ -140,9 +168,10 @@ private struct GeneralTab: View {
                         "The draft only appears in the floating window and never reaches your cursor; the final text is still the full re-transcription made when you finish."))
                     .font(.caption)
                     .foregroundColor(.secondary)
-                // 5 分钟硬上限此前在界面上无处可查，用户第一次知道它存在就是被自动收尾那一刻
-                Text(tr("单次录音最长 5 分钟：到点自动收尾（照常识别并输入，不丢已录的部分），录到 2 分钟时悬浮窗会提示。",
-                        "A single take runs at most 5 minutes; at the limit it is wrapped up normally (still transcribed and inserted — nothing recorded is lost), with a heads-up in the overlay at 2 minutes."))
+                // 硬上限此前在界面上无处可查，用户第一次知道它存在就是被自动收尾那一刻。
+                // 分段也写在这里：长段口述的识别是一段一段出来的，用户会在悬浮窗上看见「第 2/5 段」
+                Text(tr("单次录音最长 10 分钟。录到 2 分钟起悬浮窗显示「8:30 / 10:00」的计时，最后 30 秒提示即将收尾；到点自动收尾＝照常识别并把全部内容插入。长段口述按 60 秒左右分段转写，每转完一段就显示一段。",
+                        "A single take runs up to 10 minutes. From 2 minutes the overlay shows a running \"8:30 / 10:00\" clock and warns 30 seconds before the end; at the limit MicType wraps the take up, transcribes it and inserts everything. Long takes are transcribed in roughly 60-second parts, each shown as soon as it is ready."))
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -433,9 +462,13 @@ private struct RecognitionTab: View {
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKeys.inputDeviceUID) private var inputDeviceUID = ""
     @AppStorage(SettingsKeys.qwenModelRepo) private var qwenRepo = QwenModels.defaultRepo
+    @AppStorage(SettingsKeys.recognitionLanguage) private var recognitionLanguage = RecognitionLanguages.autoCode
     @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
     @AppStorage(SettingsKeys.fillerWords) private var fillerWords = ""
     @ObservedObject private var downloader = QwenModelDownloader.shared
+    @ObservedObject private var upgrader = ModelUpgrader.shared
+    /// 模型目录到货时下拉框要立刻跟上（首启动时目录还在路上）
+    @ObservedObject private var catalogStore = ModelCatalogStore.shared
     @ObservedObject private var metrics = Metrics.shared
     @StateObject private var micTest = MicTestSession()
     @State private var inputDevices: [InputDevice] = []
@@ -457,6 +490,129 @@ private struct RecognitionTab: View {
         guard let uid = InputDevices.defaultUID,
               let device = inputDevices.first(where: { $0.uid == uid }) else { return base }
         return base + "（\(device.name)）"
+    }
+
+    /// 选了阿语却还在小模型上：出一条推荐行（只推荐，不自动换——1.1 GB 的下载由用户点）
+    private var showsArabicModelHint: Bool {
+        QwenModels.recommendsLargeModel(languageCode: recognitionLanguage, currentRepo: qwenRepo)
+    }
+
+    /// 1.7B 这一档的体量（字节）。目录里没有这一档（被下架）就给 0 → 按钮上不显示体量
+    private var largeModelSizeBytes: Int64 {
+        catalogStore.catalog.model(repo: QwenModels.largeRepo)?.sizeBytes ?? 0
+    }
+
+    /// 1.7B 是否已经下载过（决定推荐行的按钮是「切换并下载」还是「切换到」）
+    private var largeModelExists: Bool {
+        _ = refreshTick
+        let dir = QwenModels.localDirectory(for: QwenModels.largeRepo)
+        return FileManager.default.fileExists(atPath: dir.appendingPathComponent("model.safetensors").path)
+    }
+
+    /// 当前选中模型的语言能力说明（来自模型目录；没写就不占一行）
+    private var selectedModelLanguagesNote: String {
+        catalogStore.catalog.model(repo: qwenRepo)?.languagesNote.localized ?? ""
+    }
+
+    /// 选中的这一档还在目录里吗（换代下架后就不在了）
+    private var selectedModelListed: Bool {
+        QwenModels.all.contains { $0.repo == qwenRepo }
+    }
+
+    /// 模型升级横幅。非模态、可「以后再说」，按钮上写清这次要下多少——
+    /// 一个会花掉几百 MB 流量的动作，绝不能让用户点下去才知道代价。
+    @ViewBuilder
+    private var upgradeBanner: some View {
+        switch upgrader.decision {
+        case .none:
+            // 没什么可升级的时候横幅不占地方；但刚跑完（成功或失败）那句结论要留在屏幕上
+            if !upgrader.statusText.isEmpty {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: upgrader.phase == .failed
+                          ? "exclamationmark.triangle" : "checkmark.circle")
+                        .foregroundColor(upgrader.phase == .failed ? .orange : .green)
+                    Text(upgrader.statusText)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        case .upgrade(let repo):
+            bannerBox(icon: "sparkles",
+                      title: tr("有更合适的识别模型：", "A better speech model is available: ")
+                          + upgrader.displayName(for: repo),
+                      detail: upgrader.languagesNote(for: repo)) {
+                Button(upgradeButtonTitle(repo: repo)) {
+                    updateMessage = ""
+                    upgrader.startUpgrade()
+                }
+                .disabled(upgrader.isBusy || downloader.isDownloading)
+                Button(tr("以后再说", "Not now")) { upgrader.dismissCurrentOffer() }
+                    .disabled(upgrader.isBusy)
+            }
+        case .refresh(let repo):
+            bannerBox(icon: "arrow.triangle.2.circlepath",
+                      title: tr("当前识别模型有新修订", "The current speech model has a newer revision"),
+                      detail: tr("同一个模型的文件在仓库里更新过。重新下载后会校验一遍再启用；失败则保留现在这份。",
+                                 "The same model's files changed upstream. The re-download is verified before it is used; if it fails, the current copy is kept.")) {
+                Button(tr("重新下载并校验", "Re-download and verify")) {
+                    updateMessage = ""
+                    upgrader.startUpgrade()
+                }
+                .disabled(upgrader.isBusy || downloader.isDownloading)
+                Text(upgrader.sizeNote(for: repo))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        case .needsAppUpdate(let repo, let minVersion):
+            bannerBox(icon: "exclamationmark.triangle",
+                      title: tr("需要更新 MicType", "MicType needs an update"),
+                      detail: tr("新模型「\(upgrader.displayName(for: repo))」要求 MicType \(minVersion) 或更高版本，当前是 \(UpdateChecker.currentVersion)。先更新 App，再回来一键升级模型。",
+                                 "The new model “\(upgrader.displayName(for: repo))” needs MicType \(minVersion) or newer; this copy is \(UpdateChecker.currentVersion). Update the app first, then upgrade the model here.")) {
+                Button(tr("去检查 MicType 更新", "Check for MicType updates")) {
+                    SettingsTabRouter.shared.tab = .about
+                }
+                Button(tr("以后再说", "Not now")) { upgrader.dismissCurrentOffer() }
+            }
+        }
+    }
+
+    /// 升级按钮的标题：把体量写在按钮上（已经下载过就不必再提体量）
+    private func upgradeButtonTitle(repo: String) -> String {
+        if FileManager.default.fileExists(
+            atPath: QwenModels.localDirectory(for: repo)
+                .appendingPathComponent("model.safetensors").path) {
+            return tr("升级并切换", "Upgrade and switch")
+        }
+        let size = upgrader.sizeNote(for: repo)
+        if size.isEmpty { return tr("下载并升级", "Download and upgrade") }
+        return tr("下载并升级（\(size)）", "Download and upgrade (\(size))")
+    }
+
+    @ViewBuilder
+    private func bannerBox<Actions: View>(icon: String, title: String, detail: String,
+                                          @ViewBuilder actions: () -> Actions) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: icon).foregroundColor(.orange)
+                Text(title).fontWeight(.medium)
+            }
+            if !detail.isEmpty {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 10) { actions() }
+            if upgrader.isBusy || !upgrader.statusText.isEmpty {
+                Text(upgrader.statusText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.08))
+        .cornerRadius(8)
     }
 
     /// 存着的麦克风此刻不在（没插上 / 换了台机器）。**不自动改设置**：插回来还要照旧用，
@@ -504,10 +660,63 @@ private struct RecognitionTab: View {
             }
 
             Section {
+                Picker(tr("识别语言：", "Recognition language:"), selection: $recognitionLanguage) {
+                    Text(tr("自动检测（默认）", "Detect automatically (default)"))
+                        .tag(RecognitionLanguages.autoCode)
+                    ForEach(RecognitionLanguages.pickerOrdered) { lang in
+                        Text(lang.displayName).tag(lang.code)
+                    }
+                }
+                Text(tr("自动检测对中英文很准，几乎不用动。说小语种（或中英夹杂被判错）时指定语言更稳；指定只影响识别，不改任何别的行为。",
+                        "Automatic detection is reliable for Chinese and English, so most people never touch this. Pick a language when you speak something else, or when mixed speech gets detected wrong. It only affects recognition."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                if showsArabicModelHint {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Image(systemName: "lightbulb")
+                                .foregroundColor(.orange)
+                            Text(tr("阿拉伯语建议换 1.7B 模型", "Arabic works noticeably better on the 1.7B model"))
+                                .fontWeight(.medium)
+                        }
+                        Text(tr("阿语上 1.7B 比 0.6B 准得多（Fleurs 词错率 25.5% → 17.0%，Common Voice 46.0% → 38.0%）。\n能用的是现代标准阿语和朗读级内容；海湾、埃及等方言**不承诺**能用——那是模型的已知短板，不是设置问题。",
+                                "On Arabic the 1.7B model is far more accurate than the 0.6B one (Fleurs WER 25.5% to 17.0%, Common Voice 46.0% to 38.0%).\nModern Standard Arabic and read-aloud speech are usable. Gulf, Egyptian and other dialects are NOT promised - that is a known weakness of the model, not a setting you can fix."))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        // 体量从模型目录取，不写死：模型换版、量化改了，这句话不该还是旧数字
+                        Button(largeModelExists
+                                ? tr("切换到 1.7B 模型", "Switch to the 1.7B model")
+                                : tr("切换并下载 1.7B 模型（\(QwenModels.sizeNote(bytes: largeModelSizeBytes))）",
+                                     "Switch and download the 1.7B model (\(QwenModels.sizeNote(bytes: largeModelSizeBytes)))")) {
+                            updateMessage = ""
+                            QwenEngine.shared.unloadModel()
+                            qwenRepo = QwenModels.largeRepo
+                            if !largeModelExists {
+                                downloader.download(repo: QwenModels.largeRepo, force: false)
+                            }
+                            refreshTick += 1
+                        }
+                        .disabled(downloader.isDownloading)
+                    }
+                }
+                // 升级横幅：非模态、可忽略，永不自动换模型（换代要下几百 MB，这种事只由用户点）
+                upgradeBanner
                 Picker(tr("识别模型：", "Speech model:"), selection: $qwenRepo) {
                     ForEach(QwenModels.all, id: \.repo) { m in
-                        Text("\(m.title) · \(m.sizeNote)").tag(m.repo)
+                        Text(m.sizeNote.isEmpty ? m.title : "\(m.title) · \(m.sizeNote)").tag(m.repo)
                     }
+                    // 目录里已经不列这一档了（换代下架），但用户正在用它：如实列出来，
+                    // 不自动替他换（Picker 少一个能选中的选项会显示空白，那才是真的看不懂）
+                    if !selectedModelListed {
+                        Text(tr("当前模型（目录里已不再列出）", "Current model (no longer listed)"))
+                            .tag(qwenRepo)
+                    }
+                }
+                if !selectedModelLanguagesNote.isEmpty {
+                    Text(selectedModelLanguagesNote)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
                 HStack {
                     Image(systemName: modelExists ? "checkmark.circle.fill" : "arrow.down.circle")
@@ -524,15 +733,18 @@ private struct RecognitionTab: View {
                             QwenEngine.shared.unloadModel()
                             downloader.download(repo: qwenRepo, force: modelExists)
                         }
-                        Button(checkingUpdate ? tr("检查中…", "Checking…") : tr("检查更新", "Check Updates")) {
+                        // 一个按钮查两件事：模型目录里有没有更好的模型，以及当前仓库有没有新修订。
+                        // 结论落在下面那行文字里，横幅（如果有）负责给「一键升级」的按钮。
+                        Button(checkingUpdate ? tr("检查中…", "Checking…")
+                                              : tr("检查模型更新", "Check for model updates")) {
                             checkingUpdate = true
                             updateMessage = ""
-                            QwenModelDownloader.checkForUpdate(repo: qwenRepo) { _, message in
+                            upgrader.checkNow { message in
                                 checkingUpdate = false
                                 updateMessage = message
                             }
                         }
-                        .disabled(checkingUpdate)
+                        .disabled(checkingUpdate || upgrader.isBusy)
                     }
                 }
                 if downloader.isDownloading {
@@ -546,7 +758,8 @@ private struct RecognitionTab: View {
                 if !updateMessage.isEmpty {
                     Text(updateMessage)
                         .font(.caption)
-                        .foregroundColor(updateMessage.contains(tr("发现新版本", "Update available")) ? .orange : .secondary)
+                        // 有事可做才用橙色：「已是最新」不该长得像警告
+                        .foregroundColor(upgrader.decision == .none ? .secondary : .orange)
                 }
                 Text(tr("Qwen3-ASR（2026）：约 30 种语言 + 22 种中文方言，自动检测语言，识别完全在本机进行。模型来自 HuggingFace（hf-mirror 加速）。",
                         "Qwen3-ASR (2026): ~30 languages + 22 Chinese dialects, automatic language detection, fully on-device. Models from HuggingFace."))
@@ -626,6 +839,7 @@ private struct RecognitionTab: View {
             updateMessage = ""
             micTest.clearMessage()
             if !downloader.isDownloading { downloader.statusText = "" }
+            if !upgrader.isBusy { upgrader.clearStatus() }
         }
     }
 }

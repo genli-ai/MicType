@@ -63,7 +63,7 @@ final class HotkeyManager {
         }
         // 鼠标 / 滚轮 / 亮度音量键也要能作废按下会话：⌥-拖拽复制、⌘-点击开新标签页、
         // ⌥-横向滚动这些手势一个 keyDown 都不产生，只看键盘的话按下时开的那段录音
-        // 没人认领，会一直录到 5 分钟硬上限再被识别、润色、粘贴出去。
+        // 没人认领，会一直录到硬上限（10 分钟）再被识别、润色、粘贴出去。
         let m5 = NSEvent.addGlobalMonitorForEvents(matching: Self.abortingEvents) { [weak self] _ in
             self?.abortCandidate()
         }
@@ -190,7 +190,7 @@ final class HotkeyManager {
         let targetFlag = NSEvent.ModifierFlags(rawValue: choice.flagMask)
         // 按下/松开沿必须判"这一颗键自己"。合并位（.option / .command / …）不分左右：
         // 另一侧的同名键还按着时，热键松开事件里这一位仍然是 1，松开会被当成又一次按下，
-        // 松开分支永远不执行——录音停不下来，只能靠再按一次 / Esc / 5 分钟上限收场。
+        // 松开分支永远不执行——录音停不下来，只能靠再按一次 / Esc / 时长上限收场。
         // 所以优先读 rawValue 里左右分开的设备相关位；只有这台机器/这条事件根本不报
         // 设备位（Fn 就没有，它也没有"另一侧"）时才退回合并位。
         let raw = event.modifierFlags.rawValue

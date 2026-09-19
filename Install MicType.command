@@ -98,6 +98,12 @@ if [ -d "Resources/Sounds" ]; then
     cp Resources/Sounds/*.wav "$APP/Contents/Resources/Sounds/"
 fi
 
+# 内置的模型目录（model-catalog.json）：断网 / 没缓存时的模型清单来源。
+# 缺了 App 会退回代码里的字面表，所以同样不阻断安装。
+if [ -f "Resources/model-catalog.json" ]; then
+    cp Resources/model-catalog.json "$APP/Contents/Resources/model-catalog.json"
+fi
+
 if [ -f "Resources/AppIcon.png" ]; then
     ICONSET=$(mktemp -d)/AppIcon.iconset
     mkdir -p "$ICONSET"

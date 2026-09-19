@@ -190,6 +190,10 @@ enum SettingsKeys {
     static let overlayPosition = "overlayPosition"         // 悬浮窗在屏幕上的落点
     static let keepHistory = "keepHistory"                 // 是否把听写结果记进历史（默认开）
     static let qwenModelRepo = "qwenModelRepo"
+    static let recognitionLanguage = "recognitionLanguage"  // 识别语言（"" = 自动检测）
+    static let modelCatalogLastCheck = "modelCatalogLastCheck"      // 上次查模型目录的时间（epoch 秒，0 = 没查过）
+    static let pendingModelCleanup = "pendingModelCleanup"          // 等着删的旧模型仓库（升级后、首次成功听写前）
+    static let dismissedModelUpgradeRepo = "dismissedModelUpgradeRepo"  // 用户点过「以后再说」的那个模型仓库
     static let llmProvider = "llmProvider"
     static let appLanguage = "appLanguage"
     static let deepseekBaseURL = "deepseekBaseURL"
@@ -226,6 +230,11 @@ final class Settings {
             SettingsKeys.overlayPosition: OverlayPosition.bottomCenter.rawValue,
             SettingsKeys.keepHistory: true,
             SettingsKeys.qwenModelRepo: QwenModels.defaultRepo,
+            SettingsKeys.recognitionLanguage: RecognitionLanguages.autoCode,
+            // 模型目录 / 升级的本机状态（不进设置导出：跟这台机器的磁盘绑定）
+            SettingsKeys.modelCatalogLastCheck: 0.0,
+            SettingsKeys.pendingModelCleanup: [String](),
+            SettingsKeys.dismissedModelUpgradeRepo: "",
             SettingsKeys.llmProvider: LLMProvider.openai.rawValue,
             SettingsKeys.deepseekBaseURL: LLMProvider.deepseek.defaultBaseURL,
             SettingsKeys.deepseekModel: LLMProvider.deepseek.defaultModel,
@@ -507,6 +516,19 @@ final class Settings {
     var qwenModelRepo: String {
         get { d.string(forKey: SettingsKeys.qwenModelRepo) ?? QwenModels.defaultRepo }
         set { d.set(newValue, forKey: SettingsKeys.qwenModelRepo) }
+    }
+
+    /// 识别语言（存的是 BCP-47 代码，"" = 自动检测，默认值）。
+    /// 只有用户显式选过才不是 Auto——MicType 永远不按场景/历史替他切语言。
+    var recognitionLanguage: String {
+        get { d.string(forKey: SettingsKeys.recognitionLanguage) ?? RecognitionLanguages.autoCode }
+        set { d.set(newValue, forKey: SettingsKeys.recognitionLanguage) }
+    }
+
+    /// 送给识别模型的语言参数：英文全名，或 nil（自动检测）。
+    /// 脏值也回 nil，见 RecognitionLanguages.modelLanguage。
+    var recognitionModelLanguage: String? {
+        RecognitionLanguages.modelLanguage(for: recognitionLanguage)
     }
 
 }
