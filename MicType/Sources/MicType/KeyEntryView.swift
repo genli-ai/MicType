@@ -151,8 +151,8 @@ final class KeyVerifier: ObservableObject {
                 // 否则他抄着这句话来问，日志里一个字都找不到（4.0.1 立的规矩）。
                 Log.warn("API key verification skipped provider=\(provider.rawValue) "
                          + "reason=cloud recognition not on this provider")
-                status = .failed(reason: tr("云端识别没有开在这一档上，请先在 设置 → AI 里打开",
-                                            "Cloud recognition is not set to this provider - turn it on first under Settings → AI"),
+                status = .failed(reason: tr("云端识别没有开在这一档上，请先在 设置 → 云端 AI 里打开",
+                                            "Cloud recognition is not set to this provider - turn it on first under Settings → Cloud AI"),
                                  keptPrevious: hadPrevious)
                 return
             }

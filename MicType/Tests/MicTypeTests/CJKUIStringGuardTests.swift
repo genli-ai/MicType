@@ -50,6 +50,9 @@ final class CJKUIStringGuardTests: XCTestCase {
         "SkillRouter.swift:isReplyTrigger",     // 「帮我回复」这类显式触发词
         "Support.swift:boundaryClass",
         "Support.swift:punctClass",
+        // 内置口水词表：拿去和识别原文比对的词，不显示给任何人看（界面上那句说明是另写的，
+        // 走的是 tr()）。中文那几条恒为中文正是它的用途——翻成英文就什么都删不掉了。
+        "Support.swift:builtInFillerWords",
         "Support.swift:removeFillerWords",
         "Support.swift:negationCount",
         "Support.swift:isVocabEcho",

@@ -234,7 +234,7 @@ enum RecognitionEngineReadiness: Equatable {
 
     var isReady: Bool { self == .ready }
 
-    /// 悬浮窗上那句话。云端两档都明确指向 设置 → AI（胶囊按钮会把那一页直接打开）：
+    /// 悬浮窗上那句话。云端两档都明确指向 设置 → 云端 AI（胶囊按钮会把那一页直接打开）：
     /// 4.0.1 起云端识别的开关和那把 Key 都在那一页上。
     var message: String {
         switch self {
@@ -245,8 +245,8 @@ enum RecognitionEngineReadiness: Equatable {
             return tr("识别模型未下载——已为你打开下载页",
                       "Speech model not downloaded - opening the download page")
         case .cloudKeyMissing(let provider):
-            return tr("当前用的是\(provider.displayName)，但还没填 API Key（设置 → AI）",
-                      "Cloud recognition (\(provider.displayName)) has no API key yet (Settings → AI)")
+            return tr("当前用的是\(provider.displayName)，但还没填 API Key（设置 → 云端 AI）",
+                      "Cloud recognition (\(provider.displayName)) has no API key yet (Settings → Cloud AI)")
         }
     }
 

@@ -80,10 +80,47 @@ public sealed class TextPostProcessorTests
             TextPostProcessor.CleanTranscript("我觉得，嗯，可以。", new[] { "嗯" }));
     }
 
+    // 内置口水词（与 Mac 端 4.0.2 同源：界面上没有这张表了，它自动生效）
+
+    /// 用户一条都没填，内置表照样生效：这才是默认体验
     [Fact]
-    public void FillerWordsEmptyListLeavesTextUntouched()
+    public void BuiltInFillersRunWithoutAnyUserList()
     {
-        Assert.Equal("嗯，那个，好的。", TextPostProcessor.CleanTranscript("嗯，那个，好的。", Array.Empty<string>()));
+        Assert.Equal("好的。", TextPostProcessor.CleanTranscript("嗯，那个，好的。", Array.Empty<string>()));
+        Assert.Equal("let's start", TextPostProcessor.CleanTranscript("um, let's start", Array.Empty<string>()));
+    }
+
+    /// 这张表只许删"独立成分"：词里的同一个字、正经句子里的同一个词，一个都不许动。
+    /// 这条比"能删掉多少口水词"重要得多——删错一次就是改写了用户说的话。
+    [Theory]
+    [InlineData("那个人已经到了。")]
+    [InlineData("这个月的预算是 1000 块。")]
+    [InlineData("他就是说话慢了点。")]
+    [InlineData("umbrella and uber are fine")]
+    [InlineData("do you know the answer")]
+    [InlineData("好啊。")]
+    [InlineData("بالذكاء الاصطناعي مهم")]
+    public void BuiltInFillersNeverTouchRealWords(string text)
+    {
+        Assert.Equal(text, TextPostProcessor.CleanTranscript(text, Array.Empty<string>()));
+    }
+
+    /// 多词西文（you know）只在后面紧跟句读时才删：那是口水词的长相，
+    /// 「do you know the answer」里的那两个词是句子本身
+    [Fact]
+    public void BuiltInPhraseFillerNeedsTrailingPunctuation()
+    {
+        Assert.Equal("I think, it is fine",
+            TextPostProcessor.CleanTranscript("I think, you know, it is fine", Array.Empty<string>()));
+        Assert.Equal("you know it is fine",
+            TextPostProcessor.CleanTranscript("you know it is fine", Array.Empty<string>()));
+    }
+
+    /// 用户自己填的 / 导入的那几条照旧生效，且与内置表用同一套规则
+    [Fact]
+    public void UserFillerWordsStillApplyOnTopOfTheBuiltInList()
+    {
+        Assert.Equal("我同意。", TextPostProcessor.CleanTranscript("怎么说呢，我同意。", new[] { "怎么说呢" }));
     }
 
     [Fact]

@@ -103,15 +103,33 @@ final class AISetupTests: XCTestCase {
                        "qwen3.7-plus")
     }
 
-    /// 说明文字必须点名真实型号（藏起来反而让人不敢点）
-    func testMenuSummaryNamesTheDefaultModel() {
+    /// 说明文字必须点名真实型号（藏起来反而让人不敢点），并说清"润色和指令是同一个模型、
+    /// 要分开选去高级里"——4.0.1 的实测反馈里，这正是用户以为自己只选了其中一个的地方
+    func testMenuSummaryNamesTheDefaultModelAndTheSharedScope() {
         L10n.shared.language = .zh
         let zh = LLMCatalog.modelMenuSummary(provider: .openai) ?? ""
         XCTAssertTrue(zh.contains("gpt-5.6-sol"), zh)
+        XCTAssertTrue(zh.contains("润色") && zh.contains("指令"), zh)
+        XCTAssertTrue(zh.contains("高级"), zh)
         L10n.shared.language = .en
         let en = LLMCatalog.modelMenuSummary(provider: .deepseek) ?? ""
         XCTAssertTrue(en.contains("deepseek-v4-pro"), en)
+        XCTAssertTrue(en.lowercased().contains("polish") && en.lowercased().contains("commands"), en)
+        XCTAssertTrue(en.contains("Advanced"), en)
         XCTAssertFalse(containsCJKOrFullWidth(en), en)
+    }
+
+    // MARK: - 设置窗口的四页（按"跑在哪、谁付钱"这条轴命名）
+
+    /// 四页、四个名字，而且深链用的那两页必须叫得出"本地"与"云端"。
+    /// 写死在测试里是为了：下次想把它们改回「听写 / AI」的人，得先过一遍这条注释。
+    func testSettingsTabsAreNamedAlongTheLocalVersusCloudAxis() {
+        XCTAssertEqual(SettingsTab.allCases.count, 4)
+        XCTAssertEqual(SettingsTab.allCases, [.general, .localRecognition, .cloudAI, .about])
+        // 悬浮窗的「去配置」、菜单栏的「配置 AI…」、云端识别缺 Key 都落在这一页
+        XCTAssertEqual(SettingsTab.cloudAI.rawValue, "cloudAI")
+        // 模型升级横幅落在这一页
+        XCTAssertEqual(SettingsTab.localRecognition.rawValue, "localRecognition")
     }
 
     /// 英文界面下选单里的标签同样不许夹中文或全角标点

@@ -84,14 +84,14 @@ enum OnboardingCopy {
     }
 
     static var aiSkipReassurance: String {
-        tr("跳过也没关系：轻点听写完整可用，以后随时能在 设置 → AI 里补一把 Key。",
-           "Skipping is fine - tap-to-dictate is fully usable, and you can add a key later under Settings → AI.")
+        tr("跳过也没关系：轻点听写完整可用，以后随时能在 设置 → 云端 AI 里补一把 Key。",
+           "Skipping is fine - tap-to-dictate is fully usable, and you can add a key later under Settings → Cloud AI.")
     }
 
     /// 模型下拉下面那一句：默认已经替他选好了，而且这不是一次性的、不可回头的决定
     static var modelHint: String {
-        tr("默认已经选好了这家最好的型号，以后在 设置 → AI 里随时能改。",
-           "The strongest model of that provider is picked for you; change it any time in Settings → AI.")
+        tr("默认已经选好了这家最好的型号，以后在 设置 → 云端 AI 里随时能改。",
+           "The strongest model of that provider is picked for you; change it any time in Settings → Cloud AI.")
     }
 
     /// 最后一屏按「AI 到底配到哪一步」给**三种**收尾（LLMCatalog.aiStatus 判，纯函数）。
@@ -107,8 +107,8 @@ enum OnboardingCopy {
             return tr("你选了只用本地：轻点听写不润色。钥匙串里那把 Key 还在，按住 \(hotkey) 说指令仍然会用它（按次计费）。",
                       "You picked local only, so tap-to-dictate does not polish. Your stored key is still there: holding \(hotkey) to command still uses it, and is still billed.")
         case .off:
-            return tr("你现在是纯本机听写，完整可用。想要润色和语音指令，去 设置 → AI 填一把 Key。",
-                      "You're on pure on-device dictation. Add a key under Settings → AI.")
+            return tr("你现在是纯本机听写，完整可用。想要润色和语音指令，去 设置 → 云端 AI 填一把 Key。",
+                      "You're on pure on-device dictation. Add a key under Settings → Cloud AI.")
         }
     }
 }
@@ -435,7 +435,7 @@ private struct PermissionsPage: View {
 
                 // 系统放行只说明"可以录"，不说明"收的是哪只麦、收得到不到声"——用户通常是在真的
                 // 要说话的时候才发现选错了麦克风。所以拿到权限就在同一页给出电平条与设备选择
-                // （复用设置 → 听写 的 MicCheckPanel，v4.0 调研 §4.5：Wispr Flow 也是这个顺序）。
+                // （复用设置 → 本地识别 的 MicCheckPanel，v4.0 调研 §4.5：Wispr Flow 也是这个顺序）。
                 if model.micOK {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(tr("说一句话，看电平条动起来——顺手也能在这里换麦克风。",
@@ -556,7 +556,11 @@ private struct PermissionRow: View {
 ///
 /// 为什么整屏可跳过、而且跳过不留任何警告：轻点听写压根不需要 Key，把这一屏做成关卡
 /// 就是骗人。反过来，配 AI 的人也不该被丢进设置页里自己找——所以这一屏只摆首配真正要的
-/// 那几个控件（型号名、Base URL、温度、关于我都留在设置页的「高级」里）。
+/// 那几个控件（分开设型号、关于我、自定义规则都留在设置页的「高级」里）。
+///
+/// **控件与「云端 AI」页逐个共用**（ProviderPickerField / KeyEntryView / ModelPickerField /
+/// CloudRecognitionFields）：4.0.1 这里是各抄一份，于是阿里云的「识别也用云端」开关只长在
+/// 设置页上——在引导里选了阿里云的人根本不知道有这一档，也没人告诉他它要花钱。
 private struct HowYouUsePage: View {
     @ObservedObject var model: OnboardingModel
     @ObservedObject private var l10n = L10n.shared
@@ -579,6 +583,8 @@ private struct HowYouUsePage: View {
     @AppStorage(SettingsKeys.localModel) private var localModel = ""
     @AppStorage(SettingsKeys.localCommandModel) private var localCommandModel = ""
     @State private var keyStatus: KeyVerifier.Status = .idle
+    /// 「模型」下拉停在「自定义…」那一项上（与设置页同一个组件，所以同样要这一位状态）
+    @State private var customModelChosen = false
     /// 选择器上**正在看**的那一档，不是生效的那一档。
     ///
     /// 4.0.1 这里直接绑 @AppStorage(llmProvider)，于是点一下选择器就已经把生效服务商换掉了
@@ -623,18 +629,8 @@ private struct HowYouUsePage: View {
                 .pickerStyle(.segmented)
 
                 if usageMode == .withAI {
-                    Picker(tr("服务商：", "Provider:"), selection: $pendingProvider) {
-                        ForEach(offered, id: \.rawValue) { provider in
-                            Text(provider.segmentName).tag(provider)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: pendingProvider) { _, _ in
-                        // 上一档的验证结论对这一档毫无意义（KeyEntryView 自己也会重载钥匙串里的 Key）
-                        keyStatus = .idle
-                        adoptIfUsable(selected)
-                        model.refreshAIReady()
-                    }
+                    // 选择器本身与「云端 AI」页共用；"换档要做什么"两处语义不同，各写在 setter 里
+                    ProviderPickerField(selection: providerBinding, offered: offered)
 
                     // 看着的这一档还没配好 Key：生效的仍是原来那一档，这件事必须写出来，
                     // 否则他以为自己已经换过去了，回头发现润色还是老样子
@@ -647,10 +643,9 @@ private struct HowYouUsePage: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    if selected == .qwen { QwenHostField.field(host: $qwenAPIHost) }
-
                     KeyEntryView(provider: selected,
                                  model: polishModel(for: selected),
+                                 probe: keyProbe,
                                  showsStorageNotes: false) { status in
                         keyStatus = status
                         adoptIfUsable(selected)
@@ -659,12 +654,25 @@ private struct HowYouUsePage: View {
 
                     if showsModel { modelRow }
 
+                    // 阿里云那一档的「识别也用云端」开关：与设置页同一个组件，连说明都是同一份。
+                    // 首配这一屏不摆「探测接入地址 / 测试识别」——他手上还没有"上一次试通的那台"。
+                    //
+                    // 和模型下拉同一个出现条件（这一档真的通了）：这个开关写的是识别引擎，
+                    // 而服务商要验证通过才会被采纳——没 Key 就打开它，等于把识别指到一家
+                    // 还没生效的服务商去（音频在传、这一页却没有那个服务商），
+                    // 正是设置页那条「云端识别停在阿里云、服务商却不是阿里云」要收拾的烂摊子。
+                    if selected == .qwen, showsModel {
+                        CloudRecognitionFields(showsDiagnostics: false) {
+                            model.refreshAIReady()
+                        }
+                    }
+
                     // 本机模型 / 其他兼容服务没有内置型号，型号名只有用户自己知道。
                     // 不说这一句的话，这一档看着像配好了，实际每次调用都是"型号名是空的"。
                     if LLMCatalog.modelMenu(for: selected).isEmpty,
                        polishModelBinding.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text(tr("这一档还要填一个模型名才跑得起来（填好之前 MicType 仍用原来的服务商）：去 设置 → AI → 高级 填上你本机已经下载好的那个，例如 llama3.1:8b。",
-                                "This provider needs a model name before it works, and MicType keeps using the previous provider until then: name the one you have downloaded, such as llama3.1:8b, under Settings → AI → Advanced."))
+                        Text(tr("这一档还要填一个模型名才跑得起来（填好之前 MicType 仍用原来的服务商）：去 设置 → 云端 AI → 高级 填上你本机已经下载好的那个，例如 llama3.1:8b。",
+                                "This provider needs a model name before it works, and MicType keeps using the previous provider until then: name the one you have downloaded, such as llama3.1:8b, under Settings → Cloud AI → Advanced."))
                             .font(.caption)
                             .foregroundColor(.orange)
                             .fixedSize(horizontal: false, vertical: true)
@@ -692,6 +700,27 @@ private struct HowYouUsePage: View {
         }
         // 接入地址一改，阿里云的地址就变了，能不能连得上也跟着变
         .onChange(of: qwenAPIHost) { _, _ in model.refreshAIReady() }
+    }
+
+    /// 选择器上换一档：只换"正在看"的那一档，真正生效要等 adoptIfUsable 认可
+    /// （设置页那一处是"选了就生效"，所以两处各写 setter，共用的只有选择器本身）。
+    private var providerBinding: Binding<LLMProvider> {
+        Binding(get: { pendingProvider },
+                set: { next in
+                    guard next != pendingProvider else { return }
+                    pendingProvider = next
+                    // 上一档的验证结论对这一档毫无意义（KeyEntryView 自己也会重载钥匙串里的 Key）
+                    keyStatus = .idle
+                    customModelChosen = false
+                    adoptIfUsable(next)
+                    model.refreshAIReady()
+                })
+    }
+
+    /// 这把 Key 用哪条链路验——与设置页同一条判据：开着云端识别的阿里云档直接打识别端点，
+    /// 「模型有没有在百炼控制台开通」只有真调一次识别才验得到。
+    private var keyProbe: KeyVerifier.Probe {
+        (selected == .qwen && engineChoice == .cloudAlibaba) ? .cloudASR(.alibaba) : .llm
     }
 
     /// 和设置页同一套映射（AISetup 那几个纯函数），两处不各写一份 switch
@@ -725,18 +754,15 @@ private struct HowYouUsePage: View {
 
     @ViewBuilder
     private var modelRow: some View {
-        Picker(tr("模型：", "Model:"), selection: modelSelection) {
-            ForEach(LLMCatalog.modelMenu(for: selected), id: \.id) { choice in
-                Text(LLMCatalog.modelLabel(choice)).tag(choice.id)
-            }
-            // 用户在设置页把润色和指令分开设过 → 如实显示「自定义」，绝不把他钉回某一项
-            if modelSelection.wrappedValue.isEmpty {
-                Text(tr("自定义", "Custom")).tag("")
-            }
-        }
+        // 下拉本身与「云端 AI」页共用（含「自定义…」那一项和默认型号那句说明）
+        ModelPickerField(provider: selected,
+                         polishModel: polishModelBinding,
+                         commandModel: commandModelBinding,
+                         customChosen: $customModelChosen)
         Text(OnboardingCopy.modelHint)
             .font(.caption)
             .foregroundColor(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     /// 这一档的两个型号字段（与设置页同一种写法：@AppStorage 投影出来的 Binding，
@@ -758,21 +784,6 @@ private struct HowYouUsePage: View {
         case .custom: return $customCommandModel
         case .local: return $localCommandModel
         }
-    }
-
-    /// 选中即写回两个型号字段（润色与指令一起改，见 LLMCatalog.modelWrites）
-    private var modelSelection: Binding<String> {
-        Binding(get: {
-                    LLMCatalog.selectedMenuModel(provider: selected,
-                                                 polish: polishModelBinding.wrappedValue,
-                                                 command: commandModelBinding.wrappedValue) ?? ""
-                },
-                set: { newValue in
-                    guard !LLMCatalog.modelWrites(provider: selected, model: newValue).isEmpty else { return }
-                    polishModelBinding.wrappedValue = newValue
-                    commandModelBinding.wrappedValue = newValue
-                    Log.info("Onboarding model provider=\(selected.rawValue) model=\(newValue)")
-                })
     }
 
     // MARK: 状态读写
@@ -899,8 +910,8 @@ private struct TryItPage: View {
                            text: tr("菜单栏的麦克风图标里有历史记录、润色档位和设置。",
                                     "The menu-bar mic icon holds your history, polish mode and settings."))
                     TipRow(symbol: "text.book.closed",
-                           text: tr("人名、术语老是听错？在 设置 → 听写 的词汇表里填「错写=正写」，一次搞定。",
-                                    "Names or jargon misheard? Add \"wrong=right\" to the vocabulary in Settings → Dictation."))
+                           text: tr("人名、术语老是听错？在 设置 → 本地识别 的词汇表里填「错写=正写」，一次搞定。",
+                                    "Names or jargon misheard? Add \"wrong=right\" to the vocabulary in Settings → On-device recognition."))
                 }
 
                 // Key 与费用：四句和关于页逐字相同（PrivacyCopy），免得用户在两处读到两种说法

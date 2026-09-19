@@ -43,21 +43,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
-        // 悬浮窗上的「去配置」：直接落到设置窗口的 AI 页，不让用户自己去翻标签
+        // 悬浮窗上的「去配置」：直接落到设置窗口的「云端 AI」页，不让用户自己去翻标签
         dictation.onNeedAISettings = {
-            SettingsWindowController.shared.show(tab: .ai)
+            SettingsWindowController.shared.show(tab: .cloudAI)
         }
 
-        // 悬浮窗上的「去设置」：云端识别没填 Key 时落到 AI 页——4.0.1 起云端识别的开关
-        // 和那把 Key 都在那里（听写页只剩麦克风、语言、词汇表、本机模型）
+        // 悬浮窗上的「去设置」：云端识别没填 Key 时落到「云端 AI」页——云端识别的开关
+        // 和那把 Key 都在那里（「本地识别」页只剩麦克风、语言、词汇表、本机模型）
         dictation.onNeedRecognitionSettings = {
-            SettingsWindowController.shared.show(tab: .ai)
+            SettingsWindowController.shared.show(tab: .cloudAI)
         }
 
         // 云端识别的 Key 统一到润色那把（qwen_api_key）：开发期存过旧账号的搬过来再删
         KeychainHelper.migrateLegacyDashScopeKey()
 
-        // 识别停在阿里云、服务商却已经不是阿里云：AI 页上那个开关这时根本不渲染。
+        // 识别停在阿里云、服务商却已经不是阿里云：「云端 AI」页上那个开关这时根本不渲染。
         // **不替他改**（音频出不出这台 Mac 永远由用户自己点），但要留一行日志——
         // 那一页现在会当面说这件事，用户抄来问的时候日志里得找得到。
         if AISetup.showsStrandedAlibabaCloudNotice(engine: Settings.shared.recognitionEngine,
@@ -374,10 +374,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         SettingsWindowController.shared.show()
     }
 
-    /// 带去设置 → 听写：升级横幅在那里，按钮上写着这次要下多少
+    /// 带去设置 → 本地识别：升级横幅在那里，按钮上写着这次要下多少
     @objc private func openModelUpgrade() {
         Log.info("Menu: open model upgrade banner")
-        SettingsWindowController.shared.show(tab: .recognition)
+        SettingsWindowController.shared.show(tab: .localRecognition)
     }
 
     /// 新模型要求更新的 App 版本：这条路只能先更新 MicType（关于页有「检查更新」）
@@ -387,7 +387,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openAISettings() {
-        SettingsWindowController.shared.show(tab: .ai)
+        SettingsWindowController.shared.show(tab: .cloudAI)
     }
 
     @objc private func openLogsFolder() {

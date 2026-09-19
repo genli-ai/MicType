@@ -176,7 +176,7 @@ enum SettingsBackup {
             Key.restoreClipboard: s.restoreClipboard,
             Key.keepHistory: s.keepHistory,
             // 识别这一段：引擎档位、语言、云端模型、接入地址、本机模型仓库。
-            // Key 一如既往不在里面（云端识别用的就是 AI 页那两把 Key）。
+            // Key 一如既往不在里面（云端识别用的就是「云端 AI」页那把 Key）。
             // 试出来的那台主机（qwenResolvedHost）**不导出**：它是本机探测的缓存，
             // 换台机器重新试一次就有，和模型下载状态同一类
             Key.recognitionEngine: s.recognitionEngine.rawValue,
@@ -604,15 +604,15 @@ extension SettingsBackup {
             if summary.notableChanges.contains(where: {
                 $0.hasPrefix(Key.qwenRegion) || $0.hasPrefix(Key.qwenApiHost)
             }) {
-                lines.append(tr("这份文件改了百炼的接入地址：润色与云端识别会改发到另一台服务器（可能是另一个司法辖区）。不是自己填的请在「AI」页清空它，交回给自动探测。",
-                                "This file changed the Model Studio endpoint: polish and cloud recognition will be sent to a different server, possibly in a different jurisdiction. Clear it on the AI tab to hand the job back to auto-detection if you did not choose it."))
+                lines.append(tr("这份文件改了百炼的接入地址：润色与云端识别会改发到另一台服务器（可能是另一个司法辖区）。不是自己填的请在「云端 AI」页清空它，交回给自动探测。",
+                                "This file changed the Model Studio endpoint: polish and cloud recognition will be sent to a different server, possibly in a different jurisdiction. Clear it on the Cloud AI tab to hand the job back to auto-detection if you did not choose it."))
             }
             // 引擎被文件改成云端 = 从此每段录音都会上传。这句重话必须说
             if summary.notableChanges.contains(where: {
                 $0.hasPrefix(Key.recognitionEngine) && !$0.hasSuffix(RecognitionEngineChoice.local.rawValue)
             }) {
-                lines.append(tr("这份文件把识别引擎改成了云端：以后每段录音都会上传给服务商，并按秒计费。不是自己选的请在「识别」页改回本地。",
-                                "This file switched recognition to a cloud engine: every recording will be uploaded to that provider and billed by the second. Change it back to on-device on the Recognition tab if you did not choose it."))
+                lines.append(tr("这份文件把识别引擎改成了云端：以后每段录音都会上传给服务商，并按秒计费。不是自己选的请在「云端 AI」页把「识别也用云端」关掉。",
+                                "This file switched recognition to a cloud engine: every recording will be uploaded to that provider and billed by the second. Turn off Also recognize speech in the cloud on the Cloud AI tab if you did not choose it."))
             }
         }
         if !summary.ignoredKeys.isEmpty {
@@ -623,9 +623,9 @@ extension SettingsBackup {
             lines.append(tr("这份文件来自更新版本的 MicType，只应用了本版认识的设置。",
                             "This file comes from a newer MicType; only settings this version knows were applied."))
         }
-        // 标签名 3.3 之后叫「AI」（那一页也管语音指令），这句话得跟着改，别指一个不存在的页
-        lines.append(tr("API Key 从不导出、也从不导入——请在「AI」页单独填写。",
-                        "API keys are never exported or imported — enter them on the AI tab."))
+        // 标签名 4.0.2 改叫「云端 AI」（按「跑在哪、谁付钱」这条轴重命名），这句话得跟着改
+        lines.append(tr("API Key 从不导出、也从不导入——请在「云端 AI」页单独填写。",
+                        "API keys are never exported or imported — enter them on the Cloud AI tab."))
 
         let alert = NSAlert()
         alert.alertStyle = .informational

@@ -641,8 +641,8 @@ enum LLMClient {
         // Qwen 不会走到这里：它的接入地址由 MicType 自己试出来（见 AlibabaEndpoint）。
         guard !base.isEmpty else {
             DispatchQueue.main.async {
-                completion(nil, tr("这个服务商的接口地址还没填完（在 设置 → AI → 高级 里填）",
-                                   "This provider's endpoint is incomplete - fill it in under Settings → AI → Advanced"))
+                completion(nil, tr("这个服务商的接口地址还没填完（在 设置 → 云端 AI → 高级 里填）",
+                                   "This provider's endpoint is incomplete - fill it in under Settings → Cloud AI → Advanced"))
             }
             return
         }

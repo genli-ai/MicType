@@ -323,7 +323,7 @@ enum SettingsKeys {
     static let aboutMe = "aboutMe"
     static let customPolishRules = "customPolishRules"
     static let customVocabulary = "customVocabulary"
-    static let fillerWords = "fillerWords"                 // 本地口水词过滤表（默认空 = 不过滤）
+    static let fillerWords = "fillerWords"                 // 额外的口水词（4.0.2 起界面上没有这一项，内置表自动生效）
     static let playSounds = "playSounds"
     static let restoreClipboard = "restoreClipboard"
     static let autoStopSilenceSeconds = "autoStopSilenceSeconds"  // 静音自动停秒数（0 = 关）
@@ -676,13 +676,17 @@ final class Settings {
     var vocabularyTerms: [String] { vocabularyEntries.terms }
     var vocabularyReplacements: [(wrong: String, right: String)] { vocabularyEntries.replacements }
 
-    /// 口水词表原文（逗号/换行分隔），默认空——不填就完全不过滤，绝不替用户决定哪些词该删
+    /// 口水词表原文（逗号/换行分隔），默认空。
+    ///
+    /// 4.0.2 起界面上**没有这个输入框**了：中/英/阿三套保守词表内置在
+    /// TextPostProcessor.builtInFillerWords 里自动生效，没人该为了不打出「嗯」维护一张表。
+    /// 这条设置留着是因为老设置和导入的设置文件里可能有内容——照旧作为**额外**的词条生效。
     var customFillerWords: String {
         get { d.string(forKey: SettingsKeys.fillerWords) ?? "" }
         set { d.set(newValue, forKey: SettingsKeys.fillerWords) }
     }
 
-    /// 解析后的口水词列表，供本机过滤用
+    /// 解析后的额外口水词列表（内置表之外的那几条）
     var fillerWords: [String] { Settings.parseList(customFillerWords) }
 
     var playSounds: Bool {

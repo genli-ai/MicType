@@ -112,13 +112,14 @@ enum LLMCatalog {
         return modelMenu(for: provider).contains { $0.id == p } ? p : nil
     }
 
-    /// 下拉下面那一句。写出默认型号名：藏起来只会让人不敢点。
-    /// nil = 这个服务商没有内置型号（下拉本身也不显示）。
+    /// 下拉下面那一句。两件事必须写出来：**润色和指令用的是同一个型号**（不说的话，
+    /// 用户会以为自己只挑了其中一个），以及要分开选去哪儿。默认型号名也点出来——
+    /// 藏起来只会让人不敢点。nil = 这个服务商没有内置型号（下拉本身也不显示）。
     static func modelMenuSummary(provider: LLMProvider) -> String? {
         let fallback = defaultModel(for: provider)
         guard !fallback.isEmpty else { return nil }
-        return tr("润色和指令都用这一个型号（默认 \(fallback)，最强的主流档）。想分开设、或用别的型号，去下面的「高级」。",
-                  "Both polish and commands use this one model (default \(fallback), the strongest mainstream tier). Split them, or name another model, under Advanced.")
+        return tr("润色和指令默认用同一个模型（默认 \(fallback)，最强的主流档）；要分开选在「高级」里。",
+                  "Polish and commands share this model (default \(fallback), the strongest mainstream tier); split them under Advanced.")
     }
 
     /// 某个服务商的「润色型号 / 指令型号」分别存在哪两个 UserDefaults 键上。

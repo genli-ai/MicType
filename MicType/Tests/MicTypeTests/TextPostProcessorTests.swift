@@ -44,8 +44,43 @@ final class TextPostProcessorTests: XCTestCase {
                        "我觉得，可以。")
     }
 
-    func testFillerWordsEmptyListLeavesTextUntouched() {
-        XCTAssertEqual(TextPostProcessor.cleanTranscript("嗯，那个，好的。", fillerWords: []), "嗯，那个，好的。")
+    // MARK: 内置口水词（4.0.2 起不再需要用户自己填表）
+
+    /// 用户一条都没填，内置表照样生效：这才是 4.0.2 的默认体验
+    func testBuiltInFillersRunWithoutAnyUserList() {
+        XCTAssertEqual(TextPostProcessor.cleanTranscript("嗯，那个，好的。", fillerWords: []), "好的。")
+        XCTAssertEqual(TextPostProcessor.cleanTranscript("um, let's start", fillerWords: []), "let's start")
+    }
+
+    /// 这张表只许删"独立成分"：词里的同一个字、正经句子里的同一个词，一个都不许动。
+    /// 这条比"能删掉多少口水词"重要得多——删错一次就是改写了用户说的话。
+    func testBuiltInFillersNeverTouchRealWords() {
+        for text in ["那个人已经到了。", "这个月的预算是 1000 块。", "他就是说话慢了点。",
+                     "umbrella and uber are fine", "do you know the answer", "好啊。",
+                     "بالذكاء الاصطناعي مهم"] {
+            XCTAssertEqual(TextPostProcessor.cleanTranscript(text, fillerWords: []), text, text)
+        }
+    }
+
+    /// 多词西文（you know）只在后面紧跟句读时才删：那是口水词的长相，
+    /// 「do you know the answer」里的那两个词是句子本身
+    func testBuiltInPhraseFillerNeedsTrailingPunctuation() {
+        XCTAssertEqual(TextPostProcessor.cleanTranscript("I think, you know, it is fine", fillerWords: []),
+                       "I think, it is fine")
+        XCTAssertEqual(TextPostProcessor.cleanTranscript("you know it is fine", fillerWords: []),
+                       "you know it is fine")
+    }
+
+    /// 阿语那几条走"两侧都是边界"的规则（阿语句读 ، ؟ ؛ 也算边界）
+    func testBuiltInArabicFillersAreRemovedWhenStandalone() {
+        XCTAssertEqual(TextPostProcessor.cleanTranscript("مرحبا، يعني، العالم", fillerWords: []),
+                       "مرحبا، العالم")
+    }
+
+    /// 导入的老设置里那几条照旧生效，且与内置表用同一套规则
+    func testImportedFillerWordsStillApplyOnTopOfTheBuiltInList() {
+        XCTAssertEqual(TextPostProcessor.cleanTranscript("怎么说呢，我同意。", fillerWords: ["怎么说呢"]),
+                       "我同意。")
     }
 
     // MARK: 词表硬替换

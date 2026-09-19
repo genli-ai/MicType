@@ -474,8 +474,8 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
     func makeRequest(wav: Data, seconds: Double, context: String?) -> Result<URLRequest, CloudASRFailure> {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else {
-            return .failure(CloudASRFailure(tr("还没有填阿里云 API Key（设置 → AI）",
-                                               "No Alibaba API key yet (Settings → AI)")))
+            return .failure(CloudASRFailure(tr("还没有填阿里云 API Key（设置 → 云端 AI）",
+                                               "No Alibaba API key yet (Settings → Cloud AI)")))
         }
         if let failure = Self.precheck(base64Length: WAVEncoder.base64Length(forByteCount: wav.count),
                                        seconds: seconds) {
@@ -644,11 +644,11 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
 
         switch effective {
         case 0:
-            return made("连不上阿里云：网络不通，或这个接入地址根本不存在。把百炼控制台里的「接入地址（apiHost）」粘到 设置 → AI 的「接入地址」里",
-                        "Could not reach Alibaba: no network, or that API host does not exist. Paste the API host from the Model Studio console into the API host field in Settings → AI")
+            return made("连不上阿里云：网络不通，或这个接入地址根本不存在。把百炼控制台里的「接入地址（apiHost）」粘到 设置 → 云端 AI 的「接入地址」里",
+                        "Could not reach Alibaba: no network, or that API host does not exist. Paste the API host from the Model Studio console into the API host field in Settings → Cloud AI")
         case 401:
-            return made("这把 Key 不属于试过的这些接入地址。到百炼控制台复制「接入地址（apiHost）」，粘到 设置 → AI 的「接入地址」里；或确认 Key 没有过期",
-                        "This key does not belong to any endpoint MicType tried. Copy the API host from the Model Studio console and paste it into the API host field in Settings → AI, or check that the key is still valid")
+            return made("这把 Key 不属于试过的这些接入地址。到百炼控制台复制「接入地址（apiHost）」，粘到 设置 → 云端 AI 的「接入地址」里；或确认 Key 没有过期",
+                        "This key does not belong to any endpoint MicType tried. Copy the API host from the Model Studio console and paste it into the API host field in Settings → Cloud AI, or check that the key is still valid")
         case 403:
             if raw.localizedCaseInsensitiveContains("arrear") {
                 return made("阿里云账户欠费，云端识别已停。请充值后再试",
@@ -660,8 +660,8 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
             // 别写成"qwen3-asr-flash 也已经试过了"：自动换模型只发生在「测试识别」/ 粘 Key
             // 那一趟上（见 CloudASRProbe.runTryingModels），日常听写这条路不换模型。
             // 说成已经试过，用户就不会再去按那颗真能救他的按钮。
-            return made("这个接入地址上没有这个识别模型。请到百炼控制台 → 模型广场开通 qwen3-asr-flash，或在 设置 → AI 里按一次「测试识别」让 MicType 自动换到它",
-                        "This endpoint has no such speech model. Enable qwen3-asr-flash in the Model Studio console → Model Gallery, or hit Test recognition under Settings → AI so MicType switches to it")
+            return made("这个接入地址上没有这个识别模型。请到百炼控制台 → 模型广场开通 qwen3-asr-flash，或在 设置 → 云端 AI 里按一次「测试识别」让 MicType 自动换到它",
+                        "This endpoint has no such speech model. Enable qwen3-asr-flash in the Model Studio console → Model Gallery, or hit Test recognition under Settings → Cloud AI so MicType switches to it")
         case 429:
             // 只认 AllocationQuota：Throttling.RateQuota 里也有 "quota" 字样，但那是限流，该重试
             if raw.localizedCaseInsensitiveContains("allocation") {
@@ -766,8 +766,8 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
     func makeRequest(wav: Data, seconds: Double, context: String?) -> Result<URLRequest, CloudASRFailure> {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else {
-            return .failure(CloudASRFailure(tr("还没有填 OpenAI API Key（设置 → AI）",
-                                               "No OpenAI API key yet (Settings → AI)")))
+            return .failure(CloudASRFailure(tr("还没有填 OpenAI API Key（设置 → 云端 AI）",
+                                               "No OpenAI API key yet (Settings → Cloud AI)")))
         }
         if let failure = Self.precheck(fileBytes: wav.count) { return .failure(failure) }
         guard let url = URL(string: Self.endpointString) else {
@@ -845,8 +845,8 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
 
         switch status {
         case 401:
-            return made("OpenAI Key 无效或已被吊销。请在 设置 → AI 里重填（这把 Key 与润色用的是同一把）",
-                        "The OpenAI key is invalid or revoked. Re-enter it in Settings → AI (same key the polish step uses)")
+            return made("OpenAI Key 无效或已被吊销。请在 设置 → 云端 AI 里重填（这把 Key 与润色用的是同一把）",
+                        "The OpenAI key is invalid or revoked. Re-enter it in Settings → Cloud AI (same key the polish step uses)")
         case 403:
             return made("这把 Key 没有调用该模型的权限。请在 OpenAI 控制台确认项目权限",
                         "This key is not allowed to call the model. Check the project permissions in the OpenAI console")

@@ -25,12 +25,28 @@ public static partial class TextPostProcessor
     /// 收尾清理会碰的句读
     private const string PunctClass = "，。！？、；：,.!?;:" + ArabicPunct;
 
+    /// 内置口水词表（中 / 英 / 阿三套）。Mac 端 4.0.2 起把「口水词过滤」那个输入框删了
+    /// ——没有人应该为了不打出「嗯」去维护一张表（用户 2026-09-19 实测反馈）。
+    ///
+    /// 这张表刻意只收**最没有歧义**的那几个，分寸由 RemoveFillerWords 的三条规则保证：
+    ///   • 中文只在"前后都是标点或空白"时删 → 「那个人」「这个月」一个字都不动；
+    ///   • 单词西文按整词删 → um 不会动 umbrella；
+    ///   • 多词西文（you know）还要求**后面紧跟句读** → 「do you know the answer」不动。
+    /// 与 Mac 端 Support.swift 的 builtInFillerWords **逐条同源**，改一端必须改另一端。
+    public static readonly IReadOnlyList<string> BuiltInFillerWords = new[]
+    {
+        "嗯", "呃", "啊", "那个", "这个", "就是说", "然后呢",
+        "um", "uh", "erm", "you know",
+        "يعني", "آآ", "إيه"
+    };
+
     public static string CleanTranscript(string text)
     {
         return CleanTranscript(text, SettingsStore.Instance.Current.FillerWordList);
     }
 
-    /// 纯函数版（可单测）。fillerWords 为空时行为与历史版本完全一致——口水词过滤是纯粹的用户选项。
+    /// 纯函数版（可单测）。fillerWords 是**额外**的那几条（用户自己填的 / 导入的设置里带的），
+    /// 内置表无论如何都生效——这一步在本机做，不联网、不花润色额度，「仅识别」档也一样。
     public static string CleanTranscript(string text, IReadOnlyList<string> fillerWords)
     {
         // 引擎控制 token 与非语音伪影。顺序有讲究：先删 <|zh|>/<|endoftext|> 这类成对标记，
@@ -47,7 +63,8 @@ public static partial class TextPostProcessor
         value = CollapseRepetitions(value);
         value = ShortRepeatRegex().Replace(value, "$1");
         value = LongRepeatRegex().Replace(value, "$1");
-        value = RemoveFillerWords(value, fillerWords);
+        // 内置表排在前面，用户/导入的那几条跟在后面：两张表走的是同一套保守规则
+        value = RemoveFillerWords(value, BuiltInFillerWords.Concat(fillerWords).ToList());
         // 数字策略（当前 Keep，恒等）：位置在这里是为了实测后翻常量即生效，不必再改调用点
         value = ApplyArabicIndicDigitsPolicy(value);
         return value.Trim();
@@ -62,10 +79,13 @@ public static partial class TextPostProcessor
         return PatternRepeatRegex().Replace(value, "$1");
     }
 
-    /// 本地口水词过滤：用户列出的词在本机就地删掉，不依赖云端润色（无 Key 的纯听写路径也能用）。
+    /// 本地口水词过滤：在本机就地删掉，不依赖云端润色（无 Key 的纯听写路径也能用）。
     /// 分寸是刻意保守的（宁可少删，绝不改变原意）：
-    ///   • 纯西文词条（um / uh / you know）按整词删、大小写不敏感；词内出现不动（"like" 不动 "likely"）。
-    ///   • 其他（中文 嗯 / 那个 / 就是说）只在"两侧都是句读、空白或文本边界"时删——
+    ///   • 单词西文（um / uh / erm）按整词删、大小写不敏感；词内出现不动（"um" 不动 "umbrella"）。
+    ///   • **多词西文**（you know / i mean）还要求后面紧跟句读：口水词的「you know」总是
+    ///     跟着一个逗号，而「do you know the answer」里的那两个词是句子的一部分——
+    ///     只按整词删的话这句话会被删成「do the answer」，那是改写用户说的话。
+    ///   • 其他（中文 嗯 / 那个 / 就是说，阿语 يعني）只在"两侧都是句读、空白或文本边界"时删——
     ///     所以「那个人」里的词永远不动，只有独立成分的口水词会被删。
     ///   • 删完做收尾：合并因此出现的重复标点、去掉标点前的空格与句首孤儿标点。
     public static string RemoveFillerWords(string text, IReadOnlyList<string> fillerWords)
@@ -85,7 +105,10 @@ public static partial class TextPostProcessor
             if (IsLatinToken(filler))
             {
                 // (?<!类) / (?!类) 在文本首尾也成立，等价于西文词边界
-                value = Regex.Replace(value, $"(?<!{LatinClass}){escaped}(?!{LatinClass})", "",
+                var pattern = $"(?<!{LatinClass}){escaped}(?!{LatinClass})";
+                // 多词词条再加一道：后面（允许有空格）必须是句读，否则这两三个词多半是句子本身
+                if (filler.Contains(' ')) pattern += $"(?=[ \\t]*[{PunctClass}])";
+                value = Regex.Replace(value, pattern, "",
                     RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             }
             else

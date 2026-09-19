@@ -7,10 +7,16 @@ import ServiceManagement
 
 /// 设置窗口的四个标签。有名字才能从别处深链过去（菜单栏「配置 AI…」、悬浮窗的「去配置」、
 /// 模型升级横幅）——把人丢进设置窗口第一页再让他自己找，等于没给路。
+///
+/// 4.0.2 按**一条轴**重新命名（用户 2026-09-19 实测后拍板）：「在我的 Mac 上跑、免费」
+/// 对「用我的 Key、要花钱」。4.0.1 那组名字（「听写」/「AI」）是按功能切的，而用户脑子里
+/// 分的是钱和隐私——于是"云端识别的开关为什么在 AI 页"这种问题根本没法回答。
 enum SettingsTab: String, Hashable, CaseIterable {
     case general
-    case recognition
-    case ai
+    /// 原「听写」：麦克风、识别语言、词汇表、本机模型
+    case localRecognition
+    /// 原「AI」：服务商、Key、模型、（阿里云的）云端识别开关
+    case cloudAI
     case about
 }
 
@@ -61,20 +67,37 @@ struct SettingsView: View {
             GeneralTab()
                 .tabItem { Label(tr("通用", "General"), systemImage: "gearshape") }
                 .tag(SettingsTab.general)
-            // 标签名 4.0.1 改叫「听写」：这一页管的是"说出来的话怎么变成字"（麦克风、
-            // 语言、词汇表、本机模型）。「识别」是内部说法，而且和 AI 页的云端识别开关撞名。
+            // 「本地识别」：在这台 Mac 上跑、免费、不联网的那一半
             RecognitionTab()
-                .tabItem { Label(tr("听写", "Dictation"), systemImage: "waveform") }
-                .tag(SettingsTab.recognition)
-            // 标签名就叫「AI」：这一页也管语音指令，叫「AI 润色」名不副实
+                .tabItem { Label(tr("本地识别", "On-device recognition"), systemImage: "waveform") }
+                .tag(SettingsTab.localRecognition)
+            // 「云端 AI」：用你自己的 Key、按用量付费的那一半（润色、语音指令、可选的云端识别）
             AITab()
-                .tabItem { Label("AI", systemImage: "wand.and.stars") }
-                .tag(SettingsTab.ai)
+                .tabItem { Label(tr("云端 AI", "Cloud AI"), systemImage: "wand.and.stars") }
+                .tag(SettingsTab.cloudAI)
             AboutTab()
                 .tabItem { Label(tr("关于", "About"), systemImage: "info.circle") }
                 .tag(SettingsTab.about)
         }
         .frame(width: 560, height: 500)
+    }
+}
+
+/// 每一页顶上那一句话：这一页管的是什么、要不要花钱。
+///
+/// 为什么值得占一行：标签名只有三四个字，而这四页的分法是"跑在哪、谁付钱"——
+/// 不把这句话写出来，用户仍然要靠点进去猜（4.0.1 的实测反馈正是"分不清两页的区别"）。
+private struct TabIntro: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20)
+            .padding(.top, 10)
     }
 }
 
@@ -120,12 +143,17 @@ private struct GeneralTab: View {
     }
 
     var body: some View {
-        Form {
-            ForEach(GeneralSectionOrder.allCases, id: \.self) { section in
-                sectionView(section)
+        VStack(spacing: 0) {
+            // 英文写 behavior（美式）：同一页下面那一段的标题就是 "Behavior"，
+            // 一个 behaviour 一个 behavior 只会显得是拼错了
+            TabIntro(text: tr("快捷键、悬浮窗和行为", "Hotkey, overlay and behavior"))
+            Form {
+                ForEach(GeneralSectionOrder.allCases, id: \.self) { section in
+                    sectionView(section)
+                }
             }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
         .padding(.top, 4)
         // 权限轮询挂在整页上而不是权限段里：两项都绿时那一段折叠成一行，轮询不能跟着一起消失
         .onReceive(permTimer) { _ in
@@ -397,10 +425,10 @@ private struct PermissionBadge: View {
     }
 }
 
-// MARK: - 听写（麦克风 / 语言 / 词汇表 / 本机模型）
+// MARK: - 本地识别（麦克风 / 语言 / 词汇表 / 本机模型）
 
-/// 「听写」页 4.0.1 只管一件事：说出来的话怎么变成字。
-/// 识别引擎选择器、云端的 Key / 接入地址 / 「测试识别」全部搬去了 AI 页——
+/// 「本地识别」页只管一件事：说出来的话怎么在**这台 Mac 上**变成字。
+/// 识别引擎、云端的 Key / 接入地址 / 「测试识别」全部在「云端 AI」页——
 /// 那几件事都是"要不要用 AI、用哪家"的一部分，分在两页等于让用户在两处各选一次
 /// （4.0.0 正是这样选出了两个对不上的值）。这里只留云端开着时要更正的那几句话。
 private struct RecognitionTab: View {
@@ -408,8 +436,7 @@ private struct RecognitionTab: View {
     @AppStorage(SettingsKeys.qwenModelRepo) private var qwenRepo = QwenModels.defaultRepo
     @AppStorage(SettingsKeys.recognitionLanguage) private var recognitionLanguage = RecognitionLanguages.autoCode
     @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
-    @AppStorage(SettingsKeys.fillerWords) private var fillerWords = ""
-    /// 只读：云端识别的开关在 AI 页。这里读它只为把几句话说对（语言提示送不送得到、
+    /// 只读：云端识别的开关在「云端 AI」页。这里读它只为把几句话说对（语言提示送不送得到、
     /// 「识别在本机完成」那句对云端不成立、本机模型这会儿只用于草稿与回落）
     @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
     @ObservedObject private var downloader = QwenModelDownloader.shared
@@ -551,34 +578,34 @@ private struct RecognitionTab: View {
     private var engineChoice: RecognitionEngineChoice { RecognitionEngineChoice.parse(recognitionEngine) }
 
     var body: some View {
-        Form {
-            // 麦克风选择 + 电平自检：与引导第二屏共用同一个组件（MicCheck.swift）
-            Section {
-                MicCheckPanel()
-            }
+        VStack(spacing: 0) {
+            TabIntro(text: tr("在你的 Mac 上运行，免费，不联网",
+                              "Runs on your Mac. Free, no network."))
+            Form {
+                // 麦克风选择 + 电平自检：与引导第二屏共用同一个组件（MicCheck.swift）
+                Section {
+                    MicCheckPanel()
+                }
 
-            Section {
-                languageSection
-            }
+                Section {
+                    languageSection
+                }
 
-            Section {
-                localModelSection
-            }
+                Section {
+                    localModelSection
+                }
 
-            Section {
-                vocabularySection
-            }
+                Section {
+                    vocabularySection
+                }
 
-            Section {
-                fillerSection
+                // 性能：只是照镜子，不提供任何"自动优化"开关——快慢的原因摆出来，怎么调由用户决定
+                Section(tr("性能", "Performance")) {
+                    performanceSection
+                }
             }
-
-            // 性能：只是照镜子，不提供任何"自动优化"开关——快慢的原因摆出来，怎么调由用户决定
-            Section(tr("性能", "Performance")) {
-                performanceSection
-            }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
         .padding(.top, 4)
         .onReceive(downloader.$isDownloading) { _ in
             refreshTick += 1
@@ -639,8 +666,8 @@ private struct RecognitionTab: View {
         // 云端识别开着的时候，本机模型并没有变成多余的东西——两件事都要说清，
         // 否则用户会把它删掉，然后发现草稿没了、云端一出错就整段丢了
         if engineChoice.isCloud {
-            Text(tr("云端识别开着（在「AI」页里打开的）：日常听写走云端。\n本机模型仍然有用——录音时那行实时草稿由它转，云端出错时也由它把这一段接住。",
-                    "Cloud recognition is on (you turned it on under AI), so everyday dictation goes to the cloud.\nThe on-device model still matters: it produces the live draft while you record, and it catches the take if the cloud call fails."))
+            Text(tr("云端识别开着（在「云端 AI」页里打开的）：日常听写走云端。\n本机模型仍然有用——录音时那行实时草稿由它转，云端出错时也由它把这一段接住。",
+                    "Cloud recognition is on (you turned it on under Cloud AI), so everyday dictation goes to the cloud.\nThe on-device model still matters: it produces the live draft while you record, and it catches the take if the cloud call fails."))
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -717,7 +744,7 @@ private struct RecognitionTab: View {
     private var vocabularySection: some View {
         VStack(alignment: .leading, spacing: 4) {
             // 这条提示就摆在词汇表上面：它要用户做的动作是"往下面这个框里填词"，
-            // 以前写成「设置 → AI → 词汇表」指向了一个不存在的界面（AI 页没有词汇表），
+            // 以前写成「设置 → 云端 AI → 词汇表」指向了一个不存在的界面（AI 页没有词汇表），
             // 而且当时挂在本机模型那一段里，选了云端的阿语用户根本看不到——
             // 词汇表对云端同样作为热词生效，这条提示与引擎无关。
             if showsArabicVocabularyTip {
@@ -752,22 +779,13 @@ private struct RecognitionTab: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
-        }
-    }
-
-    @ViewBuilder
-    private var fillerSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(tr("口水词过滤（用逗号或换行分隔，默认空 = 不过滤）：",
-                    "Filler words to drop (comma or newline separated; empty = off):"))
-            TextEditor(text: $fillerWords)
-                .font(.system(size: 12))
-                .frame(height: 56)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
-            Text(tr("在本机删掉，不联网、不花润色额度——「仅识别」档也生效。\n分寸是保守的：西文词按整词删（填 um 不会动 umbrella）；中文词只在前后都是标点或空白时删（填「那个」不会动「那个人」）。",
-                    "Removed on-device — no network, no polish tokens; works even in transcribe-only mode.\nDeliberately conservative: Latin entries are dropped as whole words only (\"um\" never touches \"umbrella\"); other entries are dropped only when standing alone between punctuation or spaces."))
+            // 4.0.2 拿掉了「口水词过滤」输入框：内置中 / 英 / 阿三套保守词表自动生效，
+            // 没有人应该为了不打出「嗯」而去维护一张表（见 TextPostProcessor.builtInFillerWords）
+            Text(tr("口水词（嗯、呃、um、uh、يعني…）默认就在本机删掉，不用自己列表；只删独立成分，「那个人」这种词里的字一个都不动。",
+                    "Filler words (um, uh and their Chinese and Arabic equivalents) are dropped on this Mac automatically - there is no list to fill in, and only standalone fillers are removed."))
                 .font(.caption)
                 .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -795,16 +813,20 @@ private struct RecognitionTab: View {
     }
 }
 
-// MARK: - AI（润色 + 语音指令 + 可选的云端识别）
+// MARK: - 云端 AI（润色 + 语音指令 + 可选的云端识别）
 
-/// AI 标签 4.0.1 的形状：**整页只有一个决定**开路。
+/// 「云端 AI」页的形状：**整页只有一个决定**开路。
 /// ① 使用方式：只用本地 / 本地 + AI；② 选了 AI 再选一个服务商、贴一把 Key；
 /// ③ 一个「模型」下拉（默认就是这家最好的那个）；④ 只有阿里云多一个「识别也用云端」开关；
-/// 其余（关于我、自定义规则、分开设型号、温度、联网搜索、优先处理、其他兼容端点）全在「高级」里。
+/// ⑤ 关于我 / 自定义规则；剩下的（分开设型号、联网搜索、优先处理）收在「高级」里。
 ///
-/// 为什么砍成这样（用户 2026-09-19 实测后拍板）：4.0.0 这一页摆着服务商 + Key + 润色档位 +
-/// 质量 + 两个花钱开关 + 个性化，识别页上还有**第二把 Key** 和第二个区域选择器——
-/// 同一个账号在两页各选一次，选出来的两个值还可能对不上，而用户根本不知道该先点哪个。
+/// 4.0.2 又拿掉了两样东西（用户 2026-09-19 实测后拍板）：
+///   • **温度滑杆**——推理系型号根本不接受自定义温度（那两根滑杆常年灰着），而这是绝大多数人
+///     不该碰的旋钮。设置键与内部默认值原样留着（Settings.polishTemperature / commandTemperature），
+///     只是界面上不再摆它。
+///   • **「其他 OpenAI 兼容服务 / 本机模型」的地址与型号输入框**——那是给 Ollama、公司网关
+///     准备的高级动作，用「导入设置…」配置即可。LLMProvider.custom / .local 仍在代码里，
+///     已经在用的人一切照旧，只是这一页多一句说明和一颗「改用官方三档」的按钮。
 private struct AITab: View {
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var metrics = Metrics.shared
@@ -828,22 +850,15 @@ private struct AITab: View {
     @AppStorage(SettingsKeys.localCommandModel) private var localCommandModel = ""
     @AppStorage(SettingsKeys.fastTier) private var fastTier = false
     @AppStorage(SettingsKeys.webSearchEnabled) private var webSearch = false
-    @AppStorage(SettingsKeys.polishTemperature) private var polishTemp = 0.5
-    @AppStorage(SettingsKeys.commandTemperature) private var commandTemp = 1.0
     @AppStorage(SettingsKeys.aboutMe) private var aboutMe = ""
     @AppStorage(SettingsKeys.customPolishRules) private var customRules = ""
-    /// 识别引擎：云端识别的开关就在这一页（阿里云那一档下面），「听写」页只读它。
+    /// 识别引擎：云端识别的开关就在这一页（阿里云那一档下面），「本地识别」页只读它。
     /// 同一个账号、同一把 Key、同一台主机只在这里选一次。
     @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
-    @AppStorage(SettingsKeys.cloudAlibabaModel) private var cloudAlibabaModel = AlibabaASRModel.qwen3Flash.rawValue
     /// 4.0.1 的默认型号迁移改掉了什么（"旧>新"，见 LLMCatalog.encodeModelChanges）。
     /// 点过「知道了」就清空——一次性提示，不留在页面上碍事。
     @AppStorage(SettingsKeys.modelMigrationNotice) private var modelMigrationNotice = ""
     @State private var testResult = ""
-    /// 「探测接入地址」那一趟的状态与结论（快照：切语言 / 改配置就清）
-    @State private var hostProbing = false
-    @State private var hostProbeResult = ""
-    @State private var hostProbeOK = false
     /// 钥匙串不是 @AppStorage，删掉一把 Key 之后这一页不会自己重算。
     /// 这个计数器就是那一下"手动推一把"（只影响显示，不落盘）。
     @State private var keychainTick = 0
@@ -853,19 +868,10 @@ private struct AITab: View {
     @State private var fetchedModels: [String] = []
     @State private var refreshing = false
     @State private var refreshStatus = ""
-    /// 高级区默认折叠：型号名 / Base URL / 温度是实现细节，不该占首屏
+    /// 高级区默认折叠：分开设型号、联网搜索、优先处理都是少数人才动的东西，不该占首屏
     @State private var advancedExpanded = false
-    /// 「模型」下拉停在「自定义…」那一项上。只影响这一页怎么显示，不落盘——
-    /// 落盘的永远是型号名本身。
+    /// 「模型」下拉停在「自定义…」那一项上。只影响这一页怎么显示，不落盘。
     @State private var customModelChosen = false
-    /// 「测试识别」那一行结论（快照，切语言 / 改配置就清掉）
-    @State private var cloudTestResult = ""
-    @State private var cloudTestOK = false
-    @State private var cloudTesting = false
-    /// 这一行结论属于哪一次配置。探针要跑几秒到几分钟（阿里云超时 120s），期间用户完全可以
-    /// 改地址、关掉开关——回来的那条旧结论绝不能落在新配置下面
-    /// （KeyEntryView 早就有这道护栏，见 KeyEntryView.verify 的 generation）
-    @State private var cloudTestGeneration = 0
 
     private var selected: LLMProvider { LLMProvider(rawValue: provider) ?? .openai }
     private var currentPolishLevel: PolishLevel { PolishLevel(rawValue: polishLevel) ?? .smart }
@@ -927,46 +933,35 @@ private struct AITab: View {
         LLMCatalog.mergedModelList(presets: LLMCatalog.presets(for: selected), fetched: fetchedModels)
     }
 
-    /// 选中的型号是不是推理系——是的话温度参数根本不会被发出去，滑杆必须看得见地置灰，
-    /// 而不是让用户以为自己在调一个其实无效的旋钮（3.3 之前就是静默无效）。
-    private var polishTempIgnored: Bool {
-        LLMCatalog.rejectsCustomTemperature(polishModelBinding.wrappedValue)
-    }
-    private var commandTempIgnored: Bool {
-        LLMCatalog.rejectsCustomTemperature(commandModelBinding.wrappedValue)
-    }
-    /// 置灰说明里点名的那些型号（纯型号名，中英通用）
-    private var ignoredTempModels: String {
-        var names: [String] = []
-        if polishTempIgnored { names.append(polishModelBinding.wrappedValue) }
-        if commandTempIgnored { names.append(commandModelBinding.wrappedValue) }
-        return names.joined(separator: " / ")
-    }
-
     var body: some View {
-        Form {
-            Section(tr("使用方式", "How you use MicType")) { usageSection }
-            // 「只用本地」时下面一个控件都不摆：那一档的全部事实就是"不联网、不花钱"，
-            // 再摆一排 AI 设置只会让人以为自己还有什么没配完
-            if usageMode == .withAI {
-                Section(tr("服务商", "Provider")) { providerSection }
-                Section(tr("模型", "Model")) { modelSection }
-                if selected == .qwen {
-                    Section(tr("云端识别（可选）", "Cloud recognition (optional)")) {
-                        cloudRecognitionSection
+        VStack(spacing: 0) {
+            TabIntro(text: tr("用你自己的 Key，按用量付费；可选",
+                              "Uses your own key, pay per use. Optional."))
+            Form {
+                Section(tr("使用方式", "How you use MicType")) { usageSection }
+                // 「只用本地」时下面一个控件都不摆：那一档的全部事实就是"不联网、不花钱"，
+                // 再摆一排 AI 设置只会让人以为自己还有什么没配完
+                if usageMode == .withAI {
+                    Section(tr("服务商", "Provider")) { providerSection }
+                    Section("API Key") { keySection }
+                    Section(tr("模型", "Model")) { modelSection }
+                    if selected == .qwen {
+                        // 开关 + 说明 + 接入地址 + 「测试识别」：与引导第三屏共用同一个组件
+                        Section(tr("云端识别（可选）", "Cloud recognition (optional)")) {
+                            CloudRecognitionFields()
+                        }
                     }
+                    Section(tr("关于我与自定义规则", "About me and rules")) { personalFields }
+                    Section { advancedSection }
                 }
-                Section { advancedSection }
             }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
         .padding(.top, 4)
         // 测试结果与刷新结果都是快照，切换语言后清掉，避免残留旧语言
         .onChange(of: l10n.language) { _, _ in
             testResult = ""
             refreshStatus = ""
-            hostProbeResult = ""
-            invalidateCloudTest()
         }
     }
 
@@ -1063,7 +1058,6 @@ private struct AITab: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Button(tr("改回本机识别", "Switch back to on-device recognition")) {
                     recognitionEngine = RecognitionEngineChoice.local.rawValue
-                    invalidateCloudTest()
                     Log.info("Stranded cloudAlibaba recognition switched back to local")
                 }
                 .fixedSize()
@@ -1081,7 +1075,6 @@ private struct AITab: View {
                         let writes = AISetup.localOnlyWrites()
                         polishLevel = writes.polish.rawValue
                         recognitionEngine = writes.engine.rawValue
-                        invalidateCloudTest()
                     case .withAI:
                         polishLevel = AISetup.polishAfterEnablingAI(currentPolishLevel).rawValue
                     }
@@ -1089,35 +1082,14 @@ private struct AITab: View {
                 })
     }
 
-    // MARK: 段 2 服务商：选一家 → 拿 Key → 粘贴即验证
+    // MARK: 段 2 服务商：选一家（选择器与引导第三屏共用同一个组件）
 
     @ViewBuilder
     private var providerSection: some View {
-        Picker(tr("服务商：", "Provider:"), selection: $provider) {
-            ForEach(offeredProviders, id: \.rawValue) { p in
-                Text(p.segmentName).tag(p.rawValue)
-            }
-        }
-        .pickerStyle(.segmented)
-        .onChange(of: provider) { _, newValue in
-            testResult = ""
-            // 上一个端点报上来的型号清单对新端点毫无意义
-            fetchedModels = []
-            refreshStatus = ""
-            customModelChosen = false
-            let next = LLMProvider(rawValue: newValue) ?? .openai
-            // 换走之后音频不能还在往阿里云传——而且界面上已经没有那个开关可以关了。
-            // 判据是纯函数，引导页那处换服务商走的是同一条（两处各写一份就一定会走散）
-            if let engine = AISetup.engineAfterProviderChange(current: engineChoice, next: next) {
-                recognitionEngine = engine.rawValue
-                Log.info("Cloud recognition off: provider=\(next.rawValue)")
-            }
-            invalidateCloudTest()
-            Log.info("AI provider=\(next.rawValue)")
-        }
+        ProviderPickerField(selection: providerBinding, offered: offeredProviders)
 
         // 官方几档的地址被老版本改过时必须看得见：看不见的自定义地址是查不出来的故障。
-        // 正常情况下这里什么都不显示（地址展示留在高级区）。
+        // 正常情况下这里什么都不显示。
         if (selected == .openai || selected == .deepseek), effectiveBaseURL != selected.defaultBaseURL {
             VStack(alignment: .leading, spacing: 4) {
                 Text(tr("这一档的接口地址被改过：", "This provider's endpoint was overridden: ") + effectiveBaseURL)
@@ -1132,6 +1104,65 @@ private struct AITab: View {
             }
         }
 
+        if selected == .custom || selected == .local {
+            legacyProviderNotice
+        }
+    }
+
+    /// 换服务商要做的事全在这个 setter 里（引导页那一处语义不同：看着的那一档要验证通过才采纳，
+    /// 所以两处各自写 setter，共用的只有选择器本身）。
+    private var providerBinding: Binding<LLMProvider> {
+        Binding(get: { selected },
+                set: { next in
+                    guard next != selected else { return }
+                    // 换走之后音频不能还在往阿里云传——而且界面上已经没有那个开关可以关了。
+                    // 判据是纯函数，引导页换服务商走的是同一条（两处各写一份就一定会走散）
+                    if let engine = AISetup.engineAfterProviderChange(current: engineChoice, next: next) {
+                        recognitionEngine = engine.rawValue
+                        Log.info("Cloud recognition off: provider=\(next.rawValue)")
+                    }
+                    provider = next.rawValue
+                    testResult = ""
+                    // 上一个端点报上来的型号清单对新端点毫无意义
+                    fetchedModels = []
+                    refreshStatus = ""
+                    customModelChosen = false
+                    Log.info("AI provider=\(next.rawValue)")
+                })
+    }
+
+    /// 选择器里摆哪几档：三家云服务商。
+    /// 「其他 OpenAI 兼容服务」与「本机模型」4.0.2 起没有入口了（只能靠导入设置文件），
+    /// 但**他正在用的那一档必须摆出来**，否则选择器上没有一项对得上，看着像被我们悄悄改掉了。
+    private var offeredProviders: [LLMProvider] {
+        var list: [LLMProvider] = [.openai, .deepseek, .qwen]
+        if !list.contains(selected) { list.append(selected) }
+        return list
+    }
+
+    /// 还在用自定义端点 / 本机模型的人看到的那一行：说清界面上为什么没有那些输入框了，
+    /// 并给一颗回到官方三档的按钮。**绝不替他改**——那一档可能正好好用着。
+    @ViewBuilder
+    private var legacyProviderNotice: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(tr("「\(selected.displayName)」的接口地址 4.0.2 起不在设置界面上：那是给 Ollama、公司网关这类用户的高级动作，改由「导入设置…」配置。你现在这份配置照常工作，型号名仍然在下面的「高级」里改。",
+                    "The endpoint for \(selected.displayName) is no longer shown here: that is an advanced setup for Ollama or a company gateway, configured through Import Settings. Your current setup keeps working, and the model name is still editable under Advanced."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Menu(tr("改用 OpenAI / DeepSeek / 阿里云", "Switch to OpenAI / DeepSeek / Alibaba Cloud")) {
+                ForEach([LLMProvider.openai, .deepseek, .qwen], id: \.rawValue) { target in
+                    Button(target.displayName) { providerBinding.wrappedValue = target }
+                }
+            }
+            .fixedSize()
+        }
+    }
+
+    // MARK: 段 3 Key（粘贴即验证）
+
+    @ViewBuilder
+    private var keySection: some View {
         // 全 App **唯一**的 Key 输入框：粘上即验证，验证通过才写钥匙串（见 KeyEntryView）
         KeyEntryView(provider: selected, model: polishModelBinding.wrappedValue, probe: keyProbe)
         if keyProbe != .llm {
@@ -1139,6 +1170,7 @@ private struct AITab: View {
                     "With cloud recognition on, the key is verified against the recognition endpoint: first your API host is found (a free model-list request), then one second of synthetic tone is sent, which also proves the model is enabled. The cost of that second is negligible."))
                 .font(.caption)
                 .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -1149,336 +1181,17 @@ private struct AITab: View {
         (selected == .qwen && engineChoice == .cloudAlibaba) ? .cloudASR(.alibaba) : .llm
     }
 
-    /// 选择器里摆哪几档：三家云服务商。
-    /// 「其他 OpenAI 兼容服务」与「本机模型」是高级动作（要自己填地址和型号名），
-    /// 入口在「高级」里——但**他正在用的那一档必须摆出来**，否则选择器上没有一项对得上，
-    /// 看着像被我们悄悄改掉了，而且他再也切不回去。
-    private var offeredProviders: [LLMProvider] {
-        var list: [LLMProvider] = [.openai, .deepseek, .qwen]
-        if !list.contains(selected) { list.append(selected) }
-        return list
-    }
-
-    // MARK: 段 3 模型（一个下拉，默认就是这家最好的那个）
-
-    private var modelMenu: [LLMCatalog.ModelChoice] { LLMCatalog.modelMenu(for: selected) }
+    // MARK: 段 4 模型（一个下拉，默认就是这家最好的那个；与引导第三屏共用）
 
     @ViewBuilder
     private var modelSection: some View {
-        if modelMenu.isEmpty {
-            Text(tr("这一档没有内置型号：到下面的「高级」里填一个型号名（例如本机已经下好的 llama3.1:8b）。",
-                    "No built-in models for this provider: name one under Advanced below (for example llama3.1:8b if you run it locally)."))
-                .font(.caption)
-                .foregroundColor(.secondary)
-        } else {
-            Picker(tr("模型：", "Model:"), selection: modelSelection) {
-                ForEach(modelMenu, id: \.id) { choice in
-                    Text(LLMCatalog.modelLabel(choice)).tag(choice.id)
-                }
-                // 空串 = 「自定义…」：用户自己填型号名，或者他在「高级」里把润色和指令分开设过了
-                Text(tr("自定义…", "Custom…")).tag("")
-            }
-            if modelSelection.wrappedValue.isEmpty {
-                TextField(tr("型号名（润色和指令都用它）", "Model name (used for both polish and commands)"),
-                          text: customModelBinding)
-                    .textFieldStyle(.roundedBorder)
-            }
-            if let summary = LLMCatalog.modelMenuSummary(provider: selected) {
-                Text(summary)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-        }
+        ModelPickerField(provider: selected,
+                         polishModel: polishModelBinding,
+                         commandModel: commandModelBinding,
+                         customChosen: $customModelChosen)
     }
 
-    /// 下拉 ←→ 两个型号字段。读是"现在落在选单的哪一项上"，写是"把两个字段一起改掉"。
-    /// 两个字段不一样（在「高级」里分开设过）时如实显示「自定义…」，绝不把用户钉回某一项。
-    private var modelSelection: Binding<String> {
-        Binding(get: {
-                    guard !customModelChosen else { return "" }
-                    return LLMCatalog.selectedMenuModel(provider: selected,
-                                                        polish: polishModelBinding.wrappedValue,
-                                                        command: commandModelBinding.wrappedValue) ?? ""
-                },
-                set: { newValue in
-                    guard !newValue.isEmpty else {
-                        // 选了「自定义…」：只是把输入框露出来，一个字段都别动
-                        customModelChosen = true
-                        return
-                    }
-                    customModelChosen = false
-                    polishModelBinding.wrappedValue = newValue
-                    commandModelBinding.wrappedValue = newValue
-                    Log.info("Model set provider=\(selected.rawValue) model=\(newValue)")
-                })
-    }
-
-    /// 「自定义…」下面那个输入框：填什么，润色和指令就都用什么（要分开设去「高级」）。
-    /// 手打出来的名字正好是选单里的某一项时，下拉自己跳回那一项——不然屏幕上会出现
-    /// 「自定义… / gpt-5.6-sol」这种自相矛盾的一对。
-    private var customModelBinding: Binding<String> {
-        Binding(get: { polishModelBinding.wrappedValue },
-                set: { newValue in
-                    polishModelBinding.wrappedValue = newValue
-                    commandModelBinding.wrappedValue = newValue
-                    if modelMenu.contains(where: {
-                        $0.id == newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                    }) {
-                        customModelChosen = false
-                    }
-                })
-    }
-
-    // MARK: 段 4 云端识别（只有阿里云这一档有）
-
-    @ViewBuilder
-    private var cloudRecognitionSection: some View {
-        Toggle(tr("识别也用云端（音频上传，按秒计费）",
-                  "Also recognize speech in the cloud (audio is uploaded, billed per second)"),
-               isOn: cloudRecognitionBinding)
-        Text(tr("默认关着：录音一个字节都不出这台 Mac。打开之后每一段录音都会传给阿里云识别——机器慢、录音长、或者本机模型听不好的语言才值得开。",
-                "Off by default: not a byte of audio leaves this Mac. Turn it on and every take is uploaded to Alibaba for recognition - worth it when this Mac is slow, the takes are long, or the local model handles your language poorly."))
-            .font(.caption)
-            .foregroundColor(.secondary)
-        if engineChoice == .cloudAlibaba {
-            cloudNotes(PrivacyCopy.cloudAlibabaLines)
-        }
-
-        qwenHostField
-
-        if engineChoice == .cloudAlibaba {
-            cloudTestRow
-        }
-    }
-
-    /// 开关 ←→ 识别引擎。哪一档由 AISetup.engine 说了算（纯函数，单测钉死），
-    /// 界面这边不自己拼 rawValue。
-    private var cloudRecognitionBinding: Binding<Bool> {
-        Binding(get: { engineChoice == .cloudAlibaba },
-                set: { isOn in
-                    let next = AISetup.engine(provider: selected, cloudRecognition: isOn)
-                    recognitionEngine = next.rawValue
-                    invalidateCloudTest()
-                    Log.info("Cloud recognition engine=\(next.rawValue)")
-                })
-    }
-
-    /// 接入地址：**可选**输入框，不是选择器。
-    ///
-    /// 4.0.0 这里是一个「接入区域」下拉 + 一个 WorkspaceId 输入框，用户得先知道自己是
-    /// 国际站还是中国站、再去控制台抄一段编号——抄错的表现是 401，文案却让他去查 Key。
-    /// 用户 2026-09-19 拍板拿掉区域：地址由 MicType 自己试（见 AlibabaEndpoint），
-    /// 这个框只留给"我就是知道地址"的人，空着才是常态。
-    @ViewBuilder
-    private var qwenHostField: some View {
-        // 输入框 / 说明 / 格式提示三样与引导页共用一份（见 QwenHostField）
-        QwenHostField.field(host: $qwenAPIHost)
-            .onChange(of: qwenAPIHost) { _, _ in
-                invalidateCloudTest()
-                hostProbeResult = ""
-            }
-        // 「探测接入地址」这一行**在地址还没定下来时也要有**：钥匙串里已经有 Key 的人
-        // （从 4.0.0 升上来、或导入过设置）不会再粘一次 Key，而粘 Key 是原先唯一的探测入口。
-        // 于是中国站账号一直被打到 dashscope-intl，401 的文案还让他去查 Key。
-        if !qwenAPIHost.isEmpty {
-            Text(tr("已经填了接入地址，MicType 就只用它，不再自己试。", "With an API host filled in, MicType uses only that one and never probes."))
-                .font(.caption)
-                .foregroundColor(.secondary)
-        } else {
-            HStack(alignment: .firstTextBaseline) {
-                Text(qwenResolvedHost.isEmpty
-                     ? tr("接入地址还没试出来。", "The endpoint has not been detected yet.")
-                     : tr("已试通的接入地址：", "Endpoint in use: ") + qwenResolvedHost)
-                    .font(.caption)
-                    .foregroundColor(qwenResolvedHost.isEmpty ? .orange : .secondary)
-                    .textSelection(.enabled)
-                Spacer()
-                Button(hostProbing ? tr("探测中…", "Detecting…")
-                                   : (qwenResolvedHost.isEmpty ? tr("探测接入地址", "Detect endpoint")
-                                                               : tr("重新探测", "Detect again"))) {
-                    runHostProbe()
-                }
-                .fixedSize()
-                .disabled(hostProbing)
-            }
-            if !hostProbeResult.isEmpty {
-                Text(hostProbeResult)
-                    .font(.caption)
-                    .foregroundColor(hostProbeOK ? .green : .orange)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        if engineChoice == .cloudAlibaba {
-            Text(tr("识别模型：\(cloudAlibabaModel)。这个端点上没有它时会自动改用 qwen3-asr-flash（同步识别端点上只有这一个型号）。",
-                    "Speech model: \(cloudAlibabaModel). If this endpoint does not have it, MicType switches to qwen3-asr-flash automatically - it is the only model on the synchronous recognition endpoint."))
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-    }
-
-    @ViewBuilder
-    private var cloudTestRow: some View {
-        HStack {
-            Button(cloudTesting ? tr("测试中…", "Testing…") : tr("测试识别", "Test recognition")) {
-                runCloudTest()
-            }
-            .disabled(cloudTesting)
-            Spacer()
-        }
-        if !cloudTestResult.isEmpty {
-            Text(cloudTestResult)
-                .font(.caption)
-                .foregroundColor(cloudTestOK ? .green : .orange)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    @ViewBuilder
-    private func cloudNotes(_ lines: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(lines, id: \.self) { line in
-                Text(line)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    /// 配置变了：上一次的结论作废，在飞的那一次也不要了。
-    /// 「测试中…」的标志位一并复位——不然改了配置之后按钮永远灰着，等一个再也不会落地的结果。
-    private func invalidateCloudTest() {
-        cloudTestGeneration &+= 1
-        cloudTestResult = ""
-        cloudTesting = false
-    }
-
-    /// 探一次接入地址：拿钥匙串里那把 Key 逐台试 `GET /compatible-mode/v1/models`（不花钱、不传音频）。
-    ///
-    /// 为什么非有这颗按钮不可：粘 Key 曾是唯一的探测入口，而从 4.0.0 升上来 / 导入过设置的人
-    /// 钥匙串里已经有 Key，永远不会再粘一次——于是中国站账号一直被打到国际站，
-    /// 401 的文案还让他去查 Key。**成败都进日志。**
-    private func runHostProbe() {
-        let key = KeychainHelper.loadAPIKey(account: LLMProvider.qwen.keychainAccount) ?? ""
-        guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            hostProbeOK = false
-            hostProbeResult = tr("先在上面粘一把阿里云 Key，再探测接入地址",
-                                 "Paste an Alibaba key above first, then detect the endpoint")
-            Log.warn("Qwen host probe skipped: no key")
-            return
-        }
-        CloudASRSettings.rememberWorkspace(fromKey: key)
-        // 重新探测 = 忘掉上一次那台（否则它排在第一位，"重新"就成了摆设）
-        qwenResolvedHost = ""
-        hostProbing = true
-        hostProbeResult = ""
-        invalidateCloudTest()
-        Log.info("Qwen host probe started")
-        AlibabaHostResolver.resolve(apiKey: key,
-                                    candidates: CloudASRSettings.currentHostCandidates(apiKey: key)) { result in
-            hostProbing = false
-            switch result {
-            case .success(let host):
-                CloudASRSettings.rememberResolution(host: host, model: nil)
-                hostProbeOK = true
-                hostProbeResult = tr("已试通的接入地址：", "Endpoint in use: ") + host
-            case .failure(let failure):
-                hostProbeOK = false
-                hostProbeResult = failure.message
-                Log.warn("Qwen host probe failed status=\(failure.status) code=\(failure.code ?? "-") "
-                         + "copy=" + String(failure.message.prefix(200)))
-            }
-        }
-    }
-
-    /// 发一次 1 秒合成音，报往返毫秒数。失败时把云端的原话摆出来（它本来就带"下一步怎么办"）。
-    /// 先把接入地址试出来、模型 404 时自动换 qwen3-asr-flash（见 CloudASRSetup）。
-    /// **不管成败，结论都进日志**：4.0.0 这个按钮报 404、日志里却一行都没有，用户只能靠抄屏。
-    private func runCloudTest() {
-        guard let config = CloudASRSettings.currentConfig() else {
-            cloudTestOK = false
-            cloudTestResult = tr("云端识别没开，没有云端可测",
-                                 "Cloud recognition is off - there is no cloud endpoint to test")
-            Log.warn("Cloud test skipped: local engine")
-            return
-        }
-        cloudTestGeneration &+= 1
-        let generation = cloudTestGeneration
-        cloudTesting = true
-        cloudTestResult = ""
-        Log.info("Cloud test started provider=\(config.provider.rawValue)")
-
-        // 这几秒里用户可能已经关掉开关或改了地址：那条结论对应的是**旧**配置，
-        // 落在新配置下面就是一句"已连通 ✓"骗人
-        func settle(_ result: Result<CloudASRProbe.Outcome, CloudASRFailure>) {
-            switch result {
-            case .success(let outcome):
-                Log.info("Cloud test ok provider=\(config.provider.rawValue) "
-                         + "model=\(outcome.model ?? "-") ms=\(outcome.milliseconds)")
-            case .failure(let failure):
-                Log.warn("Cloud test failed provider=\(config.provider.rawValue) "
-                         + "status=\(failure.status) code=\(failure.code ?? "-") "
-                         + "copy=" + String(failure.message.prefix(200)))
-            }
-            guard generation == cloudTestGeneration else { return }
-            cloudTesting = false
-            switch result {
-            case .success(let outcome):
-                cloudTestOK = true
-                cloudTestResult = CloudASRProbe.successText(outcome)
-            case .failure(let failure):
-                cloudTestOK = false
-                cloudTestResult = failure.message
-            }
-        }
-
-        guard config.provider == .alibaba else {
-            CloudASRProbe.run(config: config, completion: settle)
-            return
-        }
-        CloudASRSetup.verifyAlibaba(apiKey: config.apiKey, config: config,
-                                    candidates: CloudASRSettings.currentHostCandidates(apiKey: config.apiKey)) { result in
-            switch result {
-            case .success(let success):
-                // 记住这台主机与真正能用的那个模型。两条设置都是 @AppStorage 绑着的，
-                // 界面会自己跟上，不必在这里再赋一遍（赋一遍反而会触发 onChange 把刚得到的
-                // 结论作废掉——这一行结论正是用户在等的东西）。
-                // 代数对不上 = 这几秒里配置被改过：那这条结论属于旧配置，连地址带模型都不许落盘
-                if generation == cloudTestGeneration {
-                    CloudASRSettings.rememberResolution(host: success.host, model: success.model)
-                }
-                settle(.success(success.outcome))
-            case .failure(let failure):
-                settle(.failure(failure))
-            }
-        }
-    }
-
-    // MARK: 段 5 高级（默认折叠）
-
-    @ViewBuilder
-    private var advancedSection: some View {
-        DisclosureGroup(isExpanded: $advancedExpanded) {
-            VStack(alignment: .leading, spacing: 12) {
-                personalFields
-                Divider()
-                modelFields
-                temperatureSliders
-                Divider()
-                costlySwitches
-                Divider()
-                otherServicesFields
-            }
-            .padding(.top, 6)
-        } label: {
-            Text(tr("高级（关于我、分开设型号、温度、联网搜索、其他服务）",
-                    "Advanced (about me, split models, temperature, web search, other services)"))
-        }
-    }
-
-    // MARK: 高级 · 个性化
+    // MARK: 段 6 关于我 / 自定义规则
 
     @ViewBuilder
     private var personalFields: some View {
@@ -1503,6 +1216,23 @@ private struct AITab: View {
                     "E.g. \"formal tone for emails\", \"keep English jargon untranslated\", \"use Arabic numerals\"."))
                 .font(.caption)
                 .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: 段 7 高级（默认折叠）
+
+    @ViewBuilder
+    private var advancedSection: some View {
+        DisclosureGroup(isExpanded: $advancedExpanded) {
+            VStack(alignment: .leading, spacing: 12) {
+                modelFields
+                Divider()
+                costlySwitches
+            }
+            .padding(.top, 6)
+        } label: {
+            Text(tr("高级（分开设型号、联网搜索、优先处理）",
+                    "Advanced (split models, web search, priority processing)"))
         }
     }
 
@@ -1560,42 +1290,6 @@ private struct AITab: View {
         }
     }
 
-    // MARK: 高级 · 温度
-
-    @ViewBuilder
-    private var temperatureSliders: some View {
-        HStack {
-            Text(tr("润色温度：", "Polish temperature:"))
-                .foregroundColor(polishTempIgnored ? .secondary : .primary)
-            Slider(value: $polishTemp, in: 0...1.5)
-                .disabled(polishTempIgnored)
-            Text(String(format: "%.2f", polishTemp))
-                .monospacedDigit()
-                .foregroundColor(polishTempIgnored ? .secondary : .primary)
-                .frame(width: 38, alignment: .trailing)
-        }
-        HStack {
-            Text(tr("指令温度：", "Command temperature:"))
-                .foregroundColor(commandTempIgnored ? .secondary : .primary)
-            Slider(value: $commandTemp, in: 0...1.5)
-                .disabled(commandTempIgnored)
-            Text(String(format: "%.2f", commandTemp))
-                .monospacedDigit()
-                .foregroundColor(commandTempIgnored ? .secondary : .primary)
-                .frame(width: 38, alignment: .trailing)
-        }
-        Text(tr("低 = 稳定保真，高 = 自然多样。默认：润色 0.5 / 指令 1.00（即模型默认值）。",
-                "Lower = faithful and stable; higher = natural and varied. Defaults: polish 0.5 / commands 1.00 (the model default)."))
-            .font(.caption)
-            .foregroundColor(.secondary)
-        if polishTempIgnored || commandTempIgnored {
-            Text(tr("置灰的滑杆对应推理系模型（\(ignoredTempModels)）：这类模型只接受默认温度，MicType 干脆不发这个参数。换一个非推理型号就能再调。",
-                    "The greyed-out slider belongs to a reasoning model (\(ignoredTempModels)): those only accept their default temperature, so MicType does not send the parameter at all. Pick a non-reasoning model to re-enable it."))
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-    }
-
     // MARK: 高级 · 两个花钱的开关（默认都关）
 
     @ViewBuilder
@@ -1642,90 +1336,6 @@ private struct AITab: View {
             return LLMCatalog.webSearchPriceNote
                 + tr("　只作用于按住说出的指令，润色永不联网；模型给的来源会显示在悬浮窗和历史里。",
                      " It applies only to held-down commands - polish never goes online. Sources come back with the answer and show up in the overlay and in History.")
-        }
-    }
-
-    // MARK: 高级 · 其他服务（自定义端点 / 本机模型）与接口地址
-
-    @ViewBuilder
-    private var otherServicesFields: some View {
-        endpointFields
-        if selected == .openai || selected == .deepseek || selected == .qwen {
-            Menu(tr("改用其他服务…", "Use another service…")) {
-                Button(tr("其他 OpenAI 兼容服务（Kimi、OpenRouter、自建网关…）",
-                          "Other OpenAI-compatible service (Kimi, OpenRouter, your own gateway...)")) {
-                    provider = LLMProvider.custom.rawValue
-                }
-                Button(tr("本机模型（Ollama / LM Studio，不出网、不花钱）",
-                          "Local model (Ollama or LM Studio - nothing leaves this Mac, nothing is billed)")) {
-                    provider = LLMProvider.local.rawValue
-                }
-            }
-            .fixedSize()
-            Text(tr("这两档要自己填接口地址和型号名，选中之后会出现在上面的「服务商」里，随时能切回来。",
-                    "Both need an endpoint and a model name of your own. Once picked they appear in the Provider row above, so you can always switch back."))
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-    }
-
-    @ViewBuilder
-    private var endpointFields: some View {
-        switch selected {
-        case .openai, .deepseek:
-            // 官方档的地址由 MicType 自己拼，不给输入框（填错一个字符的表现是"找不到模型"）。
-            // 被改过时的警告在「服务商」段，这里只是如实报一下当前打到哪儿。
-            Text(tr("接口地址：", "Endpoint: ") + effectiveBaseURL)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .textSelection(.enabled)
-            if effectiveBaseURL != selected.defaultBaseURL {
-                Text(tr("要长期用自建网关，请改用「其他 OpenAI 兼容服务」那一档。",
-                        "To keep using a gateway, switch to the other OpenAI-compatible service."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-        case .qwen:
-            // 判据是"这台主机到底定下来了没有"，不是"字符串是不是空的"——候选表永远给得出
-            // 第一项，所以地址**永远**非空。照空串判的话，那条橙色提示一次都不会出现，
-            // 还没验过 Key 的人读到的是一句笃定的「接口地址（自动试出来的）」。
-            let settledHost = AlibabaEndpoint.normalizeHost(qwenAPIHost)
-                ?? AlibabaEndpoint.normalizeHost(qwenResolvedHost)
-            Text(settledHost == nil
-                 ? tr("接入地址还没定下来，会先试：", "The endpoint is not settled yet; MicType will try: ")
-                     + effectiveBaseURL
-                     + tr("。粘一次 Key，或按「探测接入地址」，MicType 会把真正那台试出来。",
-                          ". Paste your key once, or hit Detect endpoint, and MicType will find the right one.")
-                 : tr("接口地址（自动试出来的）：", "Endpoint (detected): ") + effectiveBaseURL)
-                .font(.caption)
-                .foregroundColor(settledHost == nil ? .orange : .secondary)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        case .custom:
-            TextField(tr("Base URL（要带版本段，如 https://api.moonshot.ai/v1）",
-                         "Base URL (include the version segment, e.g. https://api.moonshot.ai/v1)"),
-                      text: $customBaseURL)
-                .textFieldStyle(.roundedBorder)
-            if let problem = LLMCatalog.validateCustomBaseURL(customBaseURL) {
-                Text(problem.message)
-                    .font(.caption)
-                    .foregroundColor(problem == .empty ? .secondary : .orange)
-            }
-            Text(tr("任何 OpenAI 兼容端点都能填：Kimi、Gemini 兼容层、z.ai、OpenRouter、自建网关。只接受 https（localhost 除外）。",
-                    "Any OpenAI-compatible endpoint works here: Kimi, the Gemini compatibility layer, z.ai, OpenRouter, your own gateway. https only (localhost excepted)."))
-                .font(.caption)
-                .foregroundColor(.secondary)
-        case .local:
-            Picker(tr("本机运行时：", "Local runtime:"), selection: $localRuntime) {
-                ForEach(LLMCatalog.LocalRuntime.allCases, id: \.rawValue) { runtime in
-                    Text(runtime.displayName).tag(runtime.rawValue)
-                }
-            }
-            Text(tr("接口地址：", "Endpoint: ") + effectiveBaseURL
-                 + tr("。先在本机把它跑起来，再点「刷新模型列表」把已下载的模型取过来。",
-                      ". Start it on this Mac first, then hit Refresh model list to pull in the models you have."))
-                .font(.caption)
-                .foregroundColor(.secondary)
         }
     }
 

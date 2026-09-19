@@ -51,14 +51,32 @@ enum TextPostProcessor {
     /// 收尾清理会碰的句读（删词后留下的重复标点、句首孤儿标点）
     private static let punctClass = "，。！？、；：,.!?;:" + arabicPunct
 
+    // MARK: 内置口水词
+
+    /// 内置口水词表（中 / 英 / 阿三套）。4.0.2 起口水词过滤不再是一个要用户自己填的输入框
+    /// ——没有人应该为了不打出「嗯」去维护一张表（用户 2026-09-19 实测反馈）。
+    ///
+    /// 这张表刻意只收**最没有歧义**的那几个，分寸由下面 removeFillerWords 的三条规则保证：
+    ///   • 中文只在"前后都是标点或空白"时删 → 「那个人」「这个月」一个字都不动；
+    ///   • 单词西文按整词删 → um 不会动 umbrella；
+    ///   • 多词西文（you know）还要求**后面紧跟句读** → 「do you know the answer」不动。
+    /// 设置键 fillerWords 仍在（导入的老设置照旧生效），只是界面上不再有它。
+    /// 与 Windows 端 TextPostProcessor.BuiltInFillerWords 逐条同源。
+    static let builtInFillerWords: [String] = [
+        "嗯", "呃", "啊", "那个", "这个", "就是说", "然后呢",
+        "um", "uh", "erm", "you know",
+        "يعني", "آآ", "إيه",
+    ]
+
     // MARK: 清理识别原文
 
-    /// 清理识别引擎的原始输出：去标记、折叠复读幻觉、删用户自定义口水词
+    /// 清理识别引擎的原始输出：去标记、折叠复读幻觉、删口水词（内置表 + 导入的老设置）
     static func cleanTranscript(_ text: String) -> String {
         cleanTranscript(text, fillerWords: Settings.shared.fillerWords)
     }
 
-    /// 纯函数版（可单测）。fillerWords 为空时行为与历史版本完全一致——口水词过滤是纯粹的用户选项。
+    /// 纯函数版（可单测）。fillerWords 是**额外**的那几条（导入的老设置里可能有），
+    /// 内置表无论如何都生效——这一步在本机做，不联网、不花润色额度，「仅识别」档也一样。
     static func cleanTranscript(_ text: String, fillerWords: [String]) -> String {
         var t = text
         // 引擎控制 token 与非语音伪影。顺序有讲究：先删 <|zh|>/<|endoftext|> 这类成对标记，
@@ -83,16 +101,20 @@ enum TextPostProcessor {
         t = replaceAll(t, "(.{2,24}?)\\1{2,}", "$1", options: [.dotMatchesLineSeparators])
         // 整大段内容被原样复述一遍也只保留一次
         t = replaceAll(t, "(.{12,400}?)\\1+", "$1", options: [.dotMatchesLineSeparators])
-        t = removeFillerWords(t, fillerWords: fillerWords)
+        // 内置表排在前面，用户/导入的那几条跟在后面：两张表走的是同一套保守规则
+        t = removeFillerWords(t, fillerWords: builtInFillerWords + fillerWords)
         // 数字策略（当前 .keep，恒等）：位置在这里是为了实测后翻常量即生效，不必再改调用点
         t = applyArabicIndicDigitsPolicy(t)
         return t.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// 本地口水词过滤：用户列出的词在本机就地删掉，不依赖云端润色（无 Key 的纯听写路径也能用）。
+    /// 本地口水词过滤：在本机就地删掉，不依赖云端润色（无 Key 的纯听写路径也能用）。
     /// 分寸是刻意保守的（宁可少删，绝不改变原意）：
-    ///   • 纯西文词条（um / uh / you know）按整词删、大小写不敏感；词内出现不动（"like" 不动 "likely"）。
-    ///   • 其他（中文 嗯 / 那个 / 就是说）只在"两侧都是句读、空白或文本边界"时删——
+    ///   • 单词西文（um / uh / erm）按整词删、大小写不敏感；词内出现不动（"um" 不动 "umbrella"）。
+    ///   • **多词西文**（you know / i mean）还要求后面紧跟句读：口水词的「you know」总是
+    ///     跟着一个逗号，而「do you know the answer」里的那两个词是句子的一部分——
+    ///     只按整词删的话这句话会被删成「do the answer」，那是改写用户说的话。
+    ///   • 其他（中文 嗯 / 那个 / 就是说，阿语 يعني）只在"两侧都是句读、空白或文本边界"时删——
     ///     所以「那个人」「不嗯」里的词永远不动，只有独立成分的口水词会被删。
     ///   • 删完做收尾：合并因此出现的重复标点、去掉标点前的空格与句首孤儿标点。
     static func removeFillerWords(_ text: String, fillerWords: [String]) -> String {
@@ -108,8 +130,12 @@ enum TextPostProcessor {
             let escaped = NSRegularExpression.escapedPattern(for: filler)
             if isLatinToken(filler) {
                 // (?<!类) / (?!类) 在文本首尾也成立，等价于西文词边界
-                t = replaceAll(t, "(?<!\(latinClass))" + escaped + "(?!\(latinClass))", "",
-                               options: [.caseInsensitive])
+                var pattern = "(?<!\(latinClass))" + escaped + "(?!\(latinClass))"
+                // 多词词条再加一道：后面（允许有空格）必须是句读，否则这两三个词多半是句子本身
+                if filler.contains(" ") {
+                    pattern += "(?=[ \\t]*[\(punctClass)])"
+                }
+                t = replaceAll(t, pattern, "", options: [.caseInsensitive])
             } else {
                 // (?<![^边界]) = "前面没有字符，或前面那个字符是边界"，定长、比变长 lookbehind 稳
                 t = replaceAll(t, "(?<![^\(boundaryClass)])" + escaped + "(?![^\(boundaryClass)])", "")
