@@ -47,7 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             SettingsWindowController.shared.show(tab: .ai)
         }
 
-        // 悬浮窗上的「去设置」：云端识别没填 Key / 区域配不出接入点时，落到识别页
+        // 悬浮窗上的「去设置」：云端识别没填 Key 时，落到识别页
         dictation.onNeedRecognitionSettings = {
             SettingsWindowController.shared.show(tab: .recognition)
         }

@@ -249,8 +249,12 @@ enum SettingsKeys {
     static let appLanguage = "appLanguage"
     static let deepseekBaseURL = "deepseekBaseURL"
     static let deepseekModel = "deepseekModel"
-    static let qwenRegion = "qwenRegion"                    // DashScope 接入区域（Base URL 由它推出）
-    static let qwenWorkspaceID = "qwenWorkspaceID"          // 区域端点的 WorkspaceId（主机名第一段）
+    // 4.0.1：区域选择器已从界面拿掉（用户拍板）。这两条留着**只为兼容老设置**——
+    // 它们仍是候选主机表最好的排序线索（见 AlibabaEndpoint.candidates），但不再有 UI。
+    static let qwenRegion = "qwenRegion"                    // 老设置：DashScope 接入区域
+    static let qwenWorkspaceID = "qwenWorkspaceID"          // 老设置：WorkspaceId（主机名第一段）
+    static let qwenAPIHost = "qwenAPIHost"                  // 用户自己粘的接入地址（可选，粘了就只用它）
+    static let qwenResolvedHost = "qwenResolvedHost"        // 试通并记住的那台主机（本机缓存，不进设置导出）
     static let qwenModel = "qwenModel"
     static let qwenCommandModel = "qwenCommandModel"
     static let customBaseURL = "customBaseURL"              // 自定义端点地址（唯一可见的 URL 输入框）
@@ -296,7 +300,8 @@ final class Settings {
             SettingsKeys.recognitionLanguage: RecognitionLanguages.autoCode,
             // 识别引擎默认永远是本地：音频出不出这台 Mac 这种事，只能由用户自己点
             SettingsKeys.recognitionEngine: RecognitionEngineChoice.local.rawValue,
-            SettingsKeys.cloudAlibabaModel: AlibabaASRModel.qwenAudio30Flash.rawValue,
+            // 同步识别端点上只有 qwen3-asr-flash（4.0.0 默认的 3.0 打它必 404，见 AlibabaASRModel）
+            SettingsKeys.cloudAlibabaModel: AlibabaASRModel.qwen3Flash.rawValue,
             // 模型目录 / 升级的本机状态（不进设置导出：跟这台机器的磁盘绑定）
             SettingsKeys.modelCatalogLastCheck: 0.0,
             SettingsKeys.modelCatalogRetryAfter: 0.0,
@@ -310,6 +315,8 @@ final class Settings {
             SettingsKeys.deepseekModel: LLMCatalog.deepseekPolishDefault,
             SettingsKeys.qwenRegion: LLMCatalog.QwenRegion.international.rawValue,
             SettingsKeys.qwenWorkspaceID: "",
+            SettingsKeys.qwenAPIHost: "",
+            SettingsKeys.qwenResolvedHost: "",
             SettingsKeys.qwenModel: LLMCatalog.qwenPolishDefault,
             SettingsKeys.qwenCommandModel: LLMCatalog.qwenCommandDefault,
             SettingsKeys.customBaseURL: "",
@@ -576,22 +583,49 @@ final class Settings {
 
     // MARK: Qwen / 自定义端点 / 本机模型
 
-    /// DashScope 接入区域。读到脏值回退国际站（一条坏设置不该让服务商整档失灵）。
+    /// 老设置：DashScope 接入区域。界面上已经没有它了（4.0.1 拿掉了区域选择器），
+    /// 留着是因为老用户选过的那个值仍是候选主机表最好的排序线索。
+    /// 读到脏值回退国际站（一条坏设置不该让服务商整档失灵）。
     var qwenRegion: LLMCatalog.QwenRegion {
         get { LLMCatalog.QwenRegion(rawValue: d.string(forKey: SettingsKeys.qwenRegion) ?? "") ?? .international }
         set { d.set(newValue.rawValue, forKey: SettingsKeys.qwenRegion) }
     }
 
-    /// 区域端点主机名里的 WorkspaceId。国际站不需要它。
+    /// 老设置：区域端点主机名里的 WorkspaceId。同样只剩"候选主机的种子"这一个用途。
     var qwenWorkspaceID: String {
         get { d.string(forKey: SettingsKeys.qwenWorkspaceID) ?? "" }
         set { d.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines),
                     forKey: SettingsKeys.qwenWorkspaceID) }
     }
 
-    /// Qwen 的 Base URL 永远是推出来的，没有输入框：URL 里带 WorkspaceId，手抄错的表现是鉴权失败。
+    /// 用户从百炼控制台粘进来的接入地址（apiHost 或整条 URL 都认）。**可选**：
+    /// 空着就由 MicType 自己试（见 AlibabaEndpoint）。粘了就只用它，不再乱试别的主机。
+    var qwenAPIHost: String {
+        get { d.string(forKey: SettingsKeys.qwenAPIHost) ?? "" }
+        set { d.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines),
+                    forKey: SettingsKeys.qwenAPIHost) }
+    }
+
+    /// 上一次真的试通的那台主机（本机缓存）。有了它，正常使用一次都不再探测。
+    var qwenResolvedHost: String {
+        get { d.string(forKey: SettingsKeys.qwenResolvedHost) ?? "" }
+        set { d.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines),
+                    forKey: SettingsKeys.qwenResolvedHost) }
+    }
+
+    /// Qwen 的 Base URL 永远是推出来的，没有 URL 输入框。
+    /// 优先用试通/粘贴的那台主机——**润色与云端识别同一台主机**，一处试通两边都对；
+    /// 都还没有就退回老设置那条（区域 + WorkspaceId），老用户升级上来第一次仍然能用。
     var qwenBaseURL: String {
-        LLMCatalog.qwenBaseURL(region: qwenRegion, workspaceID: qwenWorkspaceID)
+        let host = CloudASRSettings.alibabaHost(pastedHost: qwenAPIHost,
+                                                resolvedHost: qwenResolvedHost,
+                                                workspace: qwenWorkspaceID,
+                                                legacyRegionSlug: qwenRegion.regionSlug,
+                                                apiKey: "")
+        let derived = AlibabaEndpoint.compatibleBaseURL(host: host)
+        return derived.isEmpty
+            ? LLMCatalog.qwenBaseURL(region: qwenRegion, workspaceID: qwenWorkspaceID)
+            : derived
     }
 
     var qwenModel: String {
@@ -692,7 +726,7 @@ final class Settings {
         switch provider {
         case .openai: return openaiBaseURL
         case .deepseek: return deepseekBaseURL
-        // 可能是 ""（区域端点还没填 WorkspaceId / 自定义端点还没填地址）：
+        // 可能是 ""（自定义端点还没填地址）：
         // 空地址由 LLMClient 当面报"地址还没填完"，绝不悄悄替用户换一个能连上的地址。
         case .qwen: return qwenBaseURL
         case .custom: return customBaseURL
@@ -755,10 +789,11 @@ final class Settings {
         set { d.set(newValue.rawValue, forKey: SettingsKeys.recognitionEngine) }
     }
 
-    /// 云端·阿里云那一档用哪个模型（默认 qwen-audio-3.0-asr-flash：它支持带权重的热词）
+    /// 云端·阿里云那一档用哪个模型。默认 qwen3-asr-flash：同步识别端点上只有它
+    /// （4.0.0 默认的 qwen-audio-3.0-asr-flash 打这个端点必 404，见 AlibabaASRModel）。
     var cloudAlibabaModel: AlibabaASRModel {
         get { AlibabaASRModel(rawValue: d.string(forKey: SettingsKeys.cloudAlibabaModel) ?? "")
-                ?? .qwenAudio30Flash }
+                ?? .qwen3Flash }
         set { d.set(newValue.rawValue, forKey: SettingsKeys.cloudAlibabaModel) }
     }
 

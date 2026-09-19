@@ -356,11 +356,11 @@ private struct GeneralTab: View {
                     .lineLimit(3)
             }
             // 清单要跟着 SettingsBackup.Key.all 走：v4.0 往文件里加了识别块（引擎 / 识别语言 /
-            // 区域 + WorkspaceId / 本机模型仓库），这段说明还停在 3.x 就等于没说。
+            // 接入地址 / 本机模型仓库），这段说明还停在 3.x 就等于没说。
             // 「导入可能把识别改成云端」也写在这里——导入后那张模态摘要确实会讲，
             // 但**决定要不要信这个文件**是在点「导入设置…」之前发生的。
-            Text(tr("导出一个 JSON 文件：词汇表、口水词、关于我、自定义规则、润色档位与各服务商的型号、识别引擎与识别语言、阿里云区域与 WorkspaceId、本机识别模型、热键与界面语言。导入是合并——词表取并集（老词条一条不少），其余只覆盖文件里出现的项。\n别人给的文件可能把识别引擎改成云端（导入后会明确提示一次，云端要自己填 Key 才跑得起来）。\nAPI Key 从不导出、也从不导入：Key 只在系统钥匙串里，写进文件就等于把它交给了拿到文件的人。文件格式 Mac 与 Windows 通用。",
-                    "Exports one JSON file: vocabulary, filler words, about-me, custom rules, polish mode and each provider's model names, recognition engine and recognition language, Alibaba region and workspace ID, on-device speech model, hotkey and interface language. Import merges — vocabulary lists are unioned (nothing you already have is lost) and other settings are overwritten only where the file has them.\nA file from someone else can switch recognition to a cloud engine (the import summary says so, and a cloud engine still needs a key of your own before it runs).\nAPI keys are never exported or imported: they live in the Keychain, and a file containing one gives it away to whoever receives the file. The format is shared with the Windows build."))
+            Text(tr("导出一个 JSON 文件：词汇表、口水词、关于我、自定义规则、润色档位与各服务商的型号、识别引擎与识别语言、阿里云接入地址、本机识别模型、热键与界面语言。导入是合并——词表取并集（老词条一条不少），其余只覆盖文件里出现的项。\n别人给的文件可能把识别引擎改成云端（导入后会明确提示一次，云端要自己填 Key 才跑得起来）。\nAPI Key 从不导出、也从不导入：Key 只在系统钥匙串里，写进文件就等于把它交给了拿到文件的人。文件格式 Mac 与 Windows 通用。",
+                    "Exports one JSON file: vocabulary, filler words, about-me, custom rules, polish mode and each provider's model names, recognition engine and recognition language, the Alibaba API host, on-device speech model, hotkey and interface language. Import merges — vocabulary lists are unioned (nothing you already have is lost) and other settings are overwritten only where the file has them.\nA file from someone else can switch recognition to a cloud engine (the import summary says so, and a cloud engine still needs a key of your own before it runs).\nAPI keys are never exported or imported: they live in the Keychain, and a file containing one gives it away to whoever receives the file. The format is shared with the Windows build."))
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -388,12 +388,12 @@ private struct RecognitionTab: View {
     @AppStorage(SettingsKeys.recognitionLanguage) private var recognitionLanguage = RecognitionLanguages.autoCode
     @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
     @AppStorage(SettingsKeys.fillerWords) private var fillerWords = ""
-    // 识别引擎（默认本地）与云端那一档的设置。区域 / WorkspaceId 与「AI」页共用同一条设置——
-    // 同一个百炼账号、同一把 Key，分两处存只会存出两个不一致的值
+    // 识别引擎（默认本地）与云端那一档的设置。接入地址与「AI」页共用同一条设置——
+    // 同一个百炼账号、同一把 Key、同一台主机，分两处存只会存出两个不一致的值
     @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
-    @AppStorage(SettingsKeys.cloudAlibabaModel) private var cloudAlibabaModel = AlibabaASRModel.qwenAudio30Flash.rawValue
-    @AppStorage(SettingsKeys.qwenRegion) private var qwenRegion = LLMCatalog.QwenRegion.international.rawValue
-    @AppStorage(SettingsKeys.qwenWorkspaceID) private var qwenWorkspace = ""
+    @AppStorage(SettingsKeys.cloudAlibabaModel) private var cloudAlibabaModel = AlibabaASRModel.qwen3Flash.rawValue
+    @AppStorage(SettingsKeys.qwenAPIHost) private var qwenAPIHost = ""
+    @AppStorage(SettingsKeys.qwenResolvedHost) private var qwenResolvedHost = ""
     @ObservedObject private var downloader = QwenModelDownloader.shared
     @ObservedObject private var upgrader = ModelUpgrader.shared
     /// 模型目录到货时下拉框要立刻跟上（首启动时目录还在路上）
@@ -407,7 +407,7 @@ private struct RecognitionTab: View {
     @State private var cloudTestOK = false
     @State private var cloudTesting = false
     /// 这一行结论属于哪一次配置。探针要跑几秒到几分钟（阿里云超时 120s、OpenAI 300s），
-    /// 期间用户完全可以换引擎/区域/模型/语言——回来的那条旧结论绝不能落在新档下面
+    /// 期间用户完全可以换引擎/地址/语言——回来的那条旧结论绝不能落在新档下面
     /// （KeyEntryView 早就有这道护栏，见 KeyEntryView.verify 的 generation）
     @State private var cloudTestGeneration = 0
 
@@ -540,12 +540,6 @@ private struct RecognitionTab: View {
     /// 一条读不懂的设置绝不能把音频送上云端。
     private var engineChoice: RecognitionEngineChoice { RecognitionEngineChoice.parse(recognitionEngine) }
 
-    /// 云端·阿里云这一档当前的区域配得出接入点吗（东京 / 香港没有识别主机）
-    private var cloudRegionOK: Bool {
-        CloudASRSettings.regionSupported(choice: engineChoice,
-                                         region: LLMCatalog.QwenRegion(rawValue: qwenRegion) ?? .international)
-    }
-
     var body: some View {
         Form {
             // 麦克风选择 + 电平自检：与引导第二屏共用同一个组件（MicCheck.swift）
@@ -593,10 +587,12 @@ private struct RecognitionTab: View {
             QwenEngine.shared.unloadModel()
             refreshTick += 1
         }
-        // 换引擎 / 换区域 / 换云端模型 / 换识别语言之后，上一次的测试结论不再算数
+        // 换引擎 / 换接入地址 / 换识别语言之后，上一次的测试结论不再算数
         .onChange(of: recognitionEngine) { _, _ in invalidateCloudTest() }
-        .onChange(of: qwenRegion) { _, _ in invalidateCloudTest() }
-        .onChange(of: cloudAlibabaModel) { _, _ in invalidateCloudTest() }
+        .onChange(of: qwenAPIHost) { _, _ in invalidateCloudTest() }
+        // cloudAlibabaModel 故意**不**挂 invalidate：4.0.1 起它已经没有选择器了，
+        // 唯一的写入方正是"测试通过后记下真正能用的型号"——在那里作废结论等于把
+        // 用户刚等来的那一行擦掉
         .onChange(of: recognitionLanguage) { _, _ in invalidateCloudTest() }
         // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言。
         // 下载状态不在其列：它现在存的是语言中性的 phase，文字由 tr() 现场渲染，下载中也跟着切
@@ -734,36 +730,11 @@ private struct RecognitionTab: View {
 
     @ViewBuilder
     private var cloudAlibabaSection: some View {
-        // 区域与 WorkspaceId 与 AI 页共用同一条设置：同一个百炼账号、同一把 Key，
-        // 让用户为润色和识别各选一次区域，只会选出两个不一致的值（见 CloudASRSettings.alibabaRegion）
-        Picker(tr("接入区域：", "Region:"), selection: $qwenRegion) {
-            ForEach(LLMCatalog.QwenRegion.allCases, id: \.rawValue) { region in
-                Text(region.displayName).tag(region.rawValue)
-            }
-        }
-        Text(tr("区域与 Key 都与「AI」页的 Qwen 档共用：粘一次，润色和云端识别都能用；在任何一处清空，两边都会没有。Key 是分区域的：国际站的 Key 打到中国站主机上一定 401。",
-                "The region and the key are shared with the Qwen provider on the AI tab: paste it once and it serves both polish and cloud recognition, and clearing it in either place clears it for both. Keys are region-specific: an international key always fails with 401 against the China host."))
+        // Key 与 AI 页的 Qwen 档共用同一条钥匙串条目：粘一次，润色和识别都能用
+        Text(tr("这把 Key 与「AI」页的 Qwen 档是同一把：粘一次，润色和云端识别都能用；在任何一处清空，两边都会没有。",
+                "This is the same key as the Qwen provider on the AI tab: paste it once and it serves both polish and cloud recognition. Clearing it in either place clears it for both."))
             .font(.caption)
             .foregroundColor(.secondary)
-        if !cloudRegionOK {
-            Text(tr("云端识别在这个区域没有接入点，请改选 国际站/新加坡、美国 或 中国·北京。",
-                    "Cloud recognition has no endpoint in this region - switch to International/Singapore, United States or China (Beijing)."))
-                .font(.caption)
-                .foregroundColor(.orange)
-        }
-        TextField(tr("WorkspaceId（可选）", "Workspace ID (optional)"), text: $qwenWorkspace)
-            .textFieldStyle(.roundedBorder)
-        // 说实话比说狠话重要：美国区没有独立的共享主机，不填 WorkspaceId 时端点会落回
-        // 国际站共享主机（见 AlibabaRegion.sharedHost）——不是"连不上"，而是"这次走的是
-        // 国际站主机"。照旧写"必须填、不填连不上"的话，用户看到能连通只会以为文案在吓唬他。
-        Text(tr("填了就走你自己的专属主机。美国区没有独立的共享主机：不填就落回国际站共享主机（同一个国际站账号、同一把 Key）。",
-                "Fill it in to use your own workspace host. The United States region has no shared host of its own: leave it empty and the request falls back to the international shared host (same international account, same key)."))
-            .font(.caption)
-            .foregroundColor((LLMCatalog.QwenRegion(rawValue: qwenRegion) == .us
-                              && qwenWorkspace.trimmingCharacters(in: .whitespaces).isEmpty)
-                             ? .orange : .secondary)
-
-        // Key 与 AI 页的 Qwen 档共用同一条钥匙串条目：粘一次，润色和识别都能用
         KeyEntryView(provider: .qwen,
                      model: cloudAlibabaModel,
                      probe: .cloudASR(.alibaba))
@@ -771,11 +742,7 @@ private struct RecognitionTab: View {
             .font(.caption)
             .foregroundColor(.secondary)
 
-        Picker(tr("云端识别模型：", "Cloud model:"), selection: $cloudAlibabaModel) {
-            ForEach(AlibabaASRModel.allCases, id: \.rawValue) { model in
-                Text(model.displayName).tag(model.rawValue)
-            }
-        }
+        qwenHostField
         cloudTestRow
         cloudNotes(PrivacyCopy.cloudAlibabaLines)
     }
@@ -803,12 +770,52 @@ private struct RecognitionTab: View {
         cloudNotes(PrivacyCopy.cloudOpenAILines)
     }
 
+    /// 接入地址：**可选**输入框，不是选择器。
+    ///
+    /// 4.0.0 这里是一个「接入区域」下拉 + 一个 WorkspaceId 输入框，用户得先知道自己是
+    /// 国际站还是中国站、再去控制台抄一段编号——抄错的表现是 401，文案却让他去查 Key。
+    /// 用户 2026-09-19 拍板拿掉区域：地址由 MicType 自己试（见 AlibabaEndpoint），
+    /// 这个框只留给"我就是知道地址"的人，空着才是常态。
+    @ViewBuilder
+    private var qwenHostField: some View {
+        TextField(tr("接入地址（可选）", "API host (optional)"), text: $qwenAPIHost)
+            .textFieldStyle(.roundedBorder)
+        Text(tr("留空即可：粘 Key 的时候 MicType 会自己把接入地址试出来，试通之后就记住，以后不再探测。只有在自动没试对时才需要填——到百炼控制台复制「接入地址」那一串（apiHost 或整条 URL 都行）。",
+                "Leave it empty: when you paste the key, MicType finds the right endpoint itself and remembers it, so it never probes again. Fill it in only if that fails - copy the API host from the Model Studio console (the bare host or the full URL both work)."))
+            .font(.caption)
+            .foregroundColor(.secondary)
+        if !qwenAPIHost.isEmpty, AlibabaEndpoint.normalizeHost(qwenAPIHost) == nil {
+            Text(tr("这串不像一个接入地址（主机名里不能有空格或中文）。清空它就交回给自动探测。",
+                    "That does not look like a host name (no spaces or non-ASCII characters). Clear it to hand the job back to auto-detection."))
+                .font(.caption)
+                .foregroundColor(.orange)
+        }
+        if !qwenResolvedHost.isEmpty {
+            HStack(alignment: .firstTextBaseline) {
+                Text(tr("已试通的接入地址：", "Endpoint in use: ") + qwenResolvedHost)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .textSelection(.enabled)
+                Spacer()
+                Button(tr("重新探测", "Detect again")) {
+                    qwenResolvedHost = ""
+                    invalidateCloudTest()
+                }
+                .fixedSize()
+            }
+        }
+        Text(tr("识别模型：\(cloudAlibabaModel)。这个端点上没有它时会自动改用 qwen3-asr-flash（同步识别端点上只有这一个型号）。",
+                "Speech model: \(cloudAlibabaModel). If this endpoint does not have it, MicType switches to qwen3-asr-flash automatically - it is the only model on the synchronous recognition endpoint."))
+            .font(.caption)
+            .foregroundColor(.secondary)
+    }
+
     // MARK: 云端两档共用的零件
 
     /// 粘贴即验证到底做了什么——写清楚才不会显得"它偷偷发了什么东西"
     private var cloudKeyProbeNote: String {
-        tr("粘贴 Key 会立刻发 1 秒合成音到识别端点验一次：区域、WorkspaceId、模型有没有开通都一起验到了，这一秒的费用可以忽略。",
-           "Pasting a key immediately verifies it by sending one second of synthetic tone to the recognition endpoint - that also checks the region, the workspace ID and whether the model is enabled. The cost of that second is negligible.")
+        tr("粘贴 Key 会立刻验一次：先找出你的接入地址（只查型号清单，不花钱），再发 1 秒合成音到识别端点，连模型有没有开通一起验到，这一秒的费用可以忽略。",
+           "Pasting a key verifies it right away: first it finds your endpoint (a free model-list request), then it sends one second of synthetic tone to the recognition endpoint, which also checks whether the model is enabled. The cost of that second is negligible.")
     }
 
     @ViewBuilder
@@ -849,21 +856,35 @@ private struct RecognitionTab: View {
         cloudTesting = false
     }
 
-    /// 发一次 1 秒合成音，报往返毫秒数。失败时把云端的原话摆出来（它本来就带"下一步怎么办"）
+    /// 发一次 1 秒合成音，报往返毫秒数。失败时把云端的原话摆出来（它本来就带"下一步怎么办"）。
+    /// 阿里云那一档先把接入地址试出来、模型 404 时自动换 qwen3-asr-flash（见 CloudASRSetup）。
+    /// **不管成败，结论都进日志**：4.0.0 这个按钮报 404、日志里却一行都没有，用户只能靠抄屏。
     private func runCloudTest() {
         guard let config = CloudASRSettings.currentConfig() else {
             cloudTestOK = false
-            cloudTestResult = tr("云端识别在当前接入区域没有接入点，请先改区域",
-                                 "Cloud recognition has no endpoint in the selected region - change the region first")
+            cloudTestResult = tr("当前是本地识别引擎，没有云端可测",
+                                 "The recognition engine is on-device - there is no cloud endpoint to test")
+            Log.warn("Cloud test skipped: local engine")
             return
         }
         cloudTestGeneration &+= 1
         let generation = cloudTestGeneration
         cloudTesting = true
         cloudTestResult = ""
-        CloudASRProbe.run(config: config) { result in
-            // 这几秒里用户可能已经换了引擎/区域/模型：那条结论对应的是**旧**配置，
-            // 落在新档下面就是一句"已连通 ✓"骗人（阿里云通了不代表 OpenAI 配好了）
+        Log.info("Cloud test started provider=\(config.provider.rawValue)")
+
+        // 这几秒里用户可能已经换了引擎/地址/模型：那条结论对应的是**旧**配置，
+        // 落在新档下面就是一句"已连通 ✓"骗人（阿里云通了不代表 OpenAI 配好了）
+        func settle(_ result: Result<CloudASRProbe.Outcome, CloudASRFailure>) {
+            switch result {
+            case .success(let outcome):
+                Log.info("Cloud test ok provider=\(config.provider.rawValue) "
+                         + "model=\(outcome.model ?? "-") ms=\(outcome.milliseconds)")
+            case .failure(let failure):
+                Log.warn("Cloud test failed provider=\(config.provider.rawValue) "
+                         + "status=\(failure.status) code=\(failure.code ?? "-") "
+                         + "copy=" + String(failure.message.prefix(200)))
+            }
             guard generation == cloudTestGeneration else { return }
             cloudTesting = false
             switch result {
@@ -873,6 +894,24 @@ private struct RecognitionTab: View {
             case .failure(let failure):
                 cloudTestOK = false
                 cloudTestResult = failure.message
+            }
+        }
+
+        guard config.provider == .alibaba else {
+            CloudASRProbe.run(config: config, completion: settle)
+            return
+        }
+        CloudASRSetup.verifyAlibaba(apiKey: config.apiKey, config: config,
+                                    candidates: CloudASRSettings.currentHostCandidates(apiKey: config.apiKey)) { result in
+            switch result {
+            case .success(let success):
+                // 记住这台主机与真正能用的那个模型。两条设置都是 @AppStorage 绑着的，
+                // 界面会自己跟上，不必在这里再赋一遍（赋一遍反而会触发 onChange 把刚得到的
+                // 结论作废掉——这一行结论正是用户在等的东西）
+                CloudASRSettings.rememberResolution(host: success.host, model: success.model)
+                settle(.success(success.outcome))
+            case .failure(let failure):
+                settle(.failure(failure))
             }
         }
     }
@@ -978,8 +1017,8 @@ private struct AITab: View {
     @AppStorage(SettingsKeys.deepseekBaseURL) private var dsBaseURL = LLMProvider.deepseek.defaultBaseURL
     @AppStorage(SettingsKeys.deepseekModel) private var dsModel = LLMCatalog.deepseekPolishDefault
     @AppStorage(SettingsKeys.deepseekCommandModel) private var dsCommandModel = LLMCatalog.deepseekCommandDefault
-    @AppStorage(SettingsKeys.qwenRegion) private var qwenRegion = LLMCatalog.QwenRegion.international.rawValue
-    @AppStorage(SettingsKeys.qwenWorkspaceID) private var qwenWorkspace = ""
+    @AppStorage(SettingsKeys.qwenAPIHost) private var qwenAPIHost = ""
+    @AppStorage(SettingsKeys.qwenResolvedHost) private var qwenResolvedHost = ""
     @AppStorage(SettingsKeys.qwenModel) private var qwenModel = LLMCatalog.qwenPolishDefault
     @AppStorage(SettingsKeys.qwenCommandModel) private var qwenCommandModel = LLMCatalog.qwenCommandDefault
     @AppStorage(SettingsKeys.customBaseURL) private var customBaseURL = ""
@@ -990,8 +1029,6 @@ private struct AITab: View {
     @AppStorage(SettingsKeys.localCommandModel) private var localCommandModel = ""
     @AppStorage(SettingsKeys.fastTier) private var fastTier = false
     @AppStorage(SettingsKeys.webSearchEnabled) private var webSearch = false
-    /// 只读：区域改动会不会把云端识别弄哑，得在这一页当面说（见 connectionSection）
-    @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
     @AppStorage(SettingsKeys.polishTemperature) private var polishTemp = 0.5
     @AppStorage(SettingsKeys.commandTemperature) private var commandTemp = 1.0
     @AppStorage(SettingsKeys.aboutMe) private var aboutMe = ""
@@ -1009,15 +1046,17 @@ private struct AITab: View {
     private var selected: LLMProvider { LLMProvider(rawValue: provider) ?? .openai }
 
     /// 界面上这一刻生效的 Base URL。**从 @AppStorage 的值推**而不是读 Settings.currentBaseURL：
-    /// 后者不是 @Published，改了区域/地址界面不会重算。
+    /// 后者不是 @Published，改了接入地址界面不会重算。
     private var effectiveBaseURL: String {
         switch selected {
         case .openai: return baseURL
         case .deepseek: return dsBaseURL
         case .qwen:
-            return LLMCatalog.qwenBaseURL(
-                region: LLMCatalog.QwenRegion(rawValue: qwenRegion) ?? .international,
-                workspaceID: qwenWorkspace)
+            // 接入地址是试出来的：粘了就用粘的，否则用试通的那台（两者都空时 Settings
+            // 会退回老设置推出来的地址）。见 AlibabaEndpoint。
+            let host = AlibabaEndpoint.normalizeHost(qwenAPIHost)
+                ?? AlibabaEndpoint.normalizeHost(qwenResolvedHost)
+            return host.map { AlibabaEndpoint.compatibleBaseURL(host: $0) } ?? Settings.shared.qwenBaseURL
         case .custom: return customBaseURL
         case .local: return (LLMCatalog.LocalRuntime(rawValue: localRuntime) ?? .ollama).baseURL
         }
@@ -1025,14 +1064,6 @@ private struct AITab: View {
 
     private var searchStyle: LLMCatalog.WebSearchStyle {
         LLMCatalog.searchStyle(provider: selected, baseURL: effectiveBaseURL)
-    }
-
-    /// 云端·阿里云识别在当前区域配得出接入点吗。用的是识别页同一个判据：
-    /// 只有识别引擎真的是云端·阿里云时才为假（其余档位永远为真，不多嘴）
-    private var cloudASRRegionOK: Bool {
-        CloudASRSettings.regionSupported(
-            choice: RecognitionEngineChoice.parse(recognitionEngine),
-            region: LLMCatalog.QwenRegion(rawValue: qwenRegion) ?? .international)
     }
 
     /// 润色/指令模型的输入框都绑到这两个 Binding 上——五个服务商共用一套控件，
@@ -1110,32 +1141,21 @@ private struct AITab: View {
             refreshStatus = ""
         }
 
-        // Qwen 的地址由「区域 + WorkspaceId」推出来：这两项不填就连不上，所以留在连接段，
-        // 不能塞进折叠的高级区（其余几档的地址一律没有输入框）。
+        // Qwen 的接入地址由 MicType 自己试出来（4.0.1 拿掉了「接入区域」选择器：
+        // 让用户自己分辨国际站 / 中国站，选错的表现是 401，他只会去反复核对 Key）。
+        // 这里只留一个**可选**输入框，给"我就是知道地址"的人；与识别页共用同一条设置。
         if selected == .qwen {
-            Picker(tr("接入区域：", "Region:"), selection: $qwenRegion) {
-                ForEach(LLMCatalog.QwenRegion.allCases, id: \.rawValue) { region in
-                    Text(region.displayName).tag(region.rawValue)
-                }
-            }
-            if (LLMCatalog.QwenRegion(rawValue: qwenRegion) ?? .international).requiresWorkspaceID {
-                TextField("WorkspaceId", text: $qwenWorkspace)
-                    .textFieldStyle(.roundedBorder)
-            }
-            if effectiveBaseURL.isEmpty {
-                Text(tr("这个区域的地址里带 WorkspaceId，填上才能用（在模型服务控制台的工作空间详情里）。",
-                        "This region puts your workspace ID in the URL - fill it in (you will find it in the Model Studio console)."))
+            TextField(tr("接入地址（可选）", "API host (optional)"), text: $qwenAPIHost)
+                .textFieldStyle(.roundedBorder)
+            Text(tr("留空即可：粘 Key 的时候 MicType 会自己把接入地址试出来并记住。自动没试对时，到百炼控制台复制「接入地址」粘进来（apiHost 或整条 URL 都行）。这条设置与「识别」页共用。",
+                    "Leave it empty: when you paste the key, MicType finds the right endpoint itself and remembers it. If that fails, copy the API host from the Model Studio console and paste it here (bare host or full URL). This setting is shared with the Recognition tab."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+            if !qwenResolvedHost.isEmpty, AlibabaEndpoint.normalizeHost(qwenAPIHost) == nil {
+                Text(tr("已试通的接入地址：", "Endpoint in use: ") + qwenResolvedHost)
                     .font(.caption)
-                    .foregroundColor(.orange)
-            }
-            // 区域是「AI」与「识别」两页共用的同一条设置：在这里改成东京/香港，云端识别
-            // 就没有接入点了（下一次按热键会被挡下）。告警必须出现在动手的那一页上，
-            // 不能只挂在识别页——判据与识别页同源（CloudASRSettings.regionSupported）
-            if !cloudASRRegionOK {
-                Text(tr("注意：你正在用云端·阿里云做识别，而这个区域没有云端识别的接入点。改成国际站/新加坡、美国或中国·北京，否则下一次听写会被挡下。",
-                        "Heads up: your recognition engine is Cloud · Alibaba, and this region has no cloud-recognition endpoint. Switch to International/Singapore, United States or China (Beijing), or your next dictation will be blocked."))
-                    .font(.caption)
-                    .foregroundColor(.orange)
+                    .foregroundColor(.secondary)
+                    .textSelection(.enabled)
             }
         }
 

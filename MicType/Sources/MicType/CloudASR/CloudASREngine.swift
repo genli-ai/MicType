@@ -16,10 +16,10 @@ import Foundation
 
 struct CloudASRConfig {
     var provider: CloudASRProvider = .alibaba
-    var alibabaModel: AlibabaASRModel = .qwenAudio30Flash
-    var region: AlibabaRegion = .international
-    /// 可选：填了就走 {WorkspaceId}.{region}.maas.aliyuncs.com 专属主机
-    var workspaceId: String?
+    var alibabaModel: AlibabaASRModel = .qwen3Flash
+    /// 阿里云的接入主机名。界面上没有"区域"了——这台是 AlibabaHostResolver 试出来并
+    /// 记在 qwenResolvedHost 里的那台（或用户自己粘的接入地址）。见 AlibabaEndpoint。
+    var host: String = AlibabaEndpoint.defaultHost
     /// 语言提示（阿里云最多 4 个；qwen3 只取第一个）
     var languageHints: [String] = []
     /// 词汇表词条：阿里云走 parameters.vocabulary（权重 4），OpenAI 走 keywords[]
@@ -29,17 +29,15 @@ struct CloudASRConfig {
     var enableITN: Bool = false
 
     init(provider: CloudASRProvider = .alibaba,
-         alibabaModel: AlibabaASRModel = .qwenAudio30Flash,
-         region: AlibabaRegion = .international,
-         workspaceId: String? = nil,
+         alibabaModel: AlibabaASRModel = .qwen3Flash,
+         host: String = AlibabaEndpoint.defaultHost,
          languageHints: [String] = [],
          vocabulary: [String] = [],
          apiKey: String = "",
          enableITN: Bool = false) {
         self.provider = provider
         self.alibabaModel = alibabaModel
-        self.region = region
-        self.workspaceId = workspaceId
+        self.host = host
         self.languageHints = languageHints
         self.vocabulary = vocabulary
         self.apiKey = apiKey
@@ -52,8 +50,7 @@ struct CloudASRConfig {
         case .alibaba:
             return AlibabaASRClient(apiKey: apiKey,
                                     model: alibabaModel,
-                                    region: region,
-                                    workspaceId: workspaceId,
+                                    host: host,
                                     vocabulary: vocabulary,
                                     languageHints: languageHints,
                                     enableITN: enableITN)
@@ -156,7 +153,7 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
         let urlString: String
         switch cfg.provider {
         case .alibaba:
-            guard let url = AlibabaASRClient.endpoint(region: cfg.region, workspaceId: cfg.workspaceId) else { return }
+            guard let url = AlibabaASRClient.endpoint(host: cfg.host) else { return }
             urlString = url.absoluteString
         case .openai:
             urlString = OpenAITranscribeClient.endpointString
@@ -318,6 +315,7 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
             let seconds = Double(samples.count) / Double(WAVEncoder.defaultSampleRate)
             Log.info("CloudASR start provider=\(cfg.provider.rawValue) "
                      + "model=\(cfg.provider == .alibaba ? cfg.alibabaModel.rawValue : "gpt-transcribe") "
+                     + "host=\(cfg.provider == .alibaba ? AlibabaEndpoint.redacted(cfg.host) : "api.openai.com") "
                      + "seconds=\(String(format: "%.1f", seconds)) segments=\(segments.count)")
             self.run(segmentIndex: 0, segments: segments, samples: samples,
                      config: cfg, client: client, texts: [], contextSeed: previousText,

@@ -201,11 +201,23 @@ final class AISetupTests: XCTestCase {
                                           polishModel: "gpt-5.6-luna"))
     }
 
-    /// Qwen 区域端点缺 WorkspaceId 时地址是空串——那不是"就绪"，是根本拼不出地址
+    /// 地址是空串（自定义端点还没填）——那不是"就绪"，是根本拼不出地址。
+    /// Qwen 已经不会落到这一档了：它的接入地址由 MicType 自己试出来（见 AlibabaEndpoint），
+    /// 但这条判据仍然守着自定义端点那一路。
     func testAIReadyIsFalseWhenTheEndpointCannotBeDerived() {
-        XCTAssertFalse(LLMCatalog.aiReady(hasCredential: true,
-                                          baseURL: LLMCatalog.qwenBaseURL(region: .beijing, workspaceID: ""),
+        XCTAssertFalse(LLMCatalog.aiReady(hasCredential: true, baseURL: "",
                                           polishModel: "qwen3.8-flash"))
+        XCTAssertFalse(LLMCatalog.qwenBaseURL(region: .international, workspaceID: "").isEmpty,
+                       "国际站共享主机永远拼得出来")
+    }
+
+    /// 接入地址一旦试通，润色与云端识别必须落在**同一台主机**上：
+    /// 4.0.0 让用户在两页各选一次区域，选出两个不一致的值正是那时的坑
+    func testResolvedHostDrivesThePolishEndpointToo() {
+        let host = "ws-e9548i71rc13pul7.cn-beijing.maas.aliyuncs.com"
+        XCTAssertEqual(AlibabaEndpoint.compatibleBaseURL(host: host),
+                       "https://" + host + "/compatible-mode/v1")
+        XCTAssertEqual(AlibabaEndpoint.asrURL(host: host)?.host, host)
     }
 
     /// 自定义端点 / 本机模型没填型号名同样不算就绪（空型号发出去是 400）

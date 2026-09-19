@@ -200,20 +200,30 @@ final class CloudASRTests: XCTestCase {
 
     // MARK: - 阿里云：端点
 
-    func testAlibabaEndpointsPerRegion() {
-        XCTAssertEqual(AlibabaASRClient.endpoint(region: .international, workspaceId: nil)?.absoluteString,
+    /// 端点只有一条路径（DashScope 同步 multimodal-generation），变的只是主机
+    func testAlibabaEndpointIsBuiltFromTheHost() {
+        XCTAssertEqual(AlibabaASRClient.endpoint(host: "dashscope-intl.aliyuncs.com")?.absoluteString,
                        "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")
-        XCTAssertEqual(AlibabaASRClient.endpoint(region: .china, workspaceId: nil)?.host,
-                       "dashscope.aliyuncs.com")
-        XCTAssertEqual(AlibabaASRClient.endpoint(region: .international, workspaceId: "llm-abc")?.host,
-                       "llm-abc.ap-southeast-1.maas.aliyuncs.com")
-        XCTAssertEqual(AlibabaASRClient.endpoint(region: .us, workspaceId: "llm-abc")?.host,
-                       "llm-abc.us-east-1.maas.aliyuncs.com")
-        XCTAssertEqual(AlibabaASRClient.endpoint(region: .china, workspaceId: "llm-abc")?.host,
-                       "llm-abc.cn-beijing.maas.aliyuncs.com")
-        // 空白 WorkspaceId 等于没填，不能拼出 " .ap-southeast-1…" 这种主机
-        XCTAssertEqual(AlibabaASRClient.endpoint(region: .international, workspaceId: "  ")?.host,
-                       "dashscope-intl.aliyuncs.com")
+        XCTAssertEqual(AlibabaASRClient.endpoint(host: "ws-abc.cn-beijing.maas.aliyuncs.com")?.host,
+                       "ws-abc.cn-beijing.maas.aliyuncs.com")
+        // 整条 URL 粘进来也认（控制台给的就是整条）
+        XCTAssertEqual(AlibabaASRClient.endpoint(host: "https://ws-abc.cn-beijing.maas.aliyuncs.com/api/v1")?.host,
+                       "ws-abc.cn-beijing.maas.aliyuncs.com")
+        XCTAssertNil(AlibabaASRClient.endpoint(host: "  "), "拼不出主机名就别拼出一个假地址")
+    }
+
+    /// 默认识别模型必须是 qwen3-asr-flash：4.0.0 默认的 qwen-audio-3.0-asr-flash
+    /// 根本不在这个同步端点上，于是云端识别对谁都是一次 404——这条断言就是那个 bug 的守门人
+    func testDefaultAlibabaModelIsTheOneTheSyncEndpointHas() {
+        XCTAssertEqual(AlibabaASRClient(apiKey: "k").model, .qwen3Flash)
+        XCTAssertEqual(CloudASRConfig().alibabaModel, .qwen3Flash)
+        XCTAssertEqual(AlibabaASRModel.allCases.first, .qwen3Flash, "下拉框里也要排第一")
+    }
+
+    /// 404 之后换哪个模型：只回落到 qwen3-asr-flash，而且不会把自己再试一遍
+    func testModelFallbackOrder() {
+        XCTAssertEqual(AlibabaASRModel.qwen3Flash.fallbackOrder, [.qwen3Flash])
+        XCTAssertEqual(AlibabaASRModel.qwenAudio30Flash.fallbackOrder, [.qwenAudio30Flash, .qwen3Flash])
     }
 
     // MARK: - 阿里云：词表过滤与语言提示
@@ -357,7 +367,7 @@ final class CloudASRTests: XCTestCase {
     }
 
     func testAlibabaRequestHeadersAndPrecheck() {
-        let client = AlibabaASRClient(apiKey: "sk-test", region: .international)
+        let client = AlibabaASRClient(apiKey: "sk-test", host: AlibabaEndpoint.defaultHost)
         let wav = WAVEncoder.encode(samples: [Float](repeating: 0, count: 16_000))
         guard case .success(let request) = client.makeRequest(wav: wav, seconds: 1, context: nil) else {
             return XCTFail("正常大小的音频应该能建出请求")
@@ -443,8 +453,8 @@ final class CloudASRTests: XCTestCase {
         XCTAssertEqual(unauthorized.status, 401)
         XCTAssertEqual(unauthorized.code, "InvalidApiKey")
         XCTAssertTrue(unauthorized.message.contains("401"))
-        XCTAssertTrue(unauthorized.message.contains("区域") || unauthorized.message.contains("region"),
-                      "401 必须提醒区域与 Key 不匹配这个坑")
+        XCTAssertTrue(unauthorized.message.contains("接入地址") || unauthorized.message.contains("API host"),
+                      "401 的下一步是去控制台粘接入地址——4.0.1 起没有「区域」可以改了")
 
         let denied = AlibabaASRClient.failure(status: 403, code: "Model.AccessDenied", message: nil)
         XCTAssertFalse(denied.retryable)
@@ -454,8 +464,17 @@ final class CloudASRTests: XCTestCase {
         let arrear = AlibabaASRClient.failure(status: 403, code: "Arrearage", message: nil)
         XCTAssertTrue(arrear.message.contains("充值") || arrear.message.contains("Top it up"))
 
+        // 404 是 4.0.0 那个 bug 的现场：文案必须点名 qwen3-asr-flash 已经自动试过，
+        // 否则用户会去改模型名——那条路走不通
         let notFound = AlibabaASRClient.failure(status: 404, code: "ModelNotFound", message: nil)
         XCTAssertFalse(notFound.retryable)
+        XCTAssertTrue(notFound.message.contains("qwen3-asr-flash"))
+        XCTAssertTrue(notFound.message.contains("模型广场") || notFound.message.contains("Model Gallery"))
+
+        // 还没上网（DNS 不通 / 主机不存在）：不写 "(0)" 这种对用户毫无意义的尾巴
+        let offline = AlibabaASRClient.failure(status: 0, code: nil, message: nil)
+        XCTAssertFalse(offline.message.contains("(0)"))
+        XCTAssertTrue(offline.message.contains("接入地址") || offline.message.contains("API host"))
 
         let throttled = AlibabaASRClient.failure(status: 429, code: "Throttling.RateQuota", message: nil)
         XCTAssertTrue(throttled.retryable, "限流值得退避重试一次")

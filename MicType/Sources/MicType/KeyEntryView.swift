@@ -58,7 +58,7 @@ final class KeyVerifier: ObservableObject {
     /// 但还没生效的那一档会被发到上一档的端点上。现在 provider 一路显式传到 dispatch，
     /// 验证打的永远是 KeyEntryView 手上这一档。）
     /// 所以识别页走 `.cloudASR`：直接打识别端点，发 1 秒合成音，
-    /// 顺带把区域、WorkspaceId、模型有没有在控制台开通一起验了（LLM 的 /models 探针验不到这些）。
+    /// 顺带把接入地址、模型有没有在控制台开通一起验了（LLM 的 /models 探针验不到后者）。
     enum Probe: Equatable {
         /// 走润色/指令那条链路（AI 页默认）
         case llm
@@ -99,34 +99,69 @@ final class KeyVerifier: ObservableObject {
             } else {
                 // 失败不动钥匙串：原来那把要是好的，不该被一次手滑的粘贴连累
                 self.status = .failed(reason: message, keptPrevious: hadPrevious)
-                Log.warn("API key verification failed provider=\(provider.rawValue) model=\(model)")
+                // 原因也要记：4.0.0 只记了"失败了"，用户看到的那句话（含服务商错误码）
+                // 一个字都没落盘，事后完全无从排查。记的是文案，不含 Key。
+                Log.warn("API key verification failed provider=\(provider.rawValue) model=\(model) "
+                         + "reason=" + String(message.prefix(200)))
             }
         }
 
         switch probe {
         case .llm:
-            // 走 testModel = 走与真实润色完全相同的那条路（含 Responses / chat 的分叉）
-            LLMClient.testModel(model, provider: provider, candidateKey: trimmed) { ok, message in
-                settle(ok, provider.segmentName, model, message)
+            // Qwen 这一档的接入地址是试出来的：先用最便宜的那趟（GET /models）把主机定下来，
+            // 再照常走 testModel。定不下来就直接报那一趟的原因——它比"型号不对"准得多。
+            guard provider == .qwen, Settings.shared.qwenResolvedHost.isEmpty,
+                  AlibabaEndpoint.normalizeHost(Settings.shared.qwenAPIHost) == nil else {
+                LLMClient.testModel(model, provider: provider, candidateKey: trimmed) { ok, message in
+                    settle(ok, provider.segmentName, model, message)
+                }
+                return
+            }
+            AlibabaHostResolver.resolve(
+                apiKey: trimmed,
+                candidates: CloudASRSettings.currentHostCandidates(apiKey: trimmed)) { result in
+                switch result {
+                case .failure(let failure):
+                    settle(false, provider.segmentName, model, failure.message)
+                case .success(let host):
+                    CloudASRSettings.rememberResolution(host: host, model: nil)
+                    LLMClient.testModel(model, provider: provider, candidateKey: trimmed) { ok, message in
+                        settle(ok, provider.segmentName, model, message)
+                    }
+                }
             }
         case .cloudASR(let cloudProvider):
-            // 识别页：直接打识别端点。配不出配置（区域没接入点）就当面说，别偷偷换一个区域去验
+            // 识别页：直接打识别端点，1 秒合成音。阿里云那一档还要先把接入主机试出来、
+            // 模型 404 时自动换 qwen3-asr-flash（见 CloudASRSetup）。
             guard var config = CloudASRSettings.currentConfig(), config.provider == cloudProvider else {
-                status = .failed(reason: tr("云端识别在当前接入区域没有接入点，请先改区域",
-                                            "Cloud recognition has no endpoint in the selected region - change the region first"),
+                // 走到这里只可能是识别引擎在这半秒里被改回了本地档
+                status = .failed(reason: tr("当前识别引擎不是这一档云端引擎，请先在 设置 → 识别 里选上",
+                                            "The current recognition engine is not this cloud provider - pick it first in Settings → Recognition"),
                                  keptPrevious: hadPrevious)
                 return
             }
             config.apiKey = trimmed
-            let modelName = cloudProvider == .alibaba
-                ? Settings.shared.cloudAlibabaModel.rawValue
-                : OpenAITranscribeClient.defaultModel
-            CloudASRProbe.run(config: config) { result in
+            guard cloudProvider == .alibaba else {
+                CloudASRProbe.run(config: config) { result in
+                    switch result {
+                    case .success:
+                        settle(true, cloudProvider.displayName, OpenAITranscribeClient.defaultModel, "")
+                    case .failure(let failure):
+                        settle(false, cloudProvider.displayName,
+                               OpenAITranscribeClient.defaultModel, failure.message)
+                    }
+                }
+                return
+            }
+            CloudASRSetup.verifyAlibaba(apiKey: trimmed, config: config,
+                                        candidates: CloudASRSettings.currentHostCandidates(apiKey: trimmed)) { result in
                 switch result {
-                case .success:
-                    settle(true, cloudProvider.displayName, modelName, "")
+                case .success(let success):
+                    CloudASRSettings.rememberResolution(host: success.host, model: success.model)
+                    settle(true, cloudProvider.displayName, success.model.rawValue, "")
                 case .failure(let failure):
-                    settle(false, cloudProvider.displayName, modelName, failure.message)
+                    settle(false, cloudProvider.displayName,
+                           Settings.shared.cloudAlibabaModel.rawValue, failure.message)
                 }
             }
         }

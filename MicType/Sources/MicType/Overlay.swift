@@ -737,13 +737,26 @@ final class OverlayController {
     }
 
     func flashError(_ label: String) {
+        logError(label, chip: nil)
         flash(.error(label), duration: 2.5)
+    }
+
+    /// 屏幕上闪过的每一句错误都要进日志。
+    ///
+    /// 这是 4.0.1 的一条硬规矩：4.0.0 里「测试识别」报 404、悬浮窗弹错误，日志里却一行都没有——
+    /// 用户能做的只有把提示语抄下来，排查全靠猜。记的是**给用户看的那句文案**
+    /// （它本来就只含状态码、服务商错误码和我们自己的话），绝不含 Key、音频或转写文本。
+    private func logError(_ label: String, chip: String?) {
+        let text = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        Log.warn("Overlay error: " + String(text.prefix(240)) + (chip.map { " [chip: \($0)]" } ?? ""))
     }
 
     /// 带一个可点胶囊的错误提示（「去配置」）。停留久一点：2.5 秒够读完一句话，
     /// 不够看见按钮、移动鼠标、点下去。
     func flashError(_ label: String, actionLabel: String, duration: Double = 6.0,
                     action: @escaping () -> Void) {
+        logError(label, chip: actionLabel)
         pendingAction = action
         flash(.error(label), duration: duration, actionLabel: actionLabel)
     }

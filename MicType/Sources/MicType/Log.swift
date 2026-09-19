@@ -4,8 +4,26 @@ import AppKit
 /// 用于排查偶发问题（悬浮窗不可见、手势异常等）——只记事件与状态，不记录任何转写内容和密钥。
 enum Log {
 
+    /// 现在跑在 XCTest 里吗。
+    ///
+    /// 为什么要认这件事：单测里有一批"假的云端会话"（CloudASRTests 用假发送器跑完整条
+    /// 分段流程），它们照样走 Log.info——于是用户真实的 ~/Library/Logs/MicType/ 里塞满了
+    /// 从没发生过的 200 响应。2026-09-19 排查「测试识别 404 却查不到日志」时就是被这堆
+    /// 假记录带偏的：真正的失败一行都没有，假的倒有两百行。
+    /// 所以测试期间整份日志改写到临时目录，用户的日志只记用户真的做过的事。
+    static let isUnderTest: Bool = {
+        let env = ProcessInfo.processInfo.environment
+        return env["XCTestConfigurationFilePath"] != nil
+            || env["XCTestSessionIdentifier"] != nil
+            || env["XCTestBundlePath"] != nil
+    }()
+
     static var logsDirectory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        if isUnderTest {
+            return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+                .appendingPathComponent("MicTypeTestLogs", isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/MicType", isDirectory: true)
     }
 

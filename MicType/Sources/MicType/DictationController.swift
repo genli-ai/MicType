@@ -19,7 +19,7 @@ final class DictationController {
     var onNeedSettings: (() -> Void)?
     /// 需要打开「设置 → AI」的回调（没配 Key 却按住说了指令时，悬浮窗上那个「去配置」胶囊）
     var onNeedAISettings: (() -> Void)?
-    /// 需要打开「设置 → 识别」的回调（选了云端引擎却没填 Key / 区域配不出接入点时的「去设置」胶囊）
+    /// 需要打开「设置 → 识别」的回调（选了云端引擎却没填 Key 时的「去设置」胶囊）
     var onNeedRecognitionSettings: (() -> Void)?
 
     private let recorder = AudioRecorder()
@@ -40,7 +40,7 @@ final class DictationController {
     /// 按下沿发现的拦路问题：按下这一刻还不知道用户是要说话还是只把热键当修饰键用，
     /// 所以先记下来，等手势确认了再提示（3.3 之前每一次 ⌥+字母 都会响错误音并把引导窗抢到前台）
     private enum BlockedReason: Equatable {
-        /// 当前这一档识别引擎开不了工（本地模型没下载 / 云端没 Key / 云端区域没接入点）
+        /// 当前这一档识别引擎开不了工（本地模型没下载 / 云端没 Key）
         case engine(RecognitionEngineReadiness)
         case accessibility
 
@@ -515,8 +515,8 @@ final class DictationController {
 
     /// 这一轮用哪个识别引擎。默认档直接是本机的 QwenEngine；选了云端就把 Settings + 钥匙串
     /// 组装成一份配置交给 CloudASREngine（引擎自己永远不读设置）。
-    /// 配不出配置（区域没接入点等）时退回本机：走到这里说明 engineReadiness 已经放行过，
-    /// 但设置可能在这半秒里被改动——宁可用本机跑一遍，也不能让这段录音掉在地上。
+    /// 配不出配置（设置在这半秒里被改回本地档）时退回本机：走到这里说明 engineReadiness
+    /// 已经放行过，宁可用本机跑一遍，也不能让这段录音掉在地上。
     private func prepareSessionEngine() {
         guard let config = CloudASRSettings.currentConfig() else {
             sessionEngine = QwenEngine.shared
@@ -1044,7 +1044,7 @@ final class DictationController {
     /// 录音起点。fromPress = 由热键按下触发（按下即录，这一刻还没判定听写还是指令）；
     /// 菜单等其它入口触发的一律是纯听写，永远不读选区、不碰剪贴板。
     private func startRecording(fromPress: Bool = false) {
-        // 检查这一档识别引擎（本地模型有没有下载 / 云端 Key 与区域配全了没有）
+        // 检查这一档识别引擎（本地模型有没有下载 / 云端 Key 填了没有）
         let readiness = Self.engineReadiness()
         guard readiness.isReady else {
             reportEngineNotReady(readiness)

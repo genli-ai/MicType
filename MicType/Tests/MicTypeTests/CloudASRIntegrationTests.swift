@@ -75,67 +75,205 @@ final class CloudASRIntegrationTests: XCTestCase {
         XCTAssertFalse(CloudASRSettings.containsLatinLetter("123"))
     }
 
-    // MARK: - 区域
+    // MARK: - 接入地址（没有"区域"这个概念了）
 
-    /// 一个区域设置管润色和识别两件事，但两边的主机表不一样：识别端只有新加坡 / 美国 / 北京。
-    /// 对不上的区域必须返回 nil，**绝不悄悄换一个能连上的区域**（Key 是分区域的）。
-    func testRegionMapping() {
-        XCTAssertEqual(CloudASRSettings.alibabaRegion(for: .international), .international)
-        XCTAssertEqual(CloudASRSettings.alibabaRegion(for: .singapore), .international)
-        XCTAssertEqual(CloudASRSettings.alibabaRegion(for: .us), .us)
-        XCTAssertEqual(CloudASRSettings.alibabaRegion(for: .beijing), .china)
-        XCTAssertNil(CloudASRSettings.alibabaRegion(for: .tokyo))
-        XCTAssertNil(CloudASRSettings.alibabaRegion(for: .hongkong))
+    /// 控制台会给三种串（apiHost / dashScope URL / openAiCompatible URL），三种都要认——
+    /// 让用户自己从 URL 里抠主机名，抠错的表现又是"鉴权失败"
+    func testHostNormalizationAcceptsEverythingTheConsoleGives() {
+        let host = "ws-e9548i71rc13pul7.cn-beijing.maas.aliyuncs.com"
+        XCTAssertEqual(AlibabaEndpoint.normalizeHost(host), host)
+        XCTAssertEqual(AlibabaEndpoint.normalizeHost("https://" + host), host)
+        XCTAssertEqual(AlibabaEndpoint.normalizeHost("https://" + host + "/api/v1"), host)
+        XCTAssertEqual(AlibabaEndpoint.normalizeHost("https://" + host + "/compatible-mode/v1"), host)
+        XCTAssertEqual(AlibabaEndpoint.normalizeHost("  HTTPS://" + host.uppercased() + "/  "), host)
+        XCTAssertEqual(AlibabaEndpoint.normalizeHost(host + ":443"), host)
     }
 
-    func testRegionSupportOnlyConstrainsAlibaba() {
-        XCTAssertTrue(CloudASRSettings.regionSupported(choice: .local, region: .tokyo))
-        XCTAssertTrue(CloudASRSettings.regionSupported(choice: .cloudOpenAI, region: .tokyo),
-                      "OpenAI 那一档没有区域概念")
-        XCTAssertFalse(CloudASRSettings.regionSupported(choice: .cloudAlibaba, region: .tokyo))
-        XCTAssertTrue(CloudASRSettings.regionSupported(choice: .cloudAlibaba, region: .international))
+    func testHostNormalizationRejectsJunk() {
+        XCTAssertNil(AlibabaEndpoint.normalizeHost(""))
+        XCTAssertNil(AlibabaEndpoint.normalizeHost("   "))
+        XCTAssertNil(AlibabaEndpoint.normalizeHost("localhost"), "没有点的不算主机名")
+        XCTAssertNil(AlibabaEndpoint.normalizeHost("我的 主机.com"), "带空格/中文的一律不要")
+        XCTAssertNil(AlibabaEndpoint.normalizeHost("-bad.example.com"))
+        XCTAssertNil(AlibabaEndpoint.normalizeHost("a..b.com"))
+    }
+
+    /// 工作空间的 Key 长成 sk-ws-xxxx.<密文>，前半段就是主机名第一段：
+    /// 认出它就省掉用户去控制台抄 WorkspaceId
+    func testWorkspaceIDIsRecognisedFromTheKeyShape() {
+        XCTAssertEqual(AlibabaEndpoint.workspaceID(fromKey: "sk-ws-e9548i71rc13pul7.abcdef123456"),
+                       "ws-e9548i71rc13pul7")
+        XCTAssertEqual(AlibabaEndpoint.workspaceID(fromKey: "  SK-WS-ABC123.zzz  "), "ws-abc123")
+        XCTAssertNil(AlibabaEndpoint.workspaceID(fromKey: "sk-proj-abcdef"), "普通 Key 里没有工作空间")
+        XCTAssertNil(AlibabaEndpoint.workspaceID(fromKey: ""))
+    }
+
+    /// 用户自己粘了接入地址 = 他把答案给了：**只用它**，不拿他的 Key 去试别的主机
+    func testPastedHostWinsAndStopsTheSearch() {
+        let candidates = AlibabaEndpoint.candidates(
+            pastedHost: "https://ws-abc.cn-beijing.maas.aliyuncs.com/api/v1",
+            resolvedHost: "dashscope.aliyuncs.com",
+            workspace: "ws-abc",
+            legacyRegionSlug: "cn-beijing",
+            apiKey: "sk-ws-abc.zzz")
+        XCTAssertEqual(candidates, ["ws-abc.cn-beijing.maas.aliyuncs.com"])
+    }
+
+    /// 北京站 + 工作空间的用户（正是 4.0.0 报 404 的那一位）：第一台就该是他的专属主机
+    func testWorkspaceHostComesBeforeTheSharedHosts() {
+        let candidates = AlibabaEndpoint.candidates(workspace: "ws-e9548i71rc13pul7",
+                                                    legacyRegionSlug: "cn-beijing")
+        XCTAssertEqual(candidates.first, "ws-e9548i71rc13pul7.cn-beijing.maas.aliyuncs.com")
+        XCTAssertTrue(candidates.contains("dashscope-intl.aliyuncs.com"))
+        XCTAssertTrue(candidates.contains("dashscope.aliyuncs.com"))
+        XCTAssertEqual(candidates.count, Set(candidates).count, "候选表不能有重复，重复就是白跑一趟")
+    }
+
+    /// 上一次试通的那台排第一：正常使用时候选表实际上只用得到它
+    func testResolvedHostIsTriedFirst() {
+        let candidates = AlibabaEndpoint.candidates(resolvedHost: "dashscope.aliyuncs.com",
+                                                    workspace: "ws-abc")
+        XCTAssertEqual(candidates.first, "dashscope.aliyuncs.com")
+    }
+
+    /// 什么线索都没有时也必须给得出候选表（共享主机两台）
+    func testCandidatesAreNeverEmpty() {
+        XCTAssertFalse(AlibabaEndpoint.candidates().isEmpty)
+        XCTAssertEqual(AlibabaEndpoint.candidates().first, AlibabaEndpoint.sharedInternationalHost)
+    }
+
+    /// 识别与润色必须落在**同一台主机**上：一处试通，两边都对
+    func testBothPathsDeriveFromOneHost() {
+        let host = "ws-abc.cn-beijing.maas.aliyuncs.com"
+        XCTAssertEqual(AlibabaEndpoint.asrURL(host: host)?.absoluteString,
+                       "https://" + host + "/api/v1/services/aigc/multimodal-generation/generation")
+        XCTAssertEqual(AlibabaEndpoint.compatibleBaseURL(host: host),
+                       "https://" + host + "/compatible-mode/v1")
+        XCTAssertEqual(AlibabaEndpoint.modelsURL(host: host)?.absoluteString,
+                       "https://" + host + "/compatible-mode/v1/models")
+    }
+
+    /// 主机名第一段就是工作空间编号，进日志 / 诊断信息之前必须抹掉
+    func testRedactionHidesTheWorkspaceID() {
+        let redacted = AlibabaEndpoint.redacted("ws-e9548i71rc13pul7.cn-beijing.maas.aliyuncs.com")
+        XCTAssertFalse(redacted.contains("e9548i71rc13pul7"))
+        XCTAssertTrue(redacted.hasSuffix("cn-beijing.maas.aliyuncs.com"))
+        XCTAssertEqual(AlibabaEndpoint.redacted("dashscope.aliyuncs.com"), "dashscope.aliyuncs.com",
+                       "共享主机里没有工作空间编号，原样报出来更有用")
+    }
+
+    // MARK: - 逐台试出接入地址
+
+    /// 200 = 就是它；403 也算——鉴权已经过了（Key 属于这台），换一台解决不了
+    func testResolverStopRules() {
+        XCTAssertTrue(AlibabaHostResolver.accepts(status: 200))
+        XCTAssertTrue(AlibabaHostResolver.accepts(status: 403))
+        XCTAssertFalse(AlibabaHostResolver.accepts(status: 401))
+        XCTAssertTrue(AlibabaHostResolver.keepsTrying(status: 401), "Key 不属于这台 → 试下一台")
+        XCTAssertTrue(AlibabaHostResolver.keepsTrying(status: 404))
+        XCTAssertTrue(AlibabaHostResolver.keepsTrying(status: 0), "DNS 都不通 = 这台主机不存在")
+        XCTAssertFalse(AlibabaHostResolver.keepsTrying(status: 429), "限流跟主机无关，换一台也一样")
+    }
+
+    /// 401 一路试到那台认它的主机为止（不碰网络：假发送器）
+    func testResolverWalksPastUnauthorizedHosts() {
+        var tried = [String]()
+        let done = expectation(description: "resolved")
+        AlibabaHostResolver.resolve(apiKey: "sk-ws-abc.zzz",
+                                    candidates: ["a.example.com", "b.example.com", "c.example.com"],
+                                    send: { request, completion in
+            tried.append(request.url?.host ?? "?")
+            completion(request.url?.host == "c.example.com" ? 200 : 401, "InvalidApiKey", nil)
+        }) { result in
+            guard case .success(let host) = result else { return XCTFail("第三台该被认出来") }
+            XCTAssertEqual(host, "c.example.com")
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 2)
+        XCTAssertEqual(tried, ["a.example.com", "b.example.com", "c.example.com"])
+    }
+
+    /// 全试完都不认：报最后一台的原因，而且那句话要指向"去控制台粘接入地址"
+    func testResolverReportsTheLastReasonWhenNothingWorks() {
+        let done = expectation(description: "failed")
+        AlibabaHostResolver.resolve(apiKey: "sk-test",
+                                    candidates: ["a.example.com", "b.example.com"],
+                                    send: { _, completion in completion(401, "InvalidApiKey", nil) }) { result in
+            guard case .failure(let failure) = result else { return XCTFail("不该成功") }
+            XCTAssertEqual(failure.status, 401)
+            XCTAssertEqual(failure.code, "InvalidApiKey")
+            XCTAssertTrue(failure.message.contains("接入地址") || failure.message.contains("API host"),
+                          "401 的下一步是去控制台粘接入地址，不是再翻一遍 Key")
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 2)
+    }
+
+    /// 限流这种"跟主机没关系"的失败要立刻报出来，不该把同一把 Key 再发几趟
+    func testResolverStopsOnAnUnrelatedFailure() {
+        var calls = 0
+        let done = expectation(description: "failed")
+        AlibabaHostResolver.resolve(apiKey: "sk-test",
+                                    candidates: ["a.example.com", "b.example.com"],
+                                    send: { _, completion in
+            calls += 1
+            completion(429, "Throttling.RateQuota", nil)
+        }) { result in
+            guard case .failure(let failure) = result else { return XCTFail("不该成功") }
+            XCTAssertEqual(failure.status, 429)
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 2)
+        XCTAssertEqual(calls, 1)
+    }
+
+    func testResolverRefusesToProbeWithoutAKey() {
+        let done = expectation(description: "failed")
+        AlibabaHostResolver.resolve(apiKey: "  ", candidates: ["a.example.com"],
+                                    send: { _, _ in XCTFail("没有 Key 就不该上网") }) { result in
+            guard case .failure = result else { return XCTFail("不该成功") }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 2)
     }
 
     // MARK: - 组装配置
 
-    func testConfigCarriesVocabularyHintsAndWorkspace() {
+    func testConfigCarriesVocabularyHintsAndHost() {
         let config = CloudASRSettings.config(provider: .alibaba,
-                                             alibabaModel: .qwenAudio30Flash,
-                                             region: .international,
-                                             workspaceID: "  ws-123  ",
+                                             alibabaModel: .qwen3Flash,
+                                             host: "  https://ws-123.cn-beijing.maas.aliyuncs.com/api/v1  ",
                                              recognitionLanguage: "zh",
                                              vocabulary: ["捷文", "Power BI"],
                                              apiKey: "sk-test")
         XCTAssertEqual(config.provider, .alibaba)
-        XCTAssertEqual(config.alibabaModel, .qwenAudio30Flash)
-        XCTAssertEqual(config.region, .international)
-        XCTAssertEqual(config.workspaceId, "ws-123", "两头的空白要去掉：它会被拼进主机名")
+        XCTAssertEqual(config.alibabaModel, .qwen3Flash)
+        XCTAssertEqual(config.host, "ws-123.cn-beijing.maas.aliyuncs.com",
+                       "整条 URL 也要能直接粘进来，归一成裸主机名")
         XCTAssertEqual(config.languageHints, ["zh"])
         XCTAssertEqual(config.vocabulary, ["捷文", "Power BI"], "词表原样交给客户端，权重与过滤在那一层")
         XCTAssertEqual(config.apiKey, "sk-test")
         XCTAssertFalse(config.enableITN, "ITN 一律关：MicType 自己有润色层")
     }
 
-    func testEmptyWorkspaceBecomesNil() {
+    /// 主机名读不出来也绝不能配出一个拼不出 URL 的引擎：退回共享主机，
+    /// 至于对不对由 AlibabaHostResolver 下一次试出来
+    func testUnusableHostFallsBackToADefault() {
         let config = CloudASRSettings.config(provider: .alibaba,
                                              alibabaModel: .qwen3Flash,
-                                             region: .china,
-                                             workspaceID: "   ",
+                                             host: "   ",
                                              recognitionLanguage: "",
                                              vocabulary: [],
                                              apiKey: "k")
-        XCTAssertNil(config.workspaceId, "空 WorkspaceId = 走共享主机")
-        // 配置真的落到了客户端上（端点由区域 + WorkspaceId 推出来）
-        let url = AlibabaASRClient.endpoint(region: config.region, workspaceId: config.workspaceId)
-        XCTAssertEqual(url?.host, "dashscope.aliyuncs.com")
+        XCTAssertEqual(config.host, AlibabaEndpoint.defaultHost)
+        XCTAssertNotNil(AlibabaASRClient.endpoint(host: config.host))
     }
 
     /// 词表要真的变成热词参数（权重 4）——这是云端档下专有名词准确率的唯一杠杆
     func testVocabularyReachesTheHotwordParameter() {
         let config = CloudASRSettings.config(provider: .alibaba,
-                                             alibabaModel: .qwenAudio30Flash,
-                                             region: .international,
-                                             workspaceID: "",
+                                             alibabaModel: .qwen3Flash,
+                                             host: AlibabaEndpoint.defaultHost,
                                              recognitionLanguage: "",
                                              vocabulary: ["MicType", "捷文"],
                                              apiKey: "k")
@@ -146,24 +284,23 @@ final class CloudASRIntegrationTests: XCTestCase {
 
     // MARK: - 开录之前：这一档能不能用
 
+    /// 4.0.1 起只剩两个闸门：本地档看模型，云端档看 Key。
+    /// 「这个区域没有接入点」那一档随区域选择器一起没了——地址现在是试出来的。
     func testReadinessMatrix() {
         XCTAssertEqual(RecognitionEngineReadiness.evaluate(choice: .local, localModelAvailable: true,
-                                                           cloudRegionSupported: true, hasCloudKey: false),
+                                                           hasCloudKey: false),
                        .ready, "本地档不看云端 Key")
         XCTAssertEqual(RecognitionEngineReadiness.evaluate(choice: .local, localModelAvailable: false,
-                                                           cloudRegionSupported: true, hasCloudKey: true),
+                                                           hasCloudKey: true),
                        .localModelMissing)
         XCTAssertEqual(RecognitionEngineReadiness.evaluate(choice: .cloudAlibaba, localModelAvailable: false,
-                                                           cloudRegionSupported: true, hasCloudKey: true),
+                                                           hasCloudKey: true),
                        .ready, "云端档不需要本机模型")
         XCTAssertEqual(RecognitionEngineReadiness.evaluate(choice: .cloudAlibaba, localModelAvailable: true,
-                                                           cloudRegionSupported: true, hasCloudKey: false),
+                                                           hasCloudKey: false),
                        .cloudKeyMissing(.alibaba))
-        XCTAssertEqual(RecognitionEngineReadiness.evaluate(choice: .cloudAlibaba, localModelAvailable: true,
-                                                           cloudRegionSupported: false, hasCloudKey: true),
-                       .cloudRegionUnsupported, "区域配不出接入点比缺 Key 更先报")
         XCTAssertEqual(RecognitionEngineReadiness.evaluate(choice: .cloudOpenAI, localModelAvailable: true,
-                                                           cloudRegionSupported: true, hasCloudKey: false),
+                                                           hasCloudKey: false),
                        .cloudKeyMissing(.openai))
     }
 
@@ -175,12 +312,11 @@ final class CloudASRIntegrationTests: XCTestCase {
         XCTAssertNil(RecognitionEngineReadiness.localModelMissing.settingsChipLabel,
                      "本地档走的是引导下载页，不用胶囊")
         for state: RecognitionEngineReadiness in [.localModelMissing, .cloudKeyMissing(.alibaba),
-                                                  .cloudKeyMissing(.openai), .cloudRegionUnsupported] {
+                                                  .cloudKeyMissing(.openai)] {
             XCTAssertFalse(state.isReady)
             XCTAssertFalse(state.message.trimmingCharacters(in: .whitespaces).isEmpty)
         }
         XCTAssertNotNil(RecognitionEngineReadiness.cloudKeyMissing(.alibaba).settingsChipLabel)
-        XCTAssertNotNil(RecognitionEngineReadiness.cloudRegionUnsupported.settingsChipLabel)
     }
 
     // MARK: - 云端炸了之后
@@ -233,7 +369,7 @@ final class CloudASRIntegrationTests: XCTestCase {
     /// 解析层要真的给出这个码，否则探针会把"通了但没字"当成失败
     func testParsersTagEmptyTranscriptsWithTheProbeCode() {
         guard case .failure(let alibaba) = AlibabaASRClient.parse(Data(#"{"output":{}}"#.utf8),
-                                                                 model: .qwenAudio30Flash) else {
+                                                                 model: .qwen3Flash) else {
             return XCTFail("没有文本字段不能算成功")
         }
         XCTAssertEqual(alibaba.code, CloudASRFailure.emptyTranscriptCode)
@@ -245,11 +381,15 @@ final class CloudASRIntegrationTests: XCTestCase {
         XCTAssertEqual(openai.code, CloudASRFailure.emptyTranscriptCode)
     }
 
-    func testProbeSuccessTextReportsRoundTrip() {
-        let text = CloudASRProbe.successText(CloudASRProbe.Outcome(milliseconds: 842, text: "",
-                                                                   billedSeconds: 1))
+    /// 结果行必须写出"用的哪个型号"：识别模型会被 404 回落悄悄换掉，
+    /// 不写出来用户就不知道自己到底在用什么（也就查不出账单为什么变了）
+    func testProbeSuccessTextReportsRoundTripAndModel() {
+        let text = CloudASRProbe.successText(
+            CloudASRProbe.Outcome(milliseconds: 842, text: "", billedSeconds: 1,
+                                  model: AlibabaASRModel.qwen3Flash.rawValue))
         XCTAssertTrue(text.contains("842"))
         XCTAssertTrue(text.contains("✓"))
+        XCTAssertTrue(text.contains("qwen3-asr-flash"))
     }
 
     // MARK: - SpeechEngine 桥接（不上网也测得到的那几条）

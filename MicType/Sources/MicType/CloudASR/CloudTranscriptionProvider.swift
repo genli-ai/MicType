@@ -109,7 +109,7 @@ struct CloudASRFailure: Error {
     var message: String { error.message }
 
     /// HTTP 200 回来了、只是这段音频一个字都没识别出来。**这不是一次真正的故障**：
-    /// 鉴权、区域、模型开通全都通过了。粘贴即验证的探针（CloudASRProbe）据此判"Key 是好的"，
+    /// 鉴权、接入地址、模型开通全都通过了。粘贴即验证的探针（CloudASRProbe）据此判"Key 是好的"，
     /// 所以这个码必须稳定，别改字面量。
     static let emptyTranscriptCode = "EmptyTranscript"
 
@@ -293,53 +293,34 @@ enum CloudASRExecutor {
 
 // MARK: - 阿里云 Model Studio（DashScope）
 
-/// 两个可选模型：3.0 支持带权重的内联热词 + 上下文 + language_hints（默认用它）；
-/// qwen3 只有 system 上下文 + 单一 language，留作备选。
+/// 两个可选模型。**默认必须是 qwen3-asr-flash**：官方文档里同步端点
+/// （/api/v1/services/aigc/multimodal-generation/generation）上只有它；
+/// qwen-audio-3.0-asr-flash 属于「非实时语音识别」那条**异步**链路
+/// （/api/v1/services/audio/asr/transcription），打同步端点必然 404 ModelNotFound。
+/// 4.0.0 把 3.0 设成了默认，于是云端识别对谁都是一次 404 —— 这就是 4.0.1 要修的那个 bug。
+///
+/// 3.0 仍然留在枚举里：老用户的设置里存着这个 rawValue，读不出来会整档失灵；
+/// 而且真遇到 404 时 CloudASRProbe 会自动改用 qwen3 并记住（见 fallbackOrder）。
 enum AlibabaASRModel: String, CaseIterable {
-    case qwenAudio30Flash = "qwen-audio-3.0-asr-flash"
     case qwen3Flash = "qwen3-asr-flash"
+    case qwenAudio30Flash = "qwen-audio-3.0-asr-flash"
 
     var displayName: String {
         switch self {
-        case .qwenAudio30Flash: return "qwen-audio-3.0-asr-flash" + tr("（推荐，支持热词权重）", " (recommended, weighted hotwords)")
-        case .qwen3Flash: return "qwen3-asr-flash"
+        case .qwen3Flash: return "qwen3-asr-flash" + tr("（推荐）", " (recommended)")
+        case .qwenAudio30Flash:
+            return "qwen-audio-3.0-asr-flash" + tr("（异步端点专用，多数账号不可用）",
+                                                   " (async endpoint only, unavailable on most accounts)")
         }
     }
 
     /// 有没有 parameters.vocabulary（决定词表走参数还是走上下文）
     var supportsInlineVocabulary: Bool { self == .qwenAudio30Flash }
-}
 
-/// 区域：Key 是**区域绑定**的（中国站的 Key 打到国际站主机上直接 401），所以区域必须让用户自己选
-enum AlibabaRegion: String, CaseIterable {
-    case international      // 新加坡（国际站默认）
-    case us
-    case china
-
-    var displayName: String {
-        switch self {
-        case .international: return tr("国际站·新加坡", "International · Singapore")
-        case .us: return tr("美国", "United States")
-        case .china: return tr("中国站·北京", "China · Beijing")
-        }
-    }
-
-    /// 不填 WorkspaceId 时的共享主机。
-    /// 注意：文档只给了国际站与中国站两个共享主机；US 没有独立共享主机，走国际站主机。
-    var sharedHost: String {
-        switch self {
-        case .international, .us: return "dashscope-intl.aliyuncs.com"
-        case .china: return "dashscope.aliyuncs.com"
-        }
-    }
-
-    /// 填了 WorkspaceId 时的专属主机后缀：{WorkspaceId}.{这个后缀}
-    var workspaceHostSuffix: String {
-        switch self {
-        case .international: return "ap-southeast-1.maas.aliyuncs.com"
-        case .us: return "us-east-1.maas.aliyuncs.com"
-        case .china: return "cn-beijing.maas.aliyuncs.com"
-        }
+    /// 试的顺序：先试用户选的那个，404 了再试 qwen3-asr-flash。
+    /// 只有这一条回落——它是文档上同步端点唯一保证存在的型号。
+    var fallbackOrder: [AlibabaASRModel] {
+        self == .qwen3Flash ? [self] : [self, .qwen3Flash]
     }
 }
 
@@ -348,9 +329,10 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
     // MARK: 配置
 
     var apiKey: String
-    var model: AlibabaASRModel = .qwenAudio30Flash
-    var region: AlibabaRegion = .international
-    var workspaceId: String?
+    var model: AlibabaASRModel = .qwen3Flash
+    /// 接入主机名（裸主机，不带 scheme 与路径）。由 AlibabaHostResolver 试出来，
+    /// 界面上没有"区域"这个概念了——见 AlibabaEndpoint 顶部那段。
+    var host: String = AlibabaEndpoint.defaultHost
     /// 词汇表原文（右侧词 + 普通词条），权重统一 4
     var vocabulary: [String] = []
     var languageHints: [String] = []
@@ -367,7 +349,8 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
     static let maxBase64Bytes = 10 * 1024 * 1024
     /// 单请求时长上限 5 分钟
     static let maxSeconds: Double = 300
-    static let apiPath = "/api/v1/services/aigc/multimodal-generation/generation"
+    /// 端点路径只写一处（AlibabaEndpoint），这里留个别名给老调用点
+    static var apiPath: String { AlibabaEndpoint.asrPath }
 
     /// 热词上限（文档：≤2000 词）
     static let vocabularyCap = 2000
@@ -376,11 +359,7 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
 
     // MARK: 纯函数 · 端点
 
-    static func endpoint(region: AlibabaRegion, workspaceId: String?) -> URL? {
-        let workspace = workspaceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let host = workspace.isEmpty ? region.sharedHost : workspace + "." + region.workspaceHostSuffix
-        return URL(string: "https://" + host + apiPath)
-    }
+    static func endpoint(host: String) -> URL? { AlibabaEndpoint.asrURL(host: host) }
 
     // MARK: 纯函数 · 热词过滤
 
@@ -502,9 +481,9 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
                                        seconds: seconds) {
             return .failure(failure)
         }
-        guard let url = Self.endpoint(region: region, workspaceId: workspaceId) else {
-            return .failure(CloudASRFailure(tr("云端地址拼不出来：WorkspaceId 含非法字符",
-                                               "Could not build the endpoint URL — check the WorkspaceId")))
+        guard let url = Self.endpoint(host: host) else {
+            return .failure(CloudASRFailure(tr("云端接入地址不合法，请重填「接入地址」或清空它让 MicType 自己试",
+                                               "The API host is not a valid hostname - re-enter it, or clear it and let MicType find the endpoint")))
         }
         let body = Self.requestBody(model: model,
                                     audioDataURI: WAVEncoder.dataURI(wav: wav),
@@ -623,13 +602,18 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
     }
 
     /// 状态码 + 错误码 → 双语文案（含"怎么办"）+ 是否值得重试。
-    /// 铁律：401 绝不清掉已存的 Key（可能只是区域选错了）。
+    /// 铁律：401 绝不清掉已存的 Key（可能只是接入地址还没试对）。
+    /// 每一条都必须给**一句下一步**：屏幕上只写"失败了"等于把排查工作全推给用户。
     static func failure(status: Int, code: String?, message: String?) -> CloudASRFailure {
         let raw = (code ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         // 冒号用 ASCII：这串会直接接在 tail 的 ASCII 括号后面，英文界面下混一个全角「：」
         // 就是一处中文泄漏（CJKUIStringGuardTests 拦的正是 U+FF01–FF60）。中文界面下也不突兀。
         let detail = message.map { ": " + String($0.prefix(80)) } ?? ""
-        let tail = " (" + String(status) + (raw.isEmpty ? "" : " " + raw) + ")"
+        // status 0 = 还没上网（DNS / 连接失败），"(0)" 对用户没有任何意义，不如不写
+        let tail: String = {
+            if status == 0 { return raw.isEmpty ? "" : " (" + raw + ")" }
+            return " (" + String(status) + (raw.isEmpty ? "" : " " + raw) + ")"
+        }()
 
         func made(_ zh: String, _ en: String, retryable: Bool = false) -> CloudASRFailure {
             CloudASRFailure(tr(zh, en) + tail + detail, retryable: retryable, code: raw.isEmpty ? nil : raw,
@@ -637,9 +621,12 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
         }
 
         switch status {
+        case 0:
+            return made("连不上阿里云：网络不通，或这个接入地址根本不存在。把百炼控制台里的「接入地址（apiHost）」粘到 设置 → 识别 的「接入地址」里",
+                        "Could not reach Alibaba: no network, or that API host does not exist. Paste the API host from the Model Studio console into the API host field in Settings → Recognition")
         case 401:
-            return made("云端 Key 无效或与所选区域不符。Key 是分区域的：国际站的 Key 用在中国站主机上一定 401。请在 设置 → 识别 里核对区域并重填 Key",
-                        "Cloud key invalid or from the wrong region. Keys are region-specific — an international key will 401 against the China host. Check the region and re-enter the key in Settings → Recognition")
+            return made("这把 Key 不属于试过的这些接入地址。到百炼控制台复制「接入地址（apiHost）」，粘到 设置 → 识别 的「接入地址」里；或确认 Key 没有过期",
+                        "This key does not belong to any endpoint MicType tried. Copy the API host from the Model Studio console and paste it into the API host field in Settings → Recognition, or check that the key is still valid")
         case 403:
             if raw.localizedCaseInsensitiveContains("arrear") {
                 return made("阿里云账户欠费，云端识别已停。请充值后再试",
@@ -648,8 +635,10 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
             return made("这个模型还没在阿里云百炼开通（或免费额度已用完、子工作空间无权）。请到百炼控制台 → 模型广场把该模型开通一次",
                         "This model is not enabled for your account (or the free quota is used up, or the sub-workspace lacks access). Enable it once in the Model Studio console → Model Gallery")
         case 404:
-            return made("云端找不到这个模型：模型名或区域不对。请换回默认模型，或在 设置 → 识别 里改区域",
-                        "Model not found — wrong model name or region. Switch back to the default model or change the region in Settings → Recognition")
+            // 4.0.0 的默认模型 qwen-audio-3.0-asr-flash 打这个同步端点必 404，所以这条
+            // 一定要说清"qwen3-asr-flash 也已经试过了"，否则用户会去改模型名——那条路走不通
+            return made("这个接入地址上没有这个识别模型（qwen3-asr-flash 也已经自动试过）。请到百炼控制台 → 模型广场开通 qwen3-asr-flash，或把控制台里的「接入地址」粘到 设置 → 识别",
+                        "This endpoint has no such speech model (qwen3-asr-flash was tried too). Enable qwen3-asr-flash in the Model Studio console → Model Gallery, or paste the API host from the console into Settings → Recognition")
         case 429:
             // 只认 AllocationQuota：Throttling.RateQuota 里也有 "quota" 字样，但那是限流，该重试
             if raw.localizedCaseInsensitiveContains("allocation") {

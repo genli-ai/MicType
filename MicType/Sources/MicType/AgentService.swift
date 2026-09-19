@@ -636,12 +636,13 @@ enum LLMClient {
         var base = Settings.shared.baseURL(for: provider)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if base.hasSuffix("/") { base = String(base.dropLast()) }
-        // 地址不完整（Qwen 区域端点缺 WorkspaceId / 自定义端点还没填）：宁可报错也不替用户
-        // 换一个能连上的地址——那等于把 Key 和听写文本发到他没选的地方去。
+        // 地址不完整（自定义端点还没填）：宁可报错也不替用户换一个能连上的地址——
+        // 那等于把 Key 和听写文本发到他没选的地方去。
+        // Qwen 不会走到这里：它的接入地址由 MicType 自己试出来（见 AlibabaEndpoint）。
         guard !base.isEmpty else {
             DispatchQueue.main.async {
-                completion(nil, tr("这个服务商的接口地址还没填完（Qwen 区域端点需要 WorkspaceId）",
-                                   "This provider's endpoint is incomplete (regional Qwen endpoints need a workspace ID)"))
+                completion(nil, tr("这个服务商的接口地址还没填完（在 设置 → AI → 高级 里填）",
+                                   "This provider's endpoint is incomplete - fill it in under Settings → AI → Advanced"))
             }
             return
         }

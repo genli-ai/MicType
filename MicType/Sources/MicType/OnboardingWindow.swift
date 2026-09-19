@@ -589,9 +589,9 @@ private struct TryItPage: View {
 private struct AISetupPage: View {
     @ObservedObject var model: OnboardingModel
     @ObservedObject private var l10n = L10n.shared
-    /// Qwen 那一档的地址由「区域 + WorkspaceId」推出来，没有它连不上——所以这两项得在这一屏
-    @AppStorage(SettingsKeys.qwenRegion) private var qwenRegion = LLMCatalog.QwenRegion.international.rawValue
-    @AppStorage(SettingsKeys.qwenWorkspaceID) private var qwenWorkspace = ""
+    /// Qwen 那一档的接入地址由 MicType 自己试出来（4.0.1 拿掉了区域选择器）。
+    /// 这一屏只留一个**可选**输入框，给自动没试对的人——首配的人不该在这里做地理选择题。
+    @AppStorage(SettingsKeys.qwenAPIHost) private var qwenAPIHost = ""
     @State private var keyStatus: KeyVerifier.Status = .idle
     /// 质量档（nil = 用户自己挑过型号，如实显示「自选」，绝不把他钉回我们的某一档）
     @State private var tier: LLMCatalog.QualityTier?
@@ -610,10 +610,6 @@ private struct AISetupPage: View {
     private var chosen: LLMProvider? {
         guard case .provider(let provider) = model.aiChoice else { return nil }
         return provider
-    }
-
-    private var region: LLMCatalog.QwenRegion {
-        LLMCatalog.QwenRegion(rawValue: qwenRegion) ?? .international
     }
 
     var body: some View {
@@ -684,31 +680,21 @@ private struct AISetupPage: View {
             model.refreshAIReady()
             refreshTier()
         }
-        // 区域/WorkspaceId 一改，Qwen 的地址就变了，能不能连得上也跟着变
-        .onChange(of: qwenRegion) { _, _ in model.refreshAIReady() }
-        .onChange(of: qwenWorkspace) { _, _ in model.refreshAIReady() }
+        // 接入地址一改，Qwen 的地址就变了，能不能连得上也跟着变
+        .onChange(of: qwenAPIHost) { _, _ in model.refreshAIReady() }
     }
 
-    // MARK: Qwen 的区域与 WorkspaceId
+    // MARK: Qwen 的接入地址（可选）
 
     @ViewBuilder
     private var qwenFields: some View {
-        Picker(tr("接入区域：", "Region:"), selection: $qwenRegion) {
-            ForEach(LLMCatalog.QwenRegion.allCases, id: \.rawValue) { option in
-                Text(option.displayName).tag(option.rawValue)
-            }
-        }
-        if region.requiresWorkspaceID {
-            TextField("WorkspaceId", text: $qwenWorkspace)
-                .textFieldStyle(.roundedBorder)
-        }
-        if LLMCatalog.qwenBaseURL(region: region, workspaceID: qwenWorkspace).isEmpty {
-            Text(tr("这个区域的地址里带 WorkspaceId，填上才能用（在模型服务控制台的工作空间详情里）。",
-                    "This region puts your workspace ID in the URL - fill it in (you will find it in the Model Studio console)."))
-                .font(.caption)
-                .foregroundColor(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+        TextField(tr("接入地址（可选）", "API host (optional)"), text: $qwenAPIHost)
+            .textFieldStyle(.roundedBorder)
+        Text(tr("留空就行：粘 Key 的时候 MicType 会自己把接入地址试出来。只有自动没试对时，才到百炼控制台复制「接入地址」粘进来。",
+                "Leave it empty: when you paste the key, MicType finds the right endpoint itself. Only if that fails, copy the API host from the Model Studio console and paste it here."))
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: 质量二选一（验证通过后才出现）

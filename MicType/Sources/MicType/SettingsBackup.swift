@@ -65,9 +65,10 @@ import UniformTypeIdentifiers
 //   keepHistory             ← keepHistory            / （Windows 暂无）      布尔
 //   recognitionEngine       ← recognitionEngine      / （Windows 暂无）      "local" | "cloudAlibaba" | "cloudOpenAI"
 //   recognitionLanguage     ← recognitionLanguage    / （Windows 暂无）      语言代码，"" = 自动检测
-//   cloudAlibabaModel       ← cloudAlibabaModel      / （Windows 暂无）      "qwen-audio-3.0-asr-flash" | "qwen3-asr-flash"
-//   qwenRegion              ← qwenRegion             / （Windows 暂无）      DashScope 接入区域（润色与云端识别共用）
-//   qwenWorkspaceId         ← qwenWorkspaceID        / （Windows 暂无）      区域端点主机名第一段
+//   cloudAlibabaModel       ← cloudAlibabaModel      / （Windows 暂无）      "qwen3-asr-flash" | "qwen-audio-3.0-asr-flash"
+//   qwenApiHost             ← qwenAPIHost            / （Windows 暂无）      百炼接入地址（可选；空 = 自动探测）
+//   qwenRegion              ← qwenRegion             / （Windows 暂无）      老设置：DashScope 接入区域（4.0.1 起界面上没有了）
+//   qwenWorkspaceId         ← qwenWorkspaceID        / （Windows 暂无）      老设置：区域端点主机名第一段
 //   speechModelRepo         ← qwenModelRepo          / （Windows 暂无）      HuggingFace 仓库 ID（"owner/name"）
 //
 // 关于 speechModelRepo：它确实和本机磁盘有关（导过去那台机器多半还没下这个模型），但它是
@@ -117,6 +118,7 @@ enum SettingsBackup {
         static let recognitionEngine = "recognitionEngine"
         static let recognitionLanguage = "recognitionLanguage"
         static let cloudAlibabaModel = "cloudAlibabaModel"
+        static let qwenApiHost = "qwenApiHost"
         static let qwenRegion = "qwenRegion"
         static let qwenWorkspaceId = "qwenWorkspaceId"
         static let speechModelRepo = "speechModelRepo"
@@ -131,7 +133,7 @@ enum SettingsBackup {
             polishTemperature, commandTemperature, appLanguage,
             autoStopSilenceSeconds, livePreview, playSounds, restoreClipboard, keepHistory,
             recognitionEngine, recognitionLanguage, cloudAlibabaModel,
-            qwenRegion, qwenWorkspaceId, speechModelRepo,
+            qwenApiHost, qwenRegion, qwenWorkspaceId, speechModelRepo,
         ]
     }
 
@@ -173,11 +175,14 @@ enum SettingsBackup {
             Key.playSounds: s.playSounds,
             Key.restoreClipboard: s.restoreClipboard,
             Key.keepHistory: s.keepHistory,
-            // 识别这一段：引擎档位、语言、云端模型、区域 / WorkspaceId、本机模型仓库。
-            // Key 一如既往不在里面（云端识别用的就是 AI 页那两把 Key）
+            // 识别这一段：引擎档位、语言、云端模型、接入地址、本机模型仓库。
+            // Key 一如既往不在里面（云端识别用的就是 AI 页那两把 Key）。
+            // 试出来的那台主机（qwenResolvedHost）**不导出**：它是本机探测的缓存，
+            // 换台机器重新试一次就有，和模型下载状态同一类
             Key.recognitionEngine: s.recognitionEngine.rawValue,
             Key.recognitionLanguage: s.recognitionLanguage,
             Key.cloudAlibabaModel: s.cloudAlibabaModel.rawValue,
+            Key.qwenApiHost: s.qwenAPIHost,
             Key.qwenRegion: s.qwenRegion.rawValue,
             Key.qwenWorkspaceId: s.qwenWorkspaceID,
             Key.speechModelRepo: s.qwenModelRepo,
@@ -441,9 +446,16 @@ enum SettingsBackup {
         enumValue(Key.cloudAlibabaModel, notable: true) { (v: AlibabaASRModel) in
             Settings.shared.cloudAlibabaModel = v
         }
-        // 区域 = 收信主机所在的司法辖区：润色走 LLMCatalog.qwenBaseURL，云端识别走
-        // CloudASRIntegration 的区域映射（beijing → dashscope.aliyuncs.com）。
-        // 一个字段就能把 Key 与音频从新加坡搬到北京，这正是"必须念出来"那一类。
+        // 接入地址 = 收信主机，也就是 Key 与音频落在哪个司法辖区。一个字段就能把它们
+        // 从新加坡搬到北京，所以必须当面念出来，而且只接受一个像样的主机名。
+        checkedString(Key.qwenApiHost, notable: true,
+                      isValid: { $0.isEmpty || AlibabaEndpoint.normalizeHost($0) != nil }) {
+            Settings.shared.qwenAPIHost = $0
+            // 地址被文件改了，上一次试通的那台就不再算数
+            Settings.shared.qwenResolvedHost = ""
+        }
+        // 老设置，界面上已经没有了（4.0.1 拿掉了区域选择器）。仍然接受它：它是候选
+        // 主机表的排序线索，老文件导进来不该整段丢掉。
         enumValue(Key.qwenRegion, notable: true) { (v: LLMCatalog.QwenRegion) in
             Settings.shared.qwenRegion = v
         }
@@ -570,14 +582,19 @@ extension SettingsBackup {
             lines.append(tr("接口与模型（已按文件改动）：", "Endpoints and models (changed by this file):"))
             lines.append(contentsOf: summary.notableChanges.map { "  · " + $0 })
             // 只有地址真的被改了才说这句重话，模型名换一换不至于
-            if summary.notableChanges.contains(where: { $0.hasPrefix(Key.openaiBaseURL) || $0.hasPrefix(Key.deepseekBaseURL) }) {
+            if summary.notableChanges.contains(where: {
+                $0.hasPrefix(Key.openaiBaseURL) || $0.hasPrefix(Key.deepseekBaseURL)
+                    || $0.hasPrefix(Key.qwenApiHost)
+            }) {
                 lines.append(tr("接口地址决定你的 API Key 和文本发往哪里——不是自己写的地址请改回去。",
                                 "The endpoint decides where your API key and text are sent — change it back if you didn't choose it."))
             }
-            // 区域被改 = 收信主机换了一个司法辖区（润色与云端识别共用这一项）
-            if summary.notableChanges.contains(where: { $0.hasPrefix(Key.qwenRegion) }) {
-                lines.append(tr("这份文件改了 DashScope 接入区域：润色与云端识别会改发到另一个区域的服务器（不同司法辖区）。不是自己选的请在「AI」页改回去。",
-                                "This file changed the DashScope region: polish and cloud recognition will be sent to servers in a different region (a different jurisdiction). Change it back on the AI tab if you did not choose it."))
+            // 区域 / 接入地址被改 = 收信主机换了一个司法辖区（润色与云端识别共用这一项）
+            if summary.notableChanges.contains(where: {
+                $0.hasPrefix(Key.qwenRegion) || $0.hasPrefix(Key.qwenApiHost)
+            }) {
+                lines.append(tr("这份文件改了百炼的接入地址：润色与云端识别会改发到另一台服务器（可能是另一个司法辖区）。不是自己填的请在「AI」页清空它，交回给自动探测。",
+                                "This file changed the Model Studio endpoint: polish and cloud recognition will be sent to a different server, possibly in a different jurisdiction. Clear it on the AI tab to hand the job back to auto-detection if you did not choose it."))
             }
             // 引擎被文件改成云端 = 从此每段录音都会上传。这句重话必须说
             if summary.notableChanges.contains(where: {

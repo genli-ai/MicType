@@ -10,7 +10,8 @@ import Foundation
 //   • 阿里云百炼（DashScope）的 Key 一把就管住润色和识别两件事，让用户为同一个控制台里的
 //     同一把 Key 粘两遍，只会粘出两份不一致的值（改了一处、另一处还是旧的，表现是随机 401）。
 //   • OpenAI 同理。
-// 区域设置（qwenRegion / qwenWorkspaceID）跟着一起共用，理由见 CloudASRSettings.alibabaRegion。
+// 接入地址（qwenAPIHost / qwenResolvedHost）跟着一起共用：同一台主机既跑润色也跑识别，
+// 理由见 AlibabaEndpoint。
 
 extension KeychainHelper {
 
