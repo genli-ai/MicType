@@ -57,6 +57,60 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
 
     // MARK: - 文件清单
 
+    /// HF 仓库里的一个文件（路径 + 字节数）。升级校验也照这张清单逐个核大小，
+    /// 所以解析必须和下载走同一段代码——两份实现早晚会对不上。
+    struct ManifestFile: Equatable {
+        let path: String
+        let size: Int64
+    }
+
+    /// HF `/api/models/<repo>/tree/main` 的响应 → 会下载的文件清单。
+    /// 纯函数（不联网、不碰磁盘）以便单测：跳过隐藏文件与 .md 文档，与下载行为逐条一致。
+    static func parseManifest(_ data: Data) -> [ManifestFile] {
+        guard let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+        var list: [ManifestFile] = []
+        for item in array {
+            guard (item["type"] as? String) == "file",
+                  let path = item["path"] as? String else { continue }
+            // 跳过隐藏文件和文档
+            if path.hasPrefix(".") || path.lowercased().hasSuffix(".md") { continue }
+            let size = (item["size"] as? Int64) ?? Int64((item["size"] as? Int) ?? 0)
+            list.append(ManifestFile(path: path, size: size))
+        }
+        return list
+    }
+
+    /// 取一个仓库的文件清单（镜像源顺序回退）。completion 在主线程，失败给 nil。
+    /// 供升级校验用——「清单里的文件是否都在本地、大小是否一致」是最便宜的一道验证。
+    static func fetchManifest(repo: String,
+                              hosts: [String] = defaultHosts,
+                              completion: @escaping ([ManifestFile]?) -> Void) {
+        func attempt(_ index: Int) {
+            guard index < hosts.count,
+                  let url = URL(string: "\(hosts[index])/api/models/\(repo)/tree/main") else {
+                DispatchQueue.main.async { completion(nil) }
+                return
+            }
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 30
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                guard error == nil,
+                      let http = response as? HTTPURLResponse, http.statusCode == 200,
+                      let data = data else {
+                    attempt(index + 1)
+                    return
+                }
+                let list = parseManifest(data)
+                guard !list.isEmpty else {
+                    attempt(index + 1)
+                    return
+                }
+                DispatchQueue.main.async { completion(list) }
+            }.resume()
+        }
+        attempt(0)
+    }
+
     private func fetchFileList() {
         guard hostIndex < hosts.count else {
             finishWithError(tr("无法获取模型文件清单，请检查网络", "Could not fetch the model file list — check your network"))
@@ -70,23 +124,17 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
                 guard let self = self, !self.cancelled else { return }
                 guard error == nil,
                       let http = response as? HTTPURLResponse, http.statusCode == 200,
-                      let data = data,
-                      let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                      let data = data else {
                     self.hostIndex += 1
                     self.fetchFileList()
                     return
                 }
-                var list: [(String, Int64)] = []
-                for item in array {
-                    guard (item["type"] as? String) == "file",
-                          let path = item["path"] as? String else { continue }
-                    // 跳过隐藏文件和文档
-                    if path.hasPrefix(".") || path.lowercased().hasSuffix(".md") { continue }
-                    let size = (item["size"] as? Int64) ?? Int64((item["size"] as? Int) ?? 0)
-                    list.append((path, size))
-                }
+                let list = Self.parseManifest(data).map { (path: $0.path, size: $0.size) }
                 guard !list.isEmpty else {
-                    self.finishWithError(tr("模型仓库为空或清单格式异常", "Model repo is empty or the manifest is malformed"))
+                    // 清单解析不出来（响应异常 / 仓库为空）就换下一个镜像；都试完了由上面那道
+                    // guard 给出「无法获取清单」——绝不因为一个镜像返回怪东西就判定仓库有问题
+                    self.hostIndex += 1
+                    self.fetchFileList()
                     return
                 }
                 self.files = list

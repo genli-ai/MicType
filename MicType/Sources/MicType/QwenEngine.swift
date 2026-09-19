@@ -6,17 +6,83 @@ struct QwenModelOption {
     let repo: String       // HuggingFace 仓库 ID
     let title: String
     let sizeNote: String
+    let languagesNote: String
 }
 
 enum QwenModels {
-    static var all: [QwenModelOption] { [
-        QwenModelOption(repo: "mlx-community/Qwen3-ASR-0.6B-6bit",
-                        title: tr("Qwen3-ASR 0.6B 6bit（推荐，快）", "Qwen3-ASR 0.6B 6-bit (recommended, fast)"),
-                        sizeNote: tr("约 860 MB", "~860 MB")),
-        QwenModelOption(repo: "mlx-community/Qwen3-ASR-1.7B-4bit",
-                        title: tr("Qwen3-ASR 1.7B 4bit（更准，稍慢）", "Qwen3-ASR 1.7B 4-bit (more accurate, slower)"),
-                        sizeNote: tr("约 1.1 GB", "~1.1 GB")),
-    ] }
+
+    /// 模型清单的来源。**目录驱动**：清单来自仓库根的 model-catalog.json（远端 → 缓存 →
+    /// App 内置 → 代码字面表），发新模型不需要发新版 App。
+    /// 这里留一个可替换的闭包只为单测能喂一份假目录，产品路径永远是 ModelCatalogStore。
+    static var catalogProvider: () -> [CatalogModel] = { ModelCatalogStore.shared.models }
+
+    /// 界面上可选的模型。目录为空（不该发生）时退回代码里的字面表；
+    /// 需要更高 App 版本的条目**不进下拉框**——列出一个装了也跑不起来的模型是在骗用户，
+    /// 它们改由「需要更新 MicType」那条提示负责（见 ModelUpgrader）。
+    static var all: [QwenModelOption] {
+        let models = availableModels
+        return models.map { option(for: $0) }
+    }
+
+    /// 目录里当前 App 能跑的模型
+    static var availableModels: [CatalogModel] {
+        let listed = catalogProvider()
+        let models = listed.isEmpty ? ModelCatalog.builtIn.models : listed
+        let version = UpdateChecker.currentVersion
+        let runnable = models.filter {
+            AppVersionCompare.satisfiesMinimum(appVersion: version, minimum: $0.minAppVersion)
+        }
+        // 一条都跑不了时宁可把目录原样列出来（老 App + 全新目录），也不要给用户一个空下拉框
+        return runnable.isEmpty ? models : runnable
+    }
+
+    static func option(for model: CatalogModel) -> QwenModelOption {
+        QwenModelOption(repo: model.repo,
+                        title: model.displayName.localized,
+                        sizeNote: sizeNote(bytes: model.sizeBytes),
+                        languagesNote: model.languagesNote.localized)
+    }
+
+    /// 字节数 → 界面上那句「约 862 MB」。十进制口径（和 HF 页面、Finder 一致）。
+    /// 0 / 负数（目录漏写 sizeBytes）→ 空字符串，绝不显示「约 0 MB」。
+    static func sizeNote(bytes: Int64) -> String {
+        guard bytes > 0 else { return "" }
+        if bytes >= 1_000_000_000 {
+            let gb = Double(bytes) / 1_000_000_000
+            return tr("约 ", "~") + String(format: "%.1f GB", gb)
+        }
+        let mb = Double(bytes) / 1_000_000
+        return tr("约 ", "~") + String(format: "%.0f MB", mb)
+    }
+
+    /// 模型目录下每一个存在的仓库目录（含只下了一半的）。清理要看的是磁盘真相，
+    /// 不是设置里写了什么——半个下载也会占几百 MB。
+    static func repoDirectories() -> [String] {
+        let fm = FileManager.default
+        guard let dirs = try? fm.contentsOfDirectory(at: Paths.modelsDir,
+                                                     includingPropertiesForKeys: [.isDirectoryKey]) else { return [] }
+        return dirs.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
+            .map { $0.lastPathComponent.replacingOccurrences(of: "__", with: "/") }
+    }
+
+    /// 已经下载完（目录里有 model.safetensors）的仓库 ID
+    static func installedRepos() -> [String] {
+        let fm = FileManager.default
+        return repoDirectories().filter { repo in
+            fm.fileExists(atPath: localDirectory(for: repo).appendingPathComponent("model.safetensors").path)
+        }
+    }
+
+    /// 一个模型目录占了多少字节（日志用；算不出来给 0）
+    static func directorySize(repo: String) -> Int64 {
+        let dir = localDirectory(for: repo)
+        guard let files = try? FileManager.default.subpathsOfDirectory(atPath: dir.path) else { return 0 }
+        return files.reduce(Int64(0)) { total, sub in
+            let attrs = try? FileManager.default.attributesOfItem(atPath: dir.appendingPathComponent(sub).path)
+            return total + ((attrs?[.size] as? Int64) ?? 0)
+        }
+    }
+
     static let defaultRepo = "mlx-community/Qwen3-ASR-0.6B-6bit"
     /// 更大的那一档。阿语上的差距远大于中英：Fleurs-ar 词错率 25.5%（0.6B）→ 17.0%（1.7B），
     /// Common Voice ar 46.0% → 38.0%（技术报告）。所以选阿语时要主动推荐它，而不是默默用小模型。
@@ -101,7 +167,12 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
     /// HF 上的 Qwen3-ASR 量化仓库普遍缺 tokenizer.json（swift-transformers 必需），
     /// 从 App 自带资源里补一份到模型目录
     private func ensureTokenizerFile() -> MTError? {
-        let dest = modelDirectory.appendingPathComponent("tokenizer.json")
+        ensureTokenizerFile(in: modelDirectory)
+    }
+
+    /// 同上，但对**任意**模型目录生效——升级校验要在切换设置之前先验新模型那一份
+    private func ensureTokenizerFile(in directory: URL) -> MTError? {
+        let dest = directory.appendingPathComponent("tokenizer.json")
         if FileManager.default.fileExists(atPath: dest.path) { return nil }
         guard let bundled = Bundle.main.url(forResource: "tokenizer", withExtension: "json",
                                             subdirectory: "QwenTokenizer") else {
@@ -169,6 +240,43 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
         _ = ensureLoadTask()
     }
 
+    /// 升级校验的最后一关：从**指定目录**（还没被选中的那个新模型）真跑一遍完整识别。
+    ///
+    /// 为什么非要真跑：文件齐、大小对、config.json 能解析，都只证明「下载没断」，
+    /// 证明不了权重能在这台机器上加载（量化格式不认、缺 tensor、MLX 版本对不上都是这么炸的）。
+    /// 一段 1 秒的合成音频跑完整条 加载 → log-mel → encoder → 解码 的链路，成本一次几秒，
+    /// 换来的是「敢不敢删掉旧模型」的依据——旧模型是用户唯一的退路，删错了他就没法听写了。
+    ///
+    /// 用一个**一次性实例**，不碰 loadTask：校验期间用户随时可能照常听写，正在用的那份模型
+    /// 一根头发都不许动。校验结束 flushMemoryPool() 把这几百 MB 还回去。
+    /// completion 在主线程回调，nil = 通过。
+    func verifyModel(directory: URL, samples: [Float], completion: @escaping (MTError?) -> Void) {
+        if let tokErr = ensureTokenizerFile(in: directory) {
+            DispatchQueue.main.async { completion(tokErr) }
+            return
+        }
+        Task {
+            let started = DispatchTime.now()
+            do {
+                let stt = try await Qwen3ASRSTT.loadWithWarmup(from: directory)
+                let result = try await stt.transcribe(audio: samples, language: nil,
+                                                     context: nil, temperature: 0.0)
+                // 只看「跑通了」，不看它把这段合成音听成了什么——合成音本来就没有内容。
+                // 长度进日志（不进内容），便于排查「加载成功但解码空转」这类怪事。
+                Log.info("Model verify transcription ok ms=\(Log.ms(since: started)) chars=\(result.text.count)")
+                Qwen3ASRSTT.flushMemoryPool()
+                DispatchQueue.main.async { completion(nil) }
+            } catch {
+                let message = String(error.localizedDescription.prefix(120))
+                Log.warn("Model verify transcription failed ms=\(Log.ms(since: started)): \(message)")
+                Qwen3ASRSTT.flushMemoryPool()
+                DispatchQueue.main.async {
+                    completion(MTError(tr("新模型无法加载：", "The new model failed to load: ") + message))
+                }
+            }
+        }
+    }
+
     func unloadModel() {
         loadTask = nil
         loadedDirPath = nil
@@ -225,7 +333,12 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
                 )
                 let cleaned = TextPostProcessor.cleanTranscript(result.text)
                 let final = TextPostProcessor.isVocabEcho(cleaned, terms: vocabTerms) ? "" : cleaned
-                DispatchQueue.main.async { completion(.success(final)) }
+                DispatchQueue.main.async {
+                    // 刚换过模型的话，「删掉旧模型」就等这一刻：新模型在真实听写里跑通过一次，
+                    // 旧的那份才不再是退路。绝不在切换设置的当下就删（见 ModelUpgrader）。
+                    ModelUpgrader.shared.noteSuccessfulTranscription()
+                    completion(.success(final))
+                }
             } catch {
                 let message = error.localizedDescription
                 DispatchQueue.main.async {
@@ -251,6 +364,12 @@ final class QwenEngine: SpeechEngine {
     func transcribePartial(samples: [Float],
                            completion: @escaping (String?, Int) -> Void) -> Task<Void, Never>? { nil }
     func unloadModel() {}
+    /// Intel 上没有引擎可验：直接失败，绝不让升级流程以为「验过了」而去删旧模型
+    func verifyModel(directory: URL, samples: [Float], completion: @escaping (MTError?) -> Void) {
+        DispatchQueue.main.async {
+            completion(MTError(tr("MicType 仅支持 Apple Silicon", "MicType requires Apple Silicon")))
+        }
+    }
     func transcribe(samples: [Float], completion: @escaping (Result<String, MTError>) -> Void) {
         DispatchQueue.main.async {
             completion(.failure(MTError(tr("MicType 仅支持 Apple Silicon", "MicType requires Apple Silicon"))))

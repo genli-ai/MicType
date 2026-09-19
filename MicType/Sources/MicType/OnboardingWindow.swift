@@ -331,6 +331,9 @@ private struct ModelPage: View {
     @ObservedObject var model: OnboardingModel
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var downloader = QwenModelDownloader.shared
+    /// 模型清单来自 model-catalog.json（远端 → 缓存 → 内置）。目录在启动后才到货，
+    /// 观察它才能让首启动这一页的下拉框跟着刷新，而不是永远显示内置那两档。
+    @ObservedObject private var catalogStore = ModelCatalogStore.shared
     @AppStorage(SettingsKeys.qwenModelRepo) private var repo = QwenModels.defaultRepo
     @State private var refreshTick = 0
     /// 只有"这一页点下载"完成后才自动翻页；进页时模型就在的老用户留在原地，否则上一步就回不来了
