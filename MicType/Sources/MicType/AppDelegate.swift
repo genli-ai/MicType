@@ -43,15 +43,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
-        // 悬浮窗上的「去配置」：直接落到设置窗口的「云端 AI」页，不让用户自己去翻标签
+        // 悬浮窗上的「去配置」：直接落到「云端 AI」那一页，不让用户自己从概览点进去
         dictation.onNeedAISettings = {
-            SettingsWindowController.shared.show(tab: .cloudAI)
+            SettingsWindowController.shared.show(tab: .cloud)
         }
 
         // 悬浮窗上的「去设置」：云端识别没填 Key 时落到「云端 AI」页——云端识别的开关
         // 和那把 Key 都在那里（「本地识别」页只剩麦克风、语言、词汇表、本机模型）
         dictation.onNeedRecognitionSettings = {
-            SettingsWindowController.shared.show(tab: .cloudAI)
+            SettingsWindowController.shared.show(tab: .cloud)
         }
 
         // 云端识别的 Key 统一到润色那把（qwen_api_key）：开发期存过旧账号的搬过来再删
@@ -377,7 +377,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 带去设置 → 本地识别：升级横幅在那里，按钮上写着这次要下多少
     @objc private func openModelUpgrade() {
         Log.info("Menu: open model upgrade banner")
-        SettingsWindowController.shared.show(tab: .localRecognition)
+        SettingsWindowController.shared.show(tab: .recognition)
     }
 
     /// 新模型要求更新的 App 版本：这条路只能先更新 MicType（关于页有「检查更新」）
@@ -387,7 +387,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openAISettings() {
-        SettingsWindowController.shared.show(tab: .cloudAI)
+        SettingsWindowController.shared.show(tab: .cloud)
     }
 
     @objc private func openLogsFolder() {

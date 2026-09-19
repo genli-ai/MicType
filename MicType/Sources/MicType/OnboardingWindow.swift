@@ -1013,8 +1013,10 @@ private struct TryItPage: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-                Text(tr("随时可以在 设置 → 通用 里重新打开这份引导。",
-                        "You can reopen this guide any time from Settings → General."))
+                // 页名跟着设置窗口走：4.0.2 的 Plan C 把「通用」改成了「输入」，
+                // 指路的句子指向一个不存在的页名比不指路更糟
+                Text(tr("随时可以在 设置 → 输入 里重新打开这份引导。",
+                        "You can reopen this guide any time from Settings → Input."))
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Spacer(minLength: 0)

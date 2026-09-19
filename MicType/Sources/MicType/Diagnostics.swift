@@ -108,7 +108,8 @@ enum Diagnostics {
                                               withTemplate: "<user>")
     }
 
-    private static var buildNumber: String {
+    /// 构建号。关于页也要报它（版本 + 构建是用户唯一能报给我们的身份），所以不是 private
+    static var buildNumber: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
     }
 

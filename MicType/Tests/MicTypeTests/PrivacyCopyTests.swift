@@ -162,19 +162,25 @@ final class PrivacyCopyTests: XCTestCase {
     }
 }
 
-/// 通用页的段序（v4.0 §4.4）：第一个控件必须是快捷键，界面语言必须在最后。
+/// 「输入」页的段序：第一个控件必须是快捷键，界面语言必须在最后。
 /// 值得一条测试：这次重排的全部产出就是"顺序"，而顺序是最容易在下一次改动里被顺手推回去的东西。
-final class GeneralSectionOrderTests: XCTestCase {
+final class InputSectionOrderTests: XCTestCase {
 
     func testOrderIsHotkeyFirstAndLanguageLast() {
-        XCTAssertEqual(GeneralSectionOrder.allCases,
-                       [.hotkey, .recording, .overlay, .behaviour, .permissions, .languageAndBackup])
-        XCTAssertEqual(GeneralSectionOrder.allCases.first, .hotkey)
-        XCTAssertEqual(GeneralSectionOrder.allCases.last, .languageAndBackup)
+        XCTAssertEqual(InputSectionOrder.allCases,
+                       [.hotkey, .overlay, .recording, .behaviour, .languageAndBackup])
+        XCTAssertEqual(InputSectionOrder.allCases.first, .hotkey)
+        XCTAssertEqual(InputSectionOrder.allCases.last, .languageAndBackup)
+    }
+
+    /// 权限不再是这一页的一段：缺权限是"现在用不了"，归概览顶上那条横幅管。
+    /// 钉住它是因为"顺手把权限搬回设置页"正是最容易发生的那次回退。
+    func testPermissionsAreNotASectionOfThisPage() {
+        XCTAssertEqual(InputSectionOrder.allCases.count, 5)
     }
 
     func testRawValuesAreContiguousFromZero() {
         // ForEach(id: \.self) 靠 rawValue 稳定排序；插新段落必须显式排到位置上
-        XCTAssertEqual(GeneralSectionOrder.allCases.map(\.rawValue), Array(0..<6))
+        XCTAssertEqual(InputSectionOrder.allCases.map(\.rawValue), Array(0..<5))
     }
 }

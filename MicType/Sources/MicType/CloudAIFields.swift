@@ -117,6 +117,10 @@ struct CloudRecognitionFields: View {
     /// 设置页给全套（探测接入地址 / 测试识别）；引导页只摆开关、说明和接入地址框——
     /// 首配的人手上还没有"上一次试通的那台"可以重新探测。
     var showsDiagnostics: Bool = true
+    /// 上传 / 计费 / 留存那几句（PrivacyCopy.cloudAlibabaLines）要不要逐句摆出来。
+    /// 引导页要（那是第一次做这个选择的地方）；设置页把它们收进段头那颗 ⓘ 里——
+    /// 回来改设置的人已经读过一遍，不该每次都被同样五行字推着往下滚（Plan C 的文案预算）。
+    var showsPrivacyLines: Bool = true
     /// 开关动过之后调用方要做的事（引导页据此重算"AI 现在跑不跑得起来"）
     var onEngineChange: (() -> Void)? = nil
 
@@ -171,7 +175,7 @@ struct CloudRecognitionFields: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if isOn {
+            if isOn, showsPrivacyLines {
                 // 上传、计费、留存、先开通模型、出错回落——这几句只出现在做这个选择的地方
                 ForEach(PrivacyCopy.cloudAlibabaLines, id: \.self) { line in
                     Text(line)
@@ -179,7 +183,7 @@ struct CloudRecognitionFields: View {
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-            } else {
+            } else if showsPrivacyLines {
                 Text(tr("默认关着：录音一个字节都不出这台 Mac。机器慢、录音长、或本机模型听不好你说的语言时才值得开。",
                         "Off by default: not a byte of audio leaves this Mac. Worth turning on when this Mac is slow, the takes are long, or the on-device model handles your language poorly."))
                     .font(.caption)

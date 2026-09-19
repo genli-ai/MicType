@@ -119,17 +119,26 @@ final class AISetupTests: XCTestCase {
         XCTAssertFalse(containsCJKOrFullWidth(en), en)
     }
 
-    // MARK: - 设置窗口的四页（按"跑在哪、谁付钱"这条轴命名）
+    // MARK: - 设置窗口的路由（概览 + 三个编辑页 + 关于）
 
-    /// 四页、四个名字，而且深链用的那两页必须叫得出"本地"与"云端"。
-    /// 写死在测试里是为了：下次想把它们改回「听写 / AI」的人，得先过一遍这条注释。
-    func testSettingsTabsAreNamedAlongTheLocalVersusCloudAxis() {
-        XCTAssertEqual(SettingsTab.allCases.count, 4)
-        XCTAssertEqual(SettingsTab.allCases, [.general, .localRecognition, .cloudAI, .about])
-        // 悬浮窗的「去配置」、菜单栏的「配置 AI…」、云端识别缺 Key 都落在这一页
-        XCTAssertEqual(SettingsTab.cloudAI.rawValue, "cloudAI")
-        // 模型升级横幅落在这一页
-        XCTAssertEqual(SettingsTab.localRecognition.rawValue, "localRecognition")
+    /// 五条路由，而且深链用的那三条必须还在。
+    /// 写死在测试里是为了：这几个名字是 AppDelegate 的菜单项、悬浮窗的「去配置」胶囊、
+    /// 模型升级横幅共同的落点，改名字之前得先过一遍这条注释。
+    func testSettingsRoutesAreOverviewPlusThreeEditorsAndAbout() {
+        XCTAssertEqual(SettingsRoute.allCases, [.overview, .input, .recognition, .cloud, .about])
+        // 悬浮窗的「去配置」、菜单栏的「配置 AI…」、云端识别缺 Key 都落在这一条
+        XCTAssertEqual(SettingsRoute.cloud.rawValue, "cloud")
+        // 模型升级横幅落在这一条
+        XCTAssertEqual(SettingsRoute.recognition.rawValue, "recognition")
+    }
+
+    /// 概览是首页，没有返回；其余四页都必须有自己的标题——顶栏上那颗「‹ 设置」旁边
+    /// 空着一块，等于告诉用户"你现在不知道自己在哪"
+    func testOnlyTheOverviewHasNoEditorTitle() {
+        XCTAssertNil(SettingsRoute.overview.editorTitle)
+        for route in SettingsRoute.allCases where route != .overview {
+            XCTAssertFalse(route.editorTitle?.isEmpty ?? true, route.rawValue)
+        }
     }
 
     /// 英文界面下选单里的标签同样不许夹中文或全角标点

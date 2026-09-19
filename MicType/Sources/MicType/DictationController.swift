@@ -681,6 +681,12 @@ final class DictationController {
         return head + segmenting + tail
     }
 
+    /// 一行版：只报上限本身。设置页的「录音」段只给一行（Plan C 的文案预算），
+    /// 上面那句完整的（分段、预警、收尾）收进段头那颗 ⓘ 里。数字同样来自常量。
+    static var recordingLimitShort: String {
+        tr("单次录音上限 ", "A take is capped at ") + minutesLabel(maxRecordingSeconds)
+    }
+
     /// 「10 分钟」/「10 minutes」。不足整分钟的按秒说（常量以后改成 90 s 也不会读成 2 分钟）
     static func minutesLabel(_ seconds: Double) -> String {
         guard seconds >= 60, seconds.truncatingRemainder(dividingBy: 60) == 0 else {
