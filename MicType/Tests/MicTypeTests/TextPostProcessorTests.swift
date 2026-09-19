@@ -113,4 +113,43 @@ final class TextPostProcessorTests: XCTestCase {
     func testDriftCheckRejectsEmptyPolishedText() {
         XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "今天开会", polished: "   "))
     }
+
+    // MARK: 空音频复读（3.2.2）
+
+    /// 默认口径要命中 ≥3 个词表词：正常音量那条路上不能因为一句话里出现一个词表词就丢掉
+    func testVocabEchoNeedsThreeHitsByDefault() {
+        XCTAssertTrue(TextPostProcessor.isVocabEcho("常用词汇：捷文", terms: ["捷文"]))
+        XCTAssertFalse(TextPostProcessor.isVocabEcho("捷文", terms: ["捷文"]))
+        XCTAssertTrue(TextPostProcessor.isVocabEcho("捷文、云术法、Rappel",
+                                                    terms: ["捷文", "云术法", "Rappel"]))
+    }
+
+    /// 近静音那一档放宽到 1：词表只有一两条的用户，默认口径一个都兜不住——
+    /// 没开口却被粘上一个热词，正是 3.2.2 要挡的那种事故
+    func testVocabEchoRelaxedToOneHitForFaintAudio() {
+        XCTAssertTrue(TextPostProcessor.isVocabEcho("捷文", terms: ["捷文"], minHits: 1))
+        // 真的说了一整句（词表词只是其中一个词）不能被当成复读
+        XCTAssertFalse(TextPostProcessor.isVocabEcho("帮我把捷文那份报告发出去",
+                                                     terms: ["捷文"], minHits: 1))
+    }
+
+    // MARK: 诊断信息脱敏
+
+    /// 日志尾巴会被「复制诊断信息」整段贴出去：绝对路径里的账户短名必须先换掉
+    func testDiagnosticsRedactsHomePath() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let line = "2026-01-01 [INFO] Update script=\(home)/Library/Application Support/MicType/u.sh"
+        let redacted = Diagnostics.redact(line)
+        XCTAssertFalse(redacted.contains(home))
+        XCTAssertTrue(redacted.contains("~/Library/Application Support/MicType/u.sh"))
+    }
+
+    /// 润色保真校验的失败原因只报个数，绝不带用户说过的数字本身（它会进日志 → 进诊断信息）
+    func testPolishDriftReasonNeverCarriesTheDigits() {
+        let reason = TextPostProcessor.polishDriftCheck(raw: "验证码是 4821", polished: "验证码是 4822")
+        XCTAssertNotNil(reason)
+        XCTAssertFalse(reason!.contains("4821"))
+        XCTAssertFalse(reason!.contains("4822"))
+        XCTAssertTrue(reason!.contains("digits changed"))
+    }
 }

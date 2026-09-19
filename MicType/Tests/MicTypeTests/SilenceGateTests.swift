@@ -99,6 +99,35 @@ final class SilenceGateTests: XCTestCase {
         XCTAssertLessThan(stats.rms, 0.01)
     }
 
+    // MARK: 开始音回声
+
+    /// App 自己的开始音会被同一只麦克风录进去。不刨掉这一段，判的就是 MicType 自己的"叮"，
+    /// 而不是用户开没开口——外放 + 阈值压到 0.006 之后，这一声足以把空录音顶成正常档。
+    func testStatsExcludesTheStartCueEcho() {
+        var samples = [Float](repeating: 0.0005, count: 16_000)   // 1 秒的室内本底噪声
+        for i in 0..<5_600 { samples[i] = 0.05 }                   // 开头 0.35s 的提示音回声
+        let all = SilenceGate.stats(samples)
+        XCTAssertEqual(SilenceGate.decide(peak: all.peak, rms: all.rms, duration: 1), .normal)
+        let gated = SilenceGate.stats(samples, excluding: 0..<5_600)
+        XCTAssertEqual(SilenceGate.decide(peak: gated.peak, rms: gated.rms, duration: 1), .silent)
+    }
+
+    /// 「按下即录」那条路上开始音推迟到手势确认才响，落在整段的中间——所以排除的是区间，
+    /// 不是"前 n 个采样"
+    func testStatsExcludesARangeInTheMiddle() {
+        var samples = [Float](repeating: 0.0005, count: 16_000)
+        for i in 8_000..<13_600 { samples[i] = 0.05 }
+        let gated = SilenceGate.stats(samples, excluding: 8_000..<13_600)
+        XCTAssertLessThan(gated.peak, SilenceGate.silentPeak)
+    }
+
+    /// 区间越界 / 把整段都盖住：和"什么都没录到"一样返回 (0, 0)，判静音
+    func testStatsWithEverythingExcluded() {
+        let stats = SilenceGate.stats([0.4, 0.5, 0.6], excluding: -10..<99)
+        XCTAssertEqual(stats.peak, 0)
+        XCTAssertEqual(stats.rms, 0)
+    }
+
     /// RMS 用 Double 累加：几百万个小平方项用 Float 累加会被吃掉，静音判据会跟着跑偏
     func testStatsAccumulatesWithoutPrecisionLoss() {
         let samples = [Float](repeating: 0.001, count: 2_000_000)

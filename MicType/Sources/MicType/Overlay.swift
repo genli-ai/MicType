@@ -31,8 +31,8 @@ final class OverlayState: ObservableObject {
     /// 布局回填再触发一次重绘，绕成死循环。
     var cancelHitRect: CGRect = .zero
 
-    /// 当前状态是否"可取消"——只有录音中和处理中才有取消这回事，
-    /// 一闪而过的成功/错误提示绝不能接鼠标（否则会吃掉用户投向目标应用的那一下点击）。
+    /// 当前状态是否"可取消"——只有录音中和处理中才有取消这回事。
+    /// 一闪而过的成功/错误提示不认点击：那一下多半是用户投向目标应用的。
     var isCancellable: Bool {
         switch mode {
         case .recording, .processing: return true
@@ -66,12 +66,9 @@ enum OverlayMetrics {
 /// HUD 材质 + behindWindow 混合 = 系统自己那层悬浮窗质感（纯黑块在深色壁纸上像个补丁）。
 /// 外观强制深色：材质跟随系统的话，浅色模式下背板会变亮，胶囊里的白字直接糊掉。
 private struct OverlayBackdrop: NSViewRepresentable {
-    enum CornerStyle {
-        case capsule
-        case rounded(CGFloat)
-    }
-
-    let corner: CornerStyle
+    /// 圆角半径。胶囊就是"半径 = 高度一半"，所以这里只要一个数字，不必分两种形状——
+    /// 分两种会让上层的 SwiftUI 形状也跟着分两个具体类型，identity 一变整层材质就被拆了重建。
+    let radius: CGFloat
 
     func makeNSView(context: Context) -> MaskedVisualEffectView {
         let view = MaskedVisualEffectView()
@@ -80,12 +77,12 @@ private struct OverlayBackdrop: NSViewRepresentable {
         view.state = .active
         view.isEmphasized = false
         view.appearance = NSAppearance(named: .darkAqua)
-        view.corner = corner
+        view.cornerRadius = radius
         return view
     }
 
     func updateNSView(_ view: MaskedVisualEffectView, context: Context) {
-        view.corner = corner
+        view.cornerRadius = radius
     }
 }
 
@@ -93,7 +90,7 @@ private struct OverlayBackdrop: NSViewRepresentable {
 /// 用 maskImage 而不是 layer.mask：behindWindow 混合走的是系统背板层，
 /// maskImage 是官方支持的那个裁剪口子（layer 掩码在这条路径上时灵时不灵）。
 private final class MaskedVisualEffectView: NSVisualEffectView {
-    var corner: OverlayBackdrop.CornerStyle = .capsule {
+    var cornerRadius: CGFloat = 0 {
         didSet { needsLayout = true }
     }
 
@@ -102,13 +99,8 @@ private final class MaskedVisualEffectView: NSVisualEffectView {
 
     override func layout() {
         super.layout()
-        let radius: CGFloat
-        switch corner {
-        case .capsule:
-            radius = bounds.height / 2
-        case .rounded(let r):
-            radius = min(r, min(bounds.width, bounds.height) / 2)
-        }
+        // 超过短边一半的半径钳到一半：再大也只是胶囊，画出来反而会错形
+        let radius = min(cornerRadius, min(bounds.width, bounds.height) / 2)
         // 尺寸和圆角都没变就别重画掩码：录音时每秒几十次布局，白画就是白烧 CPU
         guard bounds.size != appliedSize || radius != appliedRadius else { return }
         appliedSize = bounds.size
@@ -131,10 +123,17 @@ private final class MaskedVisualEffectView: NSVisualEffectView {
     }
 }
 
-/// 胶囊的全部外观：投影 + 材质 + 压暗层 + 发丝边
-private struct CapsuleChrome<S: InsettableShape>: View {
-    let shape: S
-    let corner: OverlayBackdrop.CornerStyle
+/// 胶囊的全部外观：投影 + 材质 + 压暗层 + 发丝边。
+/// 形状永远是 RoundedRectangle 这一个具体类型（半径给到高度一半就是胶囊）：
+/// 早先按"有没有草稿"在 Capsule / RoundedRectangle 之间切，两个不同的泛型具体类型
+/// 会改变 SwiftUI 的 identity，草稿一出现整棵子树连同 NSVisualEffectView 一起被拆了重建
+/// （behindWindow 混合不跟着淡入，背板会闪一下，掩码缓存也每次归零）。
+private struct CapsuleChrome: View {
+    let radius: CGFloat
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: radius, style: .circular)
+    }
 
     var body: some View {
         ZStack {
@@ -143,7 +142,7 @@ private struct CapsuleChrome<S: InsettableShape>: View {
             // 这层实心图形本身会被材质盖住，只有溢出到外面的投影看得见。
             shape.fill(Color.black.opacity(0.9))
                 .shadow(color: .black.opacity(0.3), radius: 12, x: 0, y: 4)
-            OverlayBackdrop(corner: corner)
+            OverlayBackdrop(radius: radius)
             // 压暗：材质在浅色壁纸上会偏亮，补一层暗色保证白字的对比度永远够
             shape.fill(Color.black.opacity(0.3))
             shape.strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
@@ -156,9 +155,13 @@ private struct CapsuleChrome<S: InsettableShape>: View {
 struct OverlayView: View {
     @ObservedObject var state: OverlayState
 
+    /// 系统「减弱动态效果」：开了就不缩放、胶囊改尺寸不插值、波形也不插值。
+    /// body 每次重算都重读一次，所以最迟下一次悬浮窗现身就生效。
+    private var reduceMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+
     var body: some View {
-        // 系统「减弱动态效果」：不缩放（下面的 scaleEffect 直接给 1）
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         VStack(spacing: 6) {
             row
             if !state.draftText.isEmpty {
@@ -174,27 +177,26 @@ struct OverlayView: View {
                     .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: state.draftText)
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
         .frame(minWidth: 160, minHeight: 44)
         .background(capsuleBackground)
+        // 动画挂在背板外面：挂在 VStack 上时只有文字在动，背板尺寸是直接跳一下。
+        // 「减弱动态效果」开着就整个不插值——胶囊被草稿撑高是这个界面里动得最大的一处
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: state.draftText)
         .padding(OverlayMetrics.contentInset)
         .opacity(state.presented ? 1 : 0)
         .scaleEffect(state.presented || reduceMotion ? 1 : 0.94,
                      anchor: state.topAligned ? .top : .bottom)
     }
 
-    /// 没草稿时保持原来的胶囊；有草稿时换成圆角矩形——两行文字装进胶囊里
-    /// 左右会被弧边啃掉，读起来别扭。
+    /// 没草稿时是胶囊（半径 = 高度一半），有草稿时收成 18pt 圆角矩形——两行文字装进胶囊里
+    /// 左右会被弧边啃掉，读起来别扭。半径由 GeometryReader 量着算，形状类型始终不变。
     /// 圆角一律用 .circular：材质那层的掩码是 NSBezierPath 画的圆弧，
     /// 这边改成 .continuous 会跟背板边缘错开一线。
-    @ViewBuilder private var capsuleBackground: some View {
-        if state.draftText.isEmpty {
-            CapsuleChrome(shape: Capsule(style: .circular), corner: .capsule)
-        } else {
-            CapsuleChrome(shape: RoundedRectangle(cornerRadius: 18, style: .circular),
-                          corner: .rounded(18))
+    private var capsuleBackground: some View {
+        GeometryReader { geo in
+            CapsuleChrome(radius: state.draftText.isEmpty ? geo.size.height / 2 : 18)
         }
     }
 
@@ -212,7 +214,7 @@ struct OverlayView: View {
                             .frame(width: 3, height: 5 + 23 * CGFloat(state.levels[i]))
                     }
                 }
-                .animation(.linear(duration: 0.1), value: state.levels)
+                .animation(reduceMotion ? nil : .linear(duration: 0.1), value: state.levels)
                 Text(label)
                     .font(.callout.weight(.medium))
                     .foregroundColor(.white.opacity(0.85))
@@ -251,9 +253,9 @@ struct OverlayView: View {
 }
 
 /// 胶囊右端的「⎋ 取消」：既是"出口在这里"的说明，也是真能点的按钮。
-/// 点击不走 SwiftUI 手势——悬浮窗所在的 app 没被激活时，SwiftUI 收到的第一下会被
-/// 系统当成"激活窗口"吞掉；命中测试与点击统一交给 OverlayHitView（见那里的注释）。
-/// 这里只负责长相，外加把自己的位置量出来回填给命中测试用。
+/// 点击不走 SwiftUI 手势，也不走面板自己的命中测试——面板整块永远 ignoresMouseEvents，
+/// 那一下点击由 OverlayController 的全局鼠标监听按屏幕坐标判（见 installCancelMonitors）。
+/// 这里只负责长相，外加把自己的位置量出来回填给命中判定用。
 private struct CancelChip: View {
     let state: OverlayState
 
@@ -272,47 +274,6 @@ private struct CancelChip: View {
                     return Color.clear
                 }
             )
-    }
-}
-
-// MARK: - 面板内容视图（命中测试）
-
-/// 只有「⎋ 取消」那一小块接鼠标，其余一律 hitTest 返回 nil：
-/// 胶囊本身不吃点击，用户投向目标应用的那一下永远打得到。
-private final class OverlayHitView: NSView {
-    /// 取消按钮在 SwiftUI 坐标系（原点左上）里的位置
-    var cancelRect: () -> CGRect = { .zero }
-    /// 当前是不是可取消状态（与 panel.ignoresMouseEvents 双保险）
-    var isCancellable: () -> Bool = { false }
-    var onCancel: (() -> Void)?
-
-    /// SwiftUI 的 y 轴朝下、NSView 默认朝上，翻过来才是同一块地方；
-    /// 小按钮再给 4pt 容错，别让用户点三次才中
-    private var hitFrame: CGRect {
-        let rect = cancelRect()
-        guard !rect.isEmpty else { return .zero }
-        return CGRect(x: rect.minX,
-                      y: bounds.height - rect.maxY,
-                      width: rect.width,
-                      height: rect.height)
-            .insetBy(dx: -4, dy: -4)
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard isCancellable() else { return nil }
-        return hitFrame.contains(convert(point, from: nil)) ? self : nil
-    }
-
-    /// MicType 没被激活时点一下就要生效：默认 first mouse 只用来激活窗口，那一下会被吃掉
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-    /// 吞掉 mouseDown，保证 mouseUp 还送到这里（默认实现会把事件甩给响应链）
-    override func mouseDown(with event: NSEvent) {}
-
-    override func mouseUp(with event: NSEvent) {
-        // 按下之后拖出去再松手不算点击，和系统按钮一个脾气
-        guard hitFrame.contains(convert(event.locationInWindow, from: nil)) else { return }
-        onCancel?()
     }
 }
 
@@ -365,21 +326,18 @@ final class OverlayController {
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = false
-        // 默认不接鼠标；只有录音/处理中（有取消可点）才在 applyMousePolicy 里放开
+        // 永远不接鼠标。**别为了"能点取消"把它放开**：ignoresMouseEvents 一旦为 false，
+        // 窗口服务器就按这块面板画出来的像素把点击投给 MicType，面板内的 hitTest 返回 nil
+        // 只是"没有视图认领"，事件到此为止，下面的应用永远收不到——用户在聊天输入框里
+        // 点一下定位光标、或者在胶囊上滚一下滚轮，全被这层悄悄吃掉（默认位置正压着输入框）。
+        // 「⎋ 取消」那一小块改由全局鼠标监听按屏幕坐标判（installCancelMonitors）。
         p.ignoresMouseEvents = true
         p.hidesOnDeactivate = false
         p.isReleasedWhenClosed = false
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
-        let container = OverlayHitView(frame: p.contentRect(forFrameRect: p.frame))
+        let container = NSView(frame: p.contentRect(forFrameRect: p.frame))
         container.autoresizingMask = [.width, .height]
-        container.cancelRect = { [weak self] in self?.state.cancelHitRect ?? .zero }
-        container.isCancellable = { [weak self] in self?.state.isCancellable ?? false }
-        container.onCancel = { [weak self] in
-            guard let self = self else { return }
-            Log.info("Overlay cancel tapped")
-            self.onCancelTapped?()
-        }
 
         let hosting = NSHostingView(rootView: OverlayContainer(state: state))
         hosting.frame = container.bounds
@@ -388,22 +346,40 @@ final class OverlayController {
 
         p.contentView = container
         panel = p
+        #if DEBUG
+        // 重建路径漏掉 close() 的话，旧面板会连着 NSHostingView 一直挂在 NSApp 的窗口表上
+        assert(NSApp.windows.filter { $0 is OverlayPanel }.count <= 1,
+               "悬浮窗面板泄漏：重建时必须 close() 旧的那个")
+        #endif
         return p
     }
 
-    private func position(_ p: NSPanel) {
+    /// 本轮锚定下来的面板左下角。一轮里 present() 会被调好几次（正在听 → 识别中 → 润色中 →
+    /// 最后那句提示），`.nearCursor` 要是每次都重新读指针，这几次之间用户的鼠标早挪走了：
+    /// 2.5 秒的错误提示会画在他当下的指针位置，而不是他正盯着的插入点；更要命的是他把指针
+    /// 移上来准备点「⎋ 取消」的那一刻正好换阶段，面板会以新指针为基准再往上跳，可点区从
+    /// 指针底下溜走。所以只在"这一轮第一次现身"时量一次，本轮后面一律复用。
+    private var latchedOrigin: CGPoint?
+
+    private func position(_ p: NSPanel, relocate: Bool) {
+        let choice = Settings.shared.overlayPosition
+        // 顶部居中时胶囊贴面板顶边，草稿往下长；另外两个位置贴底，草稿往上长
+        state.topAligned = (choice == .topCenter)
+        if !relocate, let origin = latchedOrigin {
+            p.setFrameOrigin(origin)
+            return
+        }
         // 多屏：跟随鼠标所在屏幕（用户正在操作的那块屏），固定主屏会让悬浮窗"消失"在别的屏上
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
             ?? NSScreen.main ?? NSScreen.screens.first
         guard let frame = screen?.visibleFrame else { return }
-        let choice = Settings.shared.overlayPosition
-        // 顶部居中时胶囊贴面板顶边，草稿往下长；另外两个位置贴底，草稿往上长
-        state.topAligned = (choice == .topCenter)
-        p.setFrameOrigin(OverlayController.panelOrigin(position: choice,
-                                                       panelSize: p.frame.size,
-                                                       visibleFrame: frame,
-                                                       mouse: mouse))
+        let origin = OverlayController.panelOrigin(position: choice,
+                                                   panelSize: p.frame.size,
+                                                   visibleFrame: frame,
+                                                   mouse: mouse)
+        latchedOrigin = origin
+        p.setFrameOrigin(origin)
     }
 
     /// 面板左下角坐标。纯函数（只吃几何量、不碰 AppKit 状态），位置策略与边界钳制靠单测守。
@@ -487,8 +463,8 @@ final class OverlayController {
             guard let self = self, self.hideGeneration == generation,
                   self.processingStartedAt != nil else { return }
             self.state.mode = .processing(self.processingText())
-            // 回到处理中就又能点取消了（闪提示期间鼠标是放行的）
-            if let p = self.panel { self.applyMousePolicy(p) }
+            // 回到处理中就又能点取消了（闪提示期间不认点击）
+            self.updateCancelMonitors()
         }
     }
 
@@ -524,10 +500,80 @@ final class OverlayController {
         processingLabel = ""
     }
 
-    /// 只在"有取消可点"时接鼠标。一闪而过的成功/错误提示如果接鼠标，
-    /// 用户正要点目标应用的那一下就会被悬浮窗吃掉。
-    private func applyMousePolicy(_ p: NSPanel) {
-        p.ignoresMouseEvents = !state.isCancellable
+    // MARK: 点「⎋ 取消」
+
+    /// 按下那一刻量到的可点矩形（屏幕坐标）。按下与松手之间胶囊完全可能重排——
+    /// 草稿刷新、2 分钟软提示、处理中每秒追加的秒数都会改胶囊宽度，右端的取消按钮跟着横移——
+    /// 拿松手时的新几何去判"有没有拖出去"，这一下就被静默丢掉了（日志里都看不见）。
+    private var pressedCancelRect: CGRect?
+    private var globalMouseMonitor: Any?
+    private var localMouseMonitor: Any?
+
+    /// 「⎋ 取消」此刻在屏幕上的可点矩形。SwiftUI 的 y 轴朝下、屏幕坐标朝上，翻过来才是
+    /// 同一块地方；小按钮再给 4pt 容错，别让用户点三次才中。
+    private func cancelScreenRect() -> CGRect? {
+        guard state.isCancellable, let p = panel, p.isVisible else { return nil }
+        let rect = state.cancelHitRect
+        guard !rect.isEmpty else { return nil }
+        let frame = p.frame
+        return CGRect(x: frame.minX + rect.minX,
+                      y: frame.minY + (frame.height - rect.maxY),
+                      width: rect.width,
+                      height: rect.height)
+            .insetBy(dx: -4, dy: -4)
+    }
+
+    /// 只在"有取消可点"时装监听，其余时候一个鼠标事件都不看。
+    private func updateCancelMonitors() {
+        if state.isCancellable, let p = panel, p.isVisible {
+            installCancelMonitors()
+        } else {
+            removeCancelMonitors()
+        }
+    }
+
+    /// 用全局 + 本地鼠标监听来接这一下，而不是把面板设成 ignoresMouseEvents = false：
+    /// 后者会让整块面板（包括胶囊画出来的每一个像素）截走点击和滚轮，而它默认就停在
+    /// 聊天/编辑框上方。监听只是"看一眼"，不消费事件——所以点击照样落到下面的应用里，
+    /// 代价是点取消的同时也会在目标应用里点一下（多半就是输入框，无害），换来的是
+    /// 胶囊其余部分彻底不挡路。全局监听只收别的 App 的事件，MicType 自己在前台时靠本地那条。
+    private func installCancelMonitors() {
+        guard globalMouseMonitor == nil, localMouseMonitor == nil else { return }
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) {
+            [weak self] event in
+            self?.handleCancelMouse(event)
+        }
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) {
+            [weak self] event in
+            self?.handleCancelMouse(event)
+            return event      // 绝不吞：本地事件还要照常送给 MicType 自己的窗口
+        }
+    }
+
+    private func removeCancelMonitors() {
+        if let m = globalMouseMonitor { NSEvent.removeMonitor(m) }
+        if let m = localMouseMonitor { NSEvent.removeMonitor(m) }
+        globalMouseMonitor = nil
+        localMouseMonitor = nil
+        pressedCancelRect = nil
+    }
+
+    private func handleCancelMouse(_ event: NSEvent) {
+        let location = NSEvent.mouseLocation
+        switch event.type {
+        case .leftMouseDown:
+            // 按下时把矩形定格：之后胶囊怎么重排都不影响这一下的判定
+            pressedCancelRect = cancelScreenRect().flatMap { $0.contains(location) ? $0 : nil }
+        case .leftMouseUp:
+            let pressed = pressedCancelRect
+            pressedCancelRect = nil
+            // 按下之后拖出去再松手不算点击，和系统按钮一个脾气
+            guard let rect = pressed, rect.contains(location), state.isCancellable else { return }
+            Log.info("Overlay cancel tapped")
+            onCancelTapped?()
+        default:
+            break
+        }
     }
 
     /// 统一的显示入口：定位 → 置顶 → 回读真实状态 → 入场动画。
@@ -536,18 +582,25 @@ final class OverlayController {
     /// 任一不健康就整个重建 panel：新建的 panel 必然落在当前活跃 Space。
     private func present(context: String) {
         var p = ensurePanel()
-        position(p)
         // 入场动画只在"这一轮第一次现身"时放：录音→处理中这种状态切换不该再闪一次；
-        // 正在淡出（presented 已经是 false）的话算重新入场，把它拉回来
+        // 正在淡出（presented 已经是 false）的话算重新入场，把它拉回来。
+        // 位置也跟着这个判断走：同一轮里不重新锚定（见 latchedOrigin）
         let entering = !p.isVisible || !state.presented
+        position(p, relocate: entering)
         if entering && !reduceMotion { state.presented = false }
         p.orderFrontRegardless()
         if !p.isVisible || !p.isOnActiveSpace {
             Log.warn("Overlay \(context) unhealthy (visible=\(p.isVisible) onActiveSpace=\(p.isOnActiveSpace)) — rebuilding panel")
-            p.orderOut(nil)
+            // orderOut 只是下屏：窗口仍挂在 NSApp 的窗口表上，而 isReleasedWhenClosed = false
+            // 意味着 panel 置 nil 之后也没人再放手——旧面板连着它的 NSHostingView 和那份
+            // 订阅 OverlayState 的 SwiftUI 子树永远留着（还带一个 behindWindow 的材质视图）。
+            // 全屏应用下这条重建路高发，攒起来就是只增不减的内存。close() 才是摘下来的那一下，
+            // 先清 contentView 好让 hosting view 立刻断开订阅。
+            p.contentView = nil
+            p.close()
             panel = nil
             p = ensurePanel()
-            position(p)
+            position(p, relocate: false)
             p.orderFrontRegardless()
         }
         if entering {
@@ -565,7 +618,7 @@ final class OverlayController {
                 }
             }
         }
-        applyMousePolicy(p)
+        updateCancelMonitors()
         Log.overlayShown(context: context, panel: p)
     }
 
@@ -599,7 +652,8 @@ final class OverlayController {
         endProcessing()
         state.draftText = ""
         state.cancelHitRect = .zero
-        panel?.ignoresMouseEvents = true
+        removeCancelMonitors()
+        latchedOrigin = nil
         guard let p = panel, p.isVisible, !reduceMotion else {
             state.presented = false
             panel?.orderOut(nil)

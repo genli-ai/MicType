@@ -105,23 +105,6 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
         }
     }
 
-    /// 空音频幻觉检测：模型对无声输入会把热词上下文"复读"成识别结果。
-    /// 判定：输出以"常用词汇"开头，或命中 ≥3 个词表词且去掉词表词后几乎不剩内容。
-    private static func isVocabEcho(_ text: String, terms: [String]) -> Bool {
-        guard !text.isEmpty else { return false }
-        if text.hasPrefix("常用词汇") { return true }
-        guard terms.count >= 3 else { return false }
-        var residue = text
-        var hits = 0
-        for term in terms where residue.contains(term) {
-            hits += 1
-            residue = residue.replacingOccurrences(of: term, with: "")
-        }
-        guard hits >= 3 else { return false }
-        residue = residue.filter { !"、，,。.；; ：:".contains($0) }
-        return residue.count <= max(2, text.count / 10)
-    }
-
     /// 词汇表直接作为热词上下文喂给模型（decoder 层的第一道纠正）
     private static func hotwordContext(terms: [String]) -> String? {
         guard !terms.isEmpty else { return nil }
@@ -159,7 +142,7 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
                 let elapsed = Log.ms(since: started)
                 if Task.isCancelled { return }
                 let cleaned = TextPostProcessor.cleanTranscript(result.text)
-                let text = Self.isVocabEcho(cleaned, terms: vocabTerms) ? "" : cleaned
+                let text = TextPostProcessor.isVocabEcho(cleaned, terms: vocabTerms) ? "" : cleaned
                 DispatchQueue.main.async { completion(text, elapsed) }
             } catch {
                 let elapsed = Log.ms(since: started)
@@ -227,7 +210,7 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
                     temperature: 0.0
                 )
                 let cleaned = TextPostProcessor.cleanTranscript(result.text)
-                let final = Self.isVocabEcho(cleaned, terms: vocabTerms) ? "" : cleaned
+                let final = TextPostProcessor.isVocabEcho(cleaned, terms: vocabTerms) ? "" : cleaned
                 DispatchQueue.main.async { completion(.success(final)) }
             } catch {
                 let message = error.localizedDescription

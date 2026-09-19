@@ -266,6 +266,36 @@ private struct PermissionBadge: View {
 
 // MARK: - 麦克风自检
 
+/// 麦克风自检此刻在不在跑。为什么要有这么一个全局：自检和主录音是各自独立的 AVAudioEngine，
+/// 抢的是同一只麦克风。自检这边一直知道要避让主流程（AppDelegate.isDictationBusy），
+/// 反过来主流程却完全看不见自检——用户在设置里点完「测试麦克风」顺手按了热键，两路 tap
+/// 同时开着：电平条量的是他正在听写的那句话，3 秒到点还会给出一句与本次自检无关的结论。
+/// 只在主线程读写（自检的起止、主流程的起录都在主线程）。
+enum MicTest {
+
+    private(set) static var isRunning = false
+    /// 自检登记的收手闭包。主流程起录时用它把自检掐掉——用户正要说的那句话比一次自检重要得多
+    private static var stopHandler: (() -> Void)?
+
+    static func began(stop: @escaping () -> Void) {
+        isRunning = true
+        stopHandler = stop
+    }
+
+    static func ended() {
+        isRunning = false
+        stopHandler = nil
+    }
+
+    /// 正在自检就让位给听写。返回是否真的让了位（只给日志用）
+    @discardableResult
+    static func yieldToDictation() -> Bool {
+        guard isRunning, let stop = stopHandler else { return false }
+        stop()
+        return true
+    }
+}
+
 /// 麦克风自检（路线图 P12）：借 AudioRecorder 跑一段 3 秒录音，只读电平——
 /// 采样收上来立刻丢掉，不送识别、不落盘、不进历史。
 /// 为什么值得做：选错麦克风这件事，用户通常是在真的要说话的时候才发现的（说完一段，什么都没出来）。
@@ -295,8 +325,7 @@ private final class MicTestSession: ObservableObject {
         guard !isRunning else { return }
         // 主流程正在录音/出结果时不抢麦克风：用户正说着的话比一次自检重要得多
         guard !AppDelegate.isDictationBusy else {
-            message = tr("正在录音或处理中，稍后再测",
-                         "Busy recording — try again in a moment")
+            message = busyMessage
             return
         }
         message = tr("请用平常的音量说一句话…", "Say something at your normal volume…")
@@ -307,8 +336,18 @@ private final class MicTestSession: ObservableObject {
                                   "Microphone permission denied — enable MicType in System Settings › Privacy & Security › Microphone")
                 return
             }
+            // 上面那次判定是在权限回调之前做的。首次授权的系统弹窗能挂好几秒，这期间用户
+            // 完全来得及按热键开始听写，所以真正起录前必须再查一次。
+            guard !AppDelegate.isDictationBusy else {
+                self.message = self.busyMessage
+                return
+            }
             self.begin()
         }
+    }
+
+    private var busyMessage: String {
+        tr("正在录音或处理中，稍后再测", "Busy recording — try again in a moment")
     }
 
     /// 结论文字是一次性生成的快照，切语言不会自己刷新 → 切换时清掉（3.1.1 的老坑）
@@ -323,7 +362,13 @@ private final class MicTestSession: ObservableObject {
     private func begin() {
         // 回调必须在 start() 之前设好：AudioRecorder 装 tap 那一刻就把它们快照给音频线程了
         recorder.onLevel = { [weak self] value in
-            DispatchQueue.main.async { self?.level = value }
+            // 和 onPeak 一样要查 isRunning：tap 回调在音频线程，async 回主线程时 finish()
+            // 可能已经把电平条归零了，在途的那一两块会把它写回非零——测试早结束了，
+            // 条子却停在半格上，看着像麦克风还在收音
+            DispatchQueue.main.async {
+                guard let self = self, self.isRunning else { return }
+                self.level = value
+            }
         }
         recorder.onPeak = { [weak self] value in
             DispatchQueue.main.async {
@@ -344,6 +389,10 @@ private final class MicTestSession: ObservableObject {
             return
         }
         isRunning = true
+        MicTest.began { [weak self] in
+            self?.finish(note: tr("已让位给这次听写，稍后再测",
+                                  "Stopped — dictation is using the microphone"))
+        }
         run += 1
         let token = run
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.seconds) { [weak self] in
@@ -357,6 +406,7 @@ private final class MicTestSession: ObservableObject {
         guard isRunning else { return }
         _ = recorder.stop()
         isRunning = false
+        MicTest.ended()
         level = 0
         run += 1     // 让还没到点的那个定时收尾作废
         if let note = note {
@@ -544,8 +594,8 @@ private struct RecognitionTab: View {
                             "No sessions recorded yet — dictate a few times and this will fill in."))
                         .foregroundColor(.secondary)
                 }
-                Text(tr("识别与插入都在本机完成；润色那一段主要取决于到大模型接口的网络往返，和这台 Mac 快慢无关。\n只统计数字，不保存任何听写内容。",
-                        "Recognition and insertion run on this Mac; the polish figure is network-bound — it is dominated by the round trip to your model endpoint, not by this machine.\nOnly timings are stored — never any transcribed text."))
+                Text(tr("识别与插入都在本机完成；「模型」那一段是到大模型接口的网络往返（轻点是润色，按住是指令），和这台 Mac 快慢无关，后面括号里是它实际统计了几轮。\n只统计数字，不保存任何听写内容。",
+                        "Recognition and insertion run on this Mac; the “Model” figure is the network round trip to your model endpoint (polish when you tap, the command model when you hold) — not bound by this machine. The number in brackets is how many rounds actually went through it.\nOnly timings are stored — never any transcribed text."))
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -909,8 +959,8 @@ private struct AboutTab: View {
                         "Only with AI polish enabled is the transcribed text sent to the model endpoint you configure."))
                 Text(tr("听写历史以明文保存在本机 Application Support 目录，最多 200 条：可在 设置 → 通用 关掉记录，或在菜单栏「最近记录」里清空、逐条删除。",
                         "Transcripts are kept in plain text on this Mac (up to 200): turn recording off in Settings → General, or clear and delete them from Recent Transcripts in the menu bar."))
-                Text(tr("「复制诊断信息」只包含版本、系统、芯片、设置摘要、最近的耗时数字和今天的日志尾巴——不含 API Key，也不含任何听写内容，可以放心贴给别人。",
-                        "“Copy diagnostics” includes only the version, system, chip, a settings summary, recent timings and today's log tail — never your API key and never any transcribed text, so it is safe to paste to someone."))
+                Text(tr("「复制诊断信息」只包含版本、系统、芯片、设置摘要、最近的耗时数字和今天的日志尾巴（日志里的路径和账户名已脱敏）——不含 API Key，也不含任何听写内容，可以放心贴给别人。",
+                        "“Copy diagnostics” includes only the version, system, chip, a settings summary, recent timings and today's log tail (paths and your account name in it are redacted) — never your API key and never any transcribed text, so it is safe to paste to someone."))
             }
             .font(.caption)
             .foregroundColor(.secondary)

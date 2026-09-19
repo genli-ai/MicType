@@ -60,6 +60,11 @@ final class DictationController {
     /// 否则用户还没开口，静音自动停就按"说完了"把录音收了；预览那道 speechDetected 闸门也会
     /// 被骗过去，拿一段近静音去解码（空音频最容易诱发热词复读）。
     private var levelGateUntil: Date?
+    /// 开始音回声在**整段录音**里的采样区间（nil = 没响过开始音）。levelGateUntil 那道闸门只管
+    /// 实时的 speechDetected 判定，对松手之后 SilenceGate 扫整段缓冲毫无作用——不把这段刨掉，
+    /// 外放时判的就是 MicType 自己的"叮"而不是用户的声音。
+    /// 用区间而不是"前 n 个采样"：「按下即录」那条路上开始音推迟到手势确认才响，落在整段中间。
+    private var cueEchoRange: Range<Int>?
     /// 本次录音生效的静音自动停秒数（录音开始时取一次快照：录到一半改设置不该影响这一段）
     private var autoStopSilence: Double = 0
     /// 会话代数：每开一轮、每取消一次都自增。所有异步回调（ASR / 润色 / 指令 / 选区兜底）
@@ -206,8 +211,9 @@ final class DictationController {
         guard phase == .recording, pressSession, !pressRevealed else { return }
         pressRevealed = true
         // 开始音只能放在这里。代价是它会被已经在录的麦克风收进去一小段（≤0.6s 处的一声"叮"）——
-        // 比"每次把热键当修饰键用都响一声"可接受得多。回声不会骗过静音门：armStartCueGate()
-        // 随即开一道闸门，这一声期间的电平一律不算"听到人声"。
+        // 比"每次把热键当修饰键用都响一声"可接受得多。紧接着的 armStartCueGate() 开一道闸门：
+        // 这一声期间的电平既不算"听到人声"（实时判定），对应的采样区间也会在松手时
+        // 从静音闸门的统计里刨掉（否则外放时判的是自己的提示音）。
         Sounds.playStart()
         armStartCueGate()
         overlay.showRecording(label: currentRecordingLabel())
@@ -219,9 +225,15 @@ final class DictationController {
     private func armStartCueGate() {
         guard Settings.shared.playSounds else {
             levelGateUntil = nil
+            cueEchoRange = nil
             return
         }
-        levelGateUntil = Date().addingTimeInterval(Self.startCueGateSeconds)
+        let now = Date()
+        levelGateUntil = now.addingTimeInterval(Self.startCueGateSeconds)
+        // 同一道闸门换算成采样下标，留给 finishRecording 里的 SilenceGate 用
+        guard let started = recordingStartedAt else { return }
+        let from = max(0, now.timeIntervalSince(started))
+        cueEchoRange = Int(from * 16000)..<Int((from + Self.startCueGateSeconds) * 16000)
     }
 
     /// 按下沿记下的拦路问题，等手势确认了才提示；同一问题 10 秒内只提示一次。
@@ -719,6 +731,11 @@ final class DictationController {
             // 「按下即录」是唯一的例外：按下这一刻还不知道用户是要说话还是只把热键当修饰键用，
             // 所以开始音推迟到 revealPressSession()（手势确认之后）。
             if !fromPress { Sounds.playStart() }
+            // 设置里的「测试麦克风」可能正开着另一路录音（两路 AVAudioEngine 抢同一只麦克风）。
+            // 用户按热键就是要说话，自检让位
+            if MicTest.yieldToDictation() {
+                Log.info("Mic test stopped — dictation takes the microphone")
+            }
             do {
                 try self.recorder.start()
             } catch {
@@ -738,6 +755,7 @@ final class DictationController {
             // 上面刚响过的开始音会被这只麦克风录进去 → 开一道回声闸门。
             // 「按下即录」的那一声推迟到 revealPressSession()，闸门也在那里开。
             self.levelGateUntil = nil
+            self.cueEchoRange = nil
             if !fromPress { self.armStartCueGate() }
             self.autoStopSilence = Settings.shared.autoStopSilenceSeconds
             self.recordingLabel = tr("正在听…", "Listening…")
@@ -764,8 +782,11 @@ final class DictationController {
         pressSession = false
         let duration = Double(samples.count) / 16000.0
 
-        // 电平判据一趟算完，交给 SilenceGate 这条纯函数决定这段音频的去向（判据与理由见 SilenceGate）
-        let level = SilenceGate.stats(samples)
+        // 电平判据一趟算完，交给 SilenceGate 这条纯函数决定这段音频的去向（判据与理由见 SilenceGate）。
+        // 开始音的回声先刨掉：那一声是 MicType 自己放的，外放时足以把"压根没开口"顶成 .faint
+        let echo = cueEchoRange
+        cueEchoRange = nil
+        let level = SilenceGate.stats(samples, excluding: echo)
         let decision = SilenceGate.decide(peak: level.peak, rms: level.rms, duration: duration)
         let levelLog = "duration=\(String(format: "%.2f", duration))s"
             + " peak=\(String(format: "%.4f", level.peak)) rms=\(String(format: "%.4f", level.rms))"
@@ -831,6 +852,21 @@ final class DictationController {
                 let asrMs = Log.ms(since: tASR)
                 Log.info("Timing ASR=\(asrMs)ms cold=\(isColdStart) chars=\(transcribed.count)")
                 self.pendingMetric?.asrMs = asrMs
+                // 近静音那一档（.faint）是从电平闸门底下放过来的，而那道闸门正是 3.2.2 防
+                // "空音频复读热词"的第一道防线。这里把下游那道兜底按同样的理由收严：默认口径
+                // 要命中 ≥3 个词表词，词表只有一两条的用户（多数）一个都兜不住，用户没开口
+                // 却会被粘上一个热词。只在 .faint 上放宽，正常音量那条路的口径一点不动。
+                if faintAudio,
+                   TextPostProcessor.isVocabEcho(transcribed,
+                                                 terms: Settings.shared.vocabularyTerms,
+                                                 minHits: 1) {
+                    Log.info("Faint audio vocab echo discarded chars=\(transcribed.count)")
+                    self.phase = .idle
+                    self.overlay.flashError(tr("声音太小，请靠近麦克风再试",
+                                               "Too quiet — move closer to the microphone and try again"))
+                    Sounds.playError()
+                    return
+                }
                 // 词汇表"错写=正写"硬替换：进入润色/指令之前先做确定性纠正
                 let rawText = TextPostProcessor.applyVocabReplacements(transcribed)
                 guard !rawText.isEmpty else {
@@ -948,12 +984,24 @@ final class DictationController {
                     generation: generation)
     }
 
+    /// 指令模式那一次模型往返的耗时。**三条指令路（自由指令 / 选区指令 / 帮我回复）都必须
+    /// 在回调里调它一次**：按住手势的等待几乎全压在这一段上（UAE 这条链路尤其），不记的话
+    /// 提交的那一行只有识别和插入，加起来几百毫秒，用户报"指令模式很慢"时对不上账。
+    private func noteCommandLatency(since start: DispatchTime, ok: Bool) {
+        let ms = Log.ms(since: start)
+        Log.info("Timing command=\(ms)ms model=\(Settings.shared.currentCommandModel) ok=\(ok)")
+        // 失败那一次也记：用户感觉到的等待是实打实的
+        pendingMetric?.polishMs = ms
+    }
+
     /// 技能：自由指令——指令模式下的"万能入口"
     private func runFreeform(instruction: String, raw: String, isColdStart: Bool, generation: Int) {
         overlay.showProcessing(tr("执行指令中…", "Running command…"))
+        let tModel = DispatchTime.now()
         inflightRequest = AgentService.freeform(instruction: instruction) { [weak self] result, failure in
             guard let self = self, self.isCurrent(generation) else { return }
             self.inflightRequest = nil
+            self.noteCommandLatency(since: tModel, ok: result != nil)
             if let result = result {
                 // 词汇表硬替换在每个产出点各做一次；deliver 里不再做，否则同一串文本会被替换两趟
                 let finalText = TextPostProcessor.applyVocabReplacements(result)
@@ -975,9 +1023,11 @@ final class DictationController {
         overlay.showProcessing(tr("执行指令中…", "Running command…"))
         // 微信/QQ 的选区是消息记录（对方的话），物理上不存在"原地改写"——把这个事实告诉模型
         let chatContext = Self.poorAXApps.contains(targetBundleID)
+        let tModel = DispatchTime.now()
         inflightRequest = AgentService.runOnSelection(selection, instruction: instruction, chatContext: chatContext) { [weak self] action, result, failure in
             guard let self = self, self.isCurrent(generation) else { return }
             self.inflightRequest = nil
+            self.noteCommandLatency(since: tModel, ok: result != nil)
             guard let result = result else {
                 self.phase = .idle
                 self.overlay.flashError(tr("指令执行失败（", "Command failed (") + (failure ?? tr("未知", "unknown")) + tr("）", ")"))
@@ -1007,6 +1057,7 @@ final class DictationController {
     /// 结果进剪贴板（不自动粘贴），记录历史并提示
     private func copyToClipboard(raw: String, result: String, note: String) {
         phase = .idle
+        let tDeliver = DispatchTime.now()
         // 只做标点归一：词汇表硬替换已经在各产出点做过了。在这里再做一次的话，
         // 纯听写路径（final 就是已替换过的 rawText）会被替换两趟，链式词表串成链。
         let final = TextPostProcessor.fixMixedPunctuation(result)
@@ -1014,6 +1065,13 @@ final class DictationController {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(final, forType: .string)
+        // 这条路（回复草稿 / 意图没解析出来）不走 deliver，指标得在这里自己收口，否则整轮
+        // 连一行记录都没有——而它恰恰是按住手势里最慢的那类。投递这一段照实计时（写剪贴板
+        // 本来就快），不写 0：这份表里"没发生"和"零毫秒"一直是分开的两回事。
+        if let metric = pendingMetric {
+            Metrics.shared.record(metric.finished(insertMs: Log.ms(since: tDeliver)))
+        }
+        pendingMetric = nil
         overlay.flashSuccess(takeSessionNote().map { $0 + tr("；", "; ") + note } ?? note)
         Sounds.playSuccess()
     }
@@ -1044,9 +1102,11 @@ final class DictationController {
     private func executeReplyDraft(context: String, instruction: String, raw: String,
                                    generation: Int) {
         overlay.showProcessing(tr("草拟回复中…", "Drafting reply…"))
+        let tModel = DispatchTime.now()
         inflightRequest = AgentService.replyDraft(context: context, instruction: instruction) { [weak self] result, failure in
             guard let self = self, self.isCurrent(generation) else { return }
             self.inflightRequest = nil
+            self.noteCommandLatency(since: tModel, ok: result != nil)
             if let result = result {
                 // 词汇表硬替换在每个产出点各做一次；copyToClipboard 里不再做
                 let finalText = TextPostProcessor.applyVocabReplacements(result)

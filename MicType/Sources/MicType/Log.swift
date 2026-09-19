@@ -61,8 +61,11 @@ enum Log {
         let s = Settings.shared
         info("Settings hotkey=\(s.hotkey.rawValue) polish=\(s.polishLevel.rawValue) provider=\(s.llmProvider.rawValue) "
              + "vocabTerms=\(s.vocabularyTerms.count) replacements=\(s.vocabularyReplacements.count)")
+        // 只记序号与几何，不记 localizedName：AirPlay / 随航目标的"名字"就是用户的设备名
+        //（"Gen 的 iPad"），而日志尾巴会被「复制诊断信息」整段贴出去。排悬浮窗的问题
+        // 靠的是几何和缩放，名字本来就用不上。
         for (i, screen) in NSScreen.screens.enumerated() {
-            info("Display \(i) name=\(screen.localizedName) frame=\(rect(screen.frame)) "
+            info("Display \(i) frame=\(rect(screen.frame)) "
                  + "visible=\(rect(screen.visibleFrame)) scale=\(screen.backingScaleFactor) "
                  + "isMain=\(screen == NSScreen.main)")
         }
@@ -71,8 +74,10 @@ enum Log {
 
     /// 悬浮窗显示后回读真实状态——"调了显示但没显示出来"在这里现形
     static func overlayShown(context: String, panel: NSPanel) {
-        let screenName = panel.screen?.localizedName ?? "nil"
-        info("Overlay \(context) frame=\(rect(panel.frame)) screen=\(screenName) "
+        // 同样只记序号（见 startup）。这一行每次听写都要写一遍，必然落在诊断信息的尾巴里
+        let index = panel.screen.flatMap { NSScreen.screens.firstIndex(of: $0) }
+        let screenTag = index.map { "#\($0)" } ?? "nil"
+        info("Overlay \(context) frame=\(rect(panel.frame)) screen=\(screenTag) "
              + "visible=\(panel.isVisible) onActiveSpace=\(panel.isOnActiveSpace)")
     }
 

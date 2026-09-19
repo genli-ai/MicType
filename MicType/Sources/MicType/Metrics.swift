@@ -18,7 +18,9 @@ struct SessionMetric: Codable, Equatable {
     let date: Date
     let mode: Mode
     let asrMs: Int
-    /// nil = 这一轮没润色（档位关着 / 没配 Key / 走的是指令模型）。
+    /// 大模型那一段往返的耗时：轻点是润色，按住是指令模型（两种手势的等待都压在这一段上，
+    /// 所以共用一格，是哪一种看 mode）。
+    /// nil = 这一轮压根没走大模型（档位关着 / 没配 Key / 纯识别）。
     /// 记成 0 会把中位数拉垮，所以"没发生"必须和"耗时 0"分开。
     let polishMs: Int?
     let insertMs: Int
@@ -35,6 +37,8 @@ struct SessionMetricDraft {
     let partialCount: Int
     let cold: Bool
     var asrMs: Int = 0
+    /// 大模型往返（润色 or 指令）。指令那三条路各自要在回调里填它，
+    /// 不填的话按住手势提交的行里最慢的那一段是空的——排障时等于什么都没记。
     var polishMs: Int?
 
     func finished(insertMs: Int) -> SessionMetric {
@@ -97,8 +101,13 @@ extension Metrics {
         /// 实际参与统计的轮数（不足 count 时如实报，别骗用户说"最近 10 次"）
         let sampleCount: Int
         let asrMs: Int
-        /// 这批里一次润色都没有 → nil，界面上那一段就不显示
+        /// 这批里一次大模型往返都没有 → nil，界面上那一段就不显示
         let polishMs: Int?
+        /// 真正参与这一段中位数的轮数。关着润色、没配 Key、纯识别的轮次一格都不填，
+        /// 所以它可能远小于 sampleCount——拿一个"最近 10 次"盖住三段数字就是在骗人：
+        /// 10 轮里只有 1 轮走过大模型时，那一次网络抽风会被当成"最近 10 次的中位数"摆出来，
+        /// 而中位数本来就是为了挡掉这种离群值才选的。
+        let polishSampleCount: Int
         let insertMs: Int
     }
 
@@ -107,9 +116,11 @@ extension Metrics {
         let recent = Array(items.prefix(count))
         guard let asr = median(recent.map(\.asrMs)),
               let insert = median(recent.map(\.insertMs)) else { return nil }
+        let polishValues = recent.compactMap(\.polishMs)
         return Digest(sampleCount: recent.count,
                       asrMs: asr,
-                      polishMs: median(recent.compactMap(\.polishMs)),
+                      polishMs: median(polishValues),
+                      polishSampleCount: polishValues.count,
                       insertMs: insert)
     }
 
@@ -131,11 +142,15 @@ extension Metrics {
         return String(format: "%.1f s", Double(ms) / 1000)
     }
 
-    /// 设置页里那一行：「识别 320 ms · 润色 1.8 s · 插入 90 ms（最近 10 次中位数）」
+    /// 设置页里那一行：「识别 320 ms · 模型 1.8 s（3 次）· 插入 90 ms（最近 10 次中位数）」。
+    /// 模型那一段自带次数：识别和插入每轮都有，它却只有真的走过大模型的那几轮，
+    /// 两个样本量不一样，不能让句尾那个"最近 N 次"替它背书。
     static func summaryLine(_ digest: Digest) -> String {
         var parts = [tr("识别 ", "ASR ") + formatMs(digest.asrMs)]
         if let polish = digest.polishMs {
-            parts.append(tr("润色 ", "Polish ") + formatMs(polish))
+            parts.append(tr("模型 ", "Model ") + formatMs(polish)
+                         + tr("（\(digest.polishSampleCount) 次）",
+                              " (\(digest.polishSampleCount))"))
         }
         parts.append(tr("插入 ", "Insert ") + formatMs(digest.insertMs))
         return parts.joined(separator: " · ")
@@ -152,8 +167,10 @@ extension SessionMetric {
         let f = DateFormatter()
         f.dateFormat = "MM-dd HH:mm:ss"
         f.locale = Locale(identifier: "en_US_POSIX")
+        // 字段名跟着手势走：轻点那一段是润色，按住那一段是指令模型，写死成 polish 会误导读的人
+        let modelField = mode == .command ? "model" : "polish"
         return "\(f.string(from: date)) \(mode.rawValue)"
-            + " asr=\(asrMs)ms polish=\(polishMs.map { "\($0)ms" } ?? "-")"
+            + " asr=\(asrMs)ms \(modelField)=\(polishMs.map { "\($0)ms" } ?? "-")"
             + " insert=\(insertMs)ms audio=\(String(format: "%.1f", audioSeconds))s"
             + " partials=\(partialCount) cold=\(cold)"
     }

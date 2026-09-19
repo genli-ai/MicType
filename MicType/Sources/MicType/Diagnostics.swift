@@ -7,9 +7,10 @@ import AppKit
 /// 为什么要有它：用户报"突然变慢了 / 悬浮窗没出来"时，来回问版本、芯片、模型、档位要三五轮，
 /// 而这些信息本来就都在本机。一次复制粘贴顶一整轮问答。
 ///
-/// 两条不可违反的纪律：
+/// 三条不可违反的纪律：
 /// 1. **绝不含 API Key**——只报"配没配"，Key 永远只在钥匙串里；
-/// 2. **绝不含任何听写内容**——耗时行只有数字，日志本身也只记事件不记文本（见 Log）。
+/// 2. **绝不含任何听写内容**——耗时行只有数字，日志本身也只记事件不记文本（见 Log）；
+/// 3. **不带机器标识**——日志里的绝对路径带着账户短名，进正文前统一脱敏（见 redact）。
 /// 用户会把这段文字贴进邮件、issue、群聊，它必须是可以随手公开的。
 enum Diagnostics {
 
@@ -46,7 +47,7 @@ enum Diagnostics {
             lines.append(contentsOf: metrics.map { "  " + $0.diagnosticRow })
         }
 
-        let log = Log.recentLines(40)
+        let log = Log.recentLines(40).map(redact)
         lines.append("")
         lines.append("Last \(log.count) log lines (today):")
         if log.isEmpty {
@@ -67,6 +68,29 @@ enum Diagnostics {
         pb.clearContents()
         pb.setString(text, forType: .string)
         Log.info("Diagnostics copied (\(text.count) chars)")
+    }
+
+    /// 日志行脱敏：家目录换成 `~`（`/Users/<短名>/Library/…` 这类路径每次更新检查都会写一条），
+    /// 账户全名/短名换成 `<user>`。About 页承诺这段文字可以放心贴给别人，那它就得为真。
+    static func redact(_ line: String) -> String {
+        var out = line.replacingOccurrences(
+            of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")
+        let full = NSFullUserName()
+        if full.count >= 3 { out = out.replacingOccurrences(of: full, with: "<user>") }
+        return redactWord(NSUserName(), in: out)
+    }
+
+    /// 短名（"gen"）只在独立成词时替换：整串替换会把 "generation" 这种词也咬掉一块，
+    /// 日志反而读不懂了
+    private static func redactWord(_ word: String, in text: String) -> String {
+        let escaped = NSRegularExpression.escapedPattern(for: word)
+        guard word.count >= 2,
+              let regex = try? NSRegularExpression(
+                pattern: "(?<![A-Za-z0-9_])" + escaped + "(?![A-Za-z0-9_])",
+                options: [.caseInsensitive]) else { return text }
+        return regex.stringByReplacingMatches(in: text,
+                                              range: NSRange(text.startIndex..., in: text),
+                                              withTemplate: "<user>")
     }
 
     private static var buildNumber: String {

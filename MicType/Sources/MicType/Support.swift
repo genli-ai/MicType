@@ -192,7 +192,12 @@ enum TextPostProcessor {
         let rawDigits = digitMultiset(r)
         let polDigits = digitMultiset(p)
         if rawDigits != polDigits {
-            return "digits changed raw=\(digitSummary(rawDigits)) polished=\(digitSummary(polDigits))"
+            // **只报个数，绝不报数字本身**：这句话会被 Log.warn 写进日志，而「复制诊断信息」
+            // 把今天日志的尾巴整段放进剪贴板，用户会把它贴进 issue。原样带上数字等于把他刚说的
+            // 验证码 / 电话 / 金额漏出去（四位数按多重集也就 24 种排列）。
+            return "digits changed rawCount=\(rawDigits.values.reduce(0, +))"
+                + " polishedCount=\(polDigits.values.reduce(0, +))"
+                + " distinct=\(rawDigits.count)/\(polDigits.count)"
         }
         // 2) 否定词计数：允许少量增减（删口头重复、句式改写会动一两个），差太多说明语义被翻转
         let rawNeg = negationCount(r)
@@ -219,7 +224,9 @@ enum TextPostProcessor {
         return counts
     }
 
-    private static func digitSummary(_ counts: [Character: Int]) -> String {
+    /// 数字多重集摊成字符串，**只给单测用**：它带着用户说过的数字本身，永远不许进日志
+    /// （日志尾巴会被「复制诊断信息」原样贴出去）。
+    static func digitSummary(_ counts: [Character: Int]) -> String {
         counts.keys.sorted()
             .map { String(repeating: String($0), count: counts[$0] ?? 0) }
             .joined()
@@ -232,6 +239,29 @@ enum TextPostProcessor {
             count += regex.numberOfMatches(in: text, range: NSRange(text.startIndex..., in: text))
         }
         return count
+    }
+
+    // MARK: 空音频复读
+
+    /// 空音频幻觉检测（3.2.2）：模型对无声输入会把热词上下文"复读"成识别结果。
+    /// 判定：输出以"常用词汇"开头，或命中 ≥ minHits 个词表词且去掉词表词后几乎不剩内容。
+    ///
+    /// minHits 默认 3（正常音量那条路上的口径：三个词都撞上才敢说是复读，否则会错杀
+    /// "苹果、香蕉、橙子"这种真的在念词表词的句子）。**近静音那一档要放宽到 1**：
+    /// 那段音频本来就接近没声音，词表只有一两条的用户（多数）在默认口径下一个都兜不住。
+    static func isVocabEcho(_ text: String, terms: [String], minHits: Int = 3) -> Bool {
+        guard !text.isEmpty else { return false }
+        if text.hasPrefix("常用词汇") { return true }
+        guard terms.count >= minHits else { return false }
+        var residue = text
+        var hits = 0
+        for term in terms where residue.contains(term) {
+            hits += 1
+            residue = residue.replacingOccurrences(of: term, with: "")
+        }
+        guard hits >= minHits else { return false }
+        residue = residue.filter { !"、，,。.；; ：:".contains($0) }
+        return residue.count <= max(2, text.count / 10)
     }
 
     // MARK: 标点
@@ -329,16 +359,35 @@ enum SilenceGate {
 
     /// 峰值 + RMS 一趟算完（5 分钟录音 ≈ 480 万个采样，扫两遍没必要）。
     /// 空数组返回 (0, 0) → decide 判 .silent，和"什么都没录到"一致。
-    static func stats(_ samples: [Float]) -> (peak: Float, rms: Float) {
+    ///
+    /// excluding：要排除的采样区间——App 自己的开始音会被同一只麦克风录进来（外放时尤其响），
+    /// 这一声是 MicType 自产自销的，算进峰值就等于拿自己的提示音去判"用户开没开口"。
+    /// 区间由录音侧按闸门时刻换算（「按下即录」那条路上开始音落在整段的中间，不是开头，
+    /// 所以这里收的是区间而不是"跳过前 n 个采样"）。
+    static func stats(_ samples: [Float], excluding: Range<Int>? = nil) -> (peak: Float, rms: Float) {
         guard !samples.isEmpty else { return (0, 0) }
+        let whole = 0..<samples.count
+        let skip = excluding.map { $0.clamped(to: whole) } ?? whole.upperBound..<whole.upperBound
+        // 排除段前后各扫一遍（每段内部都是连续内存，不必为跳过的那几千个采样在循环里加判断）
+        let head = scan(samples[whole.lowerBound..<skip.lowerBound])
+        let tail = scan(samples[skip.upperBound..<whole.upperBound])
+        let count = head.count + tail.count
+        // 闸门把整段都盖住了（录音短到只剩提示音）：和"什么都没录到"一样判静音
+        guard count > 0 else { return (0, 0) }
+        return (max(head.peak, tail.peak),
+                Float(((head.sumSquares + tail.sumSquares) / Double(count)).squareRoot()))
+    }
+
+    /// 一段采样的峰值、平方和、个数。平方和用 Double 累加：几百万个平方项用 Float 累加会把小值吃掉
+    private static func scan(_ samples: ArraySlice<Float>) -> (peak: Float, sumSquares: Double, count: Int) {
         var peak: Float = 0
-        var sum: Double = 0     // 用 Double 累加：几百万个平方项用 Float 累加会把小值吃掉
+        var sum: Double = 0
         for v in samples {
             let a = abs(v)
             if a > peak { peak = a }
             sum += Double(v) * Double(v)
         }
-        return (peak, Float((sum / Double(samples.count)).squareRoot()))
+        return (peak, sum, samples.count)
     }
 }
 
