@@ -220,4 +220,70 @@ final class TextPostProcessorTests: XCTestCase {
         XCTAssertNil(TextPostProcessor.polishDriftCheck(raw: "الموعد ٢٠٢٦", polished: "الموعد 2026."))
         XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "الموعد ٢٠٢٦", polished: "الموعد 2027."))
     }
+
+    // MARK: 复读折叠（Qwen 官方阈值）
+
+    /// 上游 issue #129 式的样本：同一个字重复约 2000 次。
+    /// 老实现会先被 `(.{2,24}?)\1{2,}` 按"两个字一组"折叠成两个字，官方那条单字符规则
+    /// 就再也够不着 20 次的门槛了——所以官方规则必须排在前面。
+    func testCollapsesTwoThousandRepeatsOfASingleCharacter() {
+        let text = "好" + String(repeating: "的", count: 2000)
+        XCTAssertEqual(TextPostProcessor.collapseRepetitions(text), "好的")
+        XCTAssertEqual(TextPostProcessor.cleanTranscript(text, fillerWords: []), "好的")
+    }
+
+    /// ≤20 字符的模式重复 ≥20 次 → 只留一份
+    func testCollapsesShortPatternRepeatedTwentyTimes() {
+        let text = String(repeating: "the day of ", count: 25)
+        XCTAssertEqual(TextPostProcessor.collapseRepetitions(text), "the day of ")
+    }
+
+    /// 正常文本一个字都不许动：叠词（"谢谢"）、重复的标点都不是复读
+    func testCollapseLeavesNormalTextAlone() {
+        XCTAssertEqual(TextPostProcessor.collapseRepetitions("谢谢，今天的会议就到这里。"),
+                       "谢谢，今天的会议就到这里。")
+        XCTAssertEqual(TextPostProcessor.collapseRepetitions("hello hello"), "hello hello")
+    }
+
+    // MARK: 分段拼接
+
+    /// 中文缝：不加空格（官方配方的 `" ".join` 对中文是错的）
+    func testJoinsChineseSegmentsWithoutSpace() {
+        XCTAssertEqual(TextPostProcessor.joinSegments(["今天下午三点开会。", "地点在二楼。"]),
+                       "今天下午三点开会。地点在二楼。")
+    }
+
+    /// 西文缝：一个空格，且不许变成两个
+    func testJoinsLatinSegmentsWithExactlyOneSpace() {
+        XCTAssertEqual(TextPostProcessor.joinSegments(["we start at nine", "and finish by noon"]),
+                       "we start at nine and finish by noon")
+        XCTAssertEqual(TextPostProcessor.joinSegments(["we start at nine ", "  and finish by noon"]),
+                       "we start at nine and finish by noon")
+    }
+
+    /// 阿语缝：同样要一个空格，否则两个词会粘成一个不存在的词
+    func testJoinsArabicSegmentsWithOneSpace() {
+        XCTAssertEqual(TextPostProcessor.joinSegments(["الاجتماع غدا", "في الساعة التاسعة"]),
+                       "الاجتماع غدا في الساعة التاسعة")
+    }
+
+    /// 中英混缝：任一侧是拉丁字母就给空格
+    func testJoinsMixedScriptsWithSpace() {
+        XCTAssertEqual(TextPostProcessor.joinSegments(["会议纪要", "draft"]), "会议纪要 draft")
+        XCTAssertEqual(TextPostProcessor.joinSegments(["draft", "会议纪要"]), "draft 会议纪要")
+    }
+
+    /// 段末的终止标点是模型断句的结果，拼接时一个都不许吞
+    func testJoinKeepsTerminalPunctuation() {
+        XCTAssertEqual(TextPostProcessor.joinSegments(["第一段。", "第二段！"]), "第一段。第二段！")
+        XCTAssertEqual(TextPostProcessor.joinSegments(["Part one.", "Part two?"]),
+                       "Part one. Part two?")
+    }
+
+    /// 空段（那一段全是静音）直接跳过，不许留下孤零零的空格
+    func testJoinSkipsEmptySegments() {
+        XCTAssertEqual(TextPostProcessor.joinSegments(["前半句", "", "后半句"]), "前半句后半句")
+        XCTAssertEqual(TextPostProcessor.joinSegments(["", ""]), "")
+        XCTAssertEqual(TextPostProcessor.joinSegments([]), "")
+    }
 }

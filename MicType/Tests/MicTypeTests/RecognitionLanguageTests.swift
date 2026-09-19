@@ -128,4 +128,46 @@ final class RecognitionLanguageTests: XCTestCase {
         XCTAssertFalse(QwenModels.recommendsLargeModel(languageCode: RecognitionLanguages.autoCode,
                                                        currentRepo: QwenModels.defaultRepo))
     }
+
+    // MARK: 分段上下文
+
+    /// 热词在前、上一段的尾巴在后（brief §3.3）：模型先看到要纠正的专名，再看到话说到哪儿了
+    func testSegmentContextPutsHotwordsBeforeTheTail() {
+        let context = RecognitionLanguages.segmentContext(
+            terms: ["捷文"], languageCode: "zh",
+            previousText: "我们先说第一点，然后再说第二点")
+        XCTAssertNotNil(context)
+        let hotIndex = context!.range(of: "捷文")!.lowerBound
+        let tailIndex = context!.range(of: "第二点")!.lowerBound
+        XCTAssertTrue(hotIndex < tailIndex)
+    }
+
+    /// 尾巴最多 100 字：整段历史全塞进去只会挤掉词表，而模型只需要知道上一句说到哪儿
+    func testSegmentContextTailIsCappedAtOneHundredCharacters() {
+        let long = String(repeating: "话", count: 500)
+        let context = RecognitionLanguages.segmentContext(
+            terms: [], languageCode: "zh", previousText: long)
+        XCTAssertEqual(context?.count, RecognitionLanguages.segmentTailLimit)
+    }
+
+    /// 没有上一段（第一段）时就是原来的热词上下文，一个字都不多
+    func testSegmentContextWithoutTailIsJustHotwords() {
+        XCTAssertEqual(RecognitionLanguages.segmentContext(terms: ["MicType"], languageCode: "en",
+                                                           previousText: ""),
+                       RecognitionLanguages.hotwordContext(terms: ["MicType"], languageCode: "en"))
+        XCTAssertNil(RecognitionLanguages.segmentContext(terms: [], languageCode: "en",
+                                                         previousText: "   "))
+    }
+
+    /// 总长永远不超过 800 字；预算不够时**先砍尾巴**，用户明确配置的词表一个都不能少
+    func testSegmentContextNeverExceedsTheLimitAndKeepsHotwords() {
+        let terms = (0..<200).map { "词条\($0)" }
+        let context = RecognitionLanguages.segmentContext(
+            terms: terms, languageCode: "zh",
+            previousText: String(repeating: "尾", count: 100))
+        XCTAssertNotNil(context)
+        XCTAssertLessThanOrEqual(context!.count, 800)
+        XCTAssertFalse(context!.contains("尾"))
+        XCTAssertTrue(context!.hasPrefix("常用词汇："))
+    }
 }

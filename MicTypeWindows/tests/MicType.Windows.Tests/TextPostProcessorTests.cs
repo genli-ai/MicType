@@ -206,4 +206,32 @@ public sealed class TextPostProcessorTests
     {
         Assert.True(TextPostProcessor.IsVocabEcho("Common terms: Rappel", new[] { "Rappel" }));
     }
+
+    /// 上游 issue #129 式的样本：同一个字重复约 2000 次。官方那条单字符规则必须排在
+    /// `(.{2,24}?)\1{2,}` 之前，否则复读先被折叠成两个字，20 次的门槛就够不着了。
+    /// 与 Mac 端 TextPostProcessorTests.testCollapsesTwoThousandRepeatsOfASingleCharacter 同源。
+    [Fact]
+    public void CollapsesTwoThousandRepeatsOfASingleCharacter()
+    {
+        var text = "好" + new string('的', 2000);
+        Assert.Equal("好的", TextPostProcessor.CollapseRepetitions(text));
+        Assert.Equal("好的", TextPostProcessor.CleanTranscript(text, Array.Empty<string>()));
+    }
+
+    /// ≤20 字符的模式重复 ≥20 次 → 只留一份
+    [Fact]
+    public void CollapsesShortPatternRepeatedTwentyTimes()
+    {
+        var text = string.Concat(Enumerable.Repeat("the day of ", 25));
+        Assert.Equal("the day of ", TextPostProcessor.CollapseRepetitions(text));
+    }
+
+    /// 正常文本一个字都不许动：叠词、重复的词都不是复读
+    [Fact]
+    public void CollapseLeavesNormalTextAlone()
+    {
+        Assert.Equal("谢谢，今天的会议就到这里。",
+            TextPostProcessor.CollapseRepetitions("谢谢，今天的会议就到这里。"));
+        Assert.Equal("hello hello", TextPostProcessor.CollapseRepetitions("hello hello"));
+    }
 }

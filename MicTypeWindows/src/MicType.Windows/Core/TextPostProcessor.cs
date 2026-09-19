@@ -38,12 +38,25 @@ public static partial class TextPostProcessor
         value = BracketMarkerRegex().Replace(value, "");
         value = ParenthesesMarkerRegex().Replace(value, "");
         value = MusicMarkerRegex().Replace(value, "");
+        // Qwen 官方后处理的两级阈值（与 Mac 端 Support.swift 逐字同源）。必须排在下面两条之前：
+        // 单字符复读会被 `(.{2,24}?)\1{2,}` 按"两个字符一组"折叠成两个字，
+        // 轮到官方那条单字符规则时已经不足 20 次了。
+        value = CollapseRepetitions(value);
         value = ShortRepeatRegex().Replace(value, "$1");
         value = LongRepeatRegex().Replace(value, "$1");
         value = RemoveFillerWords(value, fillerWords);
         // 数字策略（当前 Keep，恒等）：位置在这里是为了实测后翻常量即生效，不必再改调用点
         value = ApplyArabicIndicDigitsPolicy(value);
         return value.Trim();
+    }
+
+    /// Qwen 官方的复读折叠：单字符重复 **>20 次**压成 1 个；任意 **≤20 字符**的模式
+    /// 重复 **≥20 次**压成 1 份。阈值照官方口径写死，不自己发明——它们是模型作者对
+    /// 自家故障模式的定义，两端（Mac / Windows）必须逐字一致。
+    public static string CollapseRepetitions(string text)
+    {
+        var value = SingleCharRepeatRegex().Replace(text, "$1");
+        return PatternRepeatRegex().Replace(value, "$1");
     }
 
     /// 本地口水词过滤：用户列出的词在本机就地删掉，不依赖云端润色（无 Key 的纯听写路径也能用）。
@@ -349,6 +362,12 @@ public static partial class TextPostProcessor
 
     [GeneratedRegex("[♪♫♬]+")]
     private static partial Regex MusicMarkerRegex();
+
+    [GeneratedRegex("(.)\\1{20,}", RegexOptions.Singleline)]
+    private static partial Regex SingleCharRepeatRegex();
+
+    [GeneratedRegex("(.{1,20}?)\\1{19,}", RegexOptions.Singleline)]
+    private static partial Regex PatternRepeatRegex();
 
     [GeneratedRegex("(.{2,24}?)\\1{2,}", RegexOptions.Singleline)]
     private static partial Regex ShortRepeatRegex();

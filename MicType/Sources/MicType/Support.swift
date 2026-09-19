@@ -71,6 +71,11 @@ enum TextPostProcessor {
                         "[♪♫♬]+"] {                 // 音乐符号：非语音段的常见幻觉
             t = replaceAll(t, pattern, "")
         }
+        // Qwen 官方后处理的两级阈值（brief §3.1）：复读是这个模型公认的故障模式（上游 issue #129
+        // 见过同一 token 重复约 2000 次），而库里那道闸门只数"同一 token 连续 10 次"，
+        // 命中时还会把尾巴静默丢掉。必须排在下面两条之前：单字符复读会被 `(.{2,24}?)\1{2,}`
+        // 按"两个字符一组"折叠成两个字，轮到官方那条单字符规则时已经不足 20 次了。
+        t = collapseRepetitions(t)
         // 折叠"复读机"式重复：同一短语连续出现 3 次以上时只保留一次
         t = replaceAll(t, "(.{2,24}?)\\1{2,}", "$1", options: [.dotMatchesLineSeparators])
         // 整大段内容被原样复述一遍也只保留一次
@@ -115,6 +120,62 @@ enum TextPostProcessor {
         t = replaceAll(t, "[ \\t]+([\(punctClass)])", "$1")
         t = replaceAll(t, "^[ \\t]*[\(punctClass)]+[ \\t]*", "")           // 句首孤儿标点
         return t
+    }
+
+    /// Qwen 官方的复读折叠（brief §3.1 末条）：单字符重复 **>20 次**压成 1 个；
+    /// 任意 **≤20 字符**的模式重复 **≥20 次**压成 1 份。两条阈值都照官方口径写死，
+    /// 不自己发明——它们是模型作者对自家故障模式的定义，两端（Mac / Windows）必须逐字一致。
+    ///
+    /// 分段识别下这一步**按段执行、拼接之前**：一段跑飞不该污染整篇的拼接。
+    static func collapseRepetitions(_ text: String) -> String {
+        var t = replaceAll(text, "(.)\\1{20,}", "$1", options: [.dotMatchesLineSeparators])
+        t = replaceAll(t, "(.{1,20}?)\\1{19,}", "$1", options: [.dotMatchesLineSeparators])
+        return t
+    }
+
+    // MARK: 分段拼接
+
+    /// 分段识别结果的拼接（brief §3.3）。官方 `" ".join(...)` 对中文是错的——
+    /// 中文段之间凭空多出空格；对阿语和西文又必须有空格，否则两个词会粘成一个词。
+    ///
+    /// 规则（缝两侧各看一个字符）：
+    ///   • 两侧都是中日韩文字（含全角句读）→ 不加分隔；
+    ///   • 任一侧是拉丁或阿语 → 一个空格；
+    ///   • 每段先去首尾空白再拼，所以永远不会出现两个连续空格；
+    ///   • 只去空白，**不动任何标点**——段末的句号是模型断句的结果，吞掉就是改写用户说的话。
+    static func joinSegments(_ parts: [String]) -> String {
+        var out = ""
+        for part in parts {
+            let piece = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !piece.isEmpty else { continue }
+            guard let left = out.unicodeScalars.last, let right = piece.unicodeScalars.first else {
+                out = piece
+                continue
+            }
+            out += needsSegmentSpace(after: left, before: right) ? " " + piece : piece
+        }
+        return out
+    }
+
+    /// 缝上要不要空格。默认给空格，只有"两侧都是 CJK"这一种情况不给——
+    /// 判不准时多一个空格顶多难看，少一个空格会把两个西文/阿语词粘成一个不存在的词。
+    static func needsSegmentSpace(after left: Unicode.Scalar, before right: Unicode.Scalar) -> Bool {
+        !(isCJKScalar(left) && isCJKScalar(right))
+    }
+
+    /// 中日韩文字与全角句读：这些字形自带间距，中间再插空格就是排版错误
+    private static func isCJKScalar(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x3000...0x303F,        // CJK 标点（。、！？…—）
+             0x3040...0x30FF,        // 平假名 / 片假名
+             0x3400...0x4DBF,        // 扩展 A
+             0x4E00...0x9FFF,        // 统一汉字
+             0xF900...0xFAFF,        // 兼容汉字
+             0xFF01...0xFF65:        // 全角形式（，：；！？）
+            return true
+        default:
+            return false
+        }
     }
 
     // MARK: 词汇表硬替换

@@ -168,9 +168,10 @@ private struct GeneralTab: View {
                         "The draft only appears in the floating window and never reaches your cursor; the final text is still the full re-transcription made when you finish."))
                     .font(.caption)
                     .foregroundColor(.secondary)
-                // 5 分钟硬上限此前在界面上无处可查，用户第一次知道它存在就是被自动收尾那一刻
-                Text(tr("单次录音最长 5 分钟：到点自动收尾（照常识别并输入，不丢已录的部分），录到 2 分钟时悬浮窗会提示。",
-                        "A single take runs at most 5 minutes; at the limit it is wrapped up normally (still transcribed and inserted — nothing recorded is lost), with a heads-up in the overlay at 2 minutes."))
+                // 硬上限此前在界面上无处可查，用户第一次知道它存在就是被自动收尾那一刻。
+                // 分段也写在这里：长段口述的识别是一段一段出来的，用户会在悬浮窗上看见「第 2/5 段」
+                Text(tr("单次录音最长 10 分钟。录到 2 分钟起悬浮窗显示「8:30 / 10:00」的计时，最后 30 秒提示即将收尾；到点自动收尾＝照常识别并把全部内容插入。长段口述按 60 秒左右分段转写，每转完一段就显示一段。",
+                        "A single take runs up to 10 minutes. From 2 minutes the overlay shows a running \"8:30 / 10:00\" clock and warns 30 seconds before the end; at the limit MicType wraps the take up, transcribes it and inserts everything. Long takes are transcribed in roughly 60-second parts, each shown as soon as it is ready."))
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

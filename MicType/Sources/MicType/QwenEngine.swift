@@ -284,21 +284,39 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
         Qwen3ASRSTT.flushMemoryPool()
     }
 
-    func transcribe(samples: [Float], completion: @escaping (Result<String, MTError>) -> Void) {
+    /// 一开口就失败（模型没下载 / 分词器缺失 / 加载不起来）：一个字都没有的结果
+    private static func failed(_ error: MTError) -> TranscriptionOutcome {
+        TranscriptionOutcome(text: "", completedSegments: 0, totalSegments: 0,
+                             failure: error, cancelled: false)
+    }
+
+    /// 识别整段录音。**长音频按段顺序跑**（分段规则见 AudioSegmenter，brief §3.1–3.3）：
+    ///
+    ///   • 每段显式传 `maxTokens = ceil(秒数*20)+64`。库的默认值是 4096，而它内部又取
+    ///     `min(maxTokens, ceil(时长*20)+64)` —— 5 分钟密集语音的上限是 6064，默认值先撞线，
+    ///     于是**静默截断且不报错**。显式传这个数就是把那道暗闸解开。
+    ///   • 段间 `flushMemoryPool()`：否则每段的 mask / KV 叠着涨，长音频吃到几个 GB。
+    ///   • 上一段的尾巴进下一段的 context（热词在前），见 RecognitionLanguages.segmentContext。
+    ///   • 每完成一段就回调一次：文字先落到界面上，用户看得见进度；失败或被叫停时
+    ///     已经出来的段落照常交付（TranscriptionOutcome.isPartial）。
+    @discardableResult
+    func transcribe(samples: [Float],
+                    onSegment: ((String, Int, Int) -> Void)?,
+                    completion: @escaping (TranscriptionOutcome) -> Void) -> TranscriptionHandle {
+        let handle = TranscriptionHandle()
         guard isModelAvailable else {
             DispatchQueue.main.async {
-                completion(.failure(MTError(tr("Qwen 模型未下载，请在 设置 → 识别 中下载", "Qwen model not downloaded — see Settings → Recognition"))))
+                completion(Self.failed(MTError(tr("Qwen 模型未下载，请在 设置 → 识别 中下载", "Qwen model not downloaded — see Settings → Recognition"))))
             }
-            return
+            return handle
         }
         if let tokErr = ensureTokenizerFile() {
-            DispatchQueue.main.async { completion(.failure(tokErr)) }
-            return
+            DispatchQueue.main.async { completion(Self.failed(tokErr)) }
+            return handle
         }
 
         let vocabTerms = Settings.shared.vocabularyTerms
         let languageCode = Settings.shared.recognitionLanguage
-        let context = Self.hotwordContext(terms: vocabTerms, languageCode: languageCode)
         // 英文全名或 nil，见 RecognitionLanguages.modelLanguage（语言代码会被原样拼进 prompt）
         let language = Settings.shared.recognitionModelLanguage
 
@@ -314,38 +332,84 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
                     self?.loadTask = nil
                     self?.loadedDirPath = nil
                     self?.readyDirPath = nil
-                    completion(.failure(MTError(tr("Qwen 模型加载失败：", "Qwen model failed to load: ") + String(message.prefix(120)))))
+                    completion(Self.failed(MTError(tr("Qwen 模型加载失败：", "Qwen model failed to load: ") + String(message.prefix(120)))))
                 }
                 return
             }
             await MainActor.run { [weak self] in
                 self?.readyDirPath = self?.loadedDirPath
             }
-            // 第二步：识别。失败不影响已加载的模型
-            do {
-                // language 为 nil 时走模型自动检测（默认）；用户显式选过就传英文全名——
-                // mlx-swift-asr 把它原样拼进 prompt，传 "ar" 会变成字面的「language ar」
-                let result = try await stt.transcribe(
-                    audio: samples,
-                    language: language,
-                    context: context,
-                    temperature: 0.0
-                )
-                let cleaned = TextPostProcessor.cleanTranscript(result.text)
-                let final = TextPostProcessor.isVocabEcho(cleaned, terms: vocabTerms) ? "" : cleaned
-                DispatchQueue.main.async {
-                    // 刚换过模型的话，「删掉旧模型」就等这一刻：新模型在真实听写里跑通过一次，
-                    // 旧的那份才不再是退路。绝不在切换设置的当下就删（见 ModelUpgrader）。
-                    ModelUpgrader.shared.noteSuccessfulTranscription()
-                    completion(.success(final))
+
+            // 第二步：规划切点（≤90s 只有一段，行为与分段之前完全一致）
+            let plan = AudioSegmenter.plan(samples: samples)
+            let total = plan.count
+            if total > 1 {
+                Log.info("Segmented transcription segments=\(total)"
+                         + " audio=\(String(format: "%.1f", Double(samples.count) / 16000.0))s")
+            }
+            var parts: [String] = []
+            var joined = ""
+            var failure: MTError?
+            for (index, range) in plan.enumerated() {
+                // 取消的语义是"不再开新段"：正在解码的这一段停不下来（MLX 一次解码到底）
+                if handle.isCancelled { break }
+                let chunk = total == 1 ? samples : Array(samples[range])
+                let seconds = Double(chunk.count) / 16000.0
+                let maxTokens = Int(ceil(seconds * 20)) + 64
+                let context = RecognitionLanguages.segmentContext(terms: vocabTerms,
+                                                                  languageCode: languageCode,
+                                                                  previousText: joined)
+                let started = DispatchTime.now()
+                do {
+                    // language 为 nil 时走模型自动检测（默认）；用户显式选过就传英文全名
+                    let result = try await stt.transcribe(
+                        audio: chunk,
+                        language: language,
+                        context: context,
+                        maxTokens: maxTokens,
+                        temperature: 0.0
+                    )
+                    // 复读折叠等清理**按段做、拼接之前**：一段跑飞不该污染整篇
+                    let cleaned = TextPostProcessor.cleanTranscript(result.text)
+                    let text = TextPostProcessor.isVocabEcho(cleaned, terms: vocabTerms) ? "" : cleaned
+                    parts.append(text)
+                    joined = TextPostProcessor.joinSegments(parts)
+                } catch {
+                    failure = MTError(tr("Qwen 识别失败：", "Qwen transcription failed: ")
+                                      + String(error.localizedDescription.prefix(120)))
+                    Log.error("Segment \(index + 1)/\(total) failed after \(Log.ms(since: started))ms")
+                    break
                 }
-            } catch {
-                let message = error.localizedDescription
-                DispatchQueue.main.async {
-                    completion(.failure(MTError(tr("Qwen 识别失败：", "Qwen transcription failed: ") + String(message.prefix(120)))))
+                if total > 1 {
+                    Log.info("Segment \(index + 1)/\(total) ms=\(Log.ms(since: started))"
+                             + " audio=\(String(format: "%.1f", seconds))s chars=\(parts[index].count)")
+                    // 把这一段的 mask / KV 还回去，长音频的峰值内存才是"一段"而不是"整篇"
+                    Qwen3ASRSTT.flushMemoryPool()
+                }
+                let snapshot = joined
+                let done = index + 1
+                await MainActor.run {
+                    handle.noteSegmentCompleted()
+                    onSegment?(snapshot, done, total)
                 }
             }
+
+            let stoppedEarly = parts.count < total
+            let outcome = TranscriptionOutcome(text: joined,
+                                               completedSegments: parts.count,
+                                               totalSegments: total,
+                                               failure: failure,
+                                               cancelled: failure == nil && stoppedEarly)
+            DispatchQueue.main.async {
+                // 刚换过模型的话，「删掉旧模型」就等这一刻：新模型在真实听写里跑通过一次，
+                // 旧的那份才不再是退路。绝不在切换设置的当下就删（见 ModelUpgrader）。
+                if outcome.failure == nil, !outcome.text.isEmpty {
+                    ModelUpgrader.shared.noteSuccessfulTranscription()
+                }
+                completion(outcome)
+            }
         }
+        return handle
     }
 }
 
@@ -370,10 +434,18 @@ final class QwenEngine: SpeechEngine {
             completion(MTError(tr("MicType 仅支持 Apple Silicon", "MicType requires Apple Silicon")))
         }
     }
-    func transcribe(samples: [Float], completion: @escaping (Result<String, MTError>) -> Void) {
+    @discardableResult
+    func transcribe(samples: [Float],
+                    onSegment: ((String, Int, Int) -> Void)?,
+                    completion: @escaping (TranscriptionOutcome) -> Void) -> TranscriptionHandle {
+        let handle = TranscriptionHandle()
         DispatchQueue.main.async {
-            completion(.failure(MTError(tr("MicType 仅支持 Apple Silicon", "MicType requires Apple Silicon"))))
+            completion(TranscriptionOutcome(
+                text: "", completedSegments: 0, totalSegments: 0,
+                failure: MTError(tr("MicType 仅支持 Apple Silicon", "MicType requires Apple Silicon")),
+                cancelled: false))
         }
+        return handle
     }
 }
 

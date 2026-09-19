@@ -53,6 +53,11 @@ final class DictationController {
     private var recordingStartedAt: Date?
     private var recordingLabel = ""
     private var softHintShown = false
+    /// 自动收尾前 30 s 的预警是否已经给过（每轮一次）
+    private var finishWarningShown = false
+    /// 悬浮窗上那个计时器当前显示到第几秒：只有整秒变了才去动界面，
+    /// 电平回调每 85ms 来一次，不挡一下等于每秒重排 12 次悬浮窗
+    private var lastClockSecond = -1
     private var speechDetected = false
     private var lastLoudAt: Date?
     /// 开始音的回声闸门（到点时刻，nil = 没响过开始音）。Sounds.play 只是把声音排上队就返回，
@@ -72,6 +77,12 @@ final class DictationController {
     private var generation = 0
     /// 当前在飞的 LLM 请求，Esc 取消时直接掐断（省下最坏几十秒的干等）
     private var inflightRequest: LLMRequestHandle?
+    /// 当前在飞的分段识别。Esc 按下时用它叫停**后续段落**（正在解码的那一段停不下来），
+    /// 已经出来的段落照常交付 —— 长段口述最怕的就是"全没了"
+    private var inflightTranscription: TranscriptionHandle?
+    /// 润色之前先落进历史的那一条（见 HistoryStore.addRaw）：交付时补成最终文字，
+    /// 交付不成也留着识别原文。nil = 这一轮还没落过（指令模式永远是 nil）
+    private var pendingHistoryID: UUID?
     /// 伪流式预览（P13）的状态，全部只在主线程读写。
     /// 纪律：草稿只进悬浮窗，永远不进目标应用；最终文字永远来自松手后那一遍完整识别。
     private var previewEnabled = false
@@ -110,10 +121,16 @@ final class DictationController {
         "com.tencent.xinWeChat", "com.tencent.qq",
     ]
 
-    /// 录音时长闸门：2 分钟给一句软提示，5 分钟硬上限。到上限是"自动收尾"而不是丢弃——
-    /// 用户对着麦克风说了五分钟，凭什么一个字都不给他。
+    /// 录音时长闸门：2 分钟起在悬浮窗上显示「已录 / 上限」的计时，10 分钟硬上限。
+    /// 到上限是"自动收尾"而不是丢弃——用户对着麦克风说了十分钟，凭什么一个字都不给他。
+    ///
+    /// 上限从 5 分钟提到 10 分钟的依据（brief §3.3）：整段录音不再一次性喂给模型，
+    /// 而是按 60 s 分段顺序识别（AudioSegmenter），峰值内存与单段成正比、和总长无关；
+    /// 模型本身支持 1200 s，这里只用一半，留足余量。
     private static let softHintSeconds: Double = 120
-    private static let maxRecordingSeconds: Double = 300
+    private static let maxRecordingSeconds: Double = 600
+    /// 自动收尾前多久给预警：到点才知道有上限对用户毫无帮助，30 s 够说完一句话
+    private static let preFinishWarningSeconds: Double = 30
     /// 静音判据的电平阈值（AudioRecorder 送来的是 min(1, rms*14)）。比"没听到内容"的
     /// 闸门宽松些：这里只是判断"还在说吗"，判错的代价只是提前收尾。
     private static let silenceLevelThreshold: Float = 0.08
@@ -344,6 +361,19 @@ final class DictationController {
             overlay.hide()
             Sounds.playCancel()
         case .processing:
+            // 分段识别到一半按 Esc：已经识别出来的段落不跟着一起扔。叫停**后续段落**，
+            // 让这一轮照常交付 1..k 段，并在提示里说清尾巴没转。owner 的原话是
+            // "之前的语音都保留不下来"——一段三分钟的口述里前两分钟是真东西，不是垃圾。
+            // 三条限制：必须已经出过至少一段（没有就是普通取消）、必须是纯听写
+            // （半句指令绝不能拿去执行）、同一轮只认第一次（再按一次就是彻底取消）。
+            if let handle = inflightTranscription, !handle.isCancelled,
+               handle.completedSegments > 0, !skillSession {
+                Log.info("Transcription stopped by user after \(handle.completedSegments) segment(s)")
+                handle.cancel()
+                overlay.updateProcessing(label: tr("收尾中…", "Wrapping up…"))
+                Sounds.playCancel()
+                return
+            }
             // 处理中取消：掐断在飞的 LLM 请求，并把会话代数推进一格——
             // 已经在路上的 ASR/润色/指令结果回来时会被代数挡掉，一个字都不会插入。
             Log.info("Processing cancelled by user")
@@ -359,6 +389,11 @@ final class DictationController {
         stopLivePreview()
         inflightRequest?.cancel()
         inflightRequest = nil
+        // 彻底取消时连后续段落也别跑了：结果反正会被代数挡掉，白占 GPU
+        inflightTranscription?.cancel()
+        inflightTranscription = nil
+        // 指针清掉，但**不动已经写进历史的那一条**——那正是"取消也不丢字"的落点
+        pendingHistoryID = nil
         skillSession = false
         pressSession = false
         pressRevealed = false
@@ -399,12 +434,37 @@ final class DictationController {
         return sessionNotes.isEmpty ? nil : sessionNotes.joined(separator: tr("；", "; "))
     }
 
-    /// 录音中悬浮窗该显示的文案：基础标签（听写/指令）+ 超过 2 分钟时的软提示。
-    /// 软提示里带上硬上限：只说"已录 2 分钟"等于什么都没说——用户看不出还能说多久、
-    /// 到点会发生什么，直到 5 分钟被自动收尾才第一次知道有上限。
+    /// 录音中悬浮窗该显示的文案：基础标签（听写/指令）+ 过了 2 分钟之后的「已录 / 上限」计时。
+    /// 计时而不是一句静态提示：只说"已录 2 分钟"等于什么都没说——用户看不出还能说多久、
+    /// 到点会发生什么，直到被自动收尾才第一次知道有上限。
     private func currentRecordingLabel() -> String {
-        softHintShown ? recordingLabel + tr("（已录 2 分钟 / 上限 5 分钟）", " (2 of 5 min)")
-                      : recordingLabel
+        guard softHintShown, let started = recordingStartedAt else { return recordingLabel }
+        let clock = Self.recordingTimeLabel(elapsed: Date().timeIntervalSince(started),
+                                            limit: Self.maxRecordingSeconds)
+        // 预警只加一句"就要收尾了"，不说"丢失"——到点是照常识别并插入，什么都不会丢
+        if finishWarningShown {
+            return recordingLabel + tr("（\(clock) · 即将自动收尾）", " (\(clock) · wrapping up soon)")
+        }
+        return recordingLabel + tr("（\(clock)）", " (\(clock))")
+    }
+
+    /// 「8:30 / 10:00」。纯函数、可单测：这行字是用户判断"还能说多久"的唯一依据，
+    /// 超过上限时钉死在上限上（10:01 / 10:00 只会让人以为程序算错了）。
+    static func recordingTimeLabel(elapsed: Double, limit: Double) -> String {
+        clockText(min(max(elapsed, 0), limit)) + " / " + clockText(limit)
+    }
+
+    static func clockText(_ seconds: Double) -> String {
+        let whole = Int(max(0, seconds))
+        return String(format: "%d:%02d", whole / 60, whole % 60)
+    }
+
+    /// 整秒变了才去动悬浮窗（电平回调每 85ms 来一次）
+    private func updateRecordingClock(elapsed: Double) {
+        let second = Int(elapsed)
+        guard second != lastClockSecond else { return }
+        lastClockSecond = second
+        overlay.updateRecordingLabel(currentRecordingLabel())
     }
 
     /// 录音时长上限与静音自动停：复用录音电平回调（约每 85ms 一次）在主线程判断，
@@ -431,7 +491,13 @@ final class DictationController {
         if !softHintShown, elapsed >= Self.softHintSeconds {
             softHintShown = true
             Log.info("Recording soft hint shown at \(Int(elapsed))s")
-            overlay.updateRecordingLabel(currentRecordingLabel())
+        }
+        if softHintShown {
+            if !finishWarningShown, elapsed >= Self.maxRecordingSeconds - Self.preFinishWarningSeconds {
+                finishWarningShown = true
+                Log.info("Recording pre-finish warning at \(Int(elapsed))s")
+            }
+            updateRecordingClock(elapsed: elapsed)
         }
 
         // 指令模式（按住说话）豁免静音自动停：那里"松开"才是用户明确的结束信号，
@@ -748,6 +814,8 @@ final class DictationController {
             self.phase = .recording
             self.recordingStartedAt = Date()
             self.softHintShown = false
+            self.finishWarningShown = false
+            self.lastClockSecond = -1
             self.speechDetected = false
             self.lastLoudAt = nil
             self.partialCount = 0
@@ -839,10 +907,21 @@ final class DictationController {
                                            partialCount: partialCount,
                                            cold: isColdStart)
 
-        // 识别本身停不下来（MLX 一次解码到底），取消靠"丢结果"：代数对不上就当这轮没发生过
-        QwenEngine.shared.transcribe(samples: samples) { [weak self] result in
+        // 长音频一段一段来：每完成一段就把已识别的文字贴到悬浮窗上（用户看得见进度），
+        // 失败或被叫停时前面的段落照常交付。单段识别（≤90s）的行为与分段之前完全一致。
+        // 彻底取消仍然靠"丢结果"：正在解码的那一段停不下来，代数对不上就当这轮没发生过。
+        inflightTranscription = QwenEngine.shared.transcribe(
+            samples: samples,
+            onSegment: { [weak self] draft, done, total in
+                guard let self = self, self.isCurrent(generation), total > 1 else { return }
+                self.overlay.updateProcessing(
+                    label: tr("识别中…（第 \(done)/\(total) 段）",
+                              "Transcribing… (part \(done) of \(total))"),
+                    draft: draft)
+            }) { [weak self] outcome in
             guard let self = self, self.isCurrent(generation) else { return }
-            switch result {
+            self.inflightTranscription = nil
+            switch self.resolve(outcome) {
             case .failure(let error):
                 Log.error("Transcription failed: \(error.message)")
                 self.phase = .idle
@@ -899,6 +978,10 @@ final class DictationController {
                                          generation: generation)
                     return
                 }
+                // **润色之前**先把识别原文落进历史（brief §3.3）：接下来是一次网络往返 +
+                // 一次切前台粘贴，任何一步失败、被 Esc 掐断、或者用户切走了窗口，
+                // 从前都意味着刚说的那几分钟一个字都不剩。交付时 deliver 会把同一条补全。
+                self.pendingHistoryID = HistoryStore.shared.addRaw(rawText)
                 let level = Settings.shared.polishLevel
                 if level != .off, KeychainHelper.loadAPIKey() != nil {
                     self.overlay.showProcessing(tr("润色中…", "Polishing…"))
@@ -950,6 +1033,37 @@ final class DictationController {
                 }
             }
         }
+    }
+
+    /// 分段识别的结果 → 这一轮该怎么走。
+    ///
+    /// 核心规矩：**尾巴没转完不等于这一轮作废**。第 3 段炸了、或者用户在第 2 段之后按了 Esc，
+    /// 前面那些段是用户实打实说过的话，照常交付，只在提示里说清尾巴没转。
+    /// 两个例外：一个字都没有（和从前一样按失败处理）；指令模式（半条指令绝不能拿去执行）。
+    private func resolve(_ outcome: TranscriptionOutcome) -> Result<String, MTError> {
+        if skillSession, !outcome.isComplete {
+            return .failure(outcome.failure
+                            ?? MTError(tr("指令没说完就停了，请重新按住说一次",
+                                          "The command was cut short — hold the key and say it again")))
+        }
+        if outcome.text.isEmpty {
+            if let failure = outcome.failure { return .failure(failure) }
+            if outcome.cancelled { return .failure(MTError(tr("已取消", "Cancelled"))) }
+            // 真的什么都没识别出来：交给下游那句"没有听到内容"，别在这里另起一套提示
+            return .success("")
+        }
+        if !outcome.isComplete {
+            let done = outcome.completedSegments
+            let total = outcome.totalSegments
+            Log.warn("Partial transcript delivered segments=\(done)/\(total)"
+                     + " reason=\(outcome.cancelled ? "cancelled" : "failed")")
+            addSessionNote(outcome.cancelled
+                ? tr("已停在第 \(done)/\(total) 段，后面的没有转写",
+                     "Stopped after part \(done) of \(total) — the rest was not transcribed")
+                : tr("第 \(done + 1) 段识别失败，已输入前 \(done) 段",
+                     "Part \(done + 1) failed to transcribe — parts 1-\(done) were inserted"))
+        }
+        return .success(outcome.text)
     }
 
     // MARK: - V3 语音技能（仅指令模式进入）
@@ -1131,7 +1245,14 @@ final class DictationController {
         // 只做标点归一：词汇表硬替换已经在各产出点做过了（识别原文 / 润色结果 / 各技能结果），
         // 这里再做一趟等于对同一串文本替换两次，「萍果=苹果」+「苹果=Apple」会被串成链
         let finalText = TextPostProcessor.fixMixedPunctuation(text)
-        HistoryStore.shared.add(raw: raw, polished: finalText)
+        // 润色之前已经落过一条 raw（纯听写路径）就补全它，别再插一条新的——
+        // 用户看到的应该是一条"识别原文 + 最终文字"，不是同一句话的两行记录
+        if let id = pendingHistoryID {
+            HistoryStore.shared.complete(id: id, polished: finalText)
+            pendingHistoryID = nil
+        } else {
+            HistoryStore.shared.add(raw: raw, polished: finalText)
+        }
         // 又插入了新东西 → 上一次的记忆立刻作废：⌘Z 撤的永远是"最后一次粘贴"，
         // 拿旧记忆去撤只会撤掉这一次的新文字
         revertCandidate = nil

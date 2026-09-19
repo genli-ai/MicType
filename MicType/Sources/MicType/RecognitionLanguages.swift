@@ -132,4 +132,28 @@ enum RecognitionLanguages {
         if joined.count > limit { joined = String(joined.prefix(limit)) }
         return hotwordPrefix(languageCode: languageCode, terms: terms) + joined
     }
+
+    /// 上一段末尾带进下一段的字数上限（brief §3.3）
+    static let segmentTailLimit = 100
+
+    /// 分段识别里每一段的 context：**热词表在前、上一段的尾巴在后**，总长仍受 800 字上限。
+    ///
+    /// 为什么要带尾巴：vLLM #35767 记录过"分段孤立转写"的质量陷阱——每段都从零开始，
+    /// 跨边界的半句话谁也接不上。带上前一段的最后 ~100 字，模型至少知道这句话说到哪儿了。
+    ///
+    /// 预算不够时**先砍尾巴**：词表是用户明确配置的纠正项（漏掉就是把名字写错），
+    /// 跨段上下文只是锦上添花。两者都塞不下时宁可这一段没有上下文，也不动词表。
+    static func segmentContext(terms: [String], languageCode: String,
+                               previousText: String, limit: Int = 800) -> String? {
+        let hotwords = hotwordContext(terms: terms, languageCode: languageCode, limit: limit) ?? ""
+        let tail = String(previousText.suffix(segmentTailLimit))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tail.isEmpty else {
+            return hotwords.isEmpty ? nil : String(hotwords.prefix(limit))
+        }
+        guard !hotwords.isEmpty else { return String(tail.suffix(limit)) }
+        // 「热词 + 换行 + 尾巴」放不下就整条尾巴不要，绝不截半句话进去当上下文
+        let combined = hotwords + "\n" + tail
+        return combined.count <= limit ? combined : String(hotwords.prefix(limit))
+    }
 }
