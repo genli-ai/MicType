@@ -70,6 +70,21 @@ enum CloudASRSettings {
         return (hasCJK && hasLatin) ? ["zh", "en"] : []
     }
 
+    /// 选了具体语言时，这条提示云端到底收不收得到。
+    ///
+    /// 为什么要单独有这个判据：识别语言那张表有 30 种，云端的语言表比它短
+    /// （nl / fa / el / ro / hu / mk 不在里面），送一个云端不认识的码只会被判 InvalidParameter，
+    /// 所以 sanitize 一律滤掉——**但界面上那句「选了具体语言就作为语言提示送过去」是无条件的**。
+    /// 用户挑语言的动机恰恰是"说小语种更稳"，被滤掉的又恰恰全是小语种：提示没送出去、
+    /// 云端照常自动检测、界面却说已经送了。所以设置页要按这个判据换一句话。
+    /// 「自动」与空值返回 true：那一档本来就不送提示，界面说的就是"交给云端判"。
+    static func cloudHintDelivered(recognitionLanguage: String) -> Bool {
+        let code = recognitionLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !code.isEmpty, code != "auto" else { return true }
+        // 走 sanitize 而不是自己查表：与真正送出去的那条路同源，改一处两处一起变
+        return !CloudASRLanguage.sanitize(hints: [code]).isEmpty
+    }
+
     static func containsCJK(_ text: String) -> Bool {
         text.unicodeScalars.contains { scalar in
             (0x3400...0x9FFF).contains(scalar.value)       // 汉字（含扩展 A）

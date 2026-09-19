@@ -171,6 +171,29 @@ final class CloudASRTests: XCTestCase {
         XCTAssertEqual(segments.reduce(0) { $0 + $1.count }, samples(seconds: total))
     }
 
+    /// **不变式**：任何供应商的单段硬上限都必须显著小于录音硬上限。
+    /// 否则 planner 的"一次就能发完"提前返回会对**每一次**录音都命中，那一档永远只有 1 段：
+    /// 分段进度（onSegment 只在收尾时回一次、total==1）、失败的部分交付、Esc 保字
+    /// 三件事同时失效——v4.0 的 OpenAI 档（600/700）正是这么废的。
+    func testEveryProviderSegmentsAFullLengthRecording() {
+        let maxRecording = DictationController.maxRecordingSeconds
+        for provider in CloudASRProvider.allCases {
+            let limits = provider.segmentLimits
+            XCTAssertLessThanOrEqual(limits.hardMaxSeconds, maxRecording / 2,
+                                     "\(provider.rawValue)：单段硬上限必须 ≤ 录音上限的一半，满长度录音才切得开")
+            XCTAssertLessThan(limits.targetSeconds, limits.hardMaxSeconds)
+            let full = CloudSegmentPlanner.plan(rmsFrames: rmsFrames(seconds: maxRecording),
+                                                totalSamples: samples(seconds: maxRecording),
+                                                limits: limits)
+            XCTAssertGreaterThanOrEqual(full.count, 2,
+                                        "\(provider.rawValue)：满长度录音必须切成多段，否则没有进度、没有部分交付")
+            for seg in full {
+                XCTAssertLessThanOrEqual(seg.seconds, limits.hardMaxSeconds + 0.001)
+            }
+            XCTAssertEqual(full.reduce(0) { $0 + $1.count }, samples(seconds: maxRecording))
+        }
+    }
+
     func testEmptyAudioPlansNothing() {
         XCTAssertTrue(CloudSegmentPlanner.plan(samples: [], limits: .alibaba).isEmpty)
     }
@@ -456,6 +479,23 @@ final class CloudASRTests: XCTestCase {
         let weird = AlibabaASRClient.failure(status: 418, code: nil, message: nil)
         XCTAssertFalse(weird.retryable)
         XCTAssertNil(weird.code)
+    }
+
+    /// 服务商原话前面那个冒号必须是 ASCII：这串会整条显示在悬浮窗/设置页上，
+    /// 英文界面里混一个全角「：」就是一处中文泄漏（CJKUIStringGuardTests 拦的正是这一类）。
+    func testProviderDetailUsesAnASCIIColon() {
+        // 断言只看"接服务商原话"的那个冒号：中文文案自己带的全角冒号是合法的
+        let alibaba = AlibabaASRClient.failure(status: 401, code: "InvalidApiKey",
+                                               message: "Invalid API-key provided.")
+        XCTAssertTrue(alibaba.message.hasSuffix("(401 InvalidApiKey): Invalid API-key provided."),
+                      "实际是：\(alibaba.message)")
+        XCTAssertFalse(alibaba.message.contains("：Invalid"), "英文界面下不许出现全角冒号")
+
+        let openai = OpenAITranscribeClient.failure(status: 401, code: "invalid_api_key",
+                                                   message: "Incorrect API key provided: sk-***")
+        XCTAssertTrue(openai.message.hasSuffix("(401 invalid_api_key): Incorrect API key provided: sk-***"),
+                      "实际是：\(openai.message)")
+        XCTAssertFalse(openai.message.contains("：Incorrect"))
     }
 
     func testAlibabaErrorMappingReadsResponseBody() {

@@ -384,6 +384,10 @@ private struct RecognitionTab: View {
     @State private var cloudTestResult = ""
     @State private var cloudTestOK = false
     @State private var cloudTesting = false
+    /// 这一行结论属于哪一次配置。探针要跑几秒到几分钟（阿里云超时 120s、OpenAI 300s），
+    /// 期间用户完全可以换引擎/区域/模型/语言——回来的那条旧结论绝不能落在新档下面
+    /// （KeyEntryView 早就有这道护栏，见 KeyEntryView.verify 的 generation）
+    @State private var cloudTestGeneration = 0
 
     private var modelExists: Bool {
         _ = refreshTick
@@ -563,15 +567,16 @@ private struct RecognitionTab: View {
             QwenEngine.shared.unloadModel()
             refreshTick += 1
         }
-        // 换引擎 / 换区域 / 换云端模型之后，上一次的测试结论不再算数
-        .onChange(of: recognitionEngine) { _, _ in cloudTestResult = "" }
-        .onChange(of: qwenRegion) { _, _ in cloudTestResult = "" }
-        .onChange(of: cloudAlibabaModel) { _, _ in cloudTestResult = "" }
+        // 换引擎 / 换区域 / 换云端模型 / 换识别语言之后，上一次的测试结论不再算数
+        .onChange(of: recognitionEngine) { _, _ in invalidateCloudTest() }
+        .onChange(of: qwenRegion) { _, _ in invalidateCloudTest() }
+        .onChange(of: cloudAlibabaModel) { _, _ in invalidateCloudTest() }
+        .onChange(of: recognitionLanguage) { _, _ in invalidateCloudTest() }
         // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言。
         // 下载状态不在其列：它现在存的是语言中性的 phase，文字由 tr() 现场渲染，下载中也跟着切
         .onChange(of: l10n.language) { _, _ in
             updateMessage = ""
-            cloudTestResult = ""
+            invalidateCloudTest()
             // 下载状态已经是语言中性的 phase，麦克风自检的文字归 MicCheckPanel 自己管；
             // 升级器那句结论仍是快照，照旧清掉
             if !upgrader.isBusy { upgrader.clearStatus() }
@@ -610,10 +615,21 @@ private struct RecognitionTab: View {
             .font(.caption)
             .foregroundColor(.secondary)
         if engineChoice.isCloud {
-            Text(tr("云端引擎同样读这一条：选了具体语言就作为语言提示送过去，「自动检测」则交给云端自己判。",
-                    "Cloud engines read the same setting: a specific language is sent as a language hint, while Detect automatically leaves the decision to the provider."))
-                .font(.caption)
-                .foregroundColor(.secondary)
+            // 云端的语言表比这张选单短：选了它不认识的码（荷兰语、波斯语、希腊语…）时，
+            // 提示根本送不出去（送了只会被判 InvalidParameter），云端照常自动检测。
+            // 那句"选了就送过去"对这几种语言是假的，必须当面换一句话——挑语言的人图的
+            // 恰恰是"说小语种更稳"，不能让他以为提示已经生效了。
+            if CloudASRSettings.cloudHintDelivered(recognitionLanguage: recognitionLanguage) {
+                Text(tr("云端引擎同样读这一条：选了具体语言就作为语言提示送过去，「自动检测」则交给云端自己判。",
+                        "Cloud engines read the same setting: a specific language is sent as a language hint, while Detect automatically leaves the decision to the provider."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                Text(tr("云端引擎不接受这个语言的提示，这一段会交给它自己判断语言。要用这条设置，请改回本地引擎。",
+                        "The cloud engine does not accept a hint for this language, so it will detect the language itself. Switch back to the on-device engine to use this setting."))
+                    .font(.caption)
+                    .foregroundColor(.orange)
+            }
         }
     }
 
@@ -726,8 +742,11 @@ private struct RecognitionTab: View {
         }
         TextField(tr("WorkspaceId（可选）", "Workspace ID (optional)"), text: $qwenWorkspace)
             .textFieldStyle(.roundedBorder)
-        Text(tr("填了就走专属主机。美国区域**必须**填：那边没有共享主机，不填连不上。",
-                "Fill it in to use your workspace host. The United States region requires it - there is no shared US host, so it will not connect without one."))
+        // 说实话比说狠话重要：美国区没有独立的共享主机，不填 WorkspaceId 时端点会落回
+        // 国际站共享主机（见 AlibabaRegion.sharedHost）——不是"连不上"，而是"这次走的是
+        // 国际站主机"。照旧写"必须填、不填连不上"的话，用户看到能连通只会以为文案在吓唬他。
+        Text(tr("填了就走你自己的专属主机。美国区没有独立的共享主机：不填就落回国际站共享主机（同一个国际站账号、同一把 Key）。",
+                "Fill it in to use your own workspace host. The United States region has no shared host of its own: leave it empty and the request falls back to the international shared host (same international account, same key)."))
             .font(.caption)
             .foregroundColor((LLMCatalog.QwenRegion(rawValue: qwenRegion) == .us
                               && qwenWorkspace.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -811,6 +830,14 @@ private struct RecognitionTab: View {
         }
     }
 
+    /// 配置变了：上一次的结论作废，在飞的那一次也不要了。
+    /// 「测试中…」的标志位一并复位——不然换了档之后按钮永远灰着，等一个再也不会落地的结果。
+    private func invalidateCloudTest() {
+        cloudTestGeneration &+= 1
+        cloudTestResult = ""
+        cloudTesting = false
+    }
+
     /// 发一次 1 秒合成音，报往返毫秒数。失败时把云端的原话摆出来（它本来就带"下一步怎么办"）
     private func runCloudTest() {
         guard let config = CloudASRSettings.currentConfig() else {
@@ -819,9 +846,14 @@ private struct RecognitionTab: View {
                                  "Cloud recognition has no endpoint in the selected region - change the region first")
             return
         }
+        cloudTestGeneration &+= 1
+        let generation = cloudTestGeneration
         cloudTesting = true
         cloudTestResult = ""
         CloudASRProbe.run(config: config) { result in
+            // 这几秒里用户可能已经换了引擎/区域/模型：那条结论对应的是**旧**配置，
+            // 落在新档下面就是一句"已连通 ✓"骗人（阿里云通了不代表 OpenAI 配好了）
+            guard generation == cloudTestGeneration else { return }
             cloudTesting = false
             switch result {
             case .success(let outcome):

@@ -35,6 +35,8 @@ final class CJKUIStringGuardTests: XCTestCase {
         "PolishService.swift:polish",           // <<<原文>>> / <<<结束>>> 定界块
         "PolishService.swift:systemPrompt",     // 润色系统提示词的拼接段
         "QwenEngine.swift:hotwordContext",      // 送进识别模型的热词上下文
+        // 送进云端识别模型的上下文 turn（「常用词汇：」「上文：」+ 顿号分隔）：同上，不上界面
+        "CloudASR/CloudTranscriptionProvider.swift:text",
         // 热词上下文的中文前缀/分隔符（「常用词汇：」「、」）：和上面那条同一件事——
         // 送进识别模型的文字，不上界面；英文会话走的是英文分支，见 hotwordPrefix 的注释
         "RecognitionLanguages.swift:hotwordPrefix",
@@ -82,10 +84,11 @@ final class CJKUIStringGuardTests: XCTestCase {
             XCTFail("找不到源码目录 \(dir.path)——这个守卫测试必须能看到 Sources/MicType")
             return
         }
-        let files = try FileManager.default.contentsOfDirectory(atPath: dir.path)
-            .filter { $0.hasSuffix(".swift") }
-            .sorted()
+        // 必须递归：CloudASR/ 这样的子目录里照样有界面文案（v4.0 就在那里漏了两处全角冒号），
+        // 只扫顶层等于给子目录发了一张永久免检证
+        let files = Self.swiftFiles(under: dir)
         XCTAssertGreaterThan(files.count, 10, "源码文件数明显不对，扫描器大概没找对目录")
+        XCTAssertTrue(files.contains { $0.hasPrefix("CloudASR/") }, "子目录必须在扫描范围内")
 
         var failures: [String] = []
         for file in files {
@@ -135,6 +138,14 @@ final class CJKUIStringGuardTests: XCTestCase {
         XCTAssertTrue(hits.isEmpty)
         XCTAssertTrue(CJKSourceScanner.containsFlagged("破折号——在这"))
         XCTAssertFalse(CJKSourceScanner.containsFlagged("plain — dash · dot “quoted”"))
+    }
+
+    /// 本地双语包装器（CloudASR 错误映射里的 made(zh, en)）与 tr() 同规矩：
+    /// 中文侧放行，英文侧照样查
+    func testTreatsLocalBilingualWrapperLikeTr() {
+        XCTAssertTrue(CJKSourceScanner.scan(#"return made("云端限流", "Rate limited")"#).isEmpty)
+        let hits = CJKSourceScanner.scan(#"return made("云端限流", "Rate limited（已重试）")"#)
+        XCTAssertEqual(hits.first?.violation, .englishSide)
     }
 
     func testIgnoresLogAndAssertCalls() {
@@ -196,6 +207,19 @@ final class CJKUIStringGuardTests: XCTestCase {
         XCTAssertEqual(CJKSourceScanner.scan(source).first?.line, 3)
     }
 
+    /// Sources/MicType 下所有 .swift，路径相对于该目录（白名单的键就用这个路径）
+    private static func swiftFiles(under dir: URL) -> [String] {
+        let root = dir.standardizedFileURL.path + "/"
+        guard let walker = FileManager.default.enumerator(at: dir.standardizedFileURL,
+                                                          includingPropertiesForKeys: nil) else { return [] }
+        var out: [String] = []
+        for case let url as URL in walker where url.pathExtension == "swift" {
+            let path = url.standardizedFileURL.path
+            out.append(path.hasPrefix(root) ? String(path.dropFirst(root.count)) : url.lastPathComponent)
+        }
+        return out.sorted()
+    }
+
     private static var sourcesDirectory: URL {
         URL(fileURLWithPath: #filePath)            // …/MicType/Tests/MicTypeTests/本文件
             .deletingLastPathComponent()           // …/MicType/Tests/MicTypeTests
@@ -255,6 +279,12 @@ enum CJKSourceScanner {
         "Log.info", "Log.warn", "Log.error", "NSLog", "print", "debugPrint",
         "assert", "assertionFailure", "precondition", "preconditionFailure", "fatalError",
     ]
+
+    /// 与 tr() 同序的**本地双语包装器**（第 0 个实参中文、第 1 个英文）。
+    /// CloudASR 的两张错误映射表用的 `made(zh, en, retryable:)` 就是一个——它内部调 tr()。
+    /// 不认它的话那 20 条文案会整张被判成"没走 tr"，而按声明名整段豁免又会连英文侧也不查；
+    /// 认下来才能继续拦住"英文侧混进中文"那一类。
+    private static let bilingualCallees: Set<String> = ["tr", "made"]
 
     private static let declarationKeywords: Set<String> = [
         "func", "var", "let", "case", "enum", "struct", "class", "extension", "init", "subscript",
@@ -405,7 +435,7 @@ enum CJKSourceScanner {
                 let inheritedSuppression = stack.last?.suppressed ?? false
                 stack.append(Frame(callee: callee,
                                    argumentIndex: 0,
-                                   isTr: callee == "tr" || callee.hasSuffix(".tr"),
+                                   isTr: bilingualCallees.contains(callee) || callee.hasSuffix(".tr"),
                                    suppressed: inheritedSuppression || suppressedCallees.contains(callee),
                                    owner: lastDeclaration))
                 index += 1

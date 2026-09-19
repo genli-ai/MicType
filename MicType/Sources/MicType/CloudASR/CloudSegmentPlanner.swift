@@ -41,8 +41,13 @@ struct CloudSegmentLimits: Equatable {
 
     /// 阿里云：10MB base64 ≈ 234s，且模型另有 5 分钟上限 → 120s / 180s（180s ≈ 7.68MB base64）
     static let alibaba = CloudSegmentLimits(targetSeconds: 120, hardMaxSeconds: 180)
-    /// OpenAI：25MB 原始文件 ≈ 781s → 600s / 700s
-    static let openai = CloudSegmentLimits(targetSeconds: 600, hardMaxSeconds: 700)
+    /// OpenAI：25MB 原始文件 ≈ 781s，体积根本不是瓶颈，所以段长由**产品**定而不是由上限定。
+    /// 为什么不用 600/700：录音硬上限就是 600s（DictationController.maxRecordingSeconds），
+    /// hardMax 比它还大的话 planner 的"一次就能发完"提前返回对**每一次**录音都命中，永远只有
+    /// 1 段——分段进度（onSegment 只在收尾时回一次且 total==1）、失败部分交付、Esc 保字
+    /// 三件事在这一档上同时失效，十分钟口述可能一个字都不剩。切小还更抗断网。
+    /// 不变式：任何供应商的 hardMaxSeconds 都必须显著小于录音硬上限（单测钉住）。
+    static let openai = CloudSegmentLimits(targetSeconds: 150, hardMaxSeconds: 240)
 }
 
 enum CloudSegmentPlanner {

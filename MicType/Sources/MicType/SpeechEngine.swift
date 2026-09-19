@@ -23,11 +23,16 @@ struct TranscriptionOutcome {
 }
 
 /// 在途识别的句柄：Esc 按下时叫停**下一段**。
-/// 当前这一段停不下来（MLX 一次解码到底），所以"取消"的语义是"不再开新段"，
+/// 本机引擎里当前这一段停不下来（MLX 一次解码到底），所以"取消"的语义是"不再开新段"，
 /// 而不是"立刻结束"——上层要照这个语义写文案。
 final class TranscriptionHandle: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelledFlag = false
+    /// 取消时同步回调一次（装了才有）。**云端那一路必须靠它**：在飞的 HTTP 请求只有
+    /// CloudASRHandle 掐得掉，光置个标志位等于让用户按完 Esc 还要等这一整段上传完、
+    /// 云端转完、可能还退避重试一次（阿里云 120s 起步，而且照常计费）。
+    /// 本机引擎不用装：它在每段解码前自己查 isCancelled，最坏只等一段。
+    private var onCancel: (() -> Void)?
 
     /// 已经出结果的段数。只在主线程读写（引擎每完成一段回主线程更新一次），
     /// 供 Esc 那条路判断"有没有东西可交付"。
@@ -39,10 +44,26 @@ final class TranscriptionHandle: @unchecked Sendable {
         return cancelledFlag
     }
 
+    /// 装取消钩子（引擎开工时装一次）。装之前就已经被取消了就地补跑一次——
+    /// 否则那次取消永远没人接。
+    func setCancelHandler(_ handler: @escaping () -> Void) {
+        lock.lock()
+        let already = cancelledFlag
+        if !already { onCancel = handler }
+        lock.unlock()
+        if already { handler() }
+    }
+
+    /// 钩子在调 cancel() 的这条线程上同步跑（调用方都在主线程）。
+    /// 钩子里**不要**同步交付结果：cancel() 的调用点后面还要落保底历史、改悬浮窗文案，
+    /// 收口必须排到它们后面去（见 CloudASREngine 的取消钩子）。
     func cancel() {
         lock.lock()
         cancelledFlag = true
+        let handler = onCancel
+        onCancel = nil
         lock.unlock()
+        handler?()
     }
 
     /// 引擎在主线程调用

@@ -104,6 +104,18 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
     /// 分段编码与串行调用都在这条队列上：不占主线程（5 分钟音频编 WAV 也要几十毫秒）
     private let queue = DispatchQueue(label: "mictype.cloudasr", qos: .userInitiated)
 
+    /// 发一段音频出去。默认就是 CloudASRExecutor（唯一碰网络的地方）。
+    /// 留成可替换的属性只为一件事：**桥接层的取消语义只有多段流程真跑起来才验得到**
+    /// （Esc 之后不再开新段、已转段照常交付、取消优先于失败、段间尾巴传给下一段），
+    /// 而那条路上每一段都要上网。单测在这里塞一个假发送器，不花钱、不碰网络。
+    /// 只允许在"开工之前"替换（构造完到第一次 transcribe 之间），跑起来之后不再改。
+    typealias SegmentSender = (URLRequest, CloudTranscriptionProviding, CloudASRHandle,
+                               @escaping (Result<CloudASRSegmentResult, CloudASRFailure>) -> Void) -> Void
+    var sendSegment: SegmentSender = { request, provider, handle, completion in
+        CloudASRExecutor.send(request: request, provider: provider, handle: handle,
+                              completion: completion)
+    }
+
     init(config: CloudASRConfig = CloudASRConfig()) {
         self.config = config
     }
@@ -188,10 +200,11 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
                     onSegment: ((String, Int, Int) -> Void)?,
                     completion: @escaping (TranscriptionOutcome) -> Void) -> TranscriptionHandle {
         let outer = TranscriptionHandle()
-        // 下面这几个量只在主线程读写（onSegment 与 completion 都回主线程），不用加锁。
+        // 下面这几个量只在主线程读写（onSegment 与 completion 都回主线程，取消钩子也把
+        // 交付排回主队列），不用加锁。
         // inner 是**这一轮**的句柄：取消只能掐掉自己这一轮，不能走 self.cancel()——
         // 那掐的是引擎当前那一轮，用户已经开始下一次听写时会把新的那一轮误杀
-        var inner: CloudASRHandle?
+        var inner: CloudASRHandle? = nil
         var joined = ""
         var totalSegments = 1
         var delivered = false
@@ -200,6 +213,23 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
             delivered = true
             completion(outcome)
         }
+        /// 取消这一刻手上的东西照常交出去（已转好的段落不跟着一起扔）
+        func cancelledOutcome() -> TranscriptionOutcome {
+            TranscriptionOutcome(text: joined,
+                                 completedSegments: outer.completedSegments,
+                                 totalSegments: max(totalSegments, outer.completedSegments),
+                                 failure: nil, cancelled: true)
+        }
+
+        // Esc 立刻生效：**同步**掐掉在飞的那一次 HTTP（只有 CloudASRHandle 做得到），
+        // 已经转好的段落照常交付。只在 onSegment 里查 outer 的老写法要等下一段转完才停得下来，
+        // 那一段照常上传、照常计费（阿里云单段 120s 起步，还可能退避重试一次）。
+        outer.setCancelHandler {
+            inner?.cancel()
+            // 交付**不能**同步做：cancel() 是在 DictationController.cancel() 里调的，
+            // 同步收口会抢在它落保底历史、把悬浮窗改成「收尾中…」之前跑完这一轮
+            DispatchQueue.main.async { deliver(cancelledOutcome()) }
+        }
 
         inner = transcribeDetailed(samples: samples, language: language, previousText: previousText,
                                    onSegment: { text, index, total in
@@ -207,8 +237,8 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
             totalSegments = total
             outer.noteSegmentCompleted()
             onSegment?(text, index, total)
+            // 兜底：取消钩子装好之前（或从别的线程）按下的 Esc，在段间再收一次口
             guard outer.isCancelled else { return }
-            // 段与段之间才停得下来：掐掉在飞的请求，把已经转好的这几段交付出去
             inner?.cancel()
             deliver(TranscriptionOutcome(text: joined, completedSegments: index,
                                          totalSegments: total, failure: nil, cancelled: true))
@@ -221,6 +251,14 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
                                              totalSegments: count,
                                              failure: nil, cancelled: false))
             case .failure(let failure):
+                // **取消优先于失败**：用户按了 Esc 之后这一段才超时/限流失败，那不是"云端炸了"。
+                // 报成失败的话集成层会按回落判据（DictationController: usesCloud && failure && !cancelled）
+                // 把整段音频重新丢给本机引擎跑一遍——用户明明已经喊停了。
+                // 本机引擎那边同义（QwenEngine：取消了就不再开新段，已转段照常交付、不带 failure）。
+                guard !outer.isCancelled else {
+                    deliver(cancelledOutcome())
+                    return
+                }
                 deliver(TranscriptionOutcome(text: joined,
                                              completedSegments: outer.completedSegments,
                                              totalSegments: max(totalSegments, outer.completedSegments + 1),
@@ -340,7 +378,7 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
         case .failure(let failure):
             finish(.failure(failure))
         case .success(let request):
-            CloudASRExecutor.send(request: request, provider: client, handle: handle) { [weak self] result in
+            sendSegment(request, client, handle) { [weak self] result in
                 guard let self = self, !handle.isCancelled else { return }
                 switch result {
                 case .failure(let failure):

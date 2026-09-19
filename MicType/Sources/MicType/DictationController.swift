@@ -1259,10 +1259,15 @@ final class DictationController {
                     draft: draft)
             }) { [weak self] outcome in
             guard let self = self, self.isCurrent(generation) else { return }
+            // 「用户已经按过 Esc」这件事必须在清指针**之前**取出来（清完再读永远是 nil）：
+            // 它是下面那道回落判据的最后一道保险，见 userStopped
+            let userStopped = self.inflightTranscription?.isCancelled ?? false
             self.inflightTranscription = nil
             // 云端炸了先想退路：本地模型在就整段重跑一遍本地识别，用户一个字都不丢。
             // 判据是纯函数（CloudFallbackDecision），引擎自己不做这个决定。
-            if usesCloud, let failure = outcome.failure, !outcome.cancelled {
+            // userStopped 让「用户停止」永远优先于「自动回落」：用户按了 Esc 之后在飞的那一段
+            // 才超时失败的话，把整段音频再本地重跑一遍（几十秒冷启动 + 整段插入）完全是无视他。
+            if usesCloud, let failure = outcome.failure, !outcome.cancelled, !userStopped {
                 switch CloudFallbackDecision.decide(partialText: outcome.text,
                                                     localModelAvailable: QwenEngine.shared.isModelAvailable) {
                 case .retryLocally:

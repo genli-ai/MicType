@@ -626,7 +626,9 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
     /// 铁律：401 绝不清掉已存的 Key（可能只是区域选错了）。
     static func failure(status: Int, code: String?, message: String?) -> CloudASRFailure {
         let raw = (code ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let detail = message.map { "：" + String($0.prefix(80)) } ?? ""
+        // 冒号用 ASCII：这串会直接接在 tail 的 ASCII 括号后面，英文界面下混一个全角「：」
+        // 就是一处中文泄漏（CJKUIStringGuardTests 拦的正是 U+FF01–FF60）。中文界面下也不突兀。
+        let detail = message.map { ": " + String($0.prefix(80)) } ?? ""
         let tail = " (" + String(status) + (raw.isEmpty ? "" : " " + raw) + ")"
 
         func made(_ zh: String, _ en: String, retryable: Bool = false) -> CloudASRFailure {
@@ -819,7 +821,9 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
 
     static func failure(status: Int, code: String?, message: String?) -> CloudASRFailure {
         let raw = (code ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let detail = message.map { "：" + String($0.prefix(80)) } ?? ""
+        // 冒号用 ASCII：这串会直接接在 tail 的 ASCII 括号后面，英文界面下混一个全角「：」
+        // 就是一处中文泄漏（CJKUIStringGuardTests 拦的正是 U+FF01–FF60）。中文界面下也不突兀。
+        let detail = message.map { ": " + String($0.prefix(80)) } ?? ""
         let tail = " (" + String(status) + (raw.isEmpty ? "" : " " + raw) + ")"
 
         func made(_ zh: String, _ en: String, retryable: Bool = false) -> CloudASRFailure {
