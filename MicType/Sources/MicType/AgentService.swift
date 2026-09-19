@@ -103,20 +103,25 @@ enum LLMClient {
     /// 润色与所有语音指令都从这里进：按服务商挑接口，调用方不必知道发的是 Responses 还是 chat/completions。
     /// 只有这一个入口能保证「该带的参数一次都不漏、不该发的 temperature 一次都不发」。
     @discardableResult
+    /// - apiKeyOverride: 只有「粘贴即验证」那一趟会传——拿**还没进钥匙串**的候选 Key 发一次真请求。
+    ///   验证必须走与真实润色完全相同的这条路（否则「测试通过」证明不了真用的时候也通），
+    ///   而验证不过的 Key 一个字节都不该落进钥匙串（3.3 之前的「保存 Key」能存一把废 Key 还显示绿对勾）。
     static func complete(system: String, user: String, purpose: Purpose, temperature: Double?,
                          timeout: TimeInterval, model: String, maxOutputTokens: Int,
+                         apiKeyOverride: String? = nil,
                          completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle {
         let handle = LLMRequestHandle()
         if Settings.shared.llmProvider == .openai,
            usesResponsesAPI(baseURL: Settings.shared.currentBaseURL) {
             respond(system: system, user: user, purpose: purpose, temperature: temperature,
                     timeout: timeout, model: model, maxOutputTokens: maxOutputTokens,
-                    handle: handle, completion: completion)
+                    handle: handle, apiKeyOverride: apiKeyOverride, completion: completion)
         } else {
             chat(messages: [["role": "system", "content": system],
                             ["role": "user", "content": user]],
                  temperature: temperature, timeout: timeout, model: model,
-                 purpose: purpose, handle: handle, completion: completion)
+                 purpose: purpose, handle: handle, apiKeyOverride: apiKeyOverride,
+                 completion: completion)
         }
         return handle
     }
@@ -144,13 +149,14 @@ enum LLMClient {
     static func respond(system: String, user: String, purpose: Purpose, temperature: Double?,
                         timeout: TimeInterval, model: String, maxOutputTokens: Int,
                         handle: LLMRequestHandle = LLMRequestHandle(),
+                        apiKeyOverride: String? = nil,
                         completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle {
         let body = responsesBody(model: model, system: system, user: user, purpose: purpose,
                                  temperature: temperature, maxOutputTokens: maxOutputTokens,
                                  fastTier: Settings.shared.fastTier,
                                  searchStyle: searchStyle(for: purpose))
         dispatch(path: "/responses", body: body, endpoint: .responses, timeout: timeout,
-                 handle: handle, completion: completion)
+                 handle: handle, apiKeyOverride: apiKeyOverride, completion: completion)
         return handle
     }
 
@@ -165,13 +171,14 @@ enum LLMClient {
                      model: String,
                      purpose: Purpose? = nil,
                      handle: LLMRequestHandle = LLMRequestHandle(),
+                     apiKeyOverride: String? = nil,
                      completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle {
         let body = chatBody(model: model, messages: messages, temperature: temperature,
                             purpose: purpose, provider: Settings.shared.llmProvider,
                             fastTier: Settings.shared.fastTier,
                             searchStyle: purpose.map { searchStyle(for: $0) } ?? .unsupported)
         dispatch(path: "/chat/completions", body: body, endpoint: .chat, timeout: timeout,
-                 handle: handle, completion: completion)
+                 handle: handle, apiKeyOverride: apiKeyOverride, completion: completion)
         return handle
     }
 
@@ -197,12 +204,18 @@ enum LLMClient {
     /// 本机模型那一档没有 Key 才是正常状态）
     static var isConfigured: Bool { credential() != nil }
 
-    /// 测试某个模型的连通性与速度。completion 在主线程回调（是否成功, 含耗时的提示）。
+    /// 测试某个模型的连通性与速度。completion 在主线程回调（是否成功, 一句不带图标的说明）。
     /// 走的是与真实润色完全同一条代码路径——否则「测试通过」证明不了真用的时候也通。
-    static func testModel(_ model: String, completion: @escaping (Bool, String) -> Void) {
-        guard isConfigured else {
-            completion(false, tr("还没有填 API Key", "No API key yet"))
-            return
+    /// - candidateKey: 「粘贴即验证」传进来的候选 Key（还没进钥匙串）。为 nil 时用已存的那把。
+    ///   ✓ / ✗ 这类图标交给调用方拼：Key 验证那一处要把失败原因原样摆出来，不该先被一个记号裹住。
+    static func testModel(_ model: String, candidateKey: String? = nil,
+                          completion: @escaping (Bool, String) -> Void) {
+        let candidate = candidateKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if candidate == nil || candidate!.isEmpty {
+            guard isConfigured else {
+                completion(false, tr("还没有填 API Key", "No API key yet"))
+                return
+            }
         }
         guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             completion(false, tr("还没有填模型名", "No model name yet"))
@@ -212,12 +225,13 @@ enum LLMClient {
         complete(system: "You are a connectivity probe. Reply with exactly one word.",
                  user: "请只回复一个字：好",
                  purpose: .polish, temperature: nil, timeout: 30, model: model,
-                 maxOutputTokens: LLMCatalog.polishMinOutputTokens) { result, failure in
+                 maxOutputTokens: LLMCatalog.polishMinOutputTokens,
+                 apiKeyOverride: candidate) { result, failure in
             let secs = String(format: "%.1f", Date().timeIntervalSince(start))
             if let r = result {
-                completion(true, "✓ \(secs)s · " + tr("返回：", "Response: ") + String(r.prefix(20)))
+                completion(true, "\(secs)s · " + tr("返回：", "Response: ") + String(r.prefix(20)))
             } else {
-                completion(false, "✗ " + (failure ?? tr("未知原因", "unknown")))
+                completion(false, failure ?? tr("未知原因", "unknown"))
             }
         }
     }
@@ -504,9 +518,11 @@ enum LLMClient {
 
     private static func dispatch(path: String, body: [String: Any], endpoint: Endpoint,
                                  timeout: TimeInterval, handle: LLMRequestHandle,
+                                 apiKeyOverride: String? = nil,
                                  completion: @escaping (String?, String?) -> Void) {
         guard !handle.isCancelled else { return }
-        guard let apiKey = credential() else {
+        // 候选 Key（验证中）优先；它只存在于这一趟请求里，别处读不到，也没写进钥匙串
+        guard let apiKey = apiKeyOverride ?? credential() else {
             DispatchQueue.main.async { completion(nil, tr("未配置 API Key", "No API key configured")) }
             return
         }

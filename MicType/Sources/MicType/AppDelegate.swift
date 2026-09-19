@@ -42,6 +42,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
+        // 悬浮窗上的「去配置」：直接落到设置窗口的 AI 页，不让用户自己去翻标签
+        dictation.onNeedAISettings = {
+            SettingsWindowController.shared.show(tab: .ai)
+        }
+
         hotkeys.onTapToggle = { [weak self] in self?.dictation.toggle() }
         hotkeys.onPressStart = { [weak self] in self?.dictation.pressStart() }
         hotkeys.onPressTapConfirm = { [weak self] in self?.dictation.pressTapConfirm() }
@@ -220,6 +225,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(makeItem(tr("释放模型内存", "Free Model Memory"), #selector(unloadModel)))
         }
 
+        // 没配 AI 时给一条看得见的入口（配好就消失）。3.3 之前菜单栏对"AI 没配"
+        // 一个字都不说，用户只有在按住说完话之后才在悬浮窗看到一句错误。
+        // 本机模型那一档不需要 Key，isConfigured 已经替我们认下了。
+        if !LLMClient.isConfigured {
+            menu.addItem(makeItem(tr("配置 AI…", "Set up AI…"), #selector(openAISettings)))
+        }
+
         let settingsItem = makeItem(tr("设置…", "Settings…"), #selector(openSettings))
         settingsItem.keyEquivalent = ","
         settingsItem.keyEquivalentModifierMask = .command
@@ -312,6 +324,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openSettings() {
         SettingsWindowController.shared.show()
+    }
+
+    @objc private func openAISettings() {
+        SettingsWindowController.shared.show(tab: .ai)
     }
 
     @objc private func openLogsFolder() {

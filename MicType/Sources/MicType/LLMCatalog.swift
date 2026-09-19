@@ -58,6 +58,93 @@ enum LLMCatalog {
         }
     }
 
+    // MARK: - 质量二选一（快 / 最好）
+
+    /// 用户对「花多少钱换多好的结果」只做**一次**选择，选完写死两个型号字段。
+    /// 铁律：这不是运行时自动切换——MicType 永远不会替用户在两档之间跳。
+    enum QualityTier: String, CaseIterable {
+        case fast
+        case best
+
+        var displayName: String {
+            switch self {
+            case .fast: return tr("快", "Fast")
+            case .best: return tr("最好", "Best")
+            }
+        }
+    }
+
+    /// 一档质量对应的两个型号（润色 + 指令）
+    struct ModelPair: Equatable {
+        let polish: String
+        let command: String
+    }
+
+    /// **整个产品里唯一一张「档位 → 型号」表**：型号换代只改这里（以及上面的默认值常量），
+    /// 界面层一个型号名都不认识。nil = 这一档没有内置型号可推荐（自定义端点 / 本机模型的
+    /// 型号名只有用户自己知道），界面据此把质量选择器整个藏掉，而不是摆一个点了没反应的控件。
+    static func models(provider: LLMProvider, tier: QualityTier) -> ModelPair? {
+        switch (provider, tier) {
+        // 「快」这一档 == 各服务商的出厂默认：干净安装打开设置页看到的就是「快」，不是空白
+        case (.openai, .fast): return ModelPair(polish: openaiPolishDefault, command: openaiCommandDefault)
+        case (.openai, .best): return ModelPair(polish: "gpt-5.6-terra", command: "gpt-5.6-sol")
+        case (.deepseek, .fast): return ModelPair(polish: deepseekPolishDefault, command: deepseekCommandDefault)
+        // DeepSeek 只有两个型号：最好档把润色也抬到 pro（润色路径会关掉它的思考模式，不至于慢到没法用）
+        case (.deepseek, .best): return ModelPair(polish: "deepseek-v4-pro", command: "deepseek-v4-pro")
+        case (.qwen, .fast): return ModelPair(polish: qwenPolishDefault, command: qwenCommandDefault)
+        case (.qwen, .best): return ModelPair(polish: "qwen3.8-max", command: "qwen3.8-max")
+        case (.custom, _), (.local, _): return nil
+        }
+    }
+
+    /// 当前这两个型号落在哪一档（纯函数）。nil = 两档都不是——**用户自己在高级区挑过型号**，
+    /// 界面必须如实显示「自选」，绝不能把选择器硬钉在某一档上骗他（那等于偷偷改回我们的型号）。
+    static func tier(provider: LLMProvider, polish: String, command: String) -> QualityTier? {
+        let p = polish.trimmingCharacters(in: .whitespacesAndNewlines)
+        let c = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        return QualityTier.allCases.first { tier in
+            guard let pair = models(provider: provider, tier: tier) else { return false }
+            return pair.polish == p && pair.command == c
+        }
+    }
+
+    /// 质量选择器下面那句「它到底换了什么」。写出真实型号名：藏起来只会让人不敢点。
+    /// nil = 这个服务商没有内置两档（选择器本身也不显示）。
+    static func qualitySummary(provider: LLMProvider) -> String? {
+        guard let fast = models(provider: provider, tier: .fast),
+              let best = models(provider: provider, tier: .best) else { return nil }
+        return tr("「快」= 润色 \(fast.polish) + 指令 \(fast.command)；「最好」= 润色 \(best.polish) + 指令 \(best.command)。选一下就同时改掉这两个型号，想自己挑就去「高级」。",
+                  "Fast = \(fast.polish) for polish and \(fast.command) for commands. Best = \(best.polish) and \(best.command). Picking a tier writes both model fields - pick your own under Advanced.")
+    }
+
+    // MARK: - 去哪儿申请 Key / 固定的 Key 与费用说法
+
+    /// 「去申请 Key ↗」指向的页面。nil = 我们没有一条可以打包票的地址
+    /// （Qwen 的控制台随区域不同；自定义端点与本机模型压根不是一家服务商）——
+    /// 与 billingURL 同一条纪律：**宁可不给按钮，也不塞一个猜出来的链接**。
+    static func apiKeyConsoleURL(for provider: LLMProvider) -> String? {
+        switch provider {
+        case .openai: return "https://platform.openai.com/api-keys"
+        case .deepseek: return "https://platform.deepseek.com"
+        case .qwen, .custom, .local: return nil
+        }
+    }
+
+    /// Key 怎么存 / 钱怎么付。**设置页与引导页必须逐字用这两句**（同一个事实只写一处）。
+    static var keyStorageNote: String {
+        tr("Key 加密存在 macOS 钥匙串里，仅本机可读，从不写进明文文件，也不随设置导出。",
+           "Your key is encrypted in the macOS Keychain, readable only on this Mac, never written to a plain file and never included in a settings export.")
+    }
+    static var billingNote: String {
+        tr("费用由服务商直接结给你，MicType 不经手、不加价，也不代发你的请求。",
+           "You pay the provider directly. MicType takes no cut and never proxies your requests.")
+    }
+    /// 新账号的第一道坎（BoltAI 把它写在同一屏是对的：拿到 Key 也可能是 429/余额不足）
+    static var newAccountNote: String {
+        tr("新账号通常要先在服务商那边绑卡或充一点额度，Key 才真的能用。",
+           "A brand-new account usually has to add a card or buy some credit before the key works.")
+    }
+
     // MARK: - 接口地址
 
     /// DashScope 兼容模式的接入区域。**必须做成选择器**：URL 里带 WorkspaceId，

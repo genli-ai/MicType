@@ -17,6 +17,8 @@ final class DictationController {
     var onPhaseChange: ((Phase) -> Void)?
     /// 需要打开设置窗口时的回调
     var onNeedSettings: (() -> Void)?
+    /// 需要打开「设置 → AI」的回调（没配 Key 却按住说了指令时，悬浮窗上那个「去配置」胶囊）
+    var onNeedAISettings: (() -> Void)?
 
     private let recorder = AudioRecorder()
     let overlay = OverlayController()
@@ -891,9 +893,15 @@ final class DictationController {
                     if !LLMClient.isConfigured {
                         let keyName = Settings.shared.hotkey.displayName
                         self.phase = .idle
+                        // 提示里多一个可点的「去配置」：话还是那句"纯输入请轻点"，
+                        // 但别让用户读完之后还得自己去菜单栏找设置页。
+                        // 铁律不动：不做剪贴板兜底救字、不替他把这次长按当成轻点。
                         self.overlay.flashError(
                             tr("指令模式需配置 API Key；纯语音输入请「轻点」\(keyName)（而非长按）",
-                               "Command mode needs an API key. For dictation, tap \(keyName) (don't hold)"))
+                               "Command mode needs an API key. For dictation, tap \(keyName) (don't hold)"),
+                            actionLabel: tr("去配置", "Set up")) { [weak self] in
+                                self?.onNeedAISettings?()
+                            }
                         Sounds.playError()
                         return
                     }

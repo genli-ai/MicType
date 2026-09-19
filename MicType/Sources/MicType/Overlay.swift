@@ -31,6 +31,12 @@ final class OverlayState: ObservableObject {
     /// 布局回填再触发一次重绘，绕成死循环。
     var cancelHitRect: CGRect = .zero
 
+    /// 错误提示里那个可点的小胶囊的文字（「去配置」）。nil = 这条提示没有可点动作。
+    /// 只有错误提示配得上它：成功/中性提示一闪就走，摆个按钮只会让人去够一个够不着的东西。
+    @Published var actionLabel: String?
+    /// 同 cancelHitRect：非 published，只给命中测试用
+    var actionHitRect: CGRect = .zero
+
     /// 当前状态是否"可取消"——只有录音中和处理中才有取消这回事。
     /// 一闪而过的成功/错误提示不认点击：那一下多半是用户投向目标应用的。
     var isCancellable: Bool {
@@ -38,6 +44,12 @@ final class OverlayState: ObservableObject {
         case .recording, .processing: return true
         case .success, .error, .notice: return false
         }
+    }
+
+    /// 这一刻有没有"可点的动作胶囊"（与取消胶囊共用同一套全局鼠标命中判定）
+    var isActionable: Bool {
+        guard case .error = mode else { return false }
+        return actionLabel != nil
     }
 
     func pushLevel(_ level: Float) {
@@ -247,6 +259,9 @@ struct OverlayView: View {
                     .font(.callout.weight(.medium))
                     .foregroundColor(.white.opacity(0.95))
                     .lineLimit(2)
+                if let action = state.actionLabel {
+                    ActionChip(state: state, label: action)
+                }
             }
         }
     }
@@ -277,6 +292,29 @@ private struct CancelChip: View {
     }
 }
 
+/// 错误提示右端的可点胶囊（「去配置」）。长相与命中方式都照抄 CancelChip——
+/// 悬浮窗整块 ignoresMouseEvents，这一下同样由 OverlayController 的全局鼠标监听按屏幕坐标判。
+/// 它只负责"把人带到该去的地方"，绝不代替用户做任何补救动作（不救字、不改手势）。
+private struct ActionChip: View {
+    let state: OverlayState
+    let label: String
+
+    var body: some View {
+        Text(label)
+            .font(.subheadline.weight(.medium))
+            .foregroundColor(.white.opacity(0.95))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(Color.white.opacity(0.26)))
+            .background(
+                GeometryReader { geo -> Color in
+                    state.actionHitRect = geo.frame(in: .named(OverlayContainer.space))
+                    return Color.clear
+                }
+            )
+    }
+}
+
 /// 悬浮窗永远不当 key / main 窗口：点「取消」也不该把目标应用里的光标和焦点抢走
 private final class OverlayPanel: NSPanel {
     override var canBecomeKey: Bool { false }
@@ -290,6 +328,9 @@ final class OverlayController {
     let state = OverlayState()
     /// 点胶囊上的「⎋ 取消」时调用（DictationController 接到 cancel()，与 Esc 同一个出口）
     var onCancelTapped: (() -> Void)?
+    /// 当前这条错误提示上那个动作胶囊要干的事（「去配置」→ 打开设置的 AI 页）。
+    /// 每条提示自带一个，提示消失就清掉——绝不让上一条的动作挂到下一条上。
+    private var pendingAction: (() -> Void)?
 
     private var panel: NSPanel?
     private var hideGeneration = 0
@@ -417,6 +458,7 @@ final class OverlayController {
     func showRecording(label: String = tr("正在听…", "Listening…")) {
         hideGeneration += 1
         endProcessing()
+        clearAction()
         state.resetLevels()
         state.draftText = ""
         state.mode = .recording(label)
@@ -440,6 +482,7 @@ final class OverlayController {
 
     func showProcessing(_ label: String) {
         hideGeneration += 1
+        clearAction()
         state.draftText = ""
         processingLabel = label
         if processingStartedAt == nil { processingStartedAt = Date() }
@@ -493,6 +536,14 @@ final class OverlayController {
         state.mode = .processing(processingText())
     }
 
+    /// 动作胶囊只属于当前这一条提示
+    private func clearAction() {
+        pendingAction = nil
+        state.actionLabel = nil
+        state.actionHitRect = .zero
+        pressedActionRect = nil
+    }
+
     private func endProcessing() {
         processingTimer?.invalidate()
         processingTimer = nil
@@ -506,15 +557,28 @@ final class OverlayController {
     /// 草稿刷新、2 分钟软提示、处理中每秒追加的秒数都会改胶囊宽度，右端的取消按钮跟着横移——
     /// 拿松手时的新几何去判"有没有拖出去"，这一下就被静默丢掉了（日志里都看不见）。
     private var pressedCancelRect: CGRect?
+    /// 同理，按下那一刻量到的动作胶囊矩形
+    private var pressedActionRect: CGRect?
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
 
     /// 「⎋ 取消」此刻在屏幕上的可点矩形。SwiftUI 的 y 轴朝下、屏幕坐标朝上，翻过来才是
     /// 同一块地方；小按钮再给 4pt 容错，别让用户点三次才中。
     private func cancelScreenRect() -> CGRect? {
-        guard state.isCancellable, let p = panel, p.isVisible else { return nil }
-        let rect = state.cancelHitRect
-        guard !rect.isEmpty else { return nil }
+        guard state.isCancellable else { return nil }
+        return screenRect(state.cancelHitRect)
+    }
+
+    /// 动作胶囊（「去配置」）此刻的可点矩形
+    private func actionScreenRect() -> CGRect? {
+        guard state.isActionable else { return nil }
+        return screenRect(state.actionHitRect)
+    }
+
+    /// 面板坐标（SwiftUI，y 轴朝下）→ 屏幕坐标（y 轴朝上）。小按钮再给 4pt 容错，
+    /// 别让用户点三次才中。
+    private func screenRect(_ rect: CGRect) -> CGRect? {
+        guard let p = panel, p.isVisible, !rect.isEmpty else { return nil }
         let frame = p.frame
         return CGRect(x: frame.minX + rect.minX,
                       y: frame.minY + (frame.height - rect.maxY),
@@ -525,7 +589,7 @@ final class OverlayController {
 
     /// 只在"有取消可点"时装监听，其余时候一个鼠标事件都不看。
     private func updateCancelMonitors() {
-        if state.isCancellable, let p = panel, p.isVisible {
+        if state.isCancellable || state.isActionable, let p = panel, p.isVisible {
             installCancelMonitors()
         } else {
             removeCancelMonitors()
@@ -564,11 +628,21 @@ final class OverlayController {
         case .leftMouseDown:
             // 按下时把矩形定格：之后胶囊怎么重排都不影响这一下的判定
             pressedCancelRect = cancelScreenRect().flatMap { $0.contains(location) ? $0 : nil }
+            pressedActionRect = actionScreenRect().flatMap { $0.contains(location) ? $0 : nil }
         case .leftMouseUp:
-            let pressed = pressedCancelRect
+            let pressedCancel = pressedCancelRect
+            let pressedAction = pressedActionRect
             pressedCancelRect = nil
+            pressedActionRect = nil
             // 按下之后拖出去再松手不算点击，和系统按钮一个脾气
-            guard let rect = pressed, rect.contains(location), state.isCancellable else { return }
+            if let rect = pressedAction, rect.contains(location), state.isActionable {
+                Log.info("Overlay action chip tapped")
+                let action = pendingAction
+                hide()
+                action?()
+                return
+            }
+            guard let rect = pressedCancel, rect.contains(location), state.isCancellable else { return }
             Log.info("Overlay cancel tapped")
             onCancelTapped?()
         default:
@@ -630,15 +704,26 @@ final class OverlayController {
         flash(.error(label), duration: 2.5)
     }
 
+    /// 带一个可点胶囊的错误提示（「去配置」）。停留久一点：2.5 秒够读完一句话，
+    /// 不够看见按钮、移动鼠标、点下去。
+    func flashError(_ label: String, actionLabel: String, duration: Double = 6.0,
+                    action: @escaping () -> Void) {
+        pendingAction = action
+        flash(.error(label), duration: duration, actionLabel: actionLabel)
+    }
+
     func flashNotice(_ label: String) {
         flash(.notice(label), duration: 1.0)
     }
 
-    private func flash(_ mode: OverlayState.Mode, duration: Double) {
+    private func flash(_ mode: OverlayState.Mode, duration: Double, actionLabel: String? = nil) {
         hideGeneration += 1
         endProcessing()
         state.draftText = ""
         let generation = hideGeneration
+        // 没带动作的提示一律先把上一条的胶囊清干净
+        if actionLabel == nil { clearAction() }
+        state.actionLabel = actionLabel
         state.mode = mode
         present(context: "flash")
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
@@ -652,6 +737,7 @@ final class OverlayController {
         endProcessing()
         state.draftText = ""
         state.cancelHitRect = .zero
+        clearAction()
         removeCancelMonitors()
         latchedOrigin = nil
         guard let p = panel, p.isVisible, !reduceMotion else {

@@ -156,6 +156,18 @@ enum LLMProvider: String, CaseIterable {
         }
     }
 
+    /// 分段选择器里的名字：五档并排，displayName 那种带括号的长名会把控件挤爆。
+    /// 比 shortName 多留一点品牌信息（"GPT" 单独摆着认不出是 OpenAI）。
+    var segmentName: String {
+        switch self {
+        case .openai: return "OpenAI"
+        case .deepseek: return "DeepSeek"
+        case .qwen: return "Qwen"
+        case .custom: return tr("自定义", "Custom")
+        case .local: return tr("本机模型", "On-device")
+        }
+    }
+
     /// 徽章那种放不下长名字的地方用短名（纯品牌名，中英通用）
     var shortName: String {
         switch self {
