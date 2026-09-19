@@ -158,12 +158,9 @@ enum LLMProvider: String, CaseIterable {
         case .deepseek: return "https://api.deepseek.com"
         }
     }
-    var defaultModel: String {
-        switch self {
-        case .openai: return "gpt-5.4-mini"
-        case .deepseek: return "deepseek-v4-flash"
-        }
-    }
+    /// 该服务商的默认润色/指令型号（型号名一律来自 LLMCatalog，换代只改那一处）
+    var defaultPolishModel: String { LLMCatalog.polishDefault(for: self) }
+    var defaultCommandModel: String { LLMCatalog.commandDefault(for: self) }
 }
 
 // MARK: - 设置键
@@ -209,9 +206,9 @@ final class Settings {
             SettingsKeys.polishEnabled: true,
             SettingsKeys.polishLevel: PolishLevel.smart.rawValue,
             SettingsKeys.openaiBaseURL: "https://api.openai.com/v1",
-            SettingsKeys.chatModel: "gpt-5.5",
-            SettingsKeys.openaiCommandModel: "gpt-5.4-mini",
-            SettingsKeys.deepseekCommandModel: LLMProvider.deepseek.defaultModel,
+            SettingsKeys.chatModel: LLMCatalog.openaiPolishDefault,
+            SettingsKeys.openaiCommandModel: LLMCatalog.openaiCommandDefault,
+            SettingsKeys.deepseekCommandModel: LLMCatalog.deepseekCommandDefault,
             SettingsKeys.polishTemperature: 0.5,
             SettingsKeys.commandTemperature: 1.0,
             SettingsKeys.aboutMe: "",
@@ -228,7 +225,7 @@ final class Settings {
             SettingsKeys.qwenModelRepo: QwenModels.defaultRepo,
             SettingsKeys.llmProvider: LLMProvider.openai.rawValue,
             SettingsKeys.deepseekBaseURL: LLMProvider.deepseek.defaultBaseURL,
-            SettingsKeys.deepseekModel: LLMProvider.deepseek.defaultModel,
+            SettingsKeys.deepseekModel: LLMCatalog.deepseekPolishDefault,
             SettingsKeys.onboardingCompleted: false,
         ])
 
@@ -244,6 +241,21 @@ final class Settings {
                 }
             }
             d.set(true, forKey: "migratedFromVoiceFlow")
+        }
+
+        // 干净安装（四个模型键一个都没存过）：历史迁移无事可做，直接把标记全部置真。
+        // 必须显式跳过——老的 migratedSplitModels 读的是 d.string()，拿到的是**注册默认值**，
+        // 它会把这个默认值当成"用户的旧通用模型"搬进指令模型，再把润色降成 nano，
+        // 于是新装的用户反而拿不到当前版本的默认型号（3.2.1 以来的老账，v4.0 一并收掉）。
+        // 用 persistentDomain 判断"存没存过"：d.object() 会把注册域也算进去，判不出干净安装。
+        let storedDomain = d.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "com.ligen.mictype") ?? [:]
+        let modelKeys = [SettingsKeys.chatModel, SettingsKeys.openaiCommandModel,
+                         SettingsKeys.deepseekModel, SettingsKeys.deepseekCommandModel]
+        if !modelKeys.contains(where: { storedDomain[$0] != nil }) {
+            for flag in ["migratedModelToMini2", "migratedSplitModels", "migratedPolishTo55",
+                         LLMCatalog.migrationFlagKey] {
+                d.set(true, forKey: flag)
+            }
         }
 
         // 一次性迁移：统一默认模型为 gpt-5.4-mini（质量与速度的平衡点）
@@ -276,6 +288,22 @@ final class Settings {
             }
             d.set(true, forKey: "migratedPolishTo55")
         }
+
+        // 一次性迁移（v4.0）：型号线整体升到 gpt-5.6 / DeepSeek 新命名。
+        // 规则在 LLMCatalog.migrationTo56（纯函数，单测钉死）：**只搬还停在历史自动默认上的用户**，
+        // 手选过型号的人一个字都不动；DeepSeek 那几个已下线的型号名必须改，否则每次调用都 404。
+        if !d.bool(forKey: LLMCatalog.migrationFlagKey) {
+            let current: [String: String?] = [
+                SettingsKeys.chatModel: d.string(forKey: SettingsKeys.chatModel),
+                SettingsKeys.openaiCommandModel: d.string(forKey: SettingsKeys.openaiCommandModel),
+                SettingsKeys.deepseekModel: d.string(forKey: SettingsKeys.deepseekModel),
+                SettingsKeys.deepseekCommandModel: d.string(forKey: SettingsKeys.deepseekCommandModel),
+            ]
+            for (key, value) in LLMCatalog.migrationTo56(current: current) {
+                d.set(value, forKey: key)
+            }
+            d.set(true, forKey: LLMCatalog.migrationFlagKey)
+        }
     }
 
     var hotkey: HotkeyChoice {
@@ -304,7 +332,7 @@ final class Settings {
     }
 
     var chatModel: String {
-        get { d.string(forKey: SettingsKeys.chatModel) ?? "gpt-5.5" }
+        get { d.string(forKey: SettingsKeys.chatModel) ?? LLMCatalog.openaiPolishDefault }
         set { d.set(newValue, forKey: SettingsKeys.chatModel) }
     }
 
@@ -447,17 +475,17 @@ final class Settings {
     }
 
     var deepseekModel: String {
-        get { d.string(forKey: SettingsKeys.deepseekModel) ?? LLMProvider.deepseek.defaultModel }
+        get { d.string(forKey: SettingsKeys.deepseekModel) ?? LLMCatalog.deepseekPolishDefault }
         set { d.set(newValue, forKey: SettingsKeys.deepseekModel) }
     }
 
     var openaiCommandModel: String {
-        get { d.string(forKey: SettingsKeys.openaiCommandModel) ?? "gpt-5.4-mini" }
+        get { d.string(forKey: SettingsKeys.openaiCommandModel) ?? LLMCatalog.openaiCommandDefault }
         set { d.set(newValue, forKey: SettingsKeys.openaiCommandModel) }
     }
 
     var deepseekCommandModel: String {
-        get { d.string(forKey: SettingsKeys.deepseekCommandModel) ?? LLMProvider.deepseek.defaultModel }
+        get { d.string(forKey: SettingsKeys.deepseekCommandModel) ?? LLMCatalog.deepseekCommandDefault }
         set { d.set(newValue, forKey: SettingsKeys.deepseekCommandModel) }
     }
 

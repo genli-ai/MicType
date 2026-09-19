@@ -637,11 +637,11 @@ private struct PolishTab: View {
     @AppStorage(SettingsKeys.polishLevel) private var polishLevel = PolishLevel.smart.rawValue
     @AppStorage(SettingsKeys.llmProvider) private var provider = LLMProvider.openai.rawValue
     @AppStorage(SettingsKeys.openaiBaseURL) private var baseURL = "https://api.openai.com/v1"
-    @AppStorage(SettingsKeys.chatModel) private var chatModel = "gpt-5.5"
-    @AppStorage(SettingsKeys.openaiCommandModel) private var openaiCommandModel = "gpt-5.4-mini"
+    @AppStorage(SettingsKeys.chatModel) private var chatModel = LLMCatalog.openaiPolishDefault
+    @AppStorage(SettingsKeys.openaiCommandModel) private var openaiCommandModel = LLMCatalog.openaiCommandDefault
     @AppStorage(SettingsKeys.deepseekBaseURL) private var dsBaseURL = LLMProvider.deepseek.defaultBaseURL
-    @AppStorage(SettingsKeys.deepseekModel) private var dsModel = LLMProvider.deepseek.defaultModel
-    @AppStorage(SettingsKeys.deepseekCommandModel) private var dsCommandModel = LLMProvider.deepseek.defaultModel
+    @AppStorage(SettingsKeys.deepseekModel) private var dsModel = LLMCatalog.deepseekPolishDefault
+    @AppStorage(SettingsKeys.deepseekCommandModel) private var dsCommandModel = LLMCatalog.deepseekCommandDefault
     @AppStorage(SettingsKeys.polishTemperature) private var polishTemp = 0.5
     @AppStorage(SettingsKeys.commandTemperature) private var commandTemp = 1.0
     @AppStorage(SettingsKeys.aboutMe) private var aboutMe = ""
@@ -652,9 +652,28 @@ private struct PolishTab: View {
     @State private var testResult = ""
     @State private var testing = false
 
-    // 快选预设（输入框仍可手填任意模型名）
-    private static let openaiPresets = ["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5"]
-    private static let deepseekPresets = ["deepseek-v4-flash", "deepseek-chat", "deepseek-v4-pro"]
+    // 快选预设一律取自 LLMCatalog（型号换代只改那一处）；输入框仍可手填任意模型名
+    private static let openaiPresets = LLMCatalog.openaiPresets
+    private static let deepseekPresets = LLMCatalog.deepseekPresets
+
+    /// 选中的型号是不是推理系——是的话温度参数根本不会被发出去，滑杆必须看得见地置灰，
+    /// 而不是让用户以为自己在调一个其实无效的旋钮（3.3 之前就是静默无效）。
+    private var polishTempIgnored: Bool {
+        LLMCatalog.rejectsCustomTemperature(
+            provider == LLMProvider.deepseek.rawValue ? dsModel : chatModel)
+    }
+    private var commandTempIgnored: Bool {
+        LLMCatalog.rejectsCustomTemperature(
+            provider == LLMProvider.deepseek.rawValue ? dsCommandModel : openaiCommandModel)
+    }
+    /// 置灰说明里点名的那些型号（纯型号名，中英通用）
+    private var ignoredTempModels: String {
+        let isDeepSeek = provider == LLMProvider.deepseek.rawValue
+        var names: [String] = []
+        if polishTempIgnored { names.append(isDeepSeek ? dsModel : chatModel) }
+        if commandTempIgnored { names.append(isDeepSeek ? dsCommandModel : openaiCommandModel) }
+        return names.joined(separator: " / ")
+    }
 
     var body: some View {
         Form {
@@ -733,8 +752,8 @@ private struct PolishTab: View {
                                text: $dsCommandModel, presets: Self.deepseekPresets,
                                testing: testing,
                                onTest: { runModelTest(tr("指令模型", "Command model"), dsCommandModel) })
-                    Text(tr("润色高频求快、指令低频求好，两个模型分开配。右侧下拉快选：flash 快且便宜，pro 更强，deepseek-chat 是 flash 非思考别名（响应慢时用）。也可手填任意模型名。Key 在 platform.deepseek.com 申请。",
-                            "Polish runs often and wants speed; commands run rarely and want quality. Quick-pick on the right: flash is fast & cheap, pro is stronger, deepseek-chat is flash without thinking mode. Or type any model name. Get a key at platform.deepseek.com."))
+                    Text(tr("润色高频求快、指令低频求好，两个模型分开配。右侧下拉快选：deepseek-flash 快且便宜（润色默认，润色时 MicType 会替你关掉思考模式，省掉每句话干等的几秒），deepseek-v4-pro 更强（指令默认）。也可手填任意模型名。Key 在 platform.deepseek.com 申请。",
+                            "Polish runs often and wants speed; commands run rarely and want quality. Quick-pick on the right: deepseek-flash is fast and cheap (the polish default — MicType turns thinking mode off for polish, so you don't wait seconds on every sentence); deepseek-v4-pro is stronger (the command default). Or type any model name. Get a key at platform.deepseek.com."))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 } else {
@@ -748,30 +767,42 @@ private struct PolishTab: View {
                                text: $openaiCommandModel, presets: Self.openaiPresets,
                                testing: testing,
                                onTest: { runModelTest(tr("指令模型", "Command model"), openaiCommandModel) })
-                    Text(tr("润色高频求快（默认 nano），指令低频求好（默认 mini）。右侧下拉可快选 OpenAI 当前在售型号——gpt-5.4 标准版质量高于 mini 价格半于 5.5，gpt-5.5 旗舰最强。也可手填任何 OpenAI 兼容服务的模型名。",
-                            "Polish runs often and wants speed (default nano); commands run rarely and want quality (default mini). Quick-pick current OpenAI models on the right — gpt-5.4 beats mini at half the price of 5.5; gpt-5.5 is the flagship. Or type any OpenAI-compatible model name."))
+                    Text(tr("润色每句话都要跑，求快求省（默认 gpt-5.6-luna）；指令低频，求质量（默认 gpt-5.6-terra）。右侧下拉是 OpenAI 当前在售型号：luna 最便宜，terra 平衡，sol 旗舰，astra 最强也最贵。也可手填任何 OpenAI 兼容服务的模型名。",
+                            "Polish runs on every sentence, so it wants speed and low cost (default gpt-5.6-luna); commands are rare and want quality (default gpt-5.6-terra). The quick-pick list is OpenAI's current line-up: luna is the cheapest, terra is balanced, sol is the flagship, astra is the strongest and the priciest. Or type any OpenAI-compatible model name."))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
 
                 HStack {
                     Text(tr("润色温度：", "Polish temperature:"))
+                        .foregroundColor(polishTempIgnored ? .secondary : .primary)
                     Slider(value: $polishTemp, in: 0...1.5)
+                        .disabled(polishTempIgnored)
                     Text(String(format: "%.2f", polishTemp))
                         .monospacedDigit()
+                        .foregroundColor(polishTempIgnored ? .secondary : .primary)
                         .frame(width: 38, alignment: .trailing)
                 }
                 HStack {
                     Text(tr("指令温度：", "Command temperature:"))
+                        .foregroundColor(commandTempIgnored ? .secondary : .primary)
                     Slider(value: $commandTemp, in: 0...1.5)
+                        .disabled(commandTempIgnored)
                     Text(String(format: "%.2f", commandTemp))
                         .monospacedDigit()
+                        .foregroundColor(commandTempIgnored ? .secondary : .primary)
                         .frame(width: 38, alignment: .trailing)
                 }
-                Text(tr("低 = 稳定保真，高 = 自然多样。默认：润色 0.5 / 指令 1.00（即模型默认值）。推理系模型（gpt-5.5 等）只接受默认温度，其他值会被自动忽略。",
-                        "Lower = faithful and stable; higher = natural and varied. Defaults: polish 0.5 / commands 1.00 (the model default). Reasoning models (gpt-5.5 etc.) only accept the default — other values are ignored automatically."))
+                Text(tr("低 = 稳定保真，高 = 自然多样。默认：润色 0.5 / 指令 1.00（即模型默认值）。",
+                        "Lower = faithful and stable; higher = natural and varied. Defaults: polish 0.5 / commands 1.00 (the model default)."))
                     .font(.caption)
                     .foregroundColor(.secondary)
+                if polishTempIgnored || commandTempIgnored {
+                    Text(tr("置灰的滑杆对应推理系模型（\(ignoredTempModels)）：这类模型只接受默认温度，MicType 干脆不发这个参数。换一个非推理型号就能再调。",
+                            "The greyed-out slider belongs to a reasoning model (\(ignoredTempModels)): those only accept their default temperature, so MicType does not send the parameter at all. Pick a non-reasoning model to re-enable it."))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
 
             Section {

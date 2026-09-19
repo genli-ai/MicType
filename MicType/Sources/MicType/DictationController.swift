@@ -911,6 +911,8 @@ final class DictationController {
                         // 润色失败那一次也要记：用户感觉到的等待是实打实的，
                         // 只记成功的话中位数会漂亮得不像话，排障时反而看不出问题
                         self.pendingMetric?.polishMs = polishMs
+                        // prompt 缓存命中（Responses 才报）：取走即清空，绝不把上一轮的数记到这一轮
+                        self.pendingMetric?.cachedTokens = LLMUsageSink.shared.take()
                         if let raw = polished {
                             // 词汇表硬替换在**每个产出点各做一次**（识别原文已在上面做过）。
                             // 不能放到 deliver 里做：那样纯听写路径会对同一串文本替换两趟，
@@ -992,6 +994,7 @@ final class DictationController {
         Log.info("Timing command=\(ms)ms model=\(Settings.shared.currentCommandModel) ok=\(ok)")
         // 失败那一次也记：用户感觉到的等待是实打实的
         pendingMetric?.polishMs = ms
+        pendingMetric?.cachedTokens = LLMUsageSink.shared.take()
     }
 
     /// 技能：自由指令——指令模式下的"万能入口"
