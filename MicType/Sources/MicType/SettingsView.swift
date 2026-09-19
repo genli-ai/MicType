@@ -5,17 +5,18 @@ import ServiceManagement
 
 // MARK: - 设置窗口
 
-/// 设置窗口的四个标签。有了它，别处（菜单栏、升级横幅）才能把用户送到**具体**那一页，
-/// 而不是丢给他一个「自己去找」的设置窗口。
-enum SettingsTab: Hashable {
+/// 设置窗口的四个标签。有名字才能从别处深链过去（菜单栏「配置 AI…」、悬浮窗的「去配置」、
+/// 模型升级横幅）——把人丢进设置窗口第一页再让他自己找，等于没给路。
+enum SettingsTab: String, Hashable, CaseIterable {
     case general
     case recognition
-    case polish
+    case ai
     case about
 }
 
-/// 当前选中的标签。窗口是复用的（isReleasedWhenClosed = false），所以选中项必须是外部可写的
-/// 共享状态，不能只是 SettingsView 内部的 @State——否则第二次 show(tab:) 就翻不动页。
+/// 当前选中的标签。窗口是复用的（isReleasedWhenClosed = false），而深链又来自 AppKit 那一侧
+/// （菜单栏 / 悬浮窗，拿不到 SwiftUI 的 @State），所以选中项必须是外部可写的共享状态——
+/// 否则第二次 show(tab:) 就翻不动页。
 final class SettingsTabRouter: ObservableObject {
     static let shared = SettingsTabRouter()
     @Published var tab: SettingsTab = .general
@@ -27,13 +28,9 @@ final class SettingsWindowController {
     private var window: NSWindow?
     private var langObserver: AnyCancellable?
 
-    /// 打开设置窗口并翻到指定标签
-    func show(tab: SettingsTab) {
-        SettingsTabRouter.shared.tab = tab
-        show()
-    }
-
-    func show() {
+    /// - tab: 指定要停在哪一页；nil = 保持上次的位置（用户自己点「设置…」时不该被拽走）
+    func show(tab: SettingsTab? = nil) {
+        if let tab = tab { SettingsTabRouter.shared.tab = tab }
         if window == nil {
             let hosting = NSHostingController(rootView: SettingsView())
             let w = NSWindow(contentViewController: hosting)
@@ -67,9 +64,10 @@ struct SettingsView: View {
             RecognitionTab()
                 .tabItem { Label(tr("识别", "Recognition"), systemImage: "waveform") }
                 .tag(SettingsTab.recognition)
-            PolishTab()
-                .tabItem { Label(tr("AI 润色", "AI Polish"), systemImage: "wand.and.stars") }
-                .tag(SettingsTab.polish)
+            // 标签名就叫「AI」：这一页也管语音指令，叫「AI 润色」名不副实
+            AITab()
+                .tabItem { Label("AI", systemImage: "wand.and.stars") }
+                .tag(SettingsTab.ai)
             AboutTab()
                 .tabItem { Label(tr("关于", "About"), systemImage: "info.circle") }
                 .tag(SettingsTab.about)
@@ -844,200 +842,505 @@ private struct RecognitionTab: View {
     }
 }
 
-// MARK: - AI 润色
+// MARK: - AI（润色 + 语音指令）
 
-private struct PolishTab: View {
+/// AI 标签：四段——连接 / 行为 / 个性化 / 高级（默认折叠）。
+/// 为什么这么排：3.3 的「AI 润色」一屏摆了 14 个决策点，首配的人得自己在里面找出
+/// 「粘 Key → 测一下」。现在第一屏只剩"选服务商 + 粘 Key + 两三个行为开关"，
+/// 型号名、Base URL、温度这些实现细节全进「高级」——想调的人永远调得到，不想调的人看不见。
+private struct AITab: View {
     @ObservedObject private var l10n = L10n.shared
+    @ObservedObject private var metrics = Metrics.shared
     @AppStorage(SettingsKeys.polishLevel) private var polishLevel = PolishLevel.smart.rawValue
     @AppStorage(SettingsKeys.llmProvider) private var provider = LLMProvider.openai.rawValue
     @AppStorage(SettingsKeys.openaiBaseURL) private var baseURL = "https://api.openai.com/v1"
-    @AppStorage(SettingsKeys.chatModel) private var chatModel = "gpt-5.5"
-    @AppStorage(SettingsKeys.openaiCommandModel) private var openaiCommandModel = "gpt-5.4-mini"
+    @AppStorage(SettingsKeys.chatModel) private var chatModel = LLMCatalog.openaiPolishDefault
+    @AppStorage(SettingsKeys.openaiCommandModel) private var openaiCommandModel = LLMCatalog.openaiCommandDefault
     @AppStorage(SettingsKeys.deepseekBaseURL) private var dsBaseURL = LLMProvider.deepseek.defaultBaseURL
-    @AppStorage(SettingsKeys.deepseekModel) private var dsModel = LLMProvider.deepseek.defaultModel
-    @AppStorage(SettingsKeys.deepseekCommandModel) private var dsCommandModel = LLMProvider.deepseek.defaultModel
+    @AppStorage(SettingsKeys.deepseekModel) private var dsModel = LLMCatalog.deepseekPolishDefault
+    @AppStorage(SettingsKeys.deepseekCommandModel) private var dsCommandModel = LLMCatalog.deepseekCommandDefault
+    @AppStorage(SettingsKeys.qwenRegion) private var qwenRegion = LLMCatalog.QwenRegion.international.rawValue
+    @AppStorage(SettingsKeys.qwenWorkspaceID) private var qwenWorkspace = ""
+    @AppStorage(SettingsKeys.qwenModel) private var qwenModel = LLMCatalog.qwenPolishDefault
+    @AppStorage(SettingsKeys.qwenCommandModel) private var qwenCommandModel = LLMCatalog.qwenCommandDefault
+    @AppStorage(SettingsKeys.customBaseURL) private var customBaseURL = ""
+    @AppStorage(SettingsKeys.customModel) private var customModel = ""
+    @AppStorage(SettingsKeys.customCommandModel) private var customCommandModel = ""
+    @AppStorage(SettingsKeys.localRuntime) private var localRuntime = LLMCatalog.LocalRuntime.ollama.rawValue
+    @AppStorage(SettingsKeys.localModel) private var localModel = ""
+    @AppStorage(SettingsKeys.localCommandModel) private var localCommandModel = ""
+    @AppStorage(SettingsKeys.fastTier) private var fastTier = false
+    @AppStorage(SettingsKeys.webSearchEnabled) private var webSearch = false
     @AppStorage(SettingsKeys.polishTemperature) private var polishTemp = 0.5
     @AppStorage(SettingsKeys.commandTemperature) private var commandTemp = 1.0
     @AppStorage(SettingsKeys.aboutMe) private var aboutMe = ""
-    @State private var apiKey = KeychainHelper.loadAPIKey() ?? ""
-    @State private var openaiSaved = (KeychainHelper.loadAPIKey(account: LLMProvider.openai.keychainAccount) != nil)
-    @State private var dsSaved = (KeychainHelper.loadAPIKey(account: LLMProvider.deepseek.keychainAccount) != nil)
     @AppStorage(SettingsKeys.customPolishRules) private var customRules = ""
     @State private var testResult = ""
     @State private var testing = false
+    /// 「刷新模型列表」从端点取回来的型号（只在内存里，切服务商就丢——上一个端点的清单
+    /// 放到下一个端点上纯属误导）
+    @State private var fetchedModels: [String] = []
+    @State private var refreshing = false
+    @State private var refreshStatus = ""
+    /// 高级区默认折叠：型号名 / Base URL / 温度是实现细节，不该占首屏
+    @State private var advancedExpanded = false
 
-    // 快选预设（输入框仍可手填任意模型名）
-    private static let openaiPresets = ["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5"]
-    private static let deepseekPresets = ["deepseek-v4-flash", "deepseek-chat", "deepseek-v4-pro"]
+    private var selected: LLMProvider { LLMProvider(rawValue: provider) ?? .openai }
+
+    /// 界面上这一刻生效的 Base URL。**从 @AppStorage 的值推**而不是读 Settings.currentBaseURL：
+    /// 后者不是 @Published，改了区域/地址界面不会重算。
+    private var effectiveBaseURL: String {
+        switch selected {
+        case .openai: return baseURL
+        case .deepseek: return dsBaseURL
+        case .qwen:
+            return LLMCatalog.qwenBaseURL(
+                region: LLMCatalog.QwenRegion(rawValue: qwenRegion) ?? .international,
+                workspaceID: qwenWorkspace)
+        case .custom: return customBaseURL
+        case .local: return (LLMCatalog.LocalRuntime(rawValue: localRuntime) ?? .ollama).baseURL
+        }
+    }
+
+    private var searchStyle: LLMCatalog.WebSearchStyle {
+        LLMCatalog.searchStyle(provider: selected, baseURL: effectiveBaseURL)
+    }
+
+    /// 润色/指令模型的输入框都绑到这两个 Binding 上——五个服务商共用一套控件，
+    /// 不必把「输入框 + 快选 + 刷新 + 测试」这一排抄五遍（抄五遍就一定会有一遍忘了跟着改）。
+    private var polishModelBinding: Binding<String> {
+        switch selected {
+        case .openai: return $chatModel
+        case .deepseek: return $dsModel
+        case .qwen: return $qwenModel
+        case .custom: return $customModel
+        case .local: return $localModel
+        }
+    }
+    private var commandModelBinding: Binding<String> {
+        switch selected {
+        case .openai: return $openaiCommandModel
+        case .deepseek: return $dsCommandModel
+        case .qwen: return $qwenCommandModel
+        case .custom: return $customCommandModel
+        case .local: return $localCommandModel
+        }
+    }
+
+    /// 下拉里显示的型号：内置预设在前，端点刷新来的在后
+    private var modelChoices: [String] {
+        LLMCatalog.mergedModelList(presets: LLMCatalog.presets(for: selected), fetched: fetchedModels)
+    }
+
+    /// 选中的型号是不是推理系——是的话温度参数根本不会被发出去，滑杆必须看得见地置灰，
+    /// 而不是让用户以为自己在调一个其实无效的旋钮（3.3 之前就是静默无效）。
+    private var polishTempIgnored: Bool {
+        LLMCatalog.rejectsCustomTemperature(polishModelBinding.wrappedValue)
+    }
+    private var commandTempIgnored: Bool {
+        LLMCatalog.rejectsCustomTemperature(commandModelBinding.wrappedValue)
+    }
+    /// 置灰说明里点名的那些型号（纯型号名，中英通用）
+    private var ignoredTempModels: String {
+        var names: [String] = []
+        if polishTempIgnored { names.append(polishModelBinding.wrappedValue) }
+        if commandTempIgnored { names.append(commandModelBinding.wrappedValue) }
+        return names.joined(separator: " / ")
+    }
 
     var body: some View {
         Form {
-            Section {
-                Picker(tr("润色档位：", "Polish mode:"), selection: $polishLevel) {
-                    ForEach(PolishLevel.allCases, id: \.rawValue) { level in
-                        Text(level.displayName).tag(level.rawValue)
-                    }
-                }
-                .pickerStyle(.radioGroup)
-                Text(tr("「仅识别」完全不联网；「AI 润色」自适应处理力度——短句只做轻清理（去语气词、修错字），长段混乱口述自动重构成可直接使用的成品文字。所有应用同一套规则，档位完全由你决定；菜单栏图标里可以快速切换。",
-                        "Transcribe-only never touches the network. AI polish adapts: short phrases get light cleanup (fillers, typos); long rambling speech gets restructured into ready-to-use text. Same rules in every app — the mode is entirely your choice. Switch quickly from the menu bar."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            Section {
-                Text(tr("语音指令（按住快捷键）：选中文字后按住开口，AI 自动判断意图——要求加工这段文字（改写/翻译）→ 直接替换选区；要求回复对方（「回复他…」「跟他说…」）→ 草稿进剪贴板按 ⌘V；要求写新东西 → 结果输出到光标处。什么都没选就是自由指令（草拟邮件、翻译、提问）。",
-                        "Voice commands (hold the hotkey): with text selected, speak naturally and AI infers the intent — transform the text (rewrite/translate) → selection replaced; reply to the sender (\"reply to him…\", \"tell them…\") → draft lands on the clipboard, press ⌘V; compose something new → result typed at your cursor. With nothing selected it's a free-form command (draft an email, translate, ask anything)."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            Section {
-                Picker(tr("当前使用：", "Active provider:"), selection: $provider) {
-                    ForEach(LLMProvider.allCases, id: \.rawValue) { p in
-                        Text(p.displayName).tag(p.rawValue)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .onChange(of: provider) { _, newValue in
-                    let account = LLMProvider(rawValue: newValue)?.keychainAccount
-                    apiKey = KeychainHelper.loadAPIKey(account: account) ?? ""
-                    testResult = ""
-                }
-                HStack(spacing: 14) {
-                    Text(tr("润色和语音指令将使用上方选中的服务商", "Polish and voice commands use the provider selected above"))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    KeyStatusBadge(name: "GPT", saved: openaiSaved)
-                    KeyStatusBadge(name: "DeepSeek", saved: dsSaved)
-                }
-                SecureField(provider == LLMProvider.deepseek.rawValue
-                            ? tr("DeepSeek API Key（sk-…）", "DeepSeek API key (sk-…)")
-                            : tr("OpenAI API Key（sk-…）", "OpenAI API key (sk-…)"),
-                            text: $apiKey)
-                    .textFieldStyle(.roundedBorder)
-                HStack {
-                    Button(tr("保存 Key", "Save Key")) {
-                        KeychainHelper.saveAPIKey(apiKey)
-                        refreshSavedStates()
-                        testResult = (KeychainHelper.loadAPIKey() != nil)
-                            ? tr("已保存 ✓", "Saved ✓") : tr("已清空", "Cleared")
-                    }
-                    Spacer()
-                }
-                Text(tr("Key 加密保存在 macOS 系统钥匙串里（可在「钥匙串访问」App 中查看），仅本机可读，不写入任何明文文件。两个服务商的 Key 都可以保存，互不覆盖。",
-                        "Keys are encrypted in the macOS Keychain (visible in the Keychain Access app), readable only on this Mac, never written to plain files. Both providers' keys can be saved independently."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                if !testResult.isEmpty {
-                    Text(testResult)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(3)
-                }
-                if provider == LLMProvider.deepseek.rawValue {
-                    TextField(tr("Base URL", "Base URL"), text: $dsBaseURL)
-                        .textFieldStyle(.roundedBorder)
-                    ModelField(label: tr("润色模型（求快）", "Polish model (fast)"),
-                               text: $dsModel, presets: Self.deepseekPresets,
-                               testing: testing,
-                               onTest: { runModelTest(tr("润色模型", "Polish model"), dsModel) })
-                    ModelField(label: tr("指令模型（求好）", "Command model (strong)"),
-                               text: $dsCommandModel, presets: Self.deepseekPresets,
-                               testing: testing,
-                               onTest: { runModelTest(tr("指令模型", "Command model"), dsCommandModel) })
-                    Text(tr("润色高频求快、指令低频求好，两个模型分开配。右侧下拉快选：flash 快且便宜，pro 更强，deepseek-chat 是 flash 非思考别名（响应慢时用）。也可手填任意模型名。Key 在 platform.deepseek.com 申请。",
-                            "Polish runs often and wants speed; commands run rarely and want quality. Quick-pick on the right: flash is fast & cheap, pro is stronger, deepseek-chat is flash without thinking mode. Or type any model name. Get a key at platform.deepseek.com."))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } else {
-                    TextField(tr("Base URL", "Base URL"), text: $baseURL)
-                        .textFieldStyle(.roundedBorder)
-                    ModelField(label: tr("润色模型（求快）", "Polish model (fast)"),
-                               text: $chatModel, presets: Self.openaiPresets,
-                               testing: testing,
-                               onTest: { runModelTest(tr("润色模型", "Polish model"), chatModel) })
-                    ModelField(label: tr("指令模型（求好）", "Command model (strong)"),
-                               text: $openaiCommandModel, presets: Self.openaiPresets,
-                               testing: testing,
-                               onTest: { runModelTest(tr("指令模型", "Command model"), openaiCommandModel) })
-                    Text(tr("润色高频求快（默认 nano），指令低频求好（默认 mini）。右侧下拉可快选 OpenAI 当前在售型号——gpt-5.4 标准版质量高于 mini 价格半于 5.5，gpt-5.5 旗舰最强。也可手填任何 OpenAI 兼容服务的模型名。",
-                            "Polish runs often and wants speed (default nano); commands run rarely and want quality (default mini). Quick-pick current OpenAI models on the right — gpt-5.4 beats mini at half the price of 5.5; gpt-5.5 is the flagship. Or type any OpenAI-compatible model name."))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                HStack {
-                    Text(tr("润色温度：", "Polish temperature:"))
-                    Slider(value: $polishTemp, in: 0...1.5)
-                    Text(String(format: "%.2f", polishTemp))
-                        .monospacedDigit()
-                        .frame(width: 38, alignment: .trailing)
-                }
-                HStack {
-                    Text(tr("指令温度：", "Command temperature:"))
-                    Slider(value: $commandTemp, in: 0...1.5)
-                    Text(String(format: "%.2f", commandTemp))
-                        .monospacedDigit()
-                        .frame(width: 38, alignment: .trailing)
-                }
-                Text(tr("低 = 稳定保真，高 = 自然多样。默认：润色 0.5 / 指令 1.00（即模型默认值）。推理系模型（gpt-5.5 等）只接受默认温度，其他值会被自动忽略。",
-                        "Lower = faithful and stable; higher = natural and varied. Defaults: polish 0.5 / commands 1.00 (the model default). Reasoning models (gpt-5.5 etc.) only accept the default — other values are ignored automatically."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            Section {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(tr("关于我（可选）：", "About me (optional):"))
-                    TextEditor(text: $aboutMe)
-                        .font(.system(size: 12))
-                        .frame(height: 50)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
-                    Text(tr("例如：「署名用 Gen」「邮件偏正式、聊天随意」「MBA 学生，常写商务邮件」。语音指令草拟邮件/回复时会代入这些信息。",
-                            "E.g. \"sign as Gen\", \"formal in email, casual in chat\". Voice commands use this when drafting emails and replies."))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            Section {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(tr("自定义规则（可选，润色和指令都生效）：", "Custom rules (optional — applies to polish and commands):"))
-                    TextEditor(text: $customRules)
-                        .font(.system(size: 12))
-                        .frame(height: 70)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
-                    Text(tr("例如：「邮件场景用正式语气」「英文术语保留原文不翻译」「数字用阿拉伯数字」。",
-                            "E.g. \"formal tone for emails\", \"keep English jargon untranslated\", \"use Arabic numerals\"."))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
+            Section(tr("连接", "Connection")) { connectionSection }
+            Section(tr("行为", "Behavior")) { behaviorSection }
+            Section(tr("个性化", "Personal")) { personalSection }
+            Section { advancedSection }
         }
         .formStyle(.grouped)
         .padding(.top, 4)
-        // 测试结果是快照，切换语言后清掉，避免残留旧语言
+        // 测试结果与刷新结果都是快照，切换语言后清掉，避免残留旧语言
         .onChange(of: l10n.language) { _, _ in
             testResult = ""
+            refreshStatus = ""
         }
     }
 
-    private func refreshSavedStates() {
-        openaiSaved = (KeychainHelper.loadAPIKey(account: LLMProvider.openai.keychainAccount) != nil)
-        dsSaved = (KeychainHelper.loadAPIKey(account: LLMProvider.deepseek.keychainAccount) != nil)
+    // MARK: 段 1 连接：服务商 → 拿 Key → 粘贴即验证
+
+    @ViewBuilder
+    private var connectionSection: some View {
+        Picker(tr("服务商：", "Provider:"), selection: $provider) {
+            ForEach(LLMProvider.allCases, id: \.rawValue) { p in
+                Text(p.segmentName).tag(p.rawValue)
+            }
+        }
+        .pickerStyle(.segmented)
+        .onChange(of: provider) { _, _ in
+            testResult = ""
+            // 上一个端点报上来的型号清单对新端点毫无意义
+            fetchedModels = []
+            refreshStatus = ""
+        }
+
+        // Qwen 的地址由「区域 + WorkspaceId」推出来：这两项不填就连不上，所以留在连接段，
+        // 不能塞进折叠的高级区（其余几档的地址一律没有输入框）。
+        if selected == .qwen {
+            Picker(tr("接入区域：", "Region:"), selection: $qwenRegion) {
+                ForEach(LLMCatalog.QwenRegion.allCases, id: \.rawValue) { region in
+                    Text(region.displayName).tag(region.rawValue)
+                }
+            }
+            if (LLMCatalog.QwenRegion(rawValue: qwenRegion) ?? .international).requiresWorkspaceID {
+                TextField("WorkspaceId", text: $qwenWorkspace)
+                    .textFieldStyle(.roundedBorder)
+            }
+            if effectiveBaseURL.isEmpty {
+                Text(tr("这个区域的地址里带 WorkspaceId，填上才能用（在模型服务控制台的工作空间详情里）。",
+                        "This region puts your workspace ID in the URL - fill it in (you will find it in the Model Studio console)."))
+                    .font(.caption)
+                    .foregroundColor(.orange)
+            }
+        }
+
+        // 官方几档的地址被老版本改过时必须看得见：看不见的自定义地址是查不出来的故障。
+        // 正常情况下这里什么都不显示（地址展示留在高级区）。
+        if (selected == .openai || selected == .deepseek), effectiveBaseURL != selected.defaultBaseURL {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(tr("这一档的接口地址被改过：", "This provider's endpoint was overridden: ") + effectiveBaseURL)
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                    .textSelection(.enabled)
+                Button(tr("恢复官方地址", "Restore the official URL")) {
+                    if selected == .openai { baseURL = selected.defaultBaseURL }
+                    else { dsBaseURL = selected.defaultBaseURL }
+                }
+                .fixedSize()
+            }
+        }
+
+        KeyEntryView(provider: selected, model: polishModelBinding.wrappedValue)
     }
 
-    /// 单个模型的连通性/速度测试（先把输入框里的 Key 存进钥匙串再测）
+    // MARK: 段 2 行为：润色档位 + 质量 + 两个花钱的开关
+
+    @ViewBuilder
+    private var behaviorSection: some View {
+        Picker(tr("润色档位：", "Polish mode:"), selection: $polishLevel) {
+            ForEach(PolishLevel.allCases, id: \.rawValue) { level in
+                Text(level.displayName).tag(level.rawValue)
+            }
+        }
+        .pickerStyle(.radioGroup)
+        Text(tr("「仅识别」完全不联网；「AI 润色」自适应处理力度——短句只做轻清理（去语气词、修错字），长段混乱口述自动重构成可直接使用的成品文字。所有应用同一套规则，档位完全由你决定；菜单栏图标里可以快速切换。",
+                "Transcribe-only never touches the network. AI polish adapts: short phrases get light cleanup (fillers, typos); long rambling speech gets restructured into ready-to-use text. Same rules in every app - the mode is entirely your choice. Switch quickly from the menu bar."))
+            .font(.caption)
+            .foregroundColor(.secondary)
+
+        qualityPicker
+
+        Toggle(tr("语音指令允许联网搜索", "Let voice commands search the web"), isOn: $webSearch)
+            .disabled(searchStyle == .unsupported)
+        Text(webSearchHelp)
+            .font(.caption)
+            .foregroundColor(.secondary)
+
+        Toggle(tr("多花钱换低延迟（Fast 档）", "Pay more for lower latency (Fast tier)"), isOn: $fastTier)
+            .disabled(selected != .openai)
+        Text(LLMCatalog.fastTierPriceNote
+             + (selected == .openai ? "" : tr("　只有 OpenAI 有这个档位。", " Only OpenAI offers this tier.")))
+            .font(.caption)
+            .foregroundColor(.secondary)
+        if let tier = lastServiceTier {
+            Text(tr("上一次请求实际跑在：", "Last request actually ran at: ") + tier)
+                .font(.caption)
+                .foregroundColor(tier == "fast" ? .secondary : .orange)
+        }
+
+        Text(tr("语音指令（按住快捷键）：选中文字后按住开口，AI 自动判断意图——要求加工这段文字（改写/翻译）→ 直接替换选区；要求回复对方（「回复他…」「跟他说…」）→ 草稿进剪贴板按 ⌘V；要求写新东西 → 结果输出到光标处。什么都没选就是自由指令（草拟邮件、翻译、提问）。",
+                "Voice commands (hold the hotkey): with text selected, speak naturally and AI infers the intent - transform the text (rewrite/translate) to replace the selection; reply to the sender (\"reply to him…\", \"tell them…\") to get a draft on the clipboard for ⌘V; compose something new to type it at your cursor. With nothing selected it's a free-form command (draft an email, translate, ask anything)."))
+            .font(.caption)
+            .foregroundColor(.secondary)
+    }
+
+    /// 质量二选一。**一次性选择，不是运行时自动切换**：选一下写两个型号字段，
+    /// 之后每一次调用都用这两个型号，MicType 绝不在背后替用户跳档。
+    @ViewBuilder
+    private var qualityPicker: some View {
+        if let summary = LLMCatalog.qualitySummary(provider: selected) {
+            Picker(tr("质量：", "Quality:"), selection: qualityBinding) {
+                ForEach(LLMCatalog.QualityTier.allCases, id: \.rawValue) { tier in
+                    Text(tier.displayName).tag(Optional(tier))
+                }
+                // 用户在高级区自己挑过型号 → 如实显示「自选」，绝不把他钉回我们的某一档
+                if currentTier == nil {
+                    Text(tr("自选", "Custom")).tag(LLMCatalog.QualityTier?.none)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text(summary)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        } else {
+            Text(tr("这一档没有内置型号：请在下面的「高级」里填润色模型和指令模型。",
+                    "No built-in models for this provider: set the polish and command models under Advanced below."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private var currentTier: LLMCatalog.QualityTier? {
+        LLMCatalog.tier(provider: selected,
+                        polish: polishModelBinding.wrappedValue,
+                        command: commandModelBinding.wrappedValue)
+    }
+
+    /// 质量档 ←→ 两个型号字段。读是"当前落在哪一档"，写是"把两个字段一起改掉"。
+    private var qualityBinding: Binding<LLMCatalog.QualityTier?> {
+        Binding(get: { currentTier },
+                set: { newValue in
+                    guard let tier = newValue,
+                          let pair = LLMCatalog.models(provider: selected, tier: tier) else { return }
+                    polishModelBinding.wrappedValue = pair.polish
+                    commandModelBinding.wrappedValue = pair.command
+                    Log.info("Quality tier set to \(tier.rawValue) provider=\(selected.rawValue)")
+                })
+    }
+
+    /// 最近一轮拿到过 service_tier 的记录。勾了 Fast 却写着 default = 被服务商降级了，
+    /// 这件事必须看得见——不然用户以为多付的钱买到了低延迟。
+    private var lastServiceTier: String? {
+        metrics.items.compactMap(\.serviceTier).first
+    }
+
+    private var webSearchHelp: String {
+        switch searchStyle {
+        case .unsupported:
+            return tr("此服务商不支持。", "This provider does not support it.")
+        case .qwenEnableSearch:
+            return LLMCatalog.webSearchPriceNote
+                + tr("　只作用于按住说出的指令，润色永不联网。Qwen 的兼容端点不回传来源链接，所以历史里不会有来源。",
+                     " It applies only to held-down commands - polish never goes online. This Qwen endpoint returns no source links, so history will not show sources.")
+        case .openaiResponsesTool, .openrouterPlugin:
+            return LLMCatalog.webSearchPriceNote
+                + tr("　只作用于按住说出的指令，润色永不联网；模型给的来源会显示在悬浮窗和历史里。",
+                     " It applies only to held-down commands - polish never goes online. Sources come back with the answer and show up in the overlay and in History.")
+        }
+    }
+
+    // MARK: 段 3 个性化
+
+    @ViewBuilder
+    private var personalSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(tr("关于我（可选）：", "About me (optional):"))
+            TextEditor(text: $aboutMe)
+                .font(.system(size: 12))
+                .frame(height: 50)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
+            Text(tr("例如：「署名用 Gen」「邮件偏正式、聊天随意」「MBA 学生，常写商务邮件」。语音指令草拟邮件/回复时会代入这些信息。",
+                    "E.g. \"sign as Gen\", \"formal in email, casual in chat\". Voice commands use this when drafting emails and replies."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        VStack(alignment: .leading, spacing: 4) {
+            Text(tr("自定义规则（可选，润色和指令都生效）：", "Custom rules (optional - applies to polish and commands):"))
+            TextEditor(text: $customRules)
+                .font(.system(size: 12))
+                .frame(height: 70)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
+            Text(tr("例如：「邮件场景用正式语气」「英文术语保留原文不翻译」「数字用阿拉伯数字」。",
+                    "E.g. \"formal tone for emails\", \"keep English jargon untranslated\", \"use Arabic numerals\"."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: 段 4 高级（默认折叠）
+
+    @ViewBuilder
+    private var advancedSection: some View {
+        DisclosureGroup(isExpanded: $advancedExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                endpointFields
+                modelFields
+                temperatureSliders
+            }
+            .padding(.top, 6)
+        } label: {
+            Text(tr("高级（接口地址、型号、温度）", "Advanced (endpoint, models, temperature)"))
+        }
+    }
+
+    // MARK: 接口地址（只有自定义档有输入框）
+
+    @ViewBuilder
+    private var endpointFields: some View {
+        switch selected {
+        case .openai, .deepseek:
+            // 官方档的地址由 MicType 自己拼，不给输入框（填错一个字符的表现是"找不到模型"）。
+            // 被改过时的警告在「连接」段，这里只是如实报一下当前打到哪儿。
+            Text(tr("接口地址：", "Endpoint: ") + effectiveBaseURL)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .textSelection(.enabled)
+            if effectiveBaseURL != selected.defaultBaseURL {
+                Text(tr("要长期用自建网关，请改用「自定义端点」那一档。",
+                        "To keep using a gateway, switch to the Custom endpoint provider."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        case .qwen:
+            Text(effectiveBaseURL.isEmpty
+                 ? tr("接口地址还拼不出来：上面的 WorkspaceId 还没填。",
+                      "The endpoint cannot be derived yet: the workspace ID above is still empty.")
+                 : tr("接口地址（自动拼好）：", "Endpoint (derived): ") + effectiveBaseURL)
+                .font(.caption)
+                .foregroundColor(effectiveBaseURL.isEmpty ? .orange : .secondary)
+                .textSelection(.enabled)
+        case .custom:
+            TextField(tr("Base URL（要带版本段，如 https://api.moonshot.ai/v1）",
+                         "Base URL (include the version segment, e.g. https://api.moonshot.ai/v1)"),
+                      text: $customBaseURL)
+                .textFieldStyle(.roundedBorder)
+            if let problem = LLMCatalog.validateCustomBaseURL(customBaseURL) {
+                Text(problem.message)
+                    .font(.caption)
+                    .foregroundColor(problem == .empty ? .secondary : .orange)
+            }
+            Text(tr("任何 OpenAI 兼容端点都能填：Kimi、Gemini 兼容层、z.ai、OpenRouter、自建网关。只接受 https（localhost 除外）。",
+                    "Any OpenAI-compatible endpoint works here: Kimi, the Gemini compatibility layer, z.ai, OpenRouter, your own gateway. https only (localhost excepted)."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        case .local:
+            Picker(tr("本机运行时：", "Local runtime:"), selection: $localRuntime) {
+                ForEach(LLMCatalog.LocalRuntime.allCases, id: \.rawValue) { runtime in
+                    Text(runtime.displayName).tag(runtime.rawValue)
+                }
+            }
+            Text(tr("接口地址：", "Endpoint: ") + effectiveBaseURL
+                 + tr("。先在本机把它跑起来，再点「刷新模型列表」把已下载的模型取过来。",
+                      ". Start it on this Mac first, then hit Refresh model list to pull in the models you have."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: 模型
+
+    @ViewBuilder
+    private var modelFields: some View {
+        ModelField(label: tr("润色模型", "Polish model"),
+                   text: polishModelBinding, presets: modelChoices,
+                   testing: testing, refreshing: refreshing,
+                   onTest: { runModelTest(tr("润色模型", "Polish model"), polishModelBinding.wrappedValue) },
+                   onRefresh: refreshModelList)
+        ModelField(label: tr("指令模型", "Command model"),
+                   text: commandModelBinding, presets: modelChoices,
+                   testing: testing, refreshing: refreshing,
+                   onTest: { runModelTest(tr("指令模型", "Command model"), commandModelBinding.wrappedValue) },
+                   onRefresh: refreshModelList)
+        Text(modelHelp)
+            .font(.caption)
+            .foregroundColor(.secondary)
+        if !refreshStatus.isEmpty {
+            Text(refreshStatus)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        if !testResult.isEmpty {
+            Text(testResult)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(3)
+                .textSelection(.enabled)
+        }
+    }
+
+    /// 每档的型号说明。只写"贵不贵、快不快"这类会影响选择的事实，不吹参数。
+    private var modelHelp: String {
+        let shared = tr("上面的「质量」二选一就是在改这两个框。润色每句话都要跑，求快求省；指令低频，求质量。右侧下拉是内置快选，「刷新」按钮会问端点它当前有哪些型号；也可以手填任意型号名。",
+                        "The Quality switch above writes these two fields. Polish runs on every sentence, so it wants speed and low cost; commands are rare and want quality. The drop-down holds the built-in picks, Refresh asks the endpoint what it serves today, and you can always type any model name.")
+        switch selected {
+        case .openai:
+            return shared + tr("（luna 最便宜，terra 平衡，sol 旗舰，astra 最强也最贵。）",
+                               " (luna is the cheapest, terra is balanced, sol is the flagship, astra is the strongest and the priciest.)")
+        case .deepseek:
+            return shared + tr("（deepseek-flash 快且便宜，润色时 MicType 会替你关掉思考模式；deepseek-v4-pro 更强。）",
+                               " (deepseek-flash is fast and cheap - MicType turns thinking mode off for polish; deepseek-v4-pro is stronger.)")
+        case .qwen:
+            return shared + tr("（qwen3.8-flash / qwen3.8-max 是当前代；qwen-flash / qwen-plus / qwen-max 是稳定别名，换代时自动指向新模型。）",
+                               " (qwen3.8-flash / qwen3.8-max are the current generation; qwen-flash / qwen-plus / qwen-max are stable aliases that follow each new generation.)")
+        case .custom:
+            return shared + tr("（这一档没有内置清单：型号名照服务商文档填，或点「刷新」。）",
+                               " (No built-in list here: type the model id from your provider's docs, or hit Refresh.)")
+        case .local:
+            return shared + tr("（填你本机已经拉下来的模型名，例如 Ollama 里的 llama3.1:8b。）",
+                               " (Use the model you have pulled locally, such as llama3.1:8b in Ollama.)")
+        }
+    }
+
+    // MARK: 温度
+
+    @ViewBuilder
+    private var temperatureSliders: some View {
+        HStack {
+            Text(tr("润色温度：", "Polish temperature:"))
+                .foregroundColor(polishTempIgnored ? .secondary : .primary)
+            Slider(value: $polishTemp, in: 0...1.5)
+                .disabled(polishTempIgnored)
+            Text(String(format: "%.2f", polishTemp))
+                .monospacedDigit()
+                .foregroundColor(polishTempIgnored ? .secondary : .primary)
+                .frame(width: 38, alignment: .trailing)
+        }
+        HStack {
+            Text(tr("指令温度：", "Command temperature:"))
+                .foregroundColor(commandTempIgnored ? .secondary : .primary)
+            Slider(value: $commandTemp, in: 0...1.5)
+                .disabled(commandTempIgnored)
+            Text(String(format: "%.2f", commandTemp))
+                .monospacedDigit()
+                .foregroundColor(commandTempIgnored ? .secondary : .primary)
+                .frame(width: 38, alignment: .trailing)
+        }
+        Text(tr("低 = 稳定保真，高 = 自然多样。默认：润色 0.5 / 指令 1.00（即模型默认值）。",
+                "Lower = faithful and stable; higher = natural and varied. Defaults: polish 0.5 / commands 1.00 (the model default)."))
+            .font(.caption)
+            .foregroundColor(.secondary)
+        if polishTempIgnored || commandTempIgnored {
+            Text(tr("置灰的滑杆对应推理系模型（\(ignoredTempModels)）：这类模型只接受默认温度，MicType 干脆不发这个参数。换一个非推理型号就能再调。",
+                    "The greyed-out slider belongs to a reasoning model (\(ignoredTempModels)): those only accept their default temperature, so MicType does not send the parameter at all. Pick a non-reasoning model to re-enable it."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: 动作
+
+    /// 单个模型的连通性/速度测试。**不再顺手保存 Key**：Key 只由「连接」段验证通过后写钥匙串。
     private func runModelTest(_ name: String, _ model: String) {
         testing = true
         testResult = ""
-        KeychainHelper.saveAPIKey(apiKey)
-        refreshSavedStates()
-        LLMClient.testModel(model) { _, message in
+        LLMClient.testModel(model) { ok, message in
             testing = false
-            testResult = name + "（\(model)）" + tr("：", ": ") + message
+            testResult = name + tr("（", " (") + model + tr("）", ")") + tr("：", ": ")
+                + (ok ? "✓ " : "✗ ") + message
+        }
+    }
+
+    /// 问端点「你现在有哪些型号」。失败就保持内置清单不动——刷新是锦上添花，
+    /// 不该因为一次拉取失败在用户脸上弹个框。
+    private func refreshModelList() {
+        refreshing = true
+        refreshStatus = ""
+        LLMClient.fetchModelIDs { ids in
+            refreshing = false
+            guard let ids = ids, !ids.isEmpty else {
+                refreshStatus = tr("端点没有返回模型列表，下拉里仍是内置清单",
+                                   "The endpoint returned no model list - the built-in picks are unchanged")
+                return
+            }
+            fetchedModels = ids
+            refreshStatus = tr("已从端点取到 \(ids.count) 个可用型号", "Pulled \(ids.count) usable models from the endpoint")
         }
     }
 }
@@ -1048,42 +1351,42 @@ private struct ModelField: View {
     @Binding var text: String
     let presets: [String]
     var testing: Bool = false
+    var refreshing: Bool = false
     var onTest: (() -> Void)? = nil
+    /// 「刷新模型列表」：问端点它现在有哪些型号。写死的清单一定会过时，端点自己不会。
+    var onRefresh: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 6) {
             TextField(label, text: $text)
                 .textFieldStyle(.roundedBorder)
-            Menu {
-                ForEach(presets, id: \.self) { name in
-                    Button(name) { text = name }
+            // 自定义端点与本机模型没有内置清单，空菜单不显示（一个点不开的箭头比没有箭头更糟）
+            if !presets.isEmpty {
+                Menu {
+                    ForEach(presets, id: \.self) { name in
+                        Button(name) { text = name }
+                    }
+                } label: {
+                    Image(systemName: "chevron.up.chevron.down")
                 }
-            } label: {
-                Image(systemName: "chevron.up.chevron.down")
+                .menuStyle(.borderlessButton)
+                .fixedSize()
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
+            if let onRefresh = onRefresh {
+                Button(action: onRefresh) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .disabled(refreshing)
+                .help(tr("刷新模型列表", "Refresh model list"))
+                .fixedSize()
+            }
             if let onTest = onTest {
                 Button(testing ? tr("测试中…", "Testing…") : tr("测试", "Test"), action: onTest)
                     .disabled(testing)
                     .fixedSize()
             }
         }
-    }
-}
-
-/// Key 保存状态小徽章
-private struct KeyStatusBadge: View {
-    let name: String
-    let saved: Bool
-    var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: saved ? "key.fill" : "key")
-                .foregroundColor(saved ? .green : .secondary)
-            Text(name + (saved ? " ✓" : tr(" 未填", " not set")))
-        }
-        .font(.caption)
-        .foregroundColor(saved ? .primary : .secondary)
     }
 }
 

@@ -26,6 +26,14 @@
 	<string>15.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<!-- 本机模型（Ollama 11434 / LM Studio 1234）走明文 http://localhost：
+	     ATS 默认会拦掉它，而 ad-hoc 调试构建看不出这个问题，签名构建才暴露。
+	     只开"本地网络"这一条例外，公网仍然一律 https。 -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>

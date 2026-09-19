@@ -5,20 +5,32 @@ import Combine
 
 // MARK: - 首次启动引导
 
-/// 五屏引导：两种手势 → 逐项权限 → 下模型 → 现场试一次 → 完成。
+/// 六屏引导：两种手势 → 逐项权限 → 下模型 → 现场试一次 → 配 AI（可跳过）→ 完成。
 ///
 /// 为什么值得单独做一个窗口而不是塞进设置页：第一次打开的人不知道"轻点/按住"是两回事，
 /// 也不知道要先下 860MB 模型；设置页是给已经会用的人改参数的，不是教人上手的。
-/// 三条硬要求（都是过去踩过的坑）：
+/// 四条硬要求（都是过去踩过的坑）：
 ///   • 权限授予后自己变绿继续，绝不要求重启或"请再按一次"；
 ///   • 模型下载不阻塞界面，可取消、可跳过；
-///   • 结尾必须能就地试一次——引导窗口自己是前台 App，正常插入链路原样可用。
+///   • 结尾必须能就地试一次——引导窗口自己是前台 App，正常插入链路原样可用；
+///   • AI 那一屏**必须能整屏跳过**：轻点听写不需要 Key，把它做成一道关卡等于骗人。
+///     v3.3 之前这一步压根不存在，只在「试一次」角落写一句"AI 需要 Key"再把人丢进
+///     14 个控件的设置页——那一句已经在这一版删掉，换成这一屏。
 enum OnboardingPage: Int, CaseIterable {
     case welcome
     case permissions
     case model
     case tryIt
+    case aiSetup
     case done
+}
+
+/// 第 5 屏（aiSetup）的选择：某一档服务商，或者"明确跳过"。
+/// 为什么把跳过做成选择器里的一档而不是只留底部一个按钮：不配 AI 是一个**正当的最终选择**
+/// （纯本机听写完整可用），摆在同一排才不像"你还没做完"。
+enum AISetupChoice: Hashable {
+    case provider(LLMProvider)
+    case skip
 }
 
 /// 页码 + 权限状态：窗口控制器与各页共享的唯一状态源
@@ -28,6 +40,54 @@ final class OnboardingModel: ObservableObject {
     @Published var axOK = Permissions.isAccessibilityTrusted
     /// 权限页被用户明确跳过（跳过后 Continue 放行，但警告一直留着）
     @Published var skippedPermissions = false
+    /// 第 5 屏选的那一档。放在共享 model 里是为了"返回可继续"：翻回上一页再回来不该丢选择。
+    @Published var aiChoice: AISetupChoice = .provider(Settings.shared.llmProvider)
+    /// AI 现在真的跑得起来吗（不是"点过没点过"）。第 6 屏的两种收尾、底部那个「暂时跳过」
+    /// 是否出现，都读这一个值。
+    @Published var aiReady = false
+
+    /// 重算 aiReady。凭据的判断一律走 LLMClient.credential（本机模型没有 Key 才是正常状态）。
+    func refreshAIReady() {
+        aiReady = LLMCatalog.aiReady(hasCredential: LLMClient.isConfigured,
+                                     baseURL: Settings.shared.currentBaseURL,
+                                     polishModel: Settings.shared.currentPolishModel)
+    }
+}
+
+/// 引导里那几句"要按状态二选一"的话，抽成纯函数只为一件事：单测钉得住
+/// ——英文侧不许出现中文字符或全角标点，而且有 Key / 没 Key 两种收尾不能串台。
+enum OnboardingCopy {
+    static var aiHeadline: String {
+        tr("让 AI 帮你收拾这段话（可选）", "Let AI clean up what you said (optional)")
+    }
+
+    /// 两句话说清一把 Key 到底买到什么。写清边界比写得漂亮重要：
+    /// 不写清的结果是用户以为不填 Key 就用不了听写（听写从头到尾在本机跑）。
+    static var aiExplanation: String {
+        tr("轻点听写永远在这台 Mac 上跑，不填 Key 也能一直用。填 Key 只多两件事：自动润色、按住说指令。",
+           "Tap-to-dictate always runs on this Mac and works without a key. A key adds exactly two things: automatic polish, and hold-to-command.")
+    }
+
+    static var aiSkipReassurance: String {
+        tr("跳过也没关系：轻点听写完整可用，以后随时能在 设置 → AI 里补一把 Key。",
+           "Skipping is fine - tap-to-dictate is fully usable, and you can add a key later under Settings → AI.")
+    }
+
+    /// 质量档下面那一句：这不是一次性的、不可回头的决定
+    static var aiQualityHint: String {
+        tr("以后在 设置 → AI 里随时能改。", "Change it any time in Settings → AI.")
+    }
+
+    /// 第 6 屏按「AI 到底配好了没有」给两种收尾。ready 由 LLMCatalog.aiReady 判——
+    /// 用"点过跳过没有"来判会在用户中途去设置页配好 Key 时说反话。
+    static func doneAIStatus(ready: Bool, hotkey: String) -> String {
+        if ready {
+            return tr("AI 润色和语音指令都就绪了：按住 \(hotkey) 说「把这段写正式一点」。",
+                      "AI polish and voice commands are ready. Hold \(hotkey) and say \"make this more formal\".")
+        }
+        return tr("你现在是纯本机听写，完整可用。想要润色和语音指令，去 设置 → AI 填一把 Key。",
+                  "You're on pure on-device dictation. Add a key under Settings → AI.")
+    }
 }
 
 final class OnboardingWindowController: NSObject, NSWindowDelegate {
@@ -42,7 +102,10 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         model.page = page
         model.micOK = Permissions.microphoneGranted
         model.axOK = Permissions.isAccessibilityTrusted
-        Log.info("Onboarding show page=\(page.rawValue)")
+        // AI 那一屏按"现在设置里是什么"复位：重新打开引导的人可能早就在设置页配好了
+        model.aiChoice = .provider(Settings.shared.llmProvider)
+        model.refreshAIReady()
+        Log.info("Onboarding show page=\(page.rawValue) aiReady=\(model.aiReady)")
 
         if window == nil {
             let hosting = NSHostingController(rootView: OnboardingView(model: model))
@@ -53,7 +116,9 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
             w.titleVisibility = .hidden
             w.isMovableByWindowBackground = true
             w.isReleasedWhenClosed = false
-            w.setContentSize(NSSize(width: 560, height: 420))
+            // 高度从 420 抬到 470：AI 那一屏（服务商 + Key + 状态 + 质量 + 成本声明）最挤，
+            // 其余各页靠 Spacer 自然留白，看不出变化
+            w.setContentSize(NSSize(width: 560, height: 470))
             w.center()
             w.delegate = self
             window = w
@@ -95,7 +160,8 @@ struct OnboardingView: View {
                 case .permissions: PermissionsPage(model: model)
                 case .model: ModelPage(model: model)
                 case .tryIt: TryItPage()
-                case .done: DonePage()
+                case .aiSetup: AISetupPage(model: model)
+                case .done: DonePage(model: model)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -106,7 +172,7 @@ struct OnboardingView: View {
             Divider()
             footer
         }
-        .frame(width: 560, height: 420)
+        .frame(width: 560, height: 470)
     }
 
     // MARK: 底部导航
@@ -123,6 +189,14 @@ struct OnboardingView: View {
                 Button(tr("暂时跳过", "Skip for now")) {
                     model.skippedPermissions = true
                     Log.warn("Onboarding permissions skipped mic=\(model.micOK) ax=\(model.axOK)")
+                }
+            }
+            // AI 屏的跳过是直接翻页（不配 AI 是正当选择，不留任何警告）。
+            // 已经配通的人不需要这个按钮——那会让他怀疑自己刚配的东西是不是没生效。
+            if model.page == .aiSetup && !model.aiReady {
+                Button(tr("暂时跳过", "Skip for now")) {
+                    Log.info("Onboarding AI setup skipped")
+                    step(1)
                 }
             }
             Button(model.page == .done ? tr("开始使用", "Start Using MicType")
@@ -461,21 +535,6 @@ private struct TryItPage: View {
                 }
             }
 
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "wand.and.stars")
-                    .foregroundColor(.secondary)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(tr("AI 润色与语音指令是可选的：填一个 API Key 才会启用。不填也能一直用纯听写。",
-                            "AI polish and voice commands are optional: they need an API key. Without one, plain dictation keeps working."))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button(tr("打开设置", "Open Settings")) {
-                        SettingsWindowController.shared.show()
-                    }
-                    .controlSize(.small)
-                }
-            }
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -486,9 +545,218 @@ private struct TryItPage: View {
     }
 }
 
-// MARK: - 5. 完成
+// MARK: - 5. AI 设置（可跳过）
+
+/// 一屏走完：选服务商 → 去控制台拿 Key → 粘贴即验证 → 选质量。
+///
+/// 为什么整屏可跳过、而且跳过不留任何警告：轻点听写压根不需要 Key，把这一屏做成关卡
+/// 就是骗人。反过来，配 AI 的人也不该被丢进设置页里 14 个控件中自己找——所以这一屏
+/// 只摆首配真正要的那几个控件（型号名、Base URL、温度都留在设置页的「高级」里）。
+private struct AISetupPage: View {
+    @ObservedObject var model: OnboardingModel
+    @ObservedObject private var l10n = L10n.shared
+    /// Qwen 那一档的地址由「区域 + WorkspaceId」推出来，没有它连不上——所以这两项得在这一屏
+    @AppStorage(SettingsKeys.qwenRegion) private var qwenRegion = LLMCatalog.QwenRegion.international.rawValue
+    @AppStorage(SettingsKeys.qwenWorkspaceID) private var qwenWorkspace = ""
+    @State private var keyStatus: KeyVerifier.Status = .idle
+    /// 质量档（nil = 用户自己挑过型号，如实显示「自选」，绝不把他钉回我们的某一档）
+    @State private var tier: LLMCatalog.QualityTier?
+
+    /// 这一屏摆出来的几档：三家云服务商 + 本机模型，外加「跳过」。
+    /// 故意**不摆「自定义端点」**——填 Base URL 是高级动作，第一次上手的人不该在这里
+    /// 看到一个 URL 输入框（设置页的「高级」里有）。唯一例外是他此前就在用某个没列出来的档：
+    /// 那一档必须显示出来，否则选择器上没有一项对应他当前的配置，看着像被我们悄悄改掉了。
+    private var offered: [LLMProvider] {
+        var list: [LLMProvider] = [.openai, .deepseek, .qwen, .local]
+        let stored = Settings.shared.llmProvider
+        if !list.contains(stored) { list.append(stored) }
+        return list
+    }
+
+    private var chosen: LLMProvider? {
+        guard case .provider(let provider) = model.aiChoice else { return nil }
+        return provider
+    }
+
+    private var region: LLMCatalog.QwenRegion {
+        LLMCatalog.QwenRegion(rawValue: qwenRegion) ?? .international
+    }
+
+    var body: some View {
+        // ScrollView 是保险绳：验证失败那行可能三行，Qwen 还多两个控件——
+        // 挤爆时宁可能滚，也不要把底部的成本声明裁掉。
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(OnboardingCopy.aiHeadline)
+                    .font(.system(size: 16, weight: .semibold))
+                Text(OnboardingCopy.aiExplanation)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Picker(tr("服务商：", "Service:"), selection: $model.aiChoice) {
+                    ForEach(offered, id: \.rawValue) { provider in
+                        Text(provider.segmentName).tag(AISetupChoice.provider(provider))
+                    }
+                    Text(tr("跳过", "Skip")).tag(AISetupChoice.skip)
+                }
+                .pickerStyle(.segmented)
+
+                if let provider = chosen {
+                    if provider == .qwen { qwenFields }
+                    KeyEntryView(provider: provider,
+                                 model: polishModel(for: provider),
+                                 showsStorageNotes: false) { status in
+                        keyStatus = status
+                        adoptIfUsable(provider)
+                        model.refreshAIReady()
+                        refreshTier()
+                    }
+                    if showsQuality { qualityRow(for: provider) }
+                    // 本机模型 / 自定义端点没有内置型号，型号名只有用户自己知道。
+                    // 不说这一句的话，这一档看着像配好了，实际每次调用都是"型号名是空的"。
+                    if LLMCatalog.qualitySummary(provider: provider) == nil,
+                       storedPolishModel(for: provider).isEmpty {
+                        Text(tr("这一档还要填一个模型名才跑得起来（填好之前 MicType 仍用原来的服务商）：去 设置 → AI → 高级 填上你本机已经下载好的那个，例如 llama3.1:8b。",
+                                "This provider needs a model name before it works, and MicType keeps using the previous provider until then: name the one you have downloaded, such as llama3.1:8b, under Settings → AI → Advanced."))
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if provider.requiresAPIKey {
+                        Text(LLMCatalog.keyStorageNote + " " + LLMCatalog.billingNote)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    Text(OnboardingCopy.aiSkipReassurance)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onAppear {
+            model.refreshAIReady()
+            refreshTier()
+        }
+        .onChange(of: model.aiChoice) { _, choice in
+            // 上一档的验证结论对这一档毫无意义（KeyEntryView 自己也会重载钥匙串里的 Key）
+            keyStatus = .idle
+            if case .provider(let provider) = choice { adoptIfUsable(provider) }
+            model.refreshAIReady()
+            refreshTier()
+        }
+        // 区域/WorkspaceId 一改，Qwen 的地址就变了，能不能连得上也跟着变
+        .onChange(of: qwenRegion) { _, _ in model.refreshAIReady() }
+        .onChange(of: qwenWorkspace) { _, _ in model.refreshAIReady() }
+    }
+
+    // MARK: Qwen 的区域与 WorkspaceId
+
+    @ViewBuilder
+    private var qwenFields: some View {
+        Picker(tr("接入区域：", "Region:"), selection: $qwenRegion) {
+            ForEach(LLMCatalog.QwenRegion.allCases, id: \.rawValue) { option in
+                Text(option.displayName).tag(option.rawValue)
+            }
+        }
+        if region.requiresWorkspaceID {
+            TextField("WorkspaceId", text: $qwenWorkspace)
+                .textFieldStyle(.roundedBorder)
+        }
+        if LLMCatalog.qwenBaseURL(region: region, workspaceID: qwenWorkspace).isEmpty {
+            Text(tr("这个区域的地址里带 WorkspaceId，填上才能用（在模型服务控制台的工作空间详情里）。",
+                    "This region puts your workspace ID in the URL - fill it in (you will find it in the Model Studio console)."))
+                .font(.caption)
+                .foregroundColor(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: 质量二选一（验证通过后才出现）
+
+    /// 质量选择器只在"这一档真的通了"之后出现：还没连上就先摆一个花钱的档位，
+    /// 用户点下去也不知道点没点上——那正是 3.3 之前"看着像成功"的界面的来路。
+    private var showsQuality: Bool {
+        guard let provider = chosen, LLMCatalog.qualitySummary(provider: provider) != nil else { return false }
+        if case .connected = keyStatus { return true }
+        // 回头再走一遍引导的人：钥匙串里本来就有一把验证过的 Key，不该逼他重粘一次
+        return provider.requiresAPIKey
+            && KeychainHelper.loadAPIKey(account: provider.keychainAccount) != nil
+    }
+
+    @ViewBuilder
+    private func qualityRow(for provider: LLMProvider) -> some View {
+        Picker(tr("质量：", "Quality:"), selection: $tier) {
+            ForEach(LLMCatalog.QualityTier.allCases, id: \.rawValue) { option in
+                Text(option.displayName).tag(Optional(option))
+            }
+            if tier == nil {
+                Text(tr("自选", "Custom")).tag(LLMCatalog.QualityTier?.none)
+            }
+        }
+        .pickerStyle(.segmented)
+        // 选中即写回两个型号字段（哪两个键由 LLMCatalog.modelKeys 说，界面不认识型号名）。
+        // 「自选」那一档是 nil，点不到也不该写——guard 就是这个用处。
+        .onChange(of: tier) { _, newValue in
+            guard let newValue else { return }
+            for (key, value) in LLMCatalog.qualityWrites(provider: provider, tier: newValue) {
+                UserDefaults.standard.set(value, forKey: key)
+            }
+            Log.info("Onboarding quality tier=\(newValue.rawValue) provider=\(provider.rawValue)")
+        }
+        Text(OnboardingCopy.aiQualityHint)
+            .font(.caption)
+            .foregroundColor(.secondary)
+    }
+
+    // MARK: 状态读写
+
+    /// 这一档存着的润色型号（可能是空的：自定义端点 / 本机模型出厂没有型号名）
+    private func storedPolishModel(for provider: LLMProvider) -> String {
+        UserDefaults.standard.string(forKey: LLMCatalog.modelKeys(for: provider).polish)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    /// 拿来探活的型号：这一档存着的润色型号，没存过就用目录里的默认值
+    private func polishModel(for provider: LLMProvider) -> String {
+        let stored = storedPolishModel(for: provider)
+        return stored.isEmpty ? LLMCatalog.polishDefault(for: provider) : stored
+    }
+
+    private func refreshTier() {
+        guard let provider = chosen else { return }
+        let keys = LLMCatalog.modelKeys(for: provider)
+        let d = UserDefaults.standard
+        tier = LLMCatalog.tier(provider: provider,
+                              polish: d.string(forKey: keys.polish) ?? LLMCatalog.polishDefault(for: provider),
+                              command: d.string(forKey: keys.command) ?? LLMCatalog.commandDefault(for: provider))
+    }
+
+    /// 只有"这一档真的能用"才把它写成生效的服务商。
+    /// 为什么不是点一下就写：点着看看的人很多，而原来那一档可能正配着一把好 Key——
+    /// 把生效服务商换成一个没 Key 的，表现是他下次按住说话直接失败，还找不到原因。
+    private func adoptIfUsable(_ provider: LLMProvider) {
+        let hasKey = KeychainHelper.loadAPIKey(account: provider.keychainAccount) != nil
+        guard !provider.requiresAPIKey || hasKey else { return }
+        // 本机模型那一档没有 Key 可验，但型号名是空的照样跑不起来（发出去就是 400）：
+        // 同样不能拿它换掉一个正在好好用着的服务商。polishModel 对三家云服务商会落到
+        // 目录里的默认型号，只有自定义端点 / 本机模型才可能真的是空的。
+        guard !polishModel(for: provider).isEmpty else { return }
+        guard Settings.shared.llmProvider != provider else { return }
+        Settings.shared.llmProvider = provider
+        Log.info("Onboarding adopted provider=\(provider.rawValue)")
+    }
+}
+
+// MARK: - 6. 完成
 
 private struct DonePage: View {
+    @ObservedObject var model: OnboardingModel
     @ObservedObject private var l10n = L10n.shared
 
     private var key: String { Settings.shared.hotkey.shortSymbol }
@@ -508,6 +776,10 @@ private struct DonePage: View {
                 TipRow(symbol: "hand.tap.fill",
                        text: tr("按住 \(key) 说指令，松手执行。",
                                 "Hold \(key) to speak a command, release to run it."))
+                // 有 Key / 没 Key 两种收尾：这一行是用户离开引导时对"我现在有什么"的最后印象，
+                // 说反了他要么白等一个不会发生的润色，要么以为自己还没配好
+                TipRow(symbol: model.aiReady ? "wand.and.stars" : "cpu",
+                       text: OnboardingCopy.doneAIStatus(ready: model.aiReady, hotkey: key))
                 TipRow(symbol: "menubar.arrow.up.rectangle",
                        text: tr("菜单栏的麦克风图标里有历史记录、润色档位和设置。",
                                 "The menu-bar mic icon holds your history, polish mode and settings."))
@@ -524,6 +796,8 @@ private struct DonePage: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity)
+        // 上一屏可能刚粘好 Key，也可能用户中途去设置页配了——进这一屏现算一次
+        .onAppear { model.refreshAIReady() }
     }
 }
 

@@ -17,6 +17,8 @@ final class DictationController {
     var onPhaseChange: ((Phase) -> Void)?
     /// 需要打开设置窗口时的回调
     var onNeedSettings: (() -> Void)?
+    /// 需要打开「设置 → AI」的回调（没配 Key 却按住说了指令时，悬浮窗上那个「去配置」胶囊）
+    var onNeedAISettings: (() -> Void)?
 
     private let recorder = AudioRecorder()
     let overlay = OverlayController()
@@ -965,12 +967,20 @@ final class DictationController {
                     self.skillSession = false
                     // 指令模式要跑 LLM。没配 API Key 时，明确提示用户「轻点」做纯语音输入（无需 Key），
                     // 而不是长按——长按进的是需要 Key 的指令模式。教用户用对手势，不做剪贴板兜底。
-                    if KeychainHelper.loadAPIKey() == nil {
+                    // 本机模型（Ollama / LM Studio）那一档不需要 Key，照样能跑指令 → 判"配没配"
+                    // 一律走 LLMClient.isConfigured，别再直接看钥匙串
+                    if !LLMClient.isConfigured {
                         let keyName = Settings.shared.hotkey.displayName
                         self.phase = .idle
+                        // 提示里多一个可点的「去配置」：话还是那句"纯输入请轻点"，
+                        // 但别让用户读完之后还得自己去菜单栏找设置页。
+                        // 铁律不动：不做剪贴板兜底救字、不替他把这次长按当成轻点。
                         self.overlay.flashError(
                             tr("指令模式需配置 API Key；纯语音输入请「轻点」\(keyName)（而非长按）",
-                               "Command mode needs an API key. For dictation, tap \(keyName) (don't hold)"))
+                               "Command mode needs an API key. For dictation, tap \(keyName) (don't hold)"),
+                            actionLabel: tr("去配置", "Set up")) { [weak self] in
+                                self?.onNeedAISettings?()
+                            }
                         Sounds.playError()
                         return
                     }
@@ -983,7 +993,7 @@ final class DictationController {
                 // 从前都意味着刚说的那几分钟一个字都不剩。交付时 deliver 会把同一条补全。
                 self.pendingHistoryID = HistoryStore.shared.addRaw(rawText)
                 let level = Settings.shared.polishLevel
-                if level != .off, KeychainHelper.loadAPIKey() != nil {
+                if level != .off, LLMClient.isConfigured {
                     self.overlay.showProcessing(tr("润色中…", "Polishing…"))
                     let tPolish = DispatchTime.now()
                     self.inflightRequest = PolishService.polish(rawText, level: level) { [weak self] polished, failure in
@@ -994,6 +1004,9 @@ final class DictationController {
                         // 润色失败那一次也要记：用户感觉到的等待是实打实的，
                         // 只记成功的话中位数会漂亮得不像话，排障时反而看不出问题
                         self.pendingMetric?.polishMs = polishMs
+                        // 缓存命中 / 实际档位（Responses 才报）：取走即清空，绝不把上一轮的数记到这一轮。
+                        // 润色永远不联网，所以这里不会有来源。
+                        self.pendingMetric?.absorb(LLMUsageSink.shared.take())
                         if let raw = polished {
                             // 词汇表硬替换在**每个产出点各做一次**（识别原文已在上面做过）。
                             // 不能放到 deliver 里做：那样纯听写路径会对同一串文本替换两趟，
@@ -1101,11 +1114,27 @@ final class DictationController {
     /// 指令模式那一次模型往返的耗时。**三条指令路（自由指令 / 选区指令 / 帮我回复）都必须
     /// 在回调里调它一次**：按住手势的等待几乎全压在这一段上（UAE 这条链路尤其），不记的话
     /// 提交的那一行只有识别和插入，加起来几百毫秒，用户报"指令模式很慢"时对不上账。
-    private func noteCommandLatency(since start: DispatchTime, ok: Bool) {
+    /// 悬浮窗那句话后面挂上「已联网 · 3 来源」。联网是**花了钱**的动作，
+    /// 用户必须当场看见它发生了，而不是只能事后翻历史。
+    static func noteWithSources(_ note: String, _ usage: LLMUsage?) -> String {
+        guard let usage = usage, !usage.citations.isEmpty else { return note }
+        return note + tr("；", "; ") + LLMCatalog.webSearchNote(citationCount: usage.citations.count)
+    }
+
+    /// 返回这一趟顺带回来的用量（含联网来源）——沉淀点只能取一次，所以由这里统一取走再交给调用方，
+    /// 谁都不许再去 take() 第二回（第二次拿到的是 nil，来源会凭空消失）。
+    @discardableResult
+    private func noteCommandLatency(since start: DispatchTime, ok: Bool) -> LLMUsage? {
         let ms = Log.ms(since: start)
         Log.info("Timing command=\(ms)ms model=\(Settings.shared.currentCommandModel) ok=\(ok)")
         // 失败那一次也记：用户感觉到的等待是实打实的
         pendingMetric?.polishMs = ms
+        let usage = LLMUsageSink.shared.take()
+        pendingMetric?.absorb(usage)
+        if let count = usage?.citations.count, count > 0 {
+            Log.info("Command web search returned \(count) sources")
+        }
+        return usage
     }
 
     /// 技能：自由指令——指令模式下的"万能入口"
@@ -1115,12 +1144,13 @@ final class DictationController {
         inflightRequest = AgentService.freeform(instruction: instruction) { [weak self] result, failure in
             guard let self = self, self.isCurrent(generation) else { return }
             self.inflightRequest = nil
-            self.noteCommandLatency(since: tModel, ok: result != nil)
+            let usage = self.noteCommandLatency(since: tModel, ok: result != nil)
             if let result = result {
                 // 词汇表硬替换在每个产出点各做一次；deliver 里不再做，否则同一串文本会被替换两趟
                 let finalText = TextPostProcessor.applyVocabReplacements(result)
-                self.deliver(raw: raw, final: finalText, note: tr("已输入指令结果", "Command result inserted"),
-                             coldStart: isColdStart)
+                self.deliver(raw: raw, final: finalText,
+                             note: Self.noteWithSources(tr("已输入指令结果", "Command result inserted"), usage),
+                             coldStart: isColdStart, citations: usage?.citations ?? [])
             } else {
                 self.phase = .idle
                 self.overlay.flashError(tr("指令执行失败（", "Command failed (") + (failure ?? tr("未知", "unknown")) + tr("）", ")"))
@@ -1141,7 +1171,7 @@ final class DictationController {
         inflightRequest = AgentService.runOnSelection(selection, instruction: instruction, chatContext: chatContext) { [weak self] action, result, failure in
             guard let self = self, self.isCurrent(generation) else { return }
             self.inflightRequest = nil
-            self.noteCommandLatency(since: tModel, ok: result != nil)
+            let usage = self.noteCommandLatency(since: tModel, ok: result != nil)
             guard let result = result else {
                 self.phase = .idle
                 self.overlay.flashError(tr("指令执行失败（", "Command failed (") + (failure ?? tr("未知", "unknown")) + tr("）", ")"))
@@ -1150,32 +1180,38 @@ final class DictationController {
             }
             // 词汇表硬替换在每个产出点各做一次；deliver / copyToClipboard 里不再做
             let finalText = TextPostProcessor.applyVocabReplacements(result)
+            let citations = usage?.citations ?? []
             switch action {
             case .modify:
-                self.deliver(raw: raw, final: finalText, note: tr("已替换选中文本", "Selection replaced"),
-                             coldStart: isColdStart)
+                self.deliver(raw: raw, final: finalText,
+                             note: Self.noteWithSources(tr("已替换选中文本", "Selection replaced"), usage),
+                             coldStart: isColdStart, citations: citations)
             case .new:
-                self.deliver(raw: raw, final: finalText, note: tr("已输入指令结果", "Command result inserted"),
-                             coldStart: isColdStart)
+                self.deliver(raw: raw, final: finalText,
+                             note: Self.noteWithSources(tr("已输入指令结果", "Command result inserted"), usage),
+                             coldStart: isColdStart, citations: citations)
             case .reply:
                 self.copyToClipboard(raw: raw, result: finalText,
-                                     note: tr("回复草稿已复制——点到输入框按 ⌘V", "Reply draft copied — click the input field and press ⌘V"))
+                                     note: Self.noteWithSources(tr("回复草稿已复制——点到输入框按 ⌘V", "Reply draft copied — click the input field and press ⌘V"), usage),
+                                     citations: citations)
             case nil:
                 // 意图行没解析出来：进剪贴板最安全，不碰选区
                 self.copyToClipboard(raw: raw, result: finalText,
-                                     note: tr("结果已复制到剪贴板——按 ⌘V 粘贴", "Result copied — press ⌘V to paste"))
+                                     note: Self.noteWithSources(tr("结果已复制到剪贴板——按 ⌘V 粘贴", "Result copied — press ⌘V to paste"), usage),
+                                     citations: citations)
             }
         }
     }
 
     /// 结果进剪贴板（不自动粘贴），记录历史并提示
-    private func copyToClipboard(raw: String, result: String, note: String) {
+    private func copyToClipboard(raw: String, result: String, note: String,
+                                 citations: [Citation] = []) {
         phase = .idle
         let tDeliver = DispatchTime.now()
         // 只做标点归一：词汇表硬替换已经在各产出点做过了。在这里再做一次的话，
         // 纯听写路径（final 就是已替换过的 rawText）会被替换两趟，链式词表串成链。
         let final = TextPostProcessor.fixMixedPunctuation(result)
-        HistoryStore.shared.add(raw: raw, polished: final)
+        HistoryStore.shared.add(raw: raw, polished: final, citations: citations)
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(final, forType: .string)
@@ -1220,12 +1256,13 @@ final class DictationController {
         inflightRequest = AgentService.replyDraft(context: context, instruction: instruction) { [weak self] result, failure in
             guard let self = self, self.isCurrent(generation) else { return }
             self.inflightRequest = nil
-            self.noteCommandLatency(since: tModel, ok: result != nil)
+            let usage = self.noteCommandLatency(since: tModel, ok: result != nil)
             if let result = result {
                 // 词汇表硬替换在每个产出点各做一次；copyToClipboard 里不再做
                 let finalText = TextPostProcessor.applyVocabReplacements(result)
                 self.copyToClipboard(raw: raw, result: finalText,
-                                     note: tr("回复草稿已复制——点到输入框按 ⌘V", "Reply draft copied — click the input field and press ⌘V"))
+                                     note: Self.noteWithSources(tr("回复草稿已复制——点到输入框按 ⌘V", "Reply draft copied — click the input field and press ⌘V"), usage),
+                                     citations: usage?.citations ?? [])
             } else {
                 self.phase = .idle
                 self.overlay.flashError(tr("草拟失败（", "Draft failed (") + (failure ?? tr("未知", "unknown")) + tr("）", ")"))
@@ -1241,17 +1278,19 @@ final class DictationController {
     /// 「输入后恢复原剪贴板内容」的设置，把他的原剪贴板永久换成听写结果，界面上还不吭声。
     /// 恢复与否永远只听 Settings.restoreClipboard。
     private func deliver(raw: String, final text: String, note: String, warning: Bool = false,
-                         coldStart: Bool = false, revertible: Bool = false) {
+                         coldStart: Bool = false, revertible: Bool = false,
+                         citations: [Citation] = []) {
         // 只做标点归一：词汇表硬替换已经在各产出点做过了（识别原文 / 润色结果 / 各技能结果），
         // 这里再做一趟等于对同一串文本替换两次，「萍果=苹果」+「苹果=Apple」会被串成链
         let finalText = TextPostProcessor.fixMixedPunctuation(text)
         // 润色之前已经落过一条 raw（纯听写路径）就补全它，别再插一条新的——
-        // 用户看到的应该是一条"识别原文 + 最终文字"，不是同一句话的两行记录
+        // 用户看到的应该是一条"识别原文 + 最终文字"，不是同一句话的两行记录。
+        // 联网来源（自由指令 / 改选区那条路才有）跟着补全一起写进去，别在这里掉字。
         if let id = pendingHistoryID {
-            HistoryStore.shared.complete(id: id, polished: finalText)
+            HistoryStore.shared.complete(id: id, polished: finalText, citations: citations)
             pendingHistoryID = nil
         } else {
-            HistoryStore.shared.add(raw: raw, polished: finalText)
+            HistoryStore.shared.add(raw: raw, polished: finalText, citations: citations)
         }
         // 又插入了新东西 → 上一次的记忆立刻作废：⌘Z 撤的永远是"最后一次粘贴"，
         // 拿旧记忆去撤只会撤掉这一次的新文字

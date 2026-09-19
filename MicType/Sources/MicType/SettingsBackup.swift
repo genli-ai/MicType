@@ -411,8 +411,9 @@ extension SettingsBackup {
             lines.append(tr("这份文件来自更新版本的 MicType，只应用了本版认识的设置。",
                             "This file comes from a newer MicType; only settings this version knows were applied."))
         }
-        lines.append(tr("API Key 从不导出、也从不导入——请在「AI 润色」页单独填写。",
-                        "API keys are never exported or imported — enter them on the AI Polish tab."))
+        // 标签名 3.3 之后叫「AI」（那一页也管语音指令），这句话得跟着改，别指一个不存在的页
+        lines.append(tr("API Key 从不导出、也从不导入——请在「AI」页单独填写。",
+                        "API keys are never exported or imported — enter them on the AI tab."))
 
         let alert = NSAlert()
         alert.alertStyle = .informational

@@ -288,6 +288,35 @@ struct HistoryView: View {
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
 
+            // 联网搜索来源：可点的链接。模型说的话能不能信，得让用户自己点进去看
+            if !item.citations.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(LLMCatalog.webSearchNote(citationCount: item.citations.count))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    ForEach(item.citations) { citation in
+                        if let url = citation.clickableURL {
+                            Link(destination: url) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "link").font(.system(size: 9))
+                                    Text(citation.displayTitle)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                }
+                            }
+                            .help(citation.url)
+                        } else {
+                            // 不是 http(s) 的"链接"不做成可点的（见 Citation.clickableURL），但也不藏起来
+                            Text(citation.displayTitle)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+                .padding(.top, 2)
+            }
+
             if item.rawDiffers {
                 Button {
                     if expanded.contains(item.id) {

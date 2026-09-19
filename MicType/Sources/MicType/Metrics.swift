@@ -27,6 +27,60 @@ struct SessionMetric: Codable, Equatable {
     let audioSeconds: Double
     let partialCount: Int
     let cold: Bool
+    /// 这一轮大模型请求命中的 prompt 缓存 token 数（Responses 的 usage.input_tokens_details.cached_tokens）。
+    /// nil = 没走大模型，或这个端点压根不报缓存。**恒为 0 就说明前缀不到 1024 token，
+    /// 那就如实显示 0，绝不为了折扣把提示词灌水**。
+    let cachedTokens: Int?
+    /// 服务商**实际**给这一趟用的档位（响应里的 service_tier）。勾了 Fast 也可能被降回 default，
+    /// 不回显的话用户只会以为"多付的钱买到了低延迟"。nil = 没走大模型或端点不报这个字段。
+    let serviceTier: String?
+
+    /// 显式写出来（而不是用编译器合成的逐成员构造器）：cachedTokens / serviceTier 是 v4.0 才加的字段，
+    /// 给它们默认值，老的调用点与单测不必为诊断字段全部改签名。
+    init(date: Date, mode: Mode, asrMs: Int, polishMs: Int?, insertMs: Int,
+         audioSeconds: Double, partialCount: Int, cold: Bool, cachedTokens: Int? = nil,
+         serviceTier: String? = nil) {
+        self.date = date
+        self.mode = mode
+        self.asrMs = asrMs
+        self.polishMs = polishMs
+        self.insertMs = insertMs
+        self.audioSeconds = audioSeconds
+        self.partialCount = partialCount
+        self.cold = cold
+        self.cachedTokens = cachedTokens
+        self.serviceTier = serviceTier
+    }
+}
+
+// MARK: - 大模型用量的沉淀点
+
+/// 一次大模型往返顺带回来的东西：缓存命中、实际档位、联网来源。
+struct LLMUsage: Equatable {
+    var cachedTokens: Int?
+    var serviceTier: String?
+    /// 联网搜索的来源。只有开着搜索开关的指令调用才可能非空。
+    var citations: [Citation] = []
+}
+
+/// 最近一次大模型往返的用量沉淀点。
+/// 为什么用一个"取走即清空"的沉淀点，而不是把 usage 顺着回调传回去：这些东西要穿过
+/// PolishService 与三条技能路共用的 (String?, String?) 回调——为它们改四处签名不值当。
+/// take() 取走即清空，保证上一轮的数字不会被记到下一轮头上；只在主线程读写
+/// （LLMClient 在主线程回调前写，DictationController 在回调里读）。
+final class LLMUsageSink {
+    static let shared = LLMUsageSink()
+    private var usage: LLMUsage?
+
+    func record(_ usage: LLMUsage) {
+        self.usage = usage
+    }
+
+    /// 取走并清空
+    func take() -> LLMUsage? {
+        defer { usage = nil }
+        return usage
+    }
 }
 
 /// 一轮进行中的草稿：各阶段算完填一格，投递完成时 finished() 封口成 SessionMetric。
@@ -40,11 +94,24 @@ struct SessionMetricDraft {
     /// 大模型往返（润色 or 指令）。指令那三条路各自要在回调里填它，
     /// 不填的话按住手势提交的行里最慢的那一段是空的——排障时等于什么都没记。
     var polishMs: Int?
+    /// 这一轮的 prompt 缓存命中（从 LLMUsageSink 取走），没走大模型时保持 nil
+    var cachedTokens: Int?
+    /// 这一轮服务商实际用的档位（同上）
+    var serviceTier: String?
+
+    /// 把沉淀点里的用量收进这一轮。nil（没走大模型 / 端点什么都不报）时一个字段都不动——
+    /// "没发生"和"值为 0"在这张表里一直是两回事。
+    mutating func absorb(_ usage: LLMUsage?) {
+        guard let usage = usage else { return }
+        cachedTokens = usage.cachedTokens
+        serviceTier = usage.serviceTier
+    }
 
     func finished(insertMs: Int) -> SessionMetric {
         SessionMetric(date: Date(), mode: mode, asrMs: asrMs, polishMs: polishMs,
                       insertMs: insertMs, audioSeconds: audioSeconds,
-                      partialCount: partialCount, cold: cold)
+                      partialCount: partialCount, cold: cold, cachedTokens: cachedTokens,
+                      serviceTier: serviceTier)
     }
 }
 
@@ -169,9 +236,13 @@ extension SessionMetric {
         f.locale = Locale(identifier: "en_US_POSIX")
         // 字段名跟着手势走：轻点那一段是润色，按住那一段是指令模型，写死成 polish 会误导读的人
         let modelField = mode == .command ? "model" : "polish"
+        // 缓存命中只在真的走过大模型时才有意义，没有就不占一格（老记录也不会凭空多出字段）
+        let cacheField = cachedTokens.map { " cached=\($0)" } ?? ""
+        // 实际档位同理。勾了 fast 却写着 tier=default 就是"被降级了"，一眼能看出来
+        let tierField = serviceTier.map { " tier=\($0)" } ?? ""
         return "\(f.string(from: date)) \(mode.rawValue)"
             + " asr=\(asrMs)ms \(modelField)=\(polishMs.map { "\($0)ms" } ?? "-")"
             + " insert=\(insertMs)ms audio=\(String(format: "%.1f", audioSeconds))s"
-            + " partials=\(partialCount) cold=\(cold)"
+            + " partials=\(partialCount) cold=\(cold)" + cacheField + tierField
     }
 }

@@ -33,9 +33,14 @@ enum Diagnostics {
         lines.append("Hotkey: \(s.hotkey.rawValue)")
         lines.append("Polish: level=\(s.polishLevel.rawValue) model=\(s.currentPolishModel)"
                      + " command=\(s.currentCommandModel)")
-        // 服务商与"配没配 Key"就是全部：Key 本身一个字符都不出现在这里
+        // 服务商与"配没配 Key"就是全部；顺带报端点主机名（自定义/本机档最容易出错的就是它，
+        // 而主机名不是秘密——Key 本身一个字符都不出现在这里）
         lines.append("Provider: \(s.llmProvider.rawValue)"
-                     + " apiKey=\(KeychainHelper.loadAPIKey() == nil ? "absent" : "configured")")
+                     + " apiKey=\(KeychainHelper.loadAPIKey() == nil ? "absent" : "configured")"
+                     + " callable=\(LLMClient.isConfigured)"
+                     + " host=\(URL(string: s.currentBaseURL)?.host ?? "unset")")
+        lines.append("Extras: fastTier=\(s.fastTier) webSearch=\(s.webSearchEnabled)"
+                     + " searchStyle=\(s.webSearchStyle)")
         lines.append("Overlay: position=\(s.overlayPosition.rawValue) livePreview=\(s.livePreview)")
 
         let metrics = Array(Metrics.shared.items.prefix(10))
