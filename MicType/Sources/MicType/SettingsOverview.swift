@@ -40,16 +40,24 @@ struct SettingsOverview: View {
     @State private var cloudModel = ""
     /// 指定麦克风的名字。CoreAudio 枚举不便宜，只在出现和设备变动时查一次
     @State private var micName = ""
-    /// 权限轮询：用户去系统设置里勾上之后，我们这边没有任何通知，只能自己回头看
-    private let refreshTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+    /// 权限轮询：用户去系统设置里勾上之后，我们这边没有任何通知，只能自己回头看。
+    /// **只在这扇窗开着的时候轮**：窗口是复用的（isReleasedWhenClosed = false），关掉之后
+    /// 这一页并不会消失，4.0.2 那个 autoconnect 的 Timer 于是一路跑到退出为止——每 2 秒
+    /// 叫醒一次进程去问 tccd 和摄像头/麦克风授权，而屏幕上根本没有人在看这条横幅。
+    @State private var permissionPoll: AnyCancellable?
+    /// 登录项要问 ServiceManagement（它可能在系统设置里被改掉，不是我们的设置），那是一次
+    /// XPC 往返。4.0.2 把它写成 computed property 摆在 body 里：下模型时进度每跳一下这一页
+    /// 就重画一次，于是主线程上每一帧都在同步问 launchd。存起来，只在进这一页 / App 重新
+    /// 激活（可能刚从系统设置回来）时问一次。
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    /// 这扇窗开着没有：关窗时要停掉上面那个轮询，再开时要接着轮
+    @ObservedObject private var windowState = SettingsWindowController.shared
 
     private var selectedHotkey: HotkeyChoice { HotkeyChoice(rawValue: hotkey) ?? .rightOption }
     private var selectedOverlay: OverlayPosition { OverlayPosition(rawValue: overlayPosition) ?? .bottomCenter }
     private var selectedProvider: LLMProvider { LLMProvider(rawValue: provider) ?? .openai }
     private var engineChoice: RecognitionEngineChoice { RecognitionEngineChoice.parse(recognitionEngine) }
-    private var usageMode: AIUsageMode {
-        AISetup.mode(polishLevel: PolishLevel(rawValue: polishLevel) ?? .smart, engine: engineChoice)
-    }
+    private var selectedPolishLevel: PolishLevel { PolishLevel(rawValue: polishLevel) ?? .smart }
 
     var body: some View {
         ScrollView {
@@ -84,22 +92,51 @@ struct SettingsOverview: View {
         .onAppear {
             refreshLiveState()
             micName = Self.deviceName(uid: inputDeviceUID)
+            startPermissionPolling()
         }
+        .onDisappear { stopPermissionPolling() }
         .onChange(of: inputDeviceUID) { _, uid in
             micName = Self.deviceName(uid: uid)
         }
-        // 只轮询权限：用户是去系统设置里勾的，勾完不会回来通知我们。
-        // 钥匙串与型号在概览这一页上改不动，每次回到概览时（onAppear）重算一次就够了
-        .onReceive(refreshTimer) { _ in
-            micOK = Permissions.microphoneGranted
-            axOK = Permissions.isAccessibilityTrusted
+        // 关窗时这一页并不会被销毁（窗口复用），所以停轮询这件事只能由窗口来说
+        .onChange(of: windowState.isOpen) { _, open in
+            if open {
+                refreshLiveState()
+                startPermissionPolling()
+            } else {
+                stopPermissionPolling()
+            }
+        }
+        // 从系统设置回来（勾权限、改登录项）时把要问系统的那几条重新问一遍
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshLiveState()
+            refreshPermissions()
         }
     }
 
-    // MARK: 三张卡的数据
+    // MARK: 权限轮询的开关
 
-    /// 登录项的状态由 ServiceManagement 现问（它可能被系统设置里改掉，不是我们的设置）
-    private var launchAtLogin: Bool { SMAppService.mainApp.status == .enabled }
+    /// 只轮询权限：用户是去系统设置里勾的，勾完不会回来通知我们。
+    /// 钥匙串与型号在概览这一页上改不动，每次回到概览时（onAppear）重算一次就够了
+    private func startPermissionPolling() {
+        guard permissionPoll == nil else { return }
+        refreshPermissions()
+        permissionPoll = Timer.publish(every: 2, on: .main, in: .common)
+            .autoconnect()
+            .sink { _ in self.refreshPermissions() }
+    }
+
+    private func stopPermissionPolling() {
+        permissionPoll?.cancel()
+        permissionPoll = nil
+    }
+
+    private func refreshPermissions() {
+        micOK = Permissions.microphoneGranted
+        axOK = Permissions.isAccessibilityTrusted
+    }
+
+    // MARK: 三张卡的数据
 
     private var recognitionCard: SettingsSummary.Card {
         SettingsSummary.recognitionSummary(language: recognitionLanguage,
@@ -131,15 +168,16 @@ struct SettingsOverview: View {
     }
 
     private var cloudCard: SettingsSummary.Card {
-        SettingsSummary.cloudSummary(mode: usageMode,
-                                     provider: selectedProvider,
+        SettingsSummary.cloudSummary(provider: selectedProvider,
                                      model: cloudModel,
                                      keyState: keyState,
-                                     cloudRecognition: engineChoice == .cloudAlibaba)
+                                     polishLevel: selectedPolishLevel,
+                                     engine: engineChoice)
     }
 
-    /// 钥匙串 + 拼不拼得出地址和型号：这两件事 @AppStorage 管不着，得自己来问一遍
+    /// 钥匙串、登录项、拼不拼得出地址和型号：这几件事 @AppStorage 管不着，得自己来问一遍
     private func refreshLiveState() {
+        launchAtLogin = SMAppService.mainApp.status == .enabled
         cloudModel = Settings.shared.currentPolishModel
         guard LLMClient.isConfigured else {
             keyState = .missing

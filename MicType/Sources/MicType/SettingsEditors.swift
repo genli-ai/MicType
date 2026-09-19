@@ -30,6 +30,8 @@ struct InputEditor: View {
     @AppStorage(SettingsKeys.overlayPosition) private var overlayPosition = OverlayPosition.bottomCenter.rawValue
     @AppStorage(SettingsKeys.keepHistory) private var keepHistory = true
     @State private var launchAtLogin = (SMAppService.mainApp.status == .enabled)
+    /// 上一次开关登录项被系统拒了。开关自己弹回去是这一刻唯一的反馈，等于没有反馈
+    @State private var launchAtLoginRefused = false
     // 导入导出的结果文字是一次性快照，切语言时要清掉（见 CLAUDE.md「i18n 快照字符串」）
     @State private var backupStatus = ""
 
@@ -172,10 +174,25 @@ struct InputEditor: View {
                         } else {
                             try SMAppService.mainApp.unregister()
                         }
+                        launchAtLoginRefused = false
                     } catch {
+                        // 用户看得见的每一次失败都要落盘（4.0.1 立的规矩）：受管的 Mac 上
+                        // 登录项可能被 MDM 挡住，4.0.2 这里只把开关弹回去，日志里一个字都没有，
+                        // 他把诊断信息抄给我也查不出所以然。原因不上屏——系统给的那句话可能是
+                        // 另一种语言，英文界面不能冒出中文（见 CJKUIStringGuardTests）。
+                        Log.warn("Launch at login toggle failed on=\(newValue) error=\(error)")
+                        launchAtLoginRefused = true
                         launchAtLogin = (SMAppService.mainApp.status == .enabled)
                     }
                 }
+            // 一行结论 + 一颗去处，绝不写成一段话
+            if launchAtLoginRefused {
+                BoundaryRow(text: SettingsCopy.launchAtLoginFailed) {
+                    Button(tr("打开登录项设置", "Open Login Items")) {
+                        SMAppService.openSystemSettingsLoginItems()
+                    }
+                }
+            }
         } header: {
             SectionHeader(title: tr("行为", "Behavior"), info: SettingsCopy.behaviourInfo)
         }

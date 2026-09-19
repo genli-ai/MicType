@@ -8,6 +8,42 @@ import AppKit
 /// 为什么单独抽一层：3.3 之前「保存 Key」只管写钥匙串、真验证挂在模型框旁的「测试」按钮上，
 /// 于是可以存一把废 Key 还看到绿对勾，真正出事要等到下一次按住说话。竞品（Raycast / BoltAI）
 /// 都是粘贴 → 当场验证 → 通过才存，这一层就是那套流程。
+/// 验证代数的**长寿命**账本：谁的结论还算数，由它说了算。
+///
+/// 为什么代数不能只住在 KeyVerifier 里：设置页的路由用 `.id(nav.route)` 重建页面
+/// （见 SettingsView.page），粘完 Key 立刻按 Esc / 点「‹ 设置」，KeyEntryView 连同它的
+/// @StateObject 一起被释放，而那趟验证还在路上（从 UAE 出海要 1–5 秒）。代数记在视图里，
+/// 回调回来就没人可问：验证通过的那把 Key 不落盘、日志里也没有一行，用户在概览上读到的是
+/// 「还没填 Key」，以为自己没粘上。所以**落盘与日志只认这个账本**（它比任何视图都活得久），
+/// 屏幕上那一行才认视图还在不在。
+final class KeyVerificationLedger {
+    static let shared = KeyVerificationLedger()
+
+    /// 回调不保证回到主线程（云端识别那两条探针就不是），所以这张表自己上锁
+    private let lock = NSLock()
+    /// 钥匙串账户 → 最新一次验证的代数
+    private var generations: [String: Int] = [:]
+
+    private init() {}
+
+    /// 领一个新代数。每一次 verify / reset / invalidate 都要领——领完，之前那些就不算数了
+    @discardableResult
+    func nextGeneration(for account: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let next = (generations[account] ?? 0) + 1
+        generations[account] = next
+        return next
+    }
+
+    /// 这一代还是这一档最新的那一代吗。不是 = 用户后来又动过输入框，这趟的结果一律作废
+    func isCurrent(_ generation: Int, for account: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return generations[account] == generation
+    }
+}
+
 final class KeyVerifier: ObservableObject {
 
     enum Status: Equatable {
@@ -24,14 +60,24 @@ final class KeyVerifier: ObservableObject {
     @Published private(set) var status: Status = .idle
     /// 已经验证通过、正躺在钥匙串里的那把（用来判"要不要重验"，只在内存里比对，不外泄）
     private var verifiedKey: String?
-    /// 验证代数：切服务商 / 又改了一次 Key 时，旧请求回来不许覆盖新状态
-    private var generation = 0
+    /// 两本代数，管的是两件事：
+    ///   • **这一页的**代数（下面这个）决定"屏幕上那一行还要不要改"——切服务商、重新载入
+    ///     之后，上一档的回答不许改写现在这一档的状态行；
+    ///   • **落盘与日志**的代数在 KeyVerificationLedger 里（见那边的注释）：它比视图活得久，
+    ///     所以粘完就离开这一页，验证通过的 Key 照样进钥匙串。
+    private var viewGeneration = 0
+    /// 这一层现在为哪一档服务。invalidate() 手上没有 provider，只能靠它去账本上销号
+    private var account: String?
+    private let ledger = KeyVerificationLedger.shared
 
     var isVerifying: Bool { status == .verifying }
 
     /// 切服务商时调用：上一档的结论对这一档毫无意义
-    func reset(loadedKey: String?) {
-        generation += 1
+    /// 只翻**这一页的**代数，不动账本：重新载入不是"用户改主意了"。
+    /// 账本一翻，粘完立刻离开又马上回来的那趟验证就会连钥匙串都写不进去——那正是要修的那个 bug。
+    func reset(loadedKey: String?, provider: LLMProvider) {
+        account = provider.keychainAccount
+        viewGeneration += 1
         verifiedKey = loadedKey
         status = .idle
     }
@@ -39,7 +85,10 @@ final class KeyVerifier: ObservableObject {
     /// 用户又动了输入框：把上一次的结论撤掉，别让旧的 ✓ 挂在一把新 Key 旁边
     func invalidate() {
         guard status != .idle else { return }
-        generation += 1
+        // 这一次要连账本一起销号：用户又动了输入框，在路上那一把已经不是他要的那一把，
+        // 它回来时连钥匙串都不许写
+        viewGeneration += 1
+        if let account = account { ledger.nextGeneration(for: account) }
         status = .idle
     }
 
@@ -71,8 +120,12 @@ final class KeyVerifier: ObservableObject {
     /// - probe: 走哪条链路，见 Probe
     func verify(key: String, provider: LLMProvider, model: String, probe: Probe = .llm) {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        generation += 1
-        let gen = generation
+        let account = provider.keychainAccount
+        let ledger = self.ledger
+        self.account = account
+        viewGeneration += 1
+        let viewGen = viewGeneration
+        let gen = ledger.nextGeneration(for: account)
 
         guard !trimmed.isEmpty else {
             // 清空 + 失焦 = 明确要删掉这把 Key。钥匙串里没有就只是回到初始态。
@@ -93,19 +146,31 @@ final class KeyVerifier: ObservableObject {
         let hadPrevious = KeychainHelper.loadAPIKey(account: provider.keychainAccount) != nil
         /// 两条探针回来之后做的事一模一样：过了就写钥匙串，没过就一个字节都不动
         let settle: (Bool, String, String, String) -> Void = { [weak self] ok, label, model, message in
-            guard let self = self, self.generation == gen else { return }
+            // 先问账本、后问视图：粘完就按 Esc 回概览的人，这会儿 self 已经没了，
+            // 但他粘的那把 Key 验证通过就必须落盘、必须留下一行日志——4.0.2 这两件事
+            // 都挂在 `guard let self` 后面，于是一次成功的验证什么痕迹都不留
+            guard ledger.isCurrent(gen, for: account) else {
+                // 作废也要记一行：否则"我明明粘了"这类反馈在日志里彻底没有对应
+                Log.info("API key verification discarded provider=\(provider.rawValue) reason=superseded")
+                return
+            }
             if ok {
-                KeychainHelper.saveAPIKey(trimmed, account: provider.keychainAccount)
-                self.verifiedKey = trimmed
-                self.status = .connected(provider: label, model: model)
+                KeychainHelper.saveAPIKey(trimmed, account: account)
                 Log.info("API key verified provider=\(provider.rawValue) model=\(model)")
             } else {
-                // 失败不动钥匙串：原来那把要是好的，不该被一次手滑的粘贴连累
-                self.status = .failed(reason: message, keptPrevious: hadPrevious)
+                // 失败不动钥匙串：原来那把要是好的，不该被一次手滑的粘贴连累。
                 // 原因也要记：4.0.0 只记了"失败了"，用户看到的那句话（含服务商错误码）
                 // 一个字都没落盘，事后完全无从排查。记的是文案，不含 Key。
                 Log.warn("API key verification failed provider=\(provider.rawValue) model=\(model) "
                          + "reason=" + String(message.prefix(200)))
+            }
+            // 屏幕上那一行只有这一页还在、而且还停在这一档时才有人看
+            guard let self = self, self.viewGeneration == viewGen else { return }
+            if ok {
+                self.verifiedKey = trimmed
+                self.status = .connected(provider: label, model: model)
+            } else {
+                self.status = .failed(reason: message, keptPrevious: hadPrevious)
             }
         }
 
@@ -127,14 +192,14 @@ final class KeyVerifier: ObservableObject {
             }
             AlibabaHostResolver.resolve(
                 apiKey: trimmed,
-                candidates: CloudASRSettings.currentHostCandidates(apiKey: trimmed)) { [weak self] result in
+                candidates: CloudASRSettings.currentHostCandidates(apiKey: trimmed)) { result in
                 switch result {
                 case .failure(let failure):
                     settle(false, provider.segmentName, model, failure.message)
                 case .success(let host):
-                    // 和 settle 同一道闸：这几秒里用户可能又粘了一把别的 Key，
-                    // 让上一把的答案把接入地址写掉，下一把就被钉在一台不属于它的主机上
-                    if self?.generation == gen {
+                    // 和 settle 同一道闸（问的也是账本，不是视图）：这几秒里用户可能又粘了
+                    // 一把别的 Key，让上一把的答案把接入地址写掉，下一把就被钉在一台不属于它的主机上
+                    if ledger.isCurrent(gen, for: account) {
                         CloudASRSettings.rememberResolution(host: host, model: nil)
                     }
                     LLMClient.testModel(model, provider: provider, candidateKey: trimmed) { ok, message in
@@ -170,11 +235,11 @@ final class KeyVerifier: ObservableObject {
                 return
             }
             CloudASRSetup.verifyAlibaba(apiKey: trimmed, config: config,
-                                        candidates: CloudASRSettings.currentHostCandidates(apiKey: trimmed)) { [weak self] result in
+                                        candidates: CloudASRSettings.currentHostCandidates(apiKey: trimmed)) { result in
                 switch result {
                 case .success(let success):
                     // 同一道代数闸：放弃掉的那一次验证不许改写接入地址与识别模型
-                    if self?.generation == gen {
+                    if ledger.isCurrent(gen, for: account) {
                         CloudASRSettings.rememberResolution(host: success.host, model: success.model)
                     }
                     settle(true, cloudProvider.displayName, success.model.rawValue, "")
@@ -300,7 +365,7 @@ struct KeyEntryView: View {
         let stored = KeychainHelper.loadAPIKey(account: provider.keychainAccount)
         // 先告诉 verifier 这把 Key 已经是验证过的，再写输入框：反过来的话
         // onChange(of: key) 会把"载入"当成一次粘贴，白跑一趟网络
-        verifier.reset(loadedKey: stored)
+        verifier.reset(loadedKey: stored, provider: provider)
         loadedProvider = provider
         key = stored ?? ""
     }

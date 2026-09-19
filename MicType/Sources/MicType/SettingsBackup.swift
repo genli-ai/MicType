@@ -605,14 +605,14 @@ extension SettingsBackup {
                 $0.hasPrefix(Key.qwenRegion) || $0.hasPrefix(Key.qwenApiHost)
             }) {
                 lines.append(tr("这份文件改了百炼的接入地址：润色与云端识别会改发到另一台服务器（可能是另一个司法辖区）。不是自己填的请在「云端 AI」页清空它，交回给自动探测。",
-                                "This file changed the Model Studio endpoint: polish and cloud recognition will be sent to a different server, possibly in a different jurisdiction. Clear it on the Cloud AI tab to hand the job back to auto-detection if you did not choose it."))
+                                "This file changed the Model Studio endpoint: polish and cloud recognition will be sent to a different server, possibly in a different jurisdiction. Clear it under Settings → Cloud AI to hand the job back to auto-detection if you did not choose it."))
             }
             // 引擎被文件改成云端 = 从此每段录音都会上传。这句重话必须说
             if summary.notableChanges.contains(where: {
                 $0.hasPrefix(Key.recognitionEngine) && !$0.hasSuffix(RecognitionEngineChoice.local.rawValue)
             }) {
                 lines.append(tr("这份文件把识别引擎改成了云端：以后每段录音都会上传给服务商，并按秒计费。不是自己选的请在「云端 AI」页把「识别也用云端」关掉。",
-                                "This file switched recognition to a cloud engine: every recording will be uploaded to that provider and billed by the second. Turn off Also recognize speech in the cloud on the Cloud AI tab if you did not choose it."))
+                                "This file switched recognition to a cloud engine: every recording will be uploaded to that provider and billed by the second. Turn off Also recognize speech in the cloud under Settings → Cloud AI if you did not choose it."))
             }
         }
         if !summary.ignoredKeys.isEmpty {
@@ -623,9 +623,10 @@ extension SettingsBackup {
             lines.append(tr("这份文件来自更新版本的 MicType，只应用了本版认识的设置。",
                             "This file comes from a newer MicType; only settings this version knows were applied."))
         }
-        // 标签名 4.0.2 改叫「云端 AI」（按「跑在哪、谁付钱」这条轴重命名），这句话得跟着改
+        // 4.1 起设置里没有标签页了（概览 + 编辑页），所以英文这边也不能再说 "tab"——
+        // 指路一律写成 Settings → Cloud AI，和其它深链那几句同一个说法
         lines.append(tr("API Key 从不导出、也从不导入——请在「云端 AI」页单独填写。",
-                        "API keys are never exported or imported — enter them on the Cloud AI tab."))
+                        "API keys are never exported or imported — enter them under Settings → Cloud AI."))
 
         let alert = NSAlert()
         alert.alertStyle = .informational

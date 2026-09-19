@@ -157,11 +157,11 @@ final class SettingsSummaryTests: XCTestCase {
     /// 「只用本地」这一档整句就是结论，连服务商名字都不该出现——那一档不联网、不花钱
     func testLocalOnlyCloudCardSaysSoAndNothingElse() {
         L10n.shared.language = .zh
-        let card = SettingsSummary.cloudSummary(mode: .localOnly,
-                                                provider: .openai,
+        let card = SettingsSummary.cloudSummary(provider: .openai,
                                                 model: "gpt-5.6-sol",
                                                 keyState: .missing,
-                                                cloudRecognition: false)
+                                                polishLevel: .off,
+                                                engine: .local)
         XCTAssertEqual(card.sentence, "未启用 · 只用本地")
         XCTAssertFalse(card.sentence.contains("OpenAI"), card.sentence)
         // 没启用 AI 的人不该看到一枚「还没填 Key」的徽章：他根本没打算填
@@ -170,11 +170,11 @@ final class SettingsSummaryTests: XCTestCase {
 
     func testConnectedCloudCardNamesProviderAndModel() {
         L10n.shared.language = .zh
-        let card = SettingsSummary.cloudSummary(mode: .withAI,
-                                                provider: .openai,
+        let card = SettingsSummary.cloudSummary(provider: .openai,
                                                 model: " gpt-5.6-sol ",
                                                 keyState: .ready,
-                                                cloudRecognition: false)
+                                                polishLevel: .smart,
+                                                engine: .local)
         XCTAssertEqual(card.sentence, "OpenAI · gpt-5.6-sol · 已连通 ✓")
         XCTAssertNil(card.badge)
     }
@@ -182,20 +182,76 @@ final class SettingsSummaryTests: XCTestCase {
     /// 云端识别开着 = 每段录音都在上传、按秒计费，这是这一刻最该看见的一条事实
     func testCloudRecognitionTakesTheLastSlot() {
         L10n.shared.language = .zh
-        let card = SettingsSummary.cloudSummary(mode: .withAI,
-                                                provider: .qwen,
+        let card = SettingsSummary.cloudSummary(provider: .qwen,
                                                 model: "qwen3.8-max",
                                                 keyState: .ready,
-                                                cloudRecognition: true)
+                                                polishLevel: .smart,
+                                                engine: .cloudAlibaba)
         XCTAssertEqual(card.sentence, "阿里云 · qwen3.8-max · 云端识别开")
+        // 这一档是用户自己在「云端 AI」页上打开的，没有要他动手的事
+        XCTAssertNil(card.badge)
+    }
+
+    /// 4.0.0 留下的 `cloudOpenAI` 仍然是一档活的引擎（界面上早已没有这个选项）。
+    /// 概览 4.0.2 只认 `engine == .cloudAlibaba`，于是这些人读到的是一句「已连通 ✓」，
+    /// 而他每段录音都在上传——卡上没有徽章，他根本不会点进编辑页去看那行横幅。
+    func testLegacyOpenAICloudRecognitionIsNamedOnTheCard() {
+        L10n.shared.language = .zh
+        let card = SettingsSummary.cloudSummary(provider: .openai,
+                                                model: "gpt-5.6-luna",
+                                                keyState: .ready,
+                                                polishLevel: .smart,
+                                                engine: .cloudOpenAI)
+        XCTAssertTrue(card.sentence.contains("录音上传给OpenAI"), card.sentence)
+        XCTAssertFalse(card.sentence.contains("已连通"), card.sentence)
+        XCTAssertEqual(card.badge, "云端识别停在旧档")
+    }
+
+    /// 识别停在阿里云、服务商却换走了：那个开关只在阿里云档渲染，界面上关不掉它。
+    /// 句子必须报真正的收信人，不能写成「DeepSeek · … · 云端识别开」
+    func testStrandedAlibabaRecognitionNamesTheRealUploadTarget() {
+        L10n.shared.language = .zh
+        let card = SettingsSummary.cloudSummary(provider: .deepseek,
+                                                model: "deepseek-v4-pro",
+                                                keyState: .ready,
+                                                polishLevel: .smart,
+                                                engine: .cloudAlibaba)
+        XCTAssertTrue(card.sentence.hasPrefix("DeepSeek"), card.sentence)
+        XCTAssertTrue(card.sentence.contains("录音上传给阿里云"), card.sentence)
+        XCTAssertEqual(card.badge, "云端识别停在旧档")
+    }
+
+    /// 从菜单栏把润色关掉、云端识别还开着：那个润色型号一次都不会被用到，
+    /// 报出来等于让人以为文字正在被润色
+    func testPolishOffIsSaidInsteadOfNamingAnUnusedModel() {
+        L10n.shared.language = .zh
+        let card = SettingsSummary.cloudSummary(provider: .qwen,
+                                                model: "qwen3.8-max",
+                                                keyState: .ready,
+                                                polishLevel: .off,
+                                                engine: .cloudAlibaba)
+        XCTAssertEqual(card.sentence, "阿里云 · 润色关着 · 云端识别开")
+    }
+
+    /// 润色关着 + 识别在本机 = 「只用本地」：这一档整句就是结论（判据与 AISetup.mode 同源）
+    func testPolishOffWithLocalEngineFallsBackToLocalOnly() {
+        L10n.shared.language = .zh
+        let card = SettingsSummary.cloudSummary(provider: .qwen,
+                                                model: "qwen3.8-max",
+                                                keyState: .ready,
+                                                polishLevel: .off,
+                                                engine: .local)
+        XCTAssertEqual(card.sentence, "未启用 · 只用本地")
+        XCTAssertNil(card.badge)
     }
 
     func testCloudBadgeReportsWhatIsMissing() {
         L10n.shared.language = .zh
         func badge(_ state: SettingsSummary.KeyState) -> String? {
-            SettingsSummary.cloudSummary(mode: .withAI, provider: .deepseek,
+            SettingsSummary.cloudSummary(provider: .deepseek,
                                          model: "deepseek-v4-pro",
-                                         keyState: state, cloudRecognition: false).badge
+                                         keyState: state,
+                                         polishLevel: .smart, engine: .local).badge
         }
         XCTAssertNil(badge(.ready))
         XCTAssertEqual(badge(.missing), "还没填 Key")
@@ -207,26 +263,31 @@ final class SettingsSummaryTests: XCTestCase {
         L10n.shared.language = .en
         for provider in LLMProvider.allCases {
             for state in [SettingsSummary.KeyState.missing, .incomplete, .ready] {
-                for cloud in [true, false] {
-                    let card = SettingsSummary.cloudSummary(mode: .withAI, provider: provider,
-                                                            model: "model-x",
-                                                            keyState: state,
-                                                            cloudRecognition: cloud)
-                    XCTAssertFalse(containsCJKOrFullWidth(card.sentence), card.sentence)
-                    XCTAssertFalse(containsCJKOrFullWidth(card.badge ?? ""), card.badge ?? "")
+                for engine in RecognitionEngineChoice.allCases {
+                    for polish in PolishLevel.allCases {
+                        let card = SettingsSummary.cloudSummary(provider: provider,
+                                                                model: "model-x",
+                                                                keyState: state,
+                                                                polishLevel: polish,
+                                                                engine: engine)
+                        XCTAssertFalse(containsCJKOrFullWidth(card.sentence), card.sentence)
+                        XCTAssertFalse(containsCJKOrFullWidth(card.badge ?? ""), card.badge ?? "")
+                    }
                 }
             }
         }
-        let off = SettingsSummary.cloudSummary(mode: .localOnly, provider: .openai, model: "",
-                                               keyState: .missing, cloudRecognition: false)
+        let off = SettingsSummary.cloudSummary(provider: .openai, model: "",
+                                               keyState: .missing,
+                                               polishLevel: .off, engine: .local)
         XCTAssertFalse(containsCJKOrFullWidth(off.sentence), off.sentence)
     }
 
     /// 型号名空着（自定义端点没填）时不留一个孤零零的分隔点
     func testEmptyModelLeavesNoDanglingSeparator() {
         L10n.shared.language = .zh
-        let card = SettingsSummary.cloudSummary(mode: .withAI, provider: .local, model: "   ",
-                                                keyState: .incomplete, cloudRecognition: false)
+        let card = SettingsSummary.cloudSummary(provider: .local, model: "   ",
+                                                keyState: .incomplete,
+                                                polishLevel: .smart, engine: .local)
         XCTAssertFalse(card.sentence.contains("·  ·"), card.sentence)
         XCTAssertEqual(card.sentence.components(separatedBy: "·").count, 2, card.sentence)
     }

@@ -90,10 +90,18 @@ final class SettingsNavigator: ObservableObject {
     }
 }
 
-final class SettingsWindowController {
+/// 窗口是复用的，所以"它这会儿开着没有"是**这一层唯一知道**的事实：关窗不会销毁里面那一页。
+/// 概览的权限轮询据此停下——否则它会一路轮到退出为止（4.0.2 就是这样）。
+final class SettingsWindowController: NSObject, NSWindowDelegate, ObservableObject {
     static let shared = SettingsWindowController()
+
+    /// 这扇窗开着没有。概览订阅它来开关权限轮询
+    @Published private(set) var isOpen = false
+
     private var window: NSWindow?
     private var langObserver: AnyCancellable?
+
+    private override init() { super.init() }
 
     /// - tab: 深链要停在哪一页；nil = 回概览。
     ///   为什么 nil 不再是"保持上次的位置"：概览就是这个窗口的首页，打开设置的人第一眼
@@ -105,6 +113,8 @@ final class SettingsWindowController {
             let w = NSWindow(contentViewController: hosting)
             w.styleMask = [.titled, .closable, .miniaturizable]
             w.isReleasedWhenClosed = false
+            // 关窗要有人知道：里面那一页不会跟着消失，得由这里告诉它停手
+            w.delegate = self
             w.setContentSize(NSSize(width: 560, height: 520))
             w.center()
             window = w
@@ -116,6 +126,12 @@ final class SettingsWindowController {
         window?.title = tr("MicType 设置", "MicType Settings")
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        isOpen = true
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === window else { return }
+        isOpen = false
     }
 }
 

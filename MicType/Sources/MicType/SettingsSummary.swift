@@ -147,20 +147,58 @@ enum SettingsSummary {
     /// 「未启用 · 只用本地」/「OpenAI · gpt-5.6-sol · 已连通 ✓」/「阿里云 · qwen3.8-max · 云端识别开」
     ///
     /// 云端识别开着时占掉第三格：那是这一刻最贵、最该看见的一条事实（每段录音都在上传）。
-    static func cloudSummary(mode: AIUsageMode,
-                             provider: LLMProvider,
+    ///
+    /// **判据是识别引擎本身，不是"选的服务商是不是阿里云"**：4.0.2 这里问的是
+    /// `engine == .cloudAlibaba`，于是从 4.0.0 升上来、设置里还存着 `cloudOpenAI` 的人
+    /// （那一档仍然是活的，见 CloudASRSettings.currentConfig）在概览上读到的是
+    /// 「OpenAI · … · 已连通 ✓」，一个徽章都没有——而他每段录音都在上传。
+    /// 这条事实当时只有「云端 AI」页里那行横幅说过，而正因为卡上没有徽章，他不会点进去。
+    static func cloudSummary(provider: LLMProvider,
                              model: String,
                              keyState: KeyState,
-                             cloudRecognition: Bool) -> Card {
-        guard mode == .withAI else {
+                             polishLevel: PolishLevel,
+                             engine: RecognitionEngineChoice) -> Card {
+        guard AISetup.mode(polishLevel: polishLevel, engine: engine) == .withAI else {
             return Card(sentence: tr("未启用 · 只用本地", "Off · local only"), badge: nil)
         }
         var parts = [provider.segmentName]
-        let name = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !name.isEmpty { parts.append(name) }
-        parts.append(cloudRecognition ? tr("云端识别开", "Cloud recognition on")
-                                      : keyPhrase(keyState))
-        return Card(sentence: parts.joined(separator: dot), badge: keyBadge(keyState))
+        // 润色关着还落在这一档 = 云端识别开着。这会儿那个润色型号一次都不会被用到，
+        // 把它报出来等于让人以为文字正在被润色（编辑页那行 polishOffInMenuBar 说的是同一件事）
+        if polishLevel == .off {
+            parts.append(tr("润色关着", "Polish off"))
+        } else {
+            let name = model.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty { parts.append(name) }
+        }
+        let stranded = strandedCloudTarget(engine: engine, provider: provider)
+        if let target = stranded {
+            // 音频其实传给了界面上那一档之外的地方：这一格必须报真正的收信人
+            parts.append(tr("录音上传给\(target)", "Audio uploaded to \(target)"))
+        } else if engine.isCloud {
+            parts.append(tr("云端识别开", "Cloud recognition on"))
+        } else {
+            parts.append(keyPhrase(keyState))
+        }
+        // 「上传给一个你没在选的地方」比「还没填 Key」更贵，徽章位归它
+        let badge = stranded == nil ? keyBadge(keyState)
+                                    : tr("云端识别停在旧档", "Cloud recognition stranded")
+        return Card(sentence: parts.joined(separator: dot), badge: badge)
+    }
+
+    /// 音频正在往**用户选中的那一档之外**传吗；是的话返回真正的收信人。
+    ///
+    /// 两种来路，和「云端 AI」页里那两行横幅同源（AISetup.showsLegacyOpenAICloudNotice /
+    /// showsStrandedAlibabaCloudNotice）：4.0.0 的「云端 · OpenAI」识别档（界面上早已没有
+    /// 这个选项），以及换走服务商之后留在阿里云的识别档（那个开关只在阿里云档渲染，关不掉）。
+    private static func strandedCloudTarget(engine: RecognitionEngineChoice,
+                                            provider: LLMProvider) -> String? {
+        if AISetup.showsLegacyOpenAICloudNotice(engine: engine) {
+            return LLMProvider.openai.segmentName
+        }
+        if AISetup.showsStrandedAlibabaCloudNotice(engine: engine, provider: provider) {
+            return LLMProvider.qwen.segmentName
+        }
+        return nil
     }
 
     private static func keyPhrase(_ state: KeyState) -> String {

@@ -308,6 +308,13 @@ enum SettingsCopy {
            "Recognition still goes to Alibaba (billed per second) although your provider is not Alibaba.")
     }
 
+    /// 登录项没改成：受管的 Mac 上它可能被 MDM 挡住，开关自己弹回去而屏幕上一个字都没有，
+    /// 用户只会觉得这个开关坏了。原因（系统给的那句话）记进日志，界面上只留结论与去处。
+    static var launchAtLoginFailed: String {
+        tr("系统没让改登录项，可能被管理策略挡住。",
+           "The system refused to change the login item, possibly blocked by a policy.")
+    }
+
     /// 官方几档的地址被老版本改过：看不见的自定义地址是查不出来的故障
     static var endpointOverridden: String {
         tr("这一档的接口地址被改过：", "This provider's endpoint was overridden: ")
@@ -357,7 +364,8 @@ enum SettingsCopy {
 
     static var boundaryLines: [String] {
         [fnNeedsSystemSetting, storedKeyWhileLocalOnly(provider: "OpenAI"), polishOffInMenuBar,
-         legacyOpenAICloudRecognition, strandedAlibabaRecognition, endpointOverridden,
+         legacyOpenAICloudRecognition, strandedAlibabaRecognition, launchAtLoginFailed,
+         endpointOverridden,
          endpointConfiguredByImport(provider: "Ollama"), hostMalformed, hostNotDetectedYet,
          hostInUse, modelReady, modelNotDownloaded, modelNoLongerListed,
          modelUpgradeAvailable, modelHasNewRevision, modelNeedsAppUpdate(version: "4.1.0")]
