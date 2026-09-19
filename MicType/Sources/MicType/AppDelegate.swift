@@ -33,12 +33,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 录音中 *和* 处理中都要保持 Esc 拦截：处理中 Esc 是用户唯一的出口
             self?.hotkeys.setCancellable(phase != .idle)
         }
-        // 模型缺失时的"去哪儿"：引导窗口的下载页比设置页更直接（有进度、有说明、下完自动继续）
+        // 模型缺失时的"去哪儿"：引导窗口比设置页更直接（模型在那里后台下，有进度、下完自动继续）。
+        // 4.0.1 的引导只剩四屏，下载挂在权限那一屏上，所以落点改成 .permissions
         dictation.onNeedSettings = {
             if QwenEngine.shared.isModelAvailable {
                 SettingsWindowController.shared.show()
             } else {
-                OnboardingWindowController.shared.show(startAt: .model)
+                OnboardingWindowController.shared.show(startAt: .permissions)
             }
         }
 
@@ -47,9 +48,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             SettingsWindowController.shared.show(tab: .ai)
         }
 
-        // 悬浮窗上的「去设置」：云端识别没填 Key 时，落到识别页
+        // 悬浮窗上的「去设置」：云端识别没填 Key 时落到 AI 页——4.0.1 起云端识别的开关
+        // 和那把 Key 都在那里（听写页只剩麦克风、语言、词汇表、本机模型）
         dictation.onNeedRecognitionSettings = {
-            SettingsWindowController.shared.show(tab: .recognition)
+            SettingsWindowController.shared.show(tab: .ai)
         }
 
         // 云端识别的 Key 统一到润色那把（qwen_api_key）：开发期存过旧账号的搬过来再删
@@ -118,7 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if RecognitionEngineReadiness.current() == .localModelMissing {
             // 走过引导但模型没了（换了模型 / 被删）：仍然带去下载页，而不是把人扔进设置页。
             // 只对本地档成立——云端档缺 Key 不抢启动，按下热键时悬浮窗上那个「去设置」胶囊接住他
-            OnboardingWindowController.shared.show(startAt: .model)
+            OnboardingWindowController.shared.show(startAt: .permissions)
             return
         }
 
@@ -154,8 +156,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
-        let hotkeyName = Settings.shared.hotkey.shortSymbol
-        let modeHint = tr("轻点 ", "Tap ") + hotkeyName + tr(" 听写 · 按住说指令", " to dictate · hold for commands")
+        // 键名写全（「轻点 右 Option 听写」）：菜单栏第一行是很多人唯一会读的说明书，
+        // 4.0.0 那里写的是 R⌥ —— 用户实测反馈没人看得懂那是哪颗键
+        let hotkeyName = Settings.shared.hotkey.plainName
+        let modeHint = tr("轻点 ", "Tap ") + hotkeyName + tr(" 听写 · 按住说指令", " to dictate · hold to command")
         let titleItem = NSMenuItem(title: modeHint, action: nil, keyEquivalent: "")
         titleItem.isEnabled = false
         menu.addItem(titleItem)
@@ -361,7 +365,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         SettingsWindowController.shared.show()
     }
 
-    /// 带去设置 → 识别：升级横幅在那里，按钮上写着这次要下多少
+    /// 带去设置 → 听写：升级横幅在那里，按钮上写着这次要下多少
     @objc private func openModelUpgrade() {
         Log.info("Menu: open model upgrade banner")
         SettingsWindowController.shared.show(tab: .recognition)

@@ -45,4 +45,49 @@ final class HotkeyChoiceTests: XCTestCase {
         XCTAssertEqual(Set(codes).count, codes.count)
         XCTAssertEqual(HotkeyChoice.leftOption.flagMask, HotkeyChoice.rightOption.flagMask)
     }
+
+    // MARK: - 摆出来的那几档 / 名字
+
+    /// 设置里只摆右侧三颗（用户 2026-09-19 拍板）：Fn 要先去系统设置里让系统放手，
+    /// 左侧几颗天天参与 ⌘C / ⌥← ——两类都得先上一课，摆出来等于把坑一起摆出来
+    func testOnlyRightSideModifiersAreOffered() {
+        XCTAssertEqual(HotkeyChoice.offered, [.rightOption, .rightCommand, .rightControl])
+        for choice in HotkeyChoice.offered {
+            XCTAssertFalse(choice.isLeftSideModifier, choice.rawValue)
+            XCTAssertNotEqual(choice, .fn)
+        }
+        // 老设置里存着的值仍然是合法的，只是不再推荐——枚举本身不许被砍
+        XCTAssertEqual(HotkeyChoice.allCases.count, 8)
+        XCTAssertEqual(HotkeyChoice(rawValue: "leftCommand"), .leftCommand)
+        XCTAssertEqual(HotkeyChoice(rawValue: "fn"), .fn)
+    }
+
+    /// 键名一律写全（「右 Option」/「Right Option」），**不许出现 R⌥ 这种缩写**：
+    /// 菜单栏第一行和引导里的每一句话都用它，用户得能照着念出来
+    func testNamesAreSpelledOutNotAbbreviated() {
+        let saved = L10n.shared.language
+        defer { L10n.shared.language = saved }
+
+        L10n.shared.language = .zh
+        XCTAssertEqual(HotkeyChoice.rightOption.plainName, "右 Option")
+        XCTAssertEqual(HotkeyChoice.rightOption.displayName, "右 Option (⌥)")
+        L10n.shared.language = .en
+        XCTAssertEqual(HotkeyChoice.rightOption.plainName, "Right Option")
+        XCTAssertEqual(HotkeyChoice.rightCommand.displayName, "Right Command (⌘)")
+
+        for language in [AppLanguage.zh, .en] {
+            L10n.shared.language = language
+            for choice in HotkeyChoice.allCases {
+                let name = choice.plainName
+                XCTAssertFalse(name.isEmpty, choice.rawValue)
+                // 缩写的特征就是"只有一两个字符 + 一个符号"：全名一定比它长
+                XCTAssertGreaterThan(name.count, 3, name)
+                for abbreviation in ["R⌥", "R⌘", "R⌃", "L⌥", "L⌘", "L⌃", "右⌥", "左⌥"] {
+                    XCTAssertFalse(name.contains(abbreviation), name)
+                }
+                // 全名是 displayName 去掉括号里的符号那一段：两处不能各写各的
+                XCTAssertTrue(choice.displayName.hasPrefix(name), choice.displayName)
+            }
+        }
+    }
 }

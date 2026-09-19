@@ -1,7 +1,7 @@
 import XCTest
 @testable import MicType
 
-/// 引导第 5 / 6 屏的文案与"配好了没有"的判断。
+/// 引导「怎么用」/「试一下」两屏的文案与"配好了没有"的判断。
 /// 这一层错了不会崩，但会正正好在最后一屏说反话：明明配好了却写「你现在是纯本机听写」，
 /// 或者反过来让人白等一个永远不会发生的润色。
 final class OnboardingCopyTests: XCTestCase {
@@ -29,16 +29,18 @@ final class OnboardingCopyTests: XCTestCase {
 
     // MARK: - 页序
 
-    /// AI 那一屏必须夹在「现场试一次」与「完成」之间：先让人试出听写能用，
-    /// 再问要不要加 AI——顺序反了就是"先交钱再看东西"
-    func testAISetupSitsBetweenTryItAndDone() {
-        XCTAssertEqual(OnboardingPage.allCases.count, 6)
-        XCTAssertEqual(OnboardingPage.tryIt.rawValue + 1, OnboardingPage.aiSetup.rawValue)
-        XCTAssertEqual(OnboardingPage.aiSetup.rawValue + 1, OnboardingPage.done.rawValue)
-        XCTAssertEqual(OnboardingPage(rawValue: 4), .aiSetup)
+    /// 四屏，顺序写死（用户 2026-09-19 拍板：引导不许超过四屏）。
+    /// 「怎么用」必须在权限之后、「试一下」之前：先把权限和模型这两件必须的事办了，
+    /// 再问要不要加 AI；最后一屏是"就地试一次 + 收尾"。
+    func testOnboardingIsFourPagesInOrder() {
+        XCTAssertEqual(OnboardingPage.allCases.count, 4)
+        XCTAssertEqual(OnboardingPage.welcome.rawValue, 0)
+        XCTAssertEqual(OnboardingPage.permissions.rawValue + 1, OnboardingPage.howYouUse.rawValue)
+        XCTAssertEqual(OnboardingPage.howYouUse.rawValue + 1, OnboardingPage.tryIt.rawValue)
+        XCTAssertEqual(OnboardingPage(rawValue: 3), .tryIt)
     }
 
-    // MARK: - 第 6 屏两种收尾
+    // MARK: - 最后一屏两种收尾
 
     /// 有 Key：点名「按住 + 快捷键 + 一句真能照着说的话」
     func testDoneStatusWithAKeyNamesTheHoldGesture() {
@@ -77,29 +79,37 @@ final class OnboardingCopyTests: XCTestCase {
         }
     }
 
-    // MARK: - 第 5 屏文案
+    // MARK: - 「怎么用」那一屏的文案
 
     /// 那句解释必须把边界说清：听写在本机、不需要 Key；Key 只多润色与按住说指令
-    func testAIExplanationStatesWhatAKeyBuys() {
+    func testUsageExplanationStatesWhatAKeyBuys() {
         L10n.shared.language = .zh
-        let zh = OnboardingCopy.aiExplanation
+        let zh = OnboardingCopy.usageExplanation
         XCTAssertTrue(zh.contains("本机") || zh.contains("这台 Mac"), zh)
         XCTAssertTrue(zh.contains("润色") && zh.contains("指令"), zh)
 
         L10n.shared.language = .en
-        let en = OnboardingCopy.aiExplanation
+        let en = OnboardingCopy.usageExplanation
         XCTAssertTrue(en.contains("without a key"), en)
         XCTAssertTrue(en.lowercased().contains("polish"), en)
         XCTAssertTrue(en.lowercased().contains("hold-to-command"), en)
     }
 
     /// 标题要写明这一步是可选的——不写就是把一道可跳过的屏做成了关卡
-    func testAIHeadlineSaysItIsOptional() {
+    func testUsageHeadlineSaysItIsOptional() {
         L10n.shared.language = .zh
-        XCTAssertTrue(OnboardingCopy.aiHeadline.contains("可选"), OnboardingCopy.aiHeadline)
+        XCTAssertTrue(OnboardingCopy.usageHeadline.contains("可选"), OnboardingCopy.usageHeadline)
         L10n.shared.language = .en
-        XCTAssertTrue(OnboardingCopy.aiHeadline.lowercased().contains("optional"),
-                      OnboardingCopy.aiHeadline)
+        XCTAssertTrue(OnboardingCopy.usageHeadline.lowercased().contains("optional"),
+                      OnboardingCopy.usageHeadline)
+    }
+
+    /// 模型那一句要说清两件事：默认已经替他选好了，而且这不是不可回头的决定
+    func testModelHintSaysItIsChangeableLater() {
+        L10n.shared.language = .zh
+        XCTAssertTrue(OnboardingCopy.modelHint.contains("设置"), OnboardingCopy.modelHint)
+        L10n.shared.language = .en
+        XCTAssertTrue(OnboardingCopy.modelHint.contains("Settings"), OnboardingCopy.modelHint)
     }
 
     /// 跳过那句必须是"没关系"的口吻，不能留一句像警告的话
@@ -113,8 +123,8 @@ final class OnboardingCopyTests: XCTestCase {
     /// 这一屏的每一句在英文界面下都不许夹中文
     func testEveryOnboardingCopyIsCleanInEnglish() {
         L10n.shared.language = .en
-        let all = [OnboardingCopy.aiHeadline, OnboardingCopy.aiExplanation,
-                   OnboardingCopy.aiSkipReassurance, OnboardingCopy.aiQualityHint,
+        let all = [OnboardingCopy.usageHeadline, OnboardingCopy.usageExplanation,
+                   OnboardingCopy.aiSkipReassurance, OnboardingCopy.modelHint,
                    OnboardingCopy.doneAIStatus(ready: true, hotkey: "⌥"),
                    OnboardingCopy.doneAIStatus(ready: false, hotkey: "⌥")]
         for copy in all {
@@ -126,11 +136,11 @@ final class OnboardingCopyTests: XCTestCase {
     /// 中英两侧不能是同一串（漏写一侧的典型表现）
     func testCopyActuallyDiffersBetweenLanguages() {
         L10n.shared.language = .zh
-        let zh = [OnboardingCopy.aiHeadline, OnboardingCopy.aiExplanation,
-                  OnboardingCopy.aiSkipReassurance, OnboardingCopy.aiQualityHint]
+        let zh = [OnboardingCopy.usageHeadline, OnboardingCopy.usageExplanation,
+                  OnboardingCopy.aiSkipReassurance, OnboardingCopy.modelHint]
         L10n.shared.language = .en
-        let en = [OnboardingCopy.aiHeadline, OnboardingCopy.aiExplanation,
-                  OnboardingCopy.aiSkipReassurance, OnboardingCopy.aiQualityHint]
+        let en = [OnboardingCopy.usageHeadline, OnboardingCopy.usageExplanation,
+                  OnboardingCopy.aiSkipReassurance, OnboardingCopy.modelHint]
         for (a, b) in zip(zh, en) { XCTAssertNotEqual(a, b, a) }
     }
 }

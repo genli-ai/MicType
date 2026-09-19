@@ -411,7 +411,7 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
         let handle = TranscriptionHandle()
         guard isModelAvailable else {
             DispatchQueue.main.async {
-                completion(Self.failed(MTError(tr("Qwen 模型未下载，请在 设置 → 识别 中下载", "Qwen model not downloaded — see Settings → Recognition"))))
+                completion(Self.failed(MTError(tr("Qwen 模型未下载，请在 设置 → 听写 中下载", "Qwen model not downloaded — see Settings → Dictation"))))
             }
             return handle
         }

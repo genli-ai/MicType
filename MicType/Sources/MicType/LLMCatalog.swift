@@ -11,23 +11,23 @@ enum LLMCatalog {
 
     // MARK: - 预设与默认
 
-    /// OpenAI 快选（2026-09 在售主力）。luna 成本敏感、terra 平衡、sol 旗舰、astra 最强。
-    static let openaiPresets = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"]
+    /// 各档服务商的**默认型号**。4.0.1 起只有一个默认值：润色和指令用同一个，
+    /// 而且一律是这家最主流的那个好模型（用户 2026-09-19 拍板：默认绝不能是便宜的那一档）。
+    ///
+    /// 4.0.0 是「润色用最便宜的、指令用贵一档」——省下来的钱是真的，但代价是**默认体验**
+    /// 由最弱的那个模型代表，而绝大多数人从不改默认值。想省钱的人在「模型」下拉里选得到。
+    static let openaiDefaultModel = "gpt-5.6-sol"
+    static let deepseekDefaultModel = "deepseek-v4-pro"
+    static let qwenDefaultModel = "qwen3.8-max"
+
+    /// OpenAI 快选（2026-09 在售主力）。顺序= 下拉里的顺序：强的在前。
+    static let openaiPresets = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
     /// DeepSeek 快选。老的 deepseek-v4-flash / deepseek-chat / deepseek-reasoner 已全部下线（见迁移）。
-    static let deepseekPresets = ["deepseek-flash", "deepseek-v4-pro"]
+    static let deepseekPresets = ["deepseek-v4-pro", "deepseek-flash"]
     /// Qwen（DashScope 兼容模式）快选。3.8 是当前代；`qwen-flash` / `qwen-plus` / `qwen-max`
     /// 是阿里维护的稳定别名——换代时它们自己指向新模型，怕过时的用户直接用别名最省心。
-    static let qwenPresets = ["qwen3.8-flash", "qwen3.8-max", "qwen3.7-plus",
-                             "qwen-flash", "qwen-plus", "qwen-max"]
-
-    /// 润色高频、只是改写 → 用最便宜的一档；指令低频、要质量 → 往上一档。
-    /// （旗舰放在每句话都要跑的润色路径上是纯烧钱：luna 与 sol 的输入价差 20 倍。）
-    static let openaiPolishDefault = "gpt-5.6-luna"
-    static let openaiCommandDefault = "gpt-5.6-terra"
-    static let deepseekPolishDefault = "deepseek-flash"
-    static let deepseekCommandDefault = "deepseek-v4-pro"
-    static let qwenPolishDefault = "qwen3.8-flash"
-    static let qwenCommandDefault = "qwen3.8-max"
+    static let qwenPresets = ["qwen3.8-max", "qwen3.7-plus", "qwen3.8-flash",
+                             "qwen-max", "qwen-plus", "qwen-flash"]
 
     static func presets(for provider: LLMProvider) -> [String] {
         switch provider {
@@ -40,86 +40,90 @@ enum LLMCatalog {
         }
     }
 
-    static func polishDefault(for provider: LLMProvider) -> String {
+    /// 这一档服务商的默认型号（润色与指令同一个）。"" = 这一档没有内置型号。
+    static func defaultModel(for provider: LLMProvider) -> String {
         switch provider {
-        case .openai: return openaiPolishDefault
-        case .deepseek: return deepseekPolishDefault
-        case .qwen: return qwenPolishDefault
+        case .openai: return openaiDefaultModel
+        case .deepseek: return deepseekDefaultModel
+        case .qwen: return qwenDefaultModel
         case .custom, .local: return ""
         }
     }
 
-    static func commandDefault(for provider: LLMProvider) -> String {
+    /// 润色 / 指令的默认值现在是同一个。两个函数都留着，是因为调用方问的是**不同的键**
+    /// （chatModel vs openaiCommandModel），读起来比到处写 defaultModel 清楚。
+    static func polishDefault(for provider: LLMProvider) -> String { defaultModel(for: provider) }
+    static func commandDefault(for provider: LLMProvider) -> String { defaultModel(for: provider) }
+
+    // MARK: - 型号选单（界面上唯一的型号决定）
+
+    /// 「模型」下拉里的一项：型号名 + 一句大白话标签。
+    /// 标签可以是空串——同一档里并列的第二、第三个型号不必每个都贴一个词。
+    struct ModelChoice: Equatable {
+        let id: String
+        let note: String
+    }
+
+    /// **整个产品里唯一一张「服务商 → 可选型号」表**：型号换代只改这里（以及上面的默认值），
+    /// 界面层一个型号名都不认识。空数组 = 这一档没有内置型号（自定义端点 / 本机模型的型号名
+    /// 只有用户自己知道），界面据此把下拉整个藏掉，而不是摆一个点了没反应的控件。
+    ///
+    /// 4.0.0 这里是「快 / 最好」两档。用户 2026-09-19 拍板换成型号本身：
+    /// 「快」「最好」这种词既没说清花多少钱，也不让想指定型号的人指定。
+    static func modelMenu(for provider: LLMProvider) -> [ModelChoice] {
         switch provider {
-        case .openai: return openaiCommandDefault
-        case .deepseek: return deepseekCommandDefault
-        case .qwen: return qwenCommandDefault
-        case .custom, .local: return ""
+        case .openai:
+            return [ModelChoice(id: "gpt-6-astra", note: tr("最强", "Strongest")),
+                    ModelChoice(id: openaiDefaultModel, note: tr("旗舰（默认）", "Flagship (default)")),
+                    ModelChoice(id: "gpt-5.6-terra", note: tr("均衡", "Balanced")),
+                    ModelChoice(id: "gpt-5.6-luna", note: tr("省钱", "Cheapest"))]
+        case .deepseek:
+            return [ModelChoice(id: deepseekDefaultModel, note: tr("默认", "Default")),
+                    ModelChoice(id: "deepseek-flash", note: tr("快", "Fast"))]
+        case .qwen:
+            return [ModelChoice(id: qwenDefaultModel, note: tr("默认", "Default")),
+                    ModelChoice(id: "qwen3.7-plus", note: ""),
+                    ModelChoice(id: "qwen3.8-flash", note: tr("省钱", "Cheapest"))]
+        case .custom, .local:
+            return []
         }
     }
 
-    // MARK: - 质量二选一（快 / 最好）
-
-    /// 用户对「花多少钱换多好的结果」只做**一次**选择，选完写死两个型号字段。
-    /// 铁律：这不是运行时自动切换——MicType 永远不会替用户在两档之间跳。
-    enum QualityTier: String, CaseIterable {
-        case fast
-        case best
-
-        var displayName: String {
-            switch self {
-            case .fast: return tr("快", "Fast")
-            case .best: return tr("最好", "Best")
-            }
-        }
+    /// 下拉里显示的那一行（型号名永远在前：它才是要发出去的东西）
+    static func modelLabel(_ choice: ModelChoice) -> String {
+        choice.note.isEmpty ? choice.id : choice.id + " · " + choice.note
     }
 
-    /// 一档质量对应的两个型号（润色 + 指令）
-    struct ModelPair: Equatable {
-        let polish: String
-        let command: String
+    /// 选中一个型号要写回的键值（**润色与指令一起改**，纯函数）。
+    /// 空字典 = 型号名是空的，一个字节都不写。
+    static func modelWrites(provider: LLMProvider, model: String) -> [String: String] {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [:] }
+        let keys = modelKeys(for: provider)
+        return [keys.polish: trimmed, keys.command: trimmed]
     }
 
-    /// **整个产品里唯一一张「档位 → 型号」表**：型号换代只改这里（以及上面的默认值常量），
-    /// 界面层一个型号名都不认识。nil = 这一档没有内置型号可推荐（自定义端点 / 本机模型的
-    /// 型号名只有用户自己知道），界面据此把质量选择器整个藏掉，而不是摆一个点了没反应的控件。
-    static func models(provider: LLMProvider, tier: QualityTier) -> ModelPair? {
-        switch (provider, tier) {
-        // 「快」这一档 == 各服务商的出厂默认：干净安装打开设置页看到的就是「快」，不是空白
-        case (.openai, .fast): return ModelPair(polish: openaiPolishDefault, command: openaiCommandDefault)
-        case (.openai, .best): return ModelPair(polish: "gpt-5.6-terra", command: "gpt-5.6-sol")
-        case (.deepseek, .fast): return ModelPair(polish: deepseekPolishDefault, command: deepseekCommandDefault)
-        // DeepSeek 只有两个型号：最好档把润色也抬到 pro（润色路径会关掉它的思考模式，不至于慢到没法用）
-        case (.deepseek, .best): return ModelPair(polish: "deepseek-v4-pro", command: "deepseek-v4-pro")
-        case (.qwen, .fast): return ModelPair(polish: qwenPolishDefault, command: qwenCommandDefault)
-        case (.qwen, .best): return ModelPair(polish: "qwen3.8-max", command: "qwen3.8-max")
-        case (.custom, _), (.local, _): return nil
-        }
-    }
-
-    /// 当前这两个型号落在哪一档（纯函数）。nil = 两档都不是——**用户自己在高级区挑过型号**，
-    /// 界面必须如实显示「自选」，绝不能把选择器硬钉在某一档上骗他（那等于偷偷改回我们的型号）。
-    static func tier(provider: LLMProvider, polish: String, command: String) -> QualityTier? {
+    /// 当前这两个字段落在选单的哪一项上。nil = 两个字段不一样（在「高级」里分开设过），
+    /// 或者是一个选单里没有的型号——界面据此显示「自定义…」，绝不把用户钉回我们的某一项。
+    static func selectedMenuModel(provider: LLMProvider, polish: String, command: String) -> String? {
         let p = polish.trimmingCharacters(in: .whitespacesAndNewlines)
         let c = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        return QualityTier.allCases.first { tier in
-            guard let pair = models(provider: provider, tier: tier) else { return false }
-            return pair.polish == p && pair.command == c
-        }
+        guard !p.isEmpty, p == c else { return nil }
+        return modelMenu(for: provider).contains { $0.id == p } ? p : nil
     }
 
-    /// 质量选择器下面那句「它到底换了什么」。写出真实型号名：藏起来只会让人不敢点。
-    /// nil = 这个服务商没有内置两档（选择器本身也不显示）。
-    static func qualitySummary(provider: LLMProvider) -> String? {
-        guard let fast = models(provider: provider, tier: .fast),
-              let best = models(provider: provider, tier: .best) else { return nil }
-        return tr("「快」= 润色 \(fast.polish) + 指令 \(fast.command)；「最好」= 润色 \(best.polish) + 指令 \(best.command)。选一下就同时改掉这两个型号，想自己挑就去「高级」。",
-                  "Fast = \(fast.polish) for polish and \(fast.command) for commands. Best = \(best.polish) and \(best.command). Picking a tier writes both model fields - pick your own under Advanced.")
+    /// 下拉下面那一句。写出默认型号名：藏起来只会让人不敢点。
+    /// nil = 这个服务商没有内置型号（下拉本身也不显示）。
+    static func modelMenuSummary(provider: LLMProvider) -> String? {
+        let fallback = defaultModel(for: provider)
+        guard !fallback.isEmpty else { return nil }
+        return tr("润色和指令都用这一个型号（默认 \(fallback)，最强的主流档）。想分开设、或用别的型号，去下面的「高级」。",
+                  "Both polish and commands use this one model (default \(fallback), the strongest mainstream tier). Split them, or name another model, under Advanced.")
     }
 
     /// 某个服务商的「润色型号 / 指令型号」分别存在哪两个 UserDefaults 键上。
-    /// 为什么值得一个纯函数：选一下质量档就要**同时**改这两个字段，而设置页与引导页各写一份
-    /// switch 的话，早晚有一处在加服务商时漏掉一档——漏掉的表现是「点了质量没反应」。
+    /// 为什么值得一个纯函数：在「模型」下拉里选一下就要**同时**改这两个字段，而设置页与引导页
+    /// 各写一份 switch 的话，早晚有一处在加服务商时漏掉一档——漏掉的表现是「选了没反应」。
     static func modelKeys(for provider: LLMProvider) -> (polish: String, command: String) {
         switch provider {
         case .openai: return (SettingsKeys.chatModel, SettingsKeys.openaiCommandModel)
@@ -128,14 +132,6 @@ enum LLMCatalog {
         case .custom: return (SettingsKeys.customModel, SettingsKeys.customCommandModel)
         case .local: return (SettingsKeys.localModel, SettingsKeys.localCommandModel)
         }
-    }
-
-    /// 选中某一档质量要写回的键值（纯函数）。
-    /// 空字典 = 这个服务商没有内置两档（自定义端点 / 本机模型），一个字节都不该写。
-    static func qualityWrites(provider: LLMProvider, tier: QualityTier) -> [String: String] {
-        guard let pair = models(provider: provider, tier: tier) else { return [:] }
-        let keys = modelKeys(for: provider)
-        return [keys.polish: pair.polish, keys.command: pair.command]
     }
 
     // MARK: - 配置齐了没有
@@ -493,11 +489,20 @@ enum LLMCatalog {
     /// 同理，指令型号的历史自动默认只有 gpt-5.4-mini（和没存过）。
     private static let autoCommandModels: Set<String?> = [nil, "gpt-5.4-mini"]
     /// DeepSeek 这几个型号**已经不存在了**（调用直接 404/400），所以无论是不是用户手选的都得改名。
+    /// 目标型号名在这里写死、不跟着默认值走：这一步是「把死型号换成最接近的活型号」，
+    /// 不是「换成我们推荐的那个」——默认值以后再变，也不该悄悄改掉这条等价关系。
     private static let deadDeepSeekModels: [String: String] = [
-        "deepseek-v4-flash": deepseekPolishDefault,
-        "deepseek-chat": deepseekPolishDefault,
-        "deepseek-reasoner": deepseekCommandDefault,
+        "deepseek-v4-flash": "deepseek-flash",
+        "deepseek-chat": "deepseek-flash",
+        "deepseek-reasoner": "deepseek-v4-pro",
     ]
+
+    /// 读一条「当前存着什么」。nil / 空白 = 没存过（用的是注册默认值）。
+    private static func storedValue(_ current: [String: String?], _ key: String) -> String? {
+        guard let stored = current[key], let raw = stored else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 
     /// 迁移规则（**纯函数**，便于单测钉死「手选过的一个都不动」这条铁律）。
     /// 入参：当前存着什么（key = SettingsKeys，值为 nil 表示没存过 / 用的是注册默认值）。
@@ -505,26 +510,21 @@ enum LLMCatalog {
     static func migrationTo56(current: [String: String?]) -> [String: String] {
         var writes: [String: String] = [:]
 
-        func value(_ key: String) -> String? {
-            guard let stored = current[key], let raw = stored else { return nil }
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
-        }
+        func value(_ key: String) -> String? { storedValue(current, key) }
 
         // OpenAI：只搬还停在自动默认上的用户。手选过 gpt-5.4 / gpt-5.4-mini 当润色的人
         // 是自己做的决定，替他改掉就是「替用户做主」——铁律不许。
         if autoPolishModels.contains(value(SettingsKeys.chatModel)) {
-            writes[SettingsKeys.chatModel] = openaiPolishDefault
+            writes[SettingsKeys.chatModel] = defaultModel(for: .openai)
         }
         if autoCommandModels.contains(value(SettingsKeys.openaiCommandModel)) {
-            writes[SettingsKeys.openaiCommandModel] = openaiCommandDefault
+            writes[SettingsKeys.openaiCommandModel] = defaultModel(for: .openai)
         }
 
         // DeepSeek：没存过 → 新默认；存着已下线的型号 → 按等价关系改名（不改就是每次调用都失败）。
-        for (key, fallback) in [(SettingsKeys.deepseekModel, deepseekPolishDefault),
-                                (SettingsKeys.deepseekCommandModel, deepseekCommandDefault)] {
+        for key in [SettingsKeys.deepseekModel, SettingsKeys.deepseekCommandModel] {
             guard let current = value(key) else {
-                writes[key] = fallback
+                writes[key] = defaultModel(for: .deepseek)
                 continue
             }
             if let renamed = deadDeepSeekModels[current.lowercased()] {
@@ -532,6 +532,38 @@ enum LLMCatalog {
             }
         }
 
+        return writes
+    }
+
+    // MARK: - 一次性迁移到「默认用最好的型号」（4.0.1）
+
+    /// 4.0.1 迁移标记。写在 UserDefaults 里，只跑一次。
+    static let bestDefaultMigrationFlagKey = "migratedToBestDefault"
+
+    /// 4.0.0 由 **MicType 自己**写进去的那几对组合（润色便宜一档、指令贵一档）。
+    /// 这几对不是用户挑的，是出厂默认或上一次迁移的产物——所以可以整体抬到新默认；
+    /// 只要有一边对不上，就说明用户动过手，一个字都不碰。
+    private static let autoPairs40: [LLMProvider: (polish: String, command: String)] = [
+        .openai: ("gpt-5.6-luna", "gpt-5.6-terra"),
+        .deepseek: ("deepseek-flash", "deepseek-v4-pro"),
+        .qwen: ("qwen3.8-flash", "qwen3.8-max"),
+    ]
+
+    /// 迁移规则（**纯函数**，单测钉死「手选过的一个都不动」这条铁律）。
+    /// 入参：当前存着什么（key = SettingsKeys，值为 nil / 空白表示没存过）。
+    /// 返回：需要写回的键值；空字典 = 什么都不用改。
+    static func migrationToBestDefault(current: [String: String?]) -> [String: String] {
+        var writes: [String: String] = [:]
+        for (provider, auto) in autoPairs40 {
+            let keys = modelKeys(for: provider)
+            // 没存过 = 出厂默认，和"停在自动默认上"是同一件事
+            let polish = storedValue(current, keys.polish) ?? auto.polish
+            let command = storedValue(current, keys.command) ?? auto.command
+            guard polish == auto.polish, command == auto.command else { continue }
+            let target = defaultModel(for: provider)
+            if polish != target { writes[keys.polish] = target }
+            if command != target { writes[keys.command] = target }
+        }
         return writes
     }
 

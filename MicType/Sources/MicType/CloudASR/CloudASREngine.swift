@@ -296,8 +296,8 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
         }
 
         guard client.hasCredentials else {
-            finish(.failure(CloudASRFailure(tr("云端识别还没填 API Key（设置 → 识别）",
-                                               "Cloud recognition has no API key yet (Settings → Recognition)"))))
+            finish(.failure(CloudASRFailure(tr("云端识别还没填 API Key（设置 → AI）",
+                                               "Cloud recognition has no API key yet (Settings → AI)"))))
             return handle
         }
         guard !samples.isEmpty else {

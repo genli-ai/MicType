@@ -35,8 +35,9 @@ enum RecognitionEngineChoice: String, CaseIterable {
         }
     }
 
-    /// 分段控件上的名字（三档并排，写不下长句）
-    var segmentName: String {
+    /// 这一档的名字。4.0.1 起界面上没有「识别引擎」选择器了（云端识别只剩 AI 页上
+    /// 阿里云那一个开关），所以这串只出现在设置导入摘要、日志与诊断信息里。
+    var displayName: String {
         switch self {
         case .local: return tr("本地 Qwen3-ASR（默认）", "On-device Qwen3-ASR (default)")
         case .cloudAlibaba: return tr("云端 · 阿里云", "Cloud · Alibaba")
@@ -219,7 +220,8 @@ enum RecognitionEngineReadiness: Equatable {
 
     var isReady: Bool { self == .ready }
 
-    /// 悬浮窗上那句话。云端两档都明确指向 设置 → 识别（胶囊按钮会把那一页直接打开）。
+    /// 悬浮窗上那句话。云端两档都明确指向 设置 → AI（胶囊按钮会把那一页直接打开）：
+    /// 4.0.1 起云端识别的开关和那把 Key 都在那一页上。
     var message: String {
         switch self {
         case .ready:
@@ -229,8 +231,8 @@ enum RecognitionEngineReadiness: Equatable {
             return tr("识别模型未下载——已为你打开下载页",
                       "Speech model not downloaded - opening the download page")
         case .cloudKeyMissing(let provider):
-            return tr("当前用的是\(provider.displayName)，但还没填 API Key（设置 → 识别）",
-                      "Cloud recognition (\(provider.displayName)) has no API key yet (Settings → Recognition)")
+            return tr("当前用的是\(provider.displayName)，但还没填 API Key（设置 → AI）",
+                      "Cloud recognition (\(provider.displayName)) has no API key yet (Settings → AI)")
         }
     }
 

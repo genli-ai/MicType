@@ -19,7 +19,7 @@ final class DictationController {
     var onNeedSettings: (() -> Void)?
     /// 需要打开「设置 → AI」的回调（没配 Key 却按住说了指令时，悬浮窗上那个「去配置」胶囊）
     var onNeedAISettings: (() -> Void)?
-    /// 需要打开「设置 → 识别」的回调（选了云端引擎却没填 Key 时的「去设置」胶囊）
+    /// 需要打开「设置 → AI」的回调（开了云端识别却没填 Key 时的「去设置」胶囊）
     var onNeedRecognitionSettings: (() -> Void)?
 
     private let recorder = AudioRecorder()

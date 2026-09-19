@@ -42,89 +42,90 @@ final class AISetupTests: XCTestCase {
         }
     }
 
-    // MARK: - 质量二选一
+    // MARK: - 模型选单（4.0.1 起界面上唯一的型号决定）
 
-    /// 「快」这一档必须与出厂默认逐字相同——否则干净安装一打开设置页就显示「自选」，
-    /// 用户会以为自己动过什么
-    func testFastTierEqualsTheShippedDefaults() {
+    /// 每家的默认型号必须是**选单里的一项**，否则干净安装一打开设置页，
+    /// 下拉就停在「自定义…」上——用户会以为自己动过什么
+    func testDefaultModelIsInsideTheMenu() {
         for provider in [LLMProvider.openai, .deepseek, .qwen] {
-            let pair = LLMCatalog.models(provider: provider, tier: .fast)
-            XCTAssertEqual(pair?.polish, LLMCatalog.polishDefault(for: provider), provider.rawValue)
-            XCTAssertEqual(pair?.command, LLMCatalog.commandDefault(for: provider), provider.rawValue)
+            let menu = LLMCatalog.modelMenu(for: provider)
+            XCTAssertTrue(menu.contains { $0.id == LLMCatalog.defaultModel(for: provider) },
+                          provider.rawValue)
         }
     }
 
-    /// 两档必须真的不一样，而且「最好」的型号要在快选清单里（下拉框里看得见当前用的那个）
-    func testBestTierDiffersAndStaysInsideThePresets() {
+    /// 铁律（用户 2026-09-19 拍板）：默认永远是这家最好的主流型号，**绝不是便宜的那一档**。
+    /// 这三个名字写死在这里——改默认值必须先改这条测试，也就必须先过一遍脑子。
+    func testDefaultsAreTheStrongestMainstreamModels() {
+        XCTAssertEqual(LLMCatalog.defaultModel(for: .openai), "gpt-5.6-sol")
+        XCTAssertEqual(LLMCatalog.defaultModel(for: .deepseek), "deepseek-v4-pro")
+        XCTAssertEqual(LLMCatalog.defaultModel(for: .qwen), "qwen3.8-max")
+    }
+
+    /// 润色与指令共用同一个默认值：4.0.0 的"润色便宜、指令贵"已经收掉了
+    func testPolishAndCommandShareOneDefault() {
+        for provider in LLMProvider.allCases {
+            XCTAssertEqual(LLMCatalog.polishDefault(for: provider),
+                           LLMCatalog.commandDefault(for: provider), provider.rawValue)
+        }
+    }
+
+    /// 选单里的型号必须互不重复，而且每一项都能在「高级」的快选清单里找到
+    /// （下拉里选中的那个，在高级区必须看得见）
+    func testMenuModelsAreDistinctAndPresent() {
         for provider in [LLMProvider.openai, .deepseek, .qwen] {
-            guard let fast = LLMCatalog.models(provider: provider, tier: .fast),
-                  let best = LLMCatalog.models(provider: provider, tier: .best) else {
-                return XCTFail("no tier table for \(provider.rawValue)")
+            let ids = LLMCatalog.modelMenu(for: provider).map(\.id)
+            XCTAssertEqual(Set(ids).count, ids.count, provider.rawValue)
+            for id in ids {
+                XCTAssertTrue(LLMCatalog.presets(for: provider).contains(id), id)
             }
-            XCTAssertNotEqual(fast, best, provider.rawValue)
-            let presets = LLMCatalog.presets(for: provider)
-            XCTAssertTrue(presets.contains(best.polish), best.polish)
-            XCTAssertTrue(presets.contains(best.command), best.command)
         }
     }
 
-    /// OpenAI 的两档按调研结论钉死：快 = luna/terra，最好 = terra/sol
-    func testOpenAITierTableIsExactlyTheResearchedPairs() {
-        XCTAssertEqual(LLMCatalog.models(provider: .openai, tier: .fast),
-                       LLMCatalog.ModelPair(polish: "gpt-5.6-luna", command: "gpt-5.6-terra"))
-        XCTAssertEqual(LLMCatalog.models(provider: .openai, tier: .best),
-                       LLMCatalog.ModelPair(polish: "gpt-5.6-terra", command: "gpt-5.6-sol"))
-    }
-
-    /// 自定义端点 / 本机模型没有内置型号：给不出两档就别硬给（界面据此把选择器藏掉）
-    func testCustomAndLocalHaveNoTierTable() {
+    /// 其他兼容服务 / 本机模型没有内置型号：给不出选单就别硬给（界面据此把下拉藏掉）
+    func testCustomAndLocalHaveNoModelMenu() {
         for provider in [LLMProvider.custom, .local] {
-            XCTAssertNil(LLMCatalog.models(provider: provider, tier: .fast))
-            XCTAssertNil(LLMCatalog.models(provider: provider, tier: .best))
-            XCTAssertNil(LLMCatalog.qualitySummary(provider: provider))
+            XCTAssertTrue(LLMCatalog.modelMenu(for: provider).isEmpty, provider.rawValue)
+            XCTAssertNil(LLMCatalog.modelMenuSummary(provider: provider))
+            XCTAssertTrue(LLMCatalog.defaultModel(for: provider).isEmpty, provider.rawValue)
         }
     }
 
-    func testTierDetectionRoundTripsBothWays() {
-        for provider in [LLMProvider.openai, .deepseek, .qwen] {
-            for tier in LLMCatalog.QualityTier.allCases {
-                guard let pair = LLMCatalog.models(provider: provider, tier: tier) else {
-                    return XCTFail("no tier table for \(provider.rawValue)")
-                }
-                XCTAssertEqual(LLMCatalog.tier(provider: provider,
-                                               polish: pair.polish, command: pair.command),
-                               tier, "\(provider.rawValue)/\(tier.rawValue)")
-            }
-        }
-    }
-
-    /// 用户自己挑过型号 → 必须如实报 nil（界面显示「自选」）。
-    /// 把他钉回某一档等于下次点别处时悄悄替他改型号——铁律不许。
-    func testHandPickedModelsAreReportedAsCustom() {
-        XCTAssertNil(LLMCatalog.tier(provider: .openai, polish: "gpt-5.4", command: "gpt-5.6-sol"))
-        XCTAssertNil(LLMCatalog.tier(provider: .openai, polish: "gpt-5.6-luna", command: "gpt-6-astra"))
-        XCTAssertNil(LLMCatalog.tier(provider: .custom, polish: "kimi-k2", command: "kimi-k2"))
-    }
-
-    /// 前后空白不该把用户从「快」踢成「自选」
-    func testTierDetectionIgnoresSurroundingWhitespace() {
-        XCTAssertEqual(LLMCatalog.tier(provider: .openai,
-                                       polish: "  gpt-5.6-luna ", command: "\ngpt-5.6-terra"),
-                       .fast)
+    /// 下拉每一行都要先写型号名（那才是真正发出去的东西），标签只是跟在后面的大白话
+    func testMenuLabelLeadsWithTheModelID() {
+        L10n.shared.language = .zh
+        let flagship = LLMCatalog.modelMenu(for: .openai).first { $0.id == "gpt-5.6-sol" }
+        XCTAssertNotNil(flagship)
+        XCTAssertTrue(LLMCatalog.modelLabel(flagship!).hasPrefix("gpt-5.6-sol"),
+                      LLMCatalog.modelLabel(flagship!))
+        // 没有标签的那一项就只显示型号名，不留一个孤零零的分隔点
+        XCTAssertEqual(LLMCatalog.modelLabel(LLMCatalog.ModelChoice(id: "qwen3.7-plus", note: "")),
+                       "qwen3.7-plus")
     }
 
     /// 说明文字必须点名真实型号（藏起来反而让人不敢点）
-    func testQualitySummaryNamesTheRealModels() {
+    func testMenuSummaryNamesTheDefaultModel() {
         L10n.shared.language = .zh
-        let zh = LLMCatalog.qualitySummary(provider: .openai) ?? ""
-        XCTAssertTrue(zh.contains("gpt-5.6-luna") && zh.contains("gpt-5.6-sol"), zh)
+        let zh = LLMCatalog.modelMenuSummary(provider: .openai) ?? ""
+        XCTAssertTrue(zh.contains("gpt-5.6-sol"), zh)
         L10n.shared.language = .en
-        let en = LLMCatalog.qualitySummary(provider: .openai) ?? ""
-        XCTAssertTrue(en.contains("gpt-5.6-terra"), en)
+        let en = LLMCatalog.modelMenuSummary(provider: .deepseek) ?? ""
+        XCTAssertTrue(en.contains("deepseek-v4-pro"), en)
         XCTAssertFalse(containsCJKOrFullWidth(en), en)
     }
 
-    // MARK: - 型号存在哪两个键上 / 质量档写回什么
+    /// 英文界面下选单里的标签同样不许夹中文或全角标点
+    func testMenuNotesAreCleanInEnglish() {
+        L10n.shared.language = .en
+        for provider in [LLMProvider.openai, .deepseek, .qwen] {
+            for choice in LLMCatalog.modelMenu(for: provider) {
+                XCTAssertFalse(containsCJKOrFullWidth(LLMCatalog.modelLabel(choice)),
+                               LLMCatalog.modelLabel(choice))
+            }
+        }
+    }
+
+    // MARK: - 型号存在哪两个键上 / 选一个型号写回什么
 
     /// 五档服务商各有独立的两个键，十个键必须互不相同：
     /// 撞一个的后果是换服务商时把另一档的型号改掉（用户完全看不出为什么突然 404）
@@ -149,44 +150,107 @@ final class AISetupTests: XCTestCase {
         XCTAssertEqual(LLMCatalog.modelKeys(for: .local).command, SettingsKeys.localCommandModel)
     }
 
-    /// 选一档质量 = 同时写两个字段，值必须与那一档的型号表逐字相同
-    func testQualityWritesBothModelFieldsForEveryTier() {
+    /// 在下拉里选一个型号 = **同时**写润色和指令两个字段（用户只做一个决定）
+    func testSelectingAModelWritesBothFields() {
         for provider in [LLMProvider.openai, .deepseek, .qwen] {
-            for tier in LLMCatalog.QualityTier.allCases {
-                let writes = LLMCatalog.qualityWrites(provider: provider, tier: tier)
-                guard let pair = LLMCatalog.models(provider: provider, tier: tier) else {
-                    return XCTFail("no tier table for \(provider.rawValue)")
-                }
+            for choice in LLMCatalog.modelMenu(for: provider) {
+                let writes = LLMCatalog.modelWrites(provider: provider, model: choice.id)
                 let keys = LLMCatalog.modelKeys(for: provider)
                 XCTAssertEqual(writes.count, 2, provider.rawValue)
-                XCTAssertEqual(writes[keys.polish], pair.polish)
-                XCTAssertEqual(writes[keys.command], pair.command)
+                XCTAssertEqual(writes[keys.polish], choice.id)
+                XCTAssertEqual(writes[keys.command], choice.id)
             }
         }
     }
 
-    /// 写回之后必须落回同一档（否则界面会立刻显示「自选」，像刚点的那一下没生效）
-    func testQualityWritesRoundTripBackToTheSameTier() {
+    /// 写回之后下拉必须落回同一项（否则界面会立刻显示「自定义…」，像刚点的那一下没生效）
+    func testModelWritesRoundTripBackToTheSameMenuItem() {
         for provider in [LLMProvider.openai, .deepseek, .qwen] {
-            for tier in LLMCatalog.QualityTier.allCases {
-                let writes = LLMCatalog.qualityWrites(provider: provider, tier: tier)
+            for choice in LLMCatalog.modelMenu(for: provider) {
+                let writes = LLMCatalog.modelWrites(provider: provider, model: choice.id)
                 let keys = LLMCatalog.modelKeys(for: provider)
-                XCTAssertEqual(LLMCatalog.tier(provider: provider,
-                                               polish: writes[keys.polish] ?? "",
-                                               command: writes[keys.command] ?? ""),
-                               tier, "\(provider.rawValue)/\(tier.rawValue)")
+                XCTAssertEqual(LLMCatalog.selectedMenuModel(provider: provider,
+                                                            polish: writes[keys.polish] ?? "",
+                                                            command: writes[keys.command] ?? ""),
+                               choice.id, provider.rawValue)
             }
         }
     }
 
-    /// 没有内置型号的两档一个字节都不写：写一个猜出来的型号名进去就是替用户做主
-    func testQualityWritesNothingWithoutABuiltInTierTable() {
-        for provider in [LLMProvider.custom, .local] {
-            for tier in LLMCatalog.QualityTier.allCases {
-                XCTAssertTrue(LLMCatalog.qualityWrites(provider: provider, tier: tier).isEmpty,
-                              provider.rawValue)
-            }
+    /// 空型号名一个字节都不写：写一个空值进去等于把这一档弄瘫（发出去就是 400）
+    func testModelWritesNothingForAnEmptyName() {
+        XCTAssertTrue(LLMCatalog.modelWrites(provider: .openai, model: "   ").isEmpty)
+        XCTAssertTrue(LLMCatalog.modelWrites(provider: .local, model: "").isEmpty)
+        // 其他兼容服务 / 本机模型没有内置选单，但用户自己填的型号名照样要写回两个字段
+        let writes = LLMCatalog.modelWrites(provider: .local, model: " llama3.1:8b ")
+        XCTAssertEqual(writes[LLMCatalog.modelKeys(for: .local).polish], "llama3.1:8b")
+        XCTAssertEqual(writes[LLMCatalog.modelKeys(for: .local).command], "llama3.1:8b")
+    }
+
+    /// 在「高级」里把润色和指令分开设过 → 下拉必须如实显示「自定义…」（nil），
+    /// 绝不把他钉回某一项（那等于下次点别处时悄悄把他的指令模型改掉）
+    func testSplitOrUnknownModelsAreReportedAsCustom() {
+        XCTAssertNil(LLMCatalog.selectedMenuModel(provider: .openai,
+                                                  polish: "gpt-5.6-luna", command: "gpt-5.6-sol"))
+        XCTAssertNil(LLMCatalog.selectedMenuModel(provider: .openai,
+                                                  polish: "gpt-4.1", command: "gpt-4.1"))
+        XCTAssertNil(LLMCatalog.selectedMenuModel(provider: .openai, polish: "", command: ""))
+        XCTAssertNil(LLMCatalog.selectedMenuModel(provider: .local,
+                                                  polish: "llama3.1:8b", command: "llama3.1:8b"))
+    }
+
+    /// 前后空白不该把用户从某一项踢成「自定义…」
+    func testSelectedMenuModelIgnoresSurroundingWhitespace() {
+        XCTAssertEqual(LLMCatalog.selectedMenuModel(provider: .qwen,
+                                                    polish: "  qwen3.8-max ", command: "\nqwen3.8-max"),
+                       "qwen3.8-max")
+    }
+
+    // MARK: - 使用方式：一个决定落到哪几条设置上
+
+    /// 「只用本地」= 润色关掉 + 识别回本机。少写一条就是留下一条看不见的设置
+    /// （润色关了、音频还在往云端传）
+    func testLocalOnlyTurnsOffPolishAndCloudRecognition() {
+        let writes = AISetup.localOnlyWrites()
+        XCTAssertEqual(writes.polish, .off)
+        XCTAssertEqual(writes.engine, .local)
+        XCTAssertEqual(AISetup.mode(polishLevel: writes.polish, engine: writes.engine), .localOnly)
+    }
+
+    /// 两个条件都满足才算「只用本地」：只看润色的话，从菜单栏关掉润色、云端识别还开着的人
+    /// 会看到一页"只用本地"，而音频照传不误
+    func testCloudRecognitionAloneStillCountsAsUsingAI() {
+        XCTAssertEqual(AISetup.mode(polishLevel: .off, engine: .cloudAlibaba), .withAI)
+        XCTAssertEqual(AISetup.mode(polishLevel: .smart, engine: .local), .withAI)
+        XCTAssertEqual(AISetup.mode(polishLevel: .off, engine: .local), .localOnly)
+    }
+
+    /// 打开 AI 时润色要回到自适应档；本来就开着的话一个字都别动
+    func testEnablingAITurnsPolishBackOnWithoutOverridingIt() {
+        XCTAssertEqual(AISetup.polishAfterEnablingAI(.off), .smart)
+        XCTAssertEqual(AISetup.polishAfterEnablingAI(.smart), .smart)
+    }
+
+    /// 云端识别只有阿里云这一档，而且只有开关打开时才是云端
+    func testCloudRecognitionOnlyExistsUnderAlibaba() {
+        XCTAssertEqual(AISetup.engine(provider: .qwen, cloudRecognition: true), .cloudAlibaba)
+        XCTAssertEqual(AISetup.engine(provider: .qwen, cloudRecognition: false), .local)
+    }
+
+    /// **换走服务商就必须回本机**：不然用户换到 OpenAI 之后，音频还在往阿里云传，
+    /// 而界面上已经没有那个开关可以关了
+    func testSwitchingProviderAwayFromAlibabaGoesBackToLocal() {
+        for provider in [LLMProvider.openai, .deepseek, .custom, .local] {
+            XCTAssertEqual(AISetup.engine(provider: provider, cloudRecognition: true), .local,
+                           provider.rawValue)
         }
+    }
+
+    /// 4.0.0 的「云端 · OpenAI」识别：界面上没有这一档了，但设置里可能还存着 —— 必须当面说
+    func testLegacyOpenAICloudRecognitionIsSurfaced() {
+        XCTAssertTrue(AISetup.showsLegacyOpenAICloudNotice(engine: .cloudOpenAI))
+        XCTAssertFalse(AISetup.showsLegacyOpenAICloudNotice(engine: .cloudAlibaba))
+        XCTAssertFalse(AISetup.showsLegacyOpenAICloudNotice(engine: .local))
     }
 
     // MARK: - AI 配齐了没有

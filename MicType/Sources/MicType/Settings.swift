@@ -12,6 +12,14 @@ enum HotkeyChoice: String, CaseIterable {
     case leftControl
     case fn
 
+    /// 设置里**摆出来**的三个选项（用户 2026-09-19 拍板）。右侧三颗修饰键日常几乎不单独用，
+    /// 误触最少；Fn / 🌐 要先去系统设置里把系统的那一层关掉，左侧几颗天天参与 ⌘C、⌥← 这类组合键
+    /// ——两类都需要先给用户上一课，摆在选择器里等于把坑一起摆出来。
+    ///
+    /// `allCases` 仍然是全集：老设置里存着的左侧键 / Fn 照常工作、照常显示全名，
+    /// 只是不再推荐给新用户（选择器会把"他正在用的那一颗"额外列出来，见设置页）。
+    static let offered: [HotkeyChoice] = [.rightOption, .rightCommand, .rightControl]
+
     /// 修饰键的物理键码（左右两侧是不同的键码，所以"只用右侧"是真的只认右侧那颗）
     var keyCode: UInt16 {
         switch self {
@@ -78,16 +86,21 @@ enum HotkeyChoice: String, CaseIterable {
         }
     }
 
-    var shortSymbol: String {
+    /// 句子里用的键名：**永远是全名**，只是不带括号里的符号。
+    ///
+    /// 4.0.0 这里是 `R⌥` / `L⌘` 这种缩写，出现在菜单栏第一行和引导的每一句话里——
+    /// 用户 2026-09-19 实测反馈：没人看得懂那是"右 Option"。一个每天要照着做的动作，
+    /// 名字必须是能照着念出来的（「轻点 右 Option」），不能是只有作者认得的记号。
+    var plainName: String {
         switch self {
-        case .rightOption: return tr("右⌥", "R⌥")
-        case .rightCommand: return tr("右⌘", "R⌘")
-        case .rightControl: return tr("右⌃", "R⌃")
-        case .rightShift: return tr("右⇧", "R⇧")
-        case .leftOption: return tr("左⌥", "L⌥")
-        case .leftCommand: return tr("左⌘", "L⌘")
-        case .leftControl: return tr("左⌃", "L⌃")
-        case .fn: return tr("Fn", "Fn")
+        case .rightOption: return tr("右 Option", "Right Option")
+        case .rightCommand: return tr("右 Command", "Right Command")
+        case .rightControl: return tr("右 Control", "Right Control")
+        case .rightShift: return tr("右 Shift", "Right Shift")
+        case .leftOption: return tr("左 Option", "Left Option")
+        case .leftCommand: return tr("左 Command", "Left Command")
+        case .leftControl: return tr("左 Control", "Left Control")
+        case .fn: return tr("Fn / 🌐 地球键", "Fn / 🌐 Globe key")
         }
     }
 
@@ -146,35 +159,36 @@ enum LLMProvider: String, CaseIterable {
     /// 本机模型（Ollama / LM Studio）：完全不出网、不花钱、**可以不填 API Key**。
     case local
 
+    /// 用户认得的名字。`.qwen` 这一档 4.0.1 起一律叫**阿里云**：
+    /// 「Qwen」「DashScope」「百炼」是三个内部名字，而用户手里那把 Key 来自阿里云控制台。
     var displayName: String {
         switch self {
         case .openai: return "OpenAI (GPT)"
         case .deepseek: return "DeepSeek"
-        case .qwen: return "Qwen (DashScope)"
-        case .custom: return tr("自定义端点", "Custom endpoint")
+        case .qwen: return tr("阿里云", "Alibaba Cloud")
+        case .custom: return tr("其他 OpenAI 兼容服务", "Other OpenAI-compatible service")
         case .local: return tr("本机模型", "Local model")
         }
     }
 
-    /// 分段选择器里的名字：五档并排，displayName 那种带括号的长名会把控件挤爆。
-    /// 比 shortName 多留一点品牌信息（"GPT" 单独摆着认不出是 OpenAI）。
+    /// 分段选择器里的名字：三档并排，名字要短到不换行。
     var segmentName: String {
         switch self {
         case .openai: return "OpenAI"
         case .deepseek: return "DeepSeek"
-        case .qwen: return "Qwen"
-        case .custom: return tr("自定义", "Custom")
+        case .qwen: return tr("阿里云", "Alibaba Cloud")
+        case .custom: return tr("其他服务", "Other service")
         case .local: return tr("本机模型", "On-device")
         }
     }
 
-    /// 徽章那种放不下长名字的地方用短名（纯品牌名，中英通用）
+    /// 徽章那种放不下长名字的地方用短名
     var shortName: String {
         switch self {
         case .openai: return "GPT"
         case .deepseek: return "DeepSeek"
-        case .qwen: return "Qwen"
-        case .custom: return tr("自定义", "Custom")
+        case .qwen: return tr("阿里云", "Alibaba")
+        case .custom: return tr("其他", "Other")
         case .local: return tr("本机", "Local")
         }
     }
@@ -202,6 +216,62 @@ enum LLMProvider: String, CaseIterable {
         case .custom: return ""
         case .local: return LLMCatalog.LocalRuntime.ollama.baseURL
         }
+    }
+}
+
+// MARK: - 使用方式（AI 这一整页只有这一个决定）
+
+/// 「只用本地」还是「本地 + AI」。用户 2026-09-19 拍板：配置只做一个决定，
+/// 选了 AI 再选**一个**服务商、贴**一把** Key，别的全收进「高级」。
+enum AIUsageMode: String, CaseIterable {
+    case localOnly
+    case withAI
+
+    var displayName: String {
+        switch self {
+        case .localOnly: return tr("只用本地", "Local only")
+        case .withAI: return tr("本地 + AI", "Local + AI")
+        }
+    }
+}
+
+/// 「使用方式」这个决定要落到哪几条设置上。
+///
+/// 全是**纯函数**：这一层判错了不会崩，但会把音频送上云端（本该是本地档）、
+/// 或者让换过服务商的人还在往上一家传音频，所以每条都由单测钉住。
+enum AISetup {
+
+    /// 现在落在哪一档。**两个条件都满足才算「只用本地」**：润色关着、识别也在本机。
+    /// 只看润色档位的话，从菜单栏关掉润色的人会看到一页「只用本地」，而云端识别还开着
+    /// ——那就成了一条看不见的设置。
+    static func mode(polishLevel: PolishLevel, engine: RecognitionEngineChoice) -> AIUsageMode {
+        (polishLevel == .off && !engine.isCloud) ? .localOnly : .withAI
+    }
+
+    /// 选「只用本地」要写回什么：润色关掉、识别回本机（音频从此不出这台 Mac）。
+    static func localOnlyWrites() -> (polish: PolishLevel, engine: RecognitionEngineChoice) {
+        (.off, .local)
+    }
+
+    /// 选「本地 + AI」时润色该回到哪一档：关着就打开，已经开着就一个字都别动。
+    static func polishAfterEnablingAI(_ current: PolishLevel) -> PolishLevel {
+        current == .off ? .smart : current
+    }
+
+    /// 服务商 + 「识别也用云端」那个开关 → 识别引擎该是哪一档。
+    ///
+    /// 云端识别只剩阿里云这一档（OpenAI 的转写端点 4.0.1 起不再摆出来）。
+    /// 换到别的服务商就回本机：不然用户换完服务商，音频还在往阿里云传，而界面上
+    /// 已经没有那个开关可以关了。
+    static func engine(provider: LLMProvider, cloudRecognition: Bool) -> RecognitionEngineChoice {
+        (provider == .qwen && cloudRecognition) ? .cloudAlibaba : .local
+    }
+
+    /// 这台 Mac 还停在 4.0.0 的「云端 · OpenAI」识别上吗。
+    /// 界面上已经没有这一档了，但设置里可能还存着——必须当面告诉他，并给一颗回本机的按钮，
+    /// 绝不替他改（音频出不出这台 Mac 永远由用户自己点）。
+    static func showsLegacyOpenAICloudNotice(engine: RecognitionEngineChoice) -> Bool {
+        engine == .cloudOpenAI
     }
 }
 
@@ -280,9 +350,9 @@ final class Settings {
             SettingsKeys.polishEnabled: true,
             SettingsKeys.polishLevel: PolishLevel.smart.rawValue,
             SettingsKeys.openaiBaseURL: "https://api.openai.com/v1",
-            SettingsKeys.chatModel: LLMCatalog.openaiPolishDefault,
-            SettingsKeys.openaiCommandModel: LLMCatalog.openaiCommandDefault,
-            SettingsKeys.deepseekCommandModel: LLMCatalog.deepseekCommandDefault,
+            SettingsKeys.chatModel: LLMCatalog.defaultModel(for: .openai),
+            SettingsKeys.openaiCommandModel: LLMCatalog.defaultModel(for: .openai),
+            SettingsKeys.deepseekCommandModel: LLMCatalog.defaultModel(for: .deepseek),
             SettingsKeys.polishTemperature: 0.5,
             SettingsKeys.commandTemperature: 1.0,
             SettingsKeys.aboutMe: "",
@@ -312,13 +382,13 @@ final class Settings {
             SettingsKeys.dismissedModelUpgradeRepo: "",
             SettingsKeys.llmProvider: LLMProvider.openai.rawValue,
             SettingsKeys.deepseekBaseURL: LLMProvider.deepseek.defaultBaseURL,
-            SettingsKeys.deepseekModel: LLMCatalog.deepseekPolishDefault,
+            SettingsKeys.deepseekModel: LLMCatalog.defaultModel(for: .deepseek),
             SettingsKeys.qwenRegion: LLMCatalog.QwenRegion.international.rawValue,
             SettingsKeys.qwenWorkspaceID: "",
             SettingsKeys.qwenAPIHost: "",
             SettingsKeys.qwenResolvedHost: "",
-            SettingsKeys.qwenModel: LLMCatalog.qwenPolishDefault,
-            SettingsKeys.qwenCommandModel: LLMCatalog.qwenCommandDefault,
+            SettingsKeys.qwenModel: LLMCatalog.defaultModel(for: .qwen),
+            SettingsKeys.qwenCommandModel: LLMCatalog.defaultModel(for: .qwen),
             SettingsKeys.customBaseURL: "",
             SettingsKeys.customModel: "",
             SettingsKeys.customCommandModel: "",
@@ -355,7 +425,7 @@ final class Settings {
                          SettingsKeys.deepseekModel, SettingsKeys.deepseekCommandModel]
         if !modelKeys.contains(where: { storedDomain[$0] != nil }) {
             for flag in ["migratedModelToMini2", "migratedSplitModels", "migratedPolishTo55",
-                         LLMCatalog.migrationFlagKey] {
+                         LLMCatalog.migrationFlagKey, LLMCatalog.bestDefaultMigrationFlagKey] {
                 d.set(true, forKey: flag)
             }
         }
@@ -406,6 +476,25 @@ final class Settings {
             }
             d.set(true, forKey: LLMCatalog.migrationFlagKey)
         }
+
+        // 一次性迁移（4.0.1）：默认型号改成各家最好的那一档（用户拍板：默认不能是便宜货）。
+        // 规则在 LLMCatalog.migrationToBestDefault（纯函数，单测钉死）：**只搬还停在 4.0.0
+        // 那几对自动默认上的用户**（润色便宜一档 + 指令贵一档），手选过型号的人一个字都不动。
+        // 必须排在 migrationTo56 之后：那一步刚写进去的值，这一步要按新值判。
+        if !d.bool(forKey: LLMCatalog.bestDefaultMigrationFlagKey) {
+            var current: [String: String?] = [:]
+            for provider in [LLMProvider.openai, .deepseek, .qwen] {
+                let keys = LLMCatalog.modelKeys(for: provider)
+                // updateValue 而不是下标赋值：值类型本身就是 String?，下标那一路
+                // 「存一个 nil」和「把键删掉」长得一模一样，读起来要靠猜
+                current.updateValue(d.string(forKey: keys.polish), forKey: keys.polish)
+                current.updateValue(d.string(forKey: keys.command), forKey: keys.command)
+            }
+            for (key, value) in LLMCatalog.migrationToBestDefault(current: current) {
+                d.set(value, forKey: key)
+            }
+            d.set(true, forKey: LLMCatalog.bestDefaultMigrationFlagKey)
+        }
     }
 
     var hotkey: HotkeyChoice {
@@ -434,7 +523,7 @@ final class Settings {
     }
 
     var chatModel: String {
-        get { d.string(forKey: SettingsKeys.chatModel) ?? LLMCatalog.openaiPolishDefault }
+        get { d.string(forKey: SettingsKeys.chatModel) ?? LLMCatalog.defaultModel(for: .openai) }
         set { d.set(newValue, forKey: SettingsKeys.chatModel) }
     }
 
@@ -577,7 +666,7 @@ final class Settings {
     }
 
     var deepseekModel: String {
-        get { d.string(forKey: SettingsKeys.deepseekModel) ?? LLMCatalog.deepseekPolishDefault }
+        get { d.string(forKey: SettingsKeys.deepseekModel) ?? LLMCatalog.defaultModel(for: .deepseek) }
         set { d.set(newValue, forKey: SettingsKeys.deepseekModel) }
     }
 
@@ -629,12 +718,12 @@ final class Settings {
     }
 
     var qwenModel: String {
-        get { d.string(forKey: SettingsKeys.qwenModel) ?? LLMCatalog.qwenPolishDefault }
+        get { d.string(forKey: SettingsKeys.qwenModel) ?? LLMCatalog.defaultModel(for: .qwen) }
         set { d.set(newValue, forKey: SettingsKeys.qwenModel) }
     }
 
     var qwenCommandModel: String {
-        get { d.string(forKey: SettingsKeys.qwenCommandModel) ?? LLMCatalog.qwenCommandDefault }
+        get { d.string(forKey: SettingsKeys.qwenCommandModel) ?? LLMCatalog.defaultModel(for: .qwen) }
         set { d.set(newValue, forKey: SettingsKeys.qwenCommandModel) }
     }
 
@@ -693,12 +782,12 @@ final class Settings {
     }
 
     var openaiCommandModel: String {
-        get { d.string(forKey: SettingsKeys.openaiCommandModel) ?? LLMCatalog.openaiCommandDefault }
+        get { d.string(forKey: SettingsKeys.openaiCommandModel) ?? LLMCatalog.defaultModel(for: .openai) }
         set { d.set(newValue, forKey: SettingsKeys.openaiCommandModel) }
     }
 
     var deepseekCommandModel: String {
-        get { d.string(forKey: SettingsKeys.deepseekCommandModel) ?? LLMCatalog.deepseekCommandDefault }
+        get { d.string(forKey: SettingsKeys.deepseekCommandModel) ?? LLMCatalog.defaultModel(for: .deepseek) }
         set { d.set(newValue, forKey: SettingsKeys.deepseekCommandModel) }
     }
 

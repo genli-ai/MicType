@@ -135,8 +135,8 @@ final class KeyVerifier: ObservableObject {
             // 模型 404 时自动换 qwen3-asr-flash（见 CloudASRSetup）。
             guard var config = CloudASRSettings.currentConfig(), config.provider == cloudProvider else {
                 // 走到这里只可能是识别引擎在这半秒里被改回了本地档
-                status = .failed(reason: tr("当前识别引擎不是这一档云端引擎，请先在 设置 → 识别 里选上",
-                                            "The current recognition engine is not this cloud provider - pick it first in Settings → Recognition"),
+                status = .failed(reason: tr("云端识别没有开在这一档上，请先在 设置 → AI 里打开",
+                                            "Cloud recognition is not set to this provider - turn it on first under Settings → AI"),
                                  keptPrevious: hadPrevious)
                 return
             }
