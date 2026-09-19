@@ -79,27 +79,51 @@ enum ModelUpgradeLogic {
 
     /// 该删哪些模型目录。
     ///
-    /// 两类：① 升级留下的旧模型（pendingRepos）；② 孤儿目录——目录里已经没有、又没被选中的
-    /// 仓库（模型换代后被下架的那些）。
+    /// 三类：① 升级留下的旧模型（pendingRepos）；② 只下了一半、没被选中的目录
+    /// （incompleteRepos——带 `.incomplete` 标记的那些，按定义加载不了，只是在占几百 MB）；
+    /// ③ 孤儿目录——目录里已经没有、又没被选中的仓库（模型换代后被下架的那些）。
     /// **selectedRepo 永远不删**，哪怕它同时出现在 pendingRepos 里（那只能是状态写坏了）。
+    ///
+    /// `pruneOrphans` = 这一轮能不能信任 catalogRepos。目录退化成缓存 / 内置那份时它是 false：
+    /// 一份过时的目录会把用户特意下载、只是没选中的那一档判成"孤儿"，几百 MB 无声删掉——
+    /// 宁可多占一天磁盘，也不删一份用户主动要的模型。
     /// 返回顺序与 existingRepos 一致、去重，方便日志逐条对照。
     static func directoriesToRemove(existingRepos: [String],
                                     selectedRepo: String,
                                     catalogRepos: [String],
-                                    pendingRepos: [String]) -> [String] {
+                                    pendingRepos: [String],
+                                    incompleteRepos: [String] = [],
+                                    pruneOrphans: Bool = true) -> [String] {
         let selected = selectedRepo.trimmingCharacters(in: .whitespacesAndNewlines)
         let pending = Set(pendingRepos)
         let listed = Set(catalogRepos)
+        let halfDone = Set(incompleteRepos)
         var seen = Set<String>()
         var result: [String] = []
         for repo in existingRepos {
             guard repo != selected, !seen.contains(repo) else { continue }
-            if pending.contains(repo) || !listed.contains(repo) {
+            let isOrphan = pruneOrphans && !listed.contains(repo)
+            if pending.contains(repo) || halfDone.contains(repo) || isOrphan {
                 seen.insert(repo)
                 result.append(repo)
             }
         }
         return result
+    }
+
+    /// 「同仓库有新修订」这条提示要不要摆出来。
+    ///
+    /// 用户点过「以后再说」之后就别再摆——但压的是**那一次的那份文件**（清单指纹），
+    /// 不是这个仓库：上游真出了下一版，指纹变了，提示照样该回来。
+    /// 拿不到指纹（旧路径 / 网络只给了半截）时按"没压过"处理：宁可多问一次，
+    /// 也不要把一次真的更新永久藏起来。
+    static func shouldOfferRefresh(hasUpdate: Bool,
+                                   remoteFingerprint: String?,
+                                   dismissedFingerprint: String?) -> Bool {
+        guard hasUpdate else { return false }
+        guard let remote = remoteFingerprint, !remote.isEmpty,
+              let dismissed = dismissedFingerprint, !dismissed.isEmpty else { return true }
+        return remote != dismissed
     }
 
     /// 清单里有哪些文件在本地缺了 / 大小不对。
@@ -166,6 +190,16 @@ final class ModelUpgrader: ObservableObject {
     /// 正在走升级流程的目标仓库（nil = 没有）。用它区分「我们发起的下载」和用户在设置里手点的下载
     private var inFlightRepo: String?
     private var isRefreshFlow = false
+    /// 正在往暂存目录下的那个仓库（nil = 这一轮不走暂存）。同仓库重下一律走暂存：
+    /// 正在用的那份模型在校验通过之前一个字节都不动。
+    private var stagingRepo: String?
+    /// 最近一次「有没有新修订」检查看到的远端清单指纹。「以后再说」压的就是这一个值。
+    private var latestRefreshFingerprint: String?
+    /// 这一轮校验用的远端清单。切换成功之后用它写更新基线。
+    private var verifiedManifest: [QwenModelDownloader.ManifestFile]?
+    /// 校验通过、但听写还没结束时，每隔一秒再看一眼；最多等这么多次（15 分钟）。
+    /// 录音上限是 600 秒，再加上润色/插入，15 分钟足够走完一轮还有余量。
+    private static let maxSwitchWaitTicks = 900
 
     private init() {}
 
@@ -190,14 +224,19 @@ final class ModelUpgrader: ObservableObject {
             completion?()
             return
         }
-        // 目录里没有更好的了，才去问 HF「已装的这个仓库有没有新修订」
-        QwenModelDownloader.checkForUpdate(repo: repo) { [weak self] hasUpdate, _ in
+        // 目录里没有更好的了，才去问 HF「已装的这个仓库的文件有没有变」
+        QwenModelDownloader.checkForUpdate(repo: repo) { [weak self] hasUpdate, _, fingerprint in
             guard let self = self else { return }
+            self.latestRefreshFingerprint = fingerprint
+            let offer = ModelUpgradeLogic.shouldOfferRefresh(
+                hasUpdate: hasUpdate,
+                remoteFingerprint: fingerprint,
+                dismissedFingerprint: self.dismissedRefreshFingerprint(repo: repo))
             let decision = ModelUpgradeLogic.decide(installedRepo: repo,
                                                     catalog: catalog,
                                                     appVersion: UpdateChecker.currentVersion,
                                                     languageCode: language,
-                                                    revisionUpdateAvailable: hasUpdate,
+                                                    revisionUpdateAvailable: offer,
                                                     dismissedRepo: dismissed)
             self.apply(decision)
             completion?()
@@ -266,7 +305,16 @@ final class ModelUpgrader: ObservableObject {
         case .upgrade(let repo), .needsAppUpdate(let repo, _):
             d.set(repo, forKey: SettingsKeys.dismissedModelUpgradeRepo)
             Log.info("Model upgrade offer dismissed repo=\(repo)")
-        case .refresh, .none:
+        case .refresh(let repo):
+            // 修订提示压的是**这一份文件**（清单指纹），不是这个仓库：
+            // 上游真出下一版时指纹会变，提示照样回来。指纹这次没拿到就只压本次会话。
+            if let fingerprint = latestRefreshFingerprint, !fingerprint.isEmpty {
+                d.set(fingerprint, forKey: SettingsKeys.dismissedModelRefreshFingerprint(repo))
+                Log.info("Model refresh offer dismissed repo=\(repo) fp=\(fingerprint)")
+            } else {
+                Log.info("Model refresh offer dismissed for this session repo=\(repo) (no fingerprint)")
+            }
+        case .none:
             break
         }
         apply(.none)
@@ -274,6 +322,11 @@ final class ModelUpgrader: ObservableObject {
 
     private var dismissedRepo: String? {
         let v = d.string(forKey: SettingsKeys.dismissedModelUpgradeRepo) ?? ""
+        return v.isEmpty ? nil : v
+    }
+
+    private func dismissedRefreshFingerprint(repo: String) -> String? {
+        let v = d.string(forKey: SettingsKeys.dismissedModelRefreshFingerprint(repo)) ?? ""
         return v.isEmpty ? nil : v
     }
 
@@ -313,18 +366,34 @@ final class ModelUpgrader: ObservableObject {
                             "A download is already running - let it finish first")
             return
         }
+        // 听写正在进行时不开这一路：切换会卸掉正在用的权重、改写设置，
+        // 在飞的那一轮就会前半段旧模型、后半段新模型（语言锁还是旧模型检测出来的）。
+        // 同一条判据麦克风自检早就在用（AppDelegate.isDictationBusy）。
+        guard !AppDelegate.isDictationBusy else {
+            statusText = tr("正在听写，先说完这一轮再升级",
+                            "A dictation is in progress - finish it before upgrading")
+            return
+        }
         isRefreshFlow = (decision == .refresh(repo: repo))
+        stagingRepo = isRefreshFlow ? repo : nil
         inFlightRepo = repo
         phase = .downloading
         statusText = tr("正在下载 ", "Downloading ") + displayName(for: repo)
         Log.info("Model upgrade start repo=\(repo) refresh=\(isRefreshFlow) "
                  + "from=\(Settings.shared.qwenModelRepo)")
 
-        // 新模型下到它自己的目录（和当前模型平级）。正在用的那份一个字节都不动——
-        // 校验之前用户随时可以照常听写，Esc 也照常。
-        // 只有「同仓库新修订」这一种必须原地覆盖（force），那是用户明确要更新这一份。
-        QwenModelDownloader.shared.download(repo: repo, force: isRefreshFlow)
+        // 换仓库：新模型下到它自己的目录（和当前模型平级）。
+        // 同仓库重下：下到**暂存目录**——那个仓库的正式目录正是用户此刻在用的那一份，
+        // 原地重下等于先把他的模型删了再祈祷网络不断。两条路都一样：
+        // 校验之前正在用的那份一个字节都不动，用户随时可以照常听写。
+        QwenModelDownloader.shared.download(repo: repo, force: isRefreshFlow, staging: isRefreshFlow)
         observeDownload(repo: repo)
+    }
+
+    /// 这一轮的新文件落在哪个目录（同仓库重下 = 暂存目录）
+    private func downloadDirectory(for repo: String) -> URL {
+        stagingRepo == repo ? QwenModels.stagingDirectory(for: repo)
+                            : QwenModels.localDirectory(for: repo)
     }
 
     private func observeDownload(repo: String) {
@@ -334,9 +403,14 @@ final class ModelUpgrader: ObservableObject {
                 guard let self = self, !downloading, self.inFlightRepo == repo else { return }
                 self.downloadObserver = nil
                 // 「下完了」= 权重在 + 下载器已经把 .incomplete 标记删掉（QwenModels.isFullyDownloaded）
-                guard QwenModels.isFullyDownloaded(repo: repo) else {
-                    self.fail(tr("下载没有完成（已下好的文件保留，可以再点一次继续）",
-                                 "The download did not finish - files already fetched are kept, click again to resume"))
+                guard QwenModels.isFullyDownloaded(at: self.downloadDirectory(for: repo)) else {
+                    if self.stagingRepo == repo {
+                        self.fail(tr("下载没有完成，当前模型没有任何改动（可以再点一次重试）",
+                                     "The download did not finish - your current model is untouched, click again to retry"))
+                    } else {
+                        self.fail(tr("下载没有完成（已下好的文件保留，可以再点一次继续）",
+                                     "The download did not finish - files already fetched are kept, click again to resume"))
+                    }
                     return
                 }
                 self.verify(repo: repo)
@@ -349,12 +423,15 @@ final class ModelUpgrader: ObservableObject {
     private func verify(repo: String) {
         phase = .verifying
         statusText = tr("正在校验新模型…", "Verifying the new model…")
-        Log.info("Model verify start repo=\(repo) bytes=\(QwenModels.directorySize(repo: repo))")
+        let dir = downloadDirectory(for: repo)
+        Log.info("Model verify start repo=\(repo) bytes=\(QwenModels.directorySize(at: dir))")
 
         QwenModelDownloader.fetchManifest(repo: repo) { [weak self] manifest in
             guard let self = self, self.inFlightRepo == repo else { return }
-            let dir = QwenModels.localDirectory(for: repo)
             let fm = FileManager.default
+            // 校验用的这份清单就是「这一份文件长什么样」的权威记录：切换成功之后拿它
+            // 写更新基线（下载当时不写——没校验过的一份不配当基线，见 recordManifestBaseline）
+            self.verifiedManifest = manifest
 
             if let manifest = manifest {
                 var localSizes: [String: Int64] = [:]
@@ -403,7 +480,7 @@ final class ModelUpgrader: ObservableObject {
                 if let error = error {
                     self.fail(error.message)
                 } else {
-                    self.switchTo(repo: repo)
+                    self.switchWhenIdle(repo: repo)
                 }
             }
         }
@@ -411,12 +488,76 @@ final class ModelUpgrader: ObservableObject {
 
     // MARK: 切换与回滚
 
+    /// 听写还在进行时**不切模型**：一轮在飞的听写正拿着旧权重解码，这时候卸模型 + 改设置
+    /// 会让同一次交付里前半段是旧模型、后半段是新模型，语言锁还是旧模型检测出来的那个。
+    /// 校验已经过了，等一下不花任何代价——每秒看一眼，回到空闲就切。
+    private func switchWhenIdle(repo: String, attempt: Int = 0) {
+        guard AppDelegate.isDictationBusy else {
+            switchTo(repo: repo)
+            return
+        }
+        guard attempt < Self.maxSwitchWaitTicks else {
+            fail(tr("听写一直没有结束，这次升级先停下（当前模型没有改动，稍后再点一次即可）",
+                    "The dictation never finished, so the upgrade stopped - your current model is unchanged, try again later"))
+            return
+        }
+        if attempt == 0 {
+            statusText = tr("新模型已校验通过，等这一轮听写结束后切换…",
+                            "The new model is verified - switching once this dictation finishes…")
+            Log.info("Model switch deferred (dictation busy) repo=\(repo)")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self = self, self.inFlightRepo == repo else { return }
+            self.switchWhenIdle(repo: repo, attempt: attempt + 1)
+        }
+    }
+
+    /// 暂存目录里那份校验过的模型换进正式目录。同卷改名，要么整份换成功、要么原样不动。
+    private func promoteStaging(repo: String) -> Bool {
+        let staging = QwenModels.stagingDirectory(for: repo)
+        let live = QwenModels.localDirectory(for: repo)
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: staging.path) else { return false }
+        do {
+            if fm.fileExists(atPath: live.path) {
+                _ = try fm.replaceItemAt(live, withItemAt: staging)
+            } else {
+                try fm.createDirectory(at: live.deletingLastPathComponent(),
+                                       withIntermediateDirectories: true)
+                try fm.moveItem(at: staging, to: live)
+            }
+            stagingRepo = nil
+            return true
+        } catch {
+            Log.warn("Model staging promote failed repo=\(repo): "
+                     + String(error.localizedDescription.prefix(120)))
+            return false
+        }
+    }
+
+    /// 这一轮下下来的文件已经就位：把清单指纹记成新的更新基线。
+    /// **在这一刻记**，不在下载完成时记——没校验过、没换进去的一份不配当基线，
+    /// 提前记下会让一次失败的更新被当成"已经装上了"，真正的新修订从此被藏起来。
+    private func recordVerifiedBaseline(repo: String) {
+        guard let manifest = verifiedManifest, !manifest.isEmpty else { return }
+        QwenModelDownloader.recordManifestBaseline(repo: repo, manifest: manifest)
+        verifiedManifest = nil
+    }
+
     private func switchTo(repo: String) {
         let old = Settings.shared.qwenModelRepo
         inFlightRepo = nil
         if old == repo {
-            // 同仓库新修订：设置不用动，只把内存里的旧权重放掉，下一次听写自然加载新文件
+            // 同仓库新修订：文件在暂存目录里等着。先放掉内存里的旧权重（目录要被换掉），
+            // 再原子换进去；换不进去就当没发生——用户那份模型还在原地，一个字节没动。
             QwenEngine.shared.unloadModel()
+            guard promoteStaging(repo: repo) else {
+                fail(tr("新模型没能换进模型目录（磁盘写入失败），当前模型没有改动",
+                        "The verified copy could not be moved into place - your current model is unchanged"))
+                QwenEngine.shared.preload()
+                return
+            }
+            recordVerifiedBaseline(repo: repo)
             QwenEngine.shared.preload()
             phase = .done
             statusText = tr("模型已更新到最新修订 ✓", "Model updated to the latest revision ✓")
@@ -429,6 +570,7 @@ final class ModelUpgrader: ObservableObject {
         QwenEngine.shared.unloadModel()
         Settings.shared.qwenModelRepo = repo
         addPendingCleanup(old)
+        recordVerifiedBaseline(repo: repo)
         QwenEngine.shared.preload()
         phase = .done
         statusText = tr("已切换到 ", "Now using ") + displayName(for: repo)
@@ -441,6 +583,13 @@ final class ModelUpgrader: ObservableObject {
     private func fail(_ message: String) {
         inFlightRepo = nil
         downloadObserver = nil
+        verifiedManifest = nil
+        // 暂存目录里那半份（或没通过校验的那一份）留着只会白占几百 MB，而且下一次重试
+        // 本来就是整份重下（force）。用户在用的那份模型不在这里，删它没有任何风险。
+        if let staging = stagingRepo {
+            try? FileManager.default.removeItem(at: QwenModels.stagingDirectory(for: staging))
+            stagingRepo = nil
+        }
         phase = .failed
         statusText = message
         Log.warn("Model upgrade failed: " + String(message.prefix(160)))
@@ -478,7 +627,20 @@ final class ModelUpgrader: ObservableObject {
     /// 「至少重启过一次」这条门槛就是靠这个计数实现的（见 ModelUpgradeLogic.mayCleanup）。
     func noteAppLaunch() {
         d.set(launchCount + 1, forKey: SettingsKeys.appLaunchCount)
+        purgeStagingLeftovers()
         cleanupIfAllowed()
+    }
+
+    /// 上一次重下下到一半就退出 App 的话，暂存目录会留着几百 MB。
+    /// 启动这一刻不可能有下载在跑，整个 `.staging` 直接清掉：重试本来就是整份重下。
+    private func purgeStagingLeftovers() {
+        let dir = Paths.modelsDir.appendingPathComponent(".staging", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: dir.path) else { return }
+        let bytes = QwenModels.directorySize(at: dir)
+        DispatchQueue.global(qos: .utility).async {
+            try? FileManager.default.removeItem(at: dir)
+            Log.info("Model staging leftovers removed bytes=\(bytes)")
+        }
     }
 
     private func addPendingCleanup(_ repo: String) {
@@ -493,11 +655,22 @@ final class ModelUpgrader: ObservableObject {
         pendingCleanup = list
     }
 
-    /// 新模型在真实听写里成功出字过一次。由 QwenEngine 的成功路径调用（主线程）。
+    /// 新模型在真实听写里成功出字过一次。由 QwenEngine 的成功路径调用（主线程），
+    /// `repo` = **产出这段文字的那份权重**所在的仓库。
+    ///
+    /// 为什么非要带着仓库来：一轮在切换之前就开始、拿着旧权重解码到一半的听写，会在切换
+    /// **之后**才出字。不认来源的话，旧模型的这一次成功就把"新模型跑通过"那道闸打开了，
+    /// 下次启动删掉的正是它自己——而用户唯一的退路就是它。
     /// **记下来不等于立刻删**：还要等至少一次重启（见 ModelUpgradeLogic.mayCleanup）。
     /// 没有待清理项时什么都不做，开销为零。
-    func noteSuccessfulTranscription() {
+    func noteSuccessfulTranscription(repo: String) {
         guard !pendingCleanup.isEmpty else { return }
+        let used = repo.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !used.isEmpty, used == Settings.shared.qwenModelRepo,
+              !pendingCleanup.contains(used) else {
+            Log.info("Model cleanup gate ignored a transcription from repo=\(used)")
+            return
+        }
         if !cleanupSucceeded { cleanupSucceeded = true }
         cleanupIfAllowed()
     }
@@ -523,15 +696,26 @@ final class ModelUpgrader: ObservableObject {
         let selected = Settings.shared.qwenModelRepo
         let existing = QwenModels.repoDirectories()
         let catalogRepos = ModelCatalogStore.shared.models.map { $0.repo }
+        // 孤儿只在「这一轮真的从远端取到过目录」时才扫：启动时 noteAppLaunch() 排在目录刷新
+        // 之前，缓存丢了的那次启动读到的是内置那两条——拿一份退化的目录去判孤儿，会把用户
+        // 特意下载、只是没选中的那一档几百 MB 无声删掉。
+        let catalogIsLive = ModelCatalogStore.shared.isFromRemote
+        // 半份下载（带 .incomplete）按定义加载不了，只是在占磁盘，顺手回收；
+        // 但正在下的那一份不能碰——下载器还在往里写。
+        let incomplete = QwenModelDownloader.shared.isDownloading
+            ? []
+            : existing.filter { QwenModels.hasIncompleteMarker(repo: $0) }
         let victims = ModelUpgradeLogic.directoriesToRemove(existingRepos: existing,
                                                            selectedRepo: selected,
                                                            catalogRepos: catalogRepos,
-                                                           pendingRepos: pendingCleanup)
+                                                           pendingRepos: pendingCleanup,
+                                                           incompleteRepos: incomplete,
+                                                           pruneOrphans: catalogIsLive)
         pendingCleanup = []
         switchLaunch = 0
         cleanupSucceeded = false
         guard !victims.isEmpty else {
-            Log.info("Model cleanup: nothing to remove selected=\(selected)")
+            Log.info("Model cleanup: nothing to remove selected=\(selected) catalogLive=\(catalogIsLive)")
             return
         }
         // 删几百 MB 会卡住主线程（还可能触发 Spotlight），挪到后台；日志只记仓库 ID 与字节数

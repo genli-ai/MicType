@@ -61,11 +61,14 @@ enum QwenModels {
 
     /// 模型目录下每一个存在的仓库目录（含只下了一半的）。清理要看的是磁盘真相，
     /// 不是设置里写了什么——半个下载也会占几百 MB。
+    /// 点开头的目录（`.staging`）不是仓库，跳过：它要是被当成仓库列出来，清理那一步
+    /// 会把正在暂存的新模型当孤儿删掉。
     static func repoDirectories() -> [String] {
         let fm = FileManager.default
         guard let dirs = try? fm.contentsOfDirectory(at: Paths.modelsDir,
                                                      includingPropertiesForKeys: [.isDirectoryKey]) else { return [] }
         return dirs.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
+            .filter { !$0.lastPathComponent.hasPrefix(".") }
             .map { $0.lastPathComponent.replacingOccurrences(of: "__", with: "/") }
     }
 
@@ -78,7 +81,11 @@ enum QwenModels {
     /// 这个仓库目录里是不是一份**下完整**的模型。
     /// 老用户（这个标记出现之前装好的模型）目录里没有标记 → 照样算完整，不会被判成要重下。
     static func isFullyDownloaded(repo: String) -> Bool {
-        let dir = localDirectory(for: repo)
+        isFullyDownloaded(at: localDirectory(for: repo))
+    }
+
+    /// 同上，但针对任意目录——「同仓库重下」下到的是暂存目录，完整性要按那一份查。
+    static func isFullyDownloaded(at dir: URL) -> Bool {
         let fm = FileManager.default
         guard !fm.fileExists(atPath: dir.appendingPathComponent(incompleteMarkerName).path) else {
             return false
@@ -86,9 +93,19 @@ enum QwenModels {
         return fm.fileExists(atPath: dir.appendingPathComponent("model.safetensors").path)
     }
 
+    /// 这个仓库目录里躺着的是不是一份没下完的模型（带 `.incomplete` 标记）。
+    /// 带标记的目录永远加载不了，只是在占磁盘——清理那一步据此回收它。
+    static func hasIncompleteMarker(repo: String) -> Bool {
+        FileManager.default.fileExists(
+            atPath: localDirectory(for: repo).appendingPathComponent(incompleteMarkerName).path)
+    }
+
     /// 一个模型目录占了多少字节（日志用；算不出来给 0）
     static func directorySize(repo: String) -> Int64 {
-        let dir = localDirectory(for: repo)
+        directorySize(at: localDirectory(for: repo))
+    }
+
+    static func directorySize(at dir: URL) -> Int64 {
         guard let files = try? FileManager.default.subpathsOfDirectory(atPath: dir.path) else { return 0 }
         return files.reduce(Int64(0)) { total, sub in
             let attrs = try? FileManager.default.attributesOfItem(atPath: dir.appendingPathComponent(sub).path)
@@ -113,6 +130,18 @@ enum QwenModels {
     static func localDirectory(for repo: String) -> URL {
         Paths.modelsDir.appendingPathComponent(
             repo.replacingOccurrences(of: "/", with: "__"), isDirectory: true)
+    }
+
+    /// 「同一个仓库重新下一遍」时新文件落脚的暂存目录。
+    ///
+    /// 为什么非要它：重下的目标目录就是**用户正在用的那一份**。原地重下意味着从删掉旧权重
+    /// 的那一刻起，到最后一个文件落盘为止，本机听写是坏的（isFullyDownloaded 为假），
+    /// 中途断网 / 用户按取消就停在那儿——而界面上写着「失败则保留现在这份」。
+    /// 所以重下一律进这里，校验通过之后再原子换进正式目录（ModelUpgrader.promoteStaging）。
+    /// 放在 `.staging` 子目录里（点开头）是为了不被 repoDirectories() 当成一个仓库。
+    static func stagingDirectory(for repo: String) -> URL {
+        Paths.modelsDir.appendingPathComponent(".staging", isDirectory: true)
+            .appendingPathComponent(repo.replacingOccurrences(of: "/", with: "__"), isDirectory: true)
     }
 }
 
@@ -398,6 +427,10 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
         // 可能已经替这一轮锁定了语言——尾巴要接着用同一个，不能自己重新检测一遍。
         let sessionLanguage = language ?? Settings.shared.recognitionModelLanguage
 
+        // 这一轮用的是哪个仓库的权重——和 ensureLoadTask() 读的是同一刻的设置。
+        // 「删旧模型」那道闸只认**新模型**的成功，所以出字之后必须带着这个仓库去报喜：
+        // 一轮在切换之前就开始、用旧权重解码到一半的听写，绝不能解锁删它自己。
+        let usedRepo = Settings.shared.qwenModelRepo
         let load = ensureLoadTask()
         Task {
             // 第一步：等待模型加载。失败要清掉缓存的 Task，否则之后永远复用失败结果
@@ -497,7 +530,7 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
                 // 刚换过模型的话，「删掉旧模型」就等这一刻：新模型在真实听写里跑通过一次，
                 // 旧的那份才不再是退路。绝不在切换设置的当下就删（见 ModelUpgrader）。
                 if outcome.failure == nil, !outcome.text.isEmpty {
-                    ModelUpgrader.shared.noteSuccessfulTranscription()
+                    ModelUpgrader.shared.noteSuccessfulTranscription(repo: usedRepo)
                 }
                 completion(outcome)
             }

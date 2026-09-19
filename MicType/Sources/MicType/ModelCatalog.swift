@@ -53,6 +53,9 @@ struct CatalogModel: Codable, Equatable, Identifiable {
     /// （16.8%）。机制留着给将来真出现「某语言专用档」的时候用，别再凭跑分往里填语言。
     let recommendedFor: [String]
     /// 运行这个模型所需的最低 App 版本。比当前版本高 → 只提示「需要更新 MicType」，绝不假装能装。
+    /// **必须是真的跑不了才往上填**：这个字段填高于当前 App 版本的值，会让一个此刻明明
+    /// 跑得好好的模型在菜单栏和识别页挂出一条无解的「需要更新 MicType」——去查更新还会
+    /// 被告知已是最新，用户没有任何出口。目录里这两档从 3.3.0 起就能跑，写的就是 3.3.0。
     let minAppVersion: String
     /// 钉死某个 HF 修订（null = 跟随 main）。预留字段，下载器目前只走 main。
     let revision: String?
@@ -177,7 +180,7 @@ struct ModelCatalog: Codable, Equatable {
                     en: "30 languages + 22 Chinese dialects; strongest on Chinese and English, usable on Arabic, fully on-device."),
                 recommended: true,
                 recommendedFor: [],
-                minAppVersion: "4.0.0",
+                minAppVersion: "3.3.0",
                 revision: nil),
             CatalogModel(
                 repo: "mlx-community/Qwen3-ASR-1.7B-4bit",
@@ -190,7 +193,7 @@ struct ModelCatalog: Codable, Equatable {
                     en: "A larger model: more accurate overall, but measured about twice as slow and heavier on memory. It responds to vocabulary hotwords less than the 0.6B model, so for speech with embedded English names the recommended model plus a vocabulary is still the better route."),
                 recommended: false,
                 recommendedFor: [],
-                minAppVersion: "4.0.0",
+                minAppVersion: "3.3.0",
                 revision: nil),
         ])
 }
@@ -253,10 +256,20 @@ final class ModelCatalogStore: ObservableObject {
     /// 启动时最多多久查一次（秒）。查目录是个小 JSON，但也没有任何理由每次启动都查。
     static let checkInterval: TimeInterval = 24 * 3600
 
+    /// 这一次没取到目录时，隔多久可以再试（秒）。
+    /// 为什么不沿用 24 小时：一次失败最常见的原因是"启动的那一刻还没联上网"
+    /// （酒店 Wi-Fi 的登录页、刚开机）——把这种失败当成"今天查过了"，等于让用户
+    /// 一整天看不到新模型，而他其实全天都在线。
+    static let failureBackoff: TimeInterval = 30 * 60
+
     @Published private(set) var catalog: ModelCatalog
     @Published private(set) var isChecking = false
     /// 目录从哪儿来的（只进日志，不进界面）
     private(set) var sourceLabel: String
+    /// 手里这份目录是不是**本次运行真的从远端取回来的**。
+    /// 缓存 / 内置资源 / 字面表都算 false：它们可能比远端旧好几代，
+    /// 而"目录里没有这个仓库"正是删模型的依据之一（见 ModelUpgrader.runCleanup）。
+    private(set) var isFromRemote = false
 
     private let d = UserDefaults.standard
 
@@ -286,11 +299,22 @@ final class ModelCatalogStore: ObservableObject {
 
     var models: [CatalogModel] { catalog.models }
 
-    /// 距上次检查是否已满 24 小时
+    /// 距上次**成功**取到目录是否已满 24 小时（上一次失败时还要先过退避窗口）
     var isCheckDue: Bool {
-        let last = d.double(forKey: SettingsKeys.modelCatalogLastCheck)
-        guard last > 0 else { return true }
-        return Date().timeIntervalSince1970 - last >= Self.checkInterval
+        Self.isDue(now: Date().timeIntervalSince1970,
+                   lastSuccess: d.double(forKey: SettingsKeys.modelCatalogLastCheck),
+                   retryAfter: d.double(forKey: SettingsKeys.modelCatalogRetryAfter))
+    }
+
+    /// 到点了没有。纯函数（时间全由调用方给），可单测——这道节流写错的两个后果都很难看：
+    /// 要么每次启动都去打一次网，要么把用户按在一份旧目录上一整天。
+    static func isDue(now: TimeInterval,
+                      lastSuccess: TimeInterval,
+                      retryAfter: TimeInterval,
+                      interval: TimeInterval = ModelCatalogStore.checkInterval) -> Bool {
+        if retryAfter > 0, now < retryAfter { return false }
+        guard lastSuccess > 0 else { return true }
+        return now - lastSuccess >= interval
     }
 
     /// 启动时调用：到点才查。completion 在主线程回调，参数 = 这次是否真的查了远端。
@@ -314,15 +338,20 @@ final class ModelCatalogStore: ObservableObject {
         fetch(index: 0) { [weak self] data, source in
             guard let self = self else { return }
             self.isChecking = false
-            self.d.set(Date().timeIntervalSince1970, forKey: SettingsKeys.modelCatalogLastCheck)
+            let now = Date().timeIntervalSince1970
             guard let data = data, let fresh = try? ModelCatalog.decode(data) else {
+                // 失败**不打 24 小时的戳**，只记一个短退避：没取到目录不等于今天查过了
+                self.d.set(now + Self.failureBackoff, forKey: SettingsKeys.modelCatalogRetryAfter)
                 Log.warn("Model catalog fetch failed, keeping source=\(self.sourceLabel) models=\(self.models.count)")
                 completion?(false)
                 return
             }
+            self.d.set(now, forKey: SettingsKeys.modelCatalogLastCheck)
+            self.d.set(0.0, forKey: SettingsKeys.modelCatalogRetryAfter)
             let changed = fresh != self.catalog
             self.catalog = fresh
             self.sourceLabel = source
+            self.isFromRemote = true
             try? data.write(to: self.cacheFile, options: .atomic)
             Log.info("Model catalog updated source=\(source) updated=\(fresh.updated) "
                      + "models=\(fresh.models.count) changed=\(changed)")

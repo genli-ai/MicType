@@ -87,7 +87,10 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
     private var sawEmptyManifest = false
     private var repo = ""
     private var destDir: URL!
-    private var files: [(path: String, size: Int64)] = []
+    /// 这一轮是不是下到暂存目录（同仓库重下）。暂存那一轮**不写更新基线**：
+    /// 基线要等校验通过、文件真的换进正式目录之后才算数（见 recordManifestBaseline）。
+    private var isStagingDownload = false
+    private var files: [ManifestFile] = []
     private var fileIndex = 0
     private var completedBytes: Int64 = 0
     private var totalBytes: Int64 = 1
@@ -95,13 +98,17 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
     private var currentTask: URLSessionDownloadTask?
     private var cancelled = false
 
-    static func remoteSHAKey(_ repo: String) -> String { "qwenRemoteSHA_" + repo }
-    static func remoteModifiedKey(_ repo: String) -> String { "qwenRemoteModified_" + repo }
+    /// 这个仓库上一次下载时，远端清单长什么样（manifestFingerprint 的结果）。
+    /// 「有没有新修订」就比这一个值——不再比仓库的 commit sha（见 checkForUpdate）。
+    static func manifestBaselineKey(_ repo: String) -> String { "qwenManifestFP_" + repo }
 
-    func download(repo: String, force: Bool = false) {
+    /// 下到哪个目录：staging = true 时进暂存目录，正在用的那一份一个字节都不碰。
+    func download(repo: String, force: Bool = false, staging: Bool = false) {
         guard !isDownloading else { return }
         self.repo = repo
-        self.destDir = QwenModels.localDirectory(for: repo)
+        self.isStagingDownload = staging
+        self.destDir = staging ? QwenModels.stagingDirectory(for: repo)
+                               : QwenModels.localDirectory(for: repo)
         if force {
             try? FileManager.default.removeItem(at: destDir)
         }
@@ -154,6 +161,35 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
     struct ManifestFile: Equatable {
         let path: String
         let size: Int64
+        /// HF 给的内容指纹（git blob sha 或 LFS oid）。老清单 / 服务端不给时是空串，
+        /// 那时指纹就退化成「路径 + 大小」，仍然比仓库 commit sha 准。
+        let oid: String
+
+        init(path: String, size: Int64, oid: String = "") {
+            self.path = path
+            self.size = size
+            self.oid = oid
+        }
+    }
+
+    /// 一份清单的指纹：按路径排序后的 (路径, 大小, oid) 串成一条，再折成 64 位十六进制。
+    ///
+    /// 为什么不用仓库的 commit sha：下载器明确跳过 `.md` 和点开头的文件（parseManifest），
+    /// 而上游最常改的恰恰是模型卡——一次改错别字的 commit 会让 sha 变，于是用户被劝着
+    /// 重下 862 MB 换来零变化。指纹只认**我们真的会下载的那些文件**。
+    /// 纯函数（不联网、不碰磁盘），可单测。
+    static func manifestFingerprint(_ files: [ManifestFile]) -> String {
+        let joined = files
+            .map { "\($0.path)\u{1}\($0.size)\u{1}\($0.oid)" }
+            .sorted()
+            .joined(separator: "\n")
+        // FNV-1a 64 位：这里要的是「变了没有」，不是抗碰撞的密码学摘要
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in joined.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01B3
+        }
+        return String(format: "%016llx", hash)
     }
 
     /// HF `/api/models/<repo>/tree/main` 的响应 → 会下载的文件清单。
@@ -167,7 +203,10 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
             // 跳过隐藏文件和文档
             if path.hasPrefix(".") || path.lowercased().hasSuffix(".md") { continue }
             let size = (item["size"] as? Int64) ?? Int64((item["size"] as? Int) ?? 0)
-            list.append(ManifestFile(path: path, size: size))
+            // LFS 文件的内容指纹在 lfs.oid 里，普通文件在 oid 里
+            let lfsOID = (item["lfs"] as? [String: Any])?["oid"] as? String
+            let oid = lfsOID ?? (item["oid"] as? String) ?? ""
+            list.append(ManifestFile(path: path, size: size, oid: oid))
         }
         return list
     }
@@ -222,7 +261,7 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
                     self.fetchFileList()
                     return
                 }
-                let list = Self.parseManifest(data).map { (path: $0.path, size: $0.size) }
+                let list = Self.parseManifest(data)
                 guard !list.isEmpty else {
                     // 清单解析不出来（响应异常 / 仓库为空）就换下一个镜像；都试完了才由上面那道
                     // guard 收口——绝不因为一个镜像返回怪东西就判定仓库有问题。记下"至少有一个
@@ -233,7 +272,7 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
                     return
                 }
                 self.files = list
-                self.totalBytes = max(1, list.reduce(0) { $0 + $1.1 })
+                self.totalBytes = max(1, list.reduce(0) { $0 + $1.size })
                 self.downloadNextFile()
             }
         }
@@ -252,7 +291,7 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
             phase = .completed(fileCount: files.count)
             session?.finishTasksAndInvalidate()
             session = nil
-            recordRemoteVersion()
+            recordManifestBaseline()
             return
         }
         let file = files[fileIndex]
@@ -280,107 +319,72 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
         task.resume()
     }
 
-    /// 下载完成后记录远端仓库版本，供"检查更新"对比。
-    private func recordRemoteVersion() {
-        let repo = self.repo
-        Self.fetchRemoteVersion(repo: repo, hosts: hosts) { version in
-            guard let version = version else { return }
-            Self.store(version, for: repo)
-        }
+    /// 下载完成后记下这一份的清单指纹，供"检查更新"对比。
+    ///
+    /// 暂存下载（同仓库重下）**不在这里记**：那一份还没被校验、还没换进正式目录，
+    /// 提前记下基线会让一次失败的更新被记成"已经装上了"——下次检查反而说已是最新，
+    /// 把真正的新修订永久藏起来。那一路由 ModelUpgrader 在换进去之后调下面这个静态方法。
+    private func recordManifestBaseline() {
+        guard !isStagingDownload else { return }
+        Self.recordManifestBaseline(repo: repo, manifest: files)
     }
 
-    /// 检查 HF 仓库是否比本地下载时更新。completion 在主线程回调 (是否有更新, 说明文字)。
-    static func checkForUpdate(repo: String, completion: @escaping (Bool, String) -> Void) {
-        fetchRemoteVersion(repo: repo) { version in
-            guard let remote = version else {
-                completion(false, tr("检查失败：无法连接模型仓库", "Check failed — cannot reach the model repo"))
+    /// 记下某个仓库当前这一份文件对应的远端清单指纹。
+    static func recordManifestBaseline(repo: String, manifest: [ManifestFile]) {
+        guard !manifest.isEmpty else { return }
+        UserDefaults.standard.set(manifestFingerprint(manifest), forKey: manifestBaselineKey(repo))
+    }
+
+    /// 检查 HF 仓库里这个模型的文件是否和本地这一份不同。
+    /// completion 在主线程回调 (是否有更新, 说明文字, 远端清单指纹)。
+    ///
+    /// 比的是**会被下载的那些文件**（路径 / 大小 / oid），两条依据取或：
+    ///   ① 本地磁盘上的文件和远端清单对不上（缺文件、大小不同）——老用户没有基线也能判；
+    ///   ② 有基线且基线和远端清单不同——大小恰好没变的内容更新靠它。
+    /// 仓库的 commit sha 不参与：上游改一次模型卡不该换来 862 MB 的重下。
+    static func checkForUpdate(repo: String,
+                               completion: @escaping (Bool, String, String?) -> Void) {
+        fetchManifest(repo: repo) { manifest in
+            guard let manifest = manifest, !manifest.isEmpty else {
+                completion(false, tr("检查失败：无法连接模型仓库", "Check failed — cannot reach the model repo"), nil)
                 return
             }
-
-            let defaults = UserDefaults.standard
-            let localSHA = defaults.string(forKey: remoteSHAKey(repo))
-            let localModified = defaults.string(forKey: remoteModifiedKey(repo))
-            let hasLocalModel = QwenModels.isFullyDownloaded(repo: repo)
-
-            if let remoteSHA = remote.sha, let localSHA = localSHA {
-                if remoteSHA == localSHA {
-                    completion(false, tr("已是最新（远端版本 ", "Up to date (remote ") + remote.displayLabel + tr("）", ")"))
-                } else {
-                    completion(true, tr("发现新版本：远端 ", "Update available: remote ") + remote.displayLabel + tr("，本地 ", ", local ") + String(localSHA.prefix(8)) + tr("。点「重新下载 / 更新」", ". Click Re-download to update"))
+            let fingerprint = manifestFingerprint(manifest)
+            guard QwenModels.isFullyDownloaded(repo: repo) else {
+                completion(false, tr("模型尚未下载；先点「下载模型」", "Model not downloaded yet — click Download first"),
+                           fingerprint)
+                return
+            }
+            // 逐个读文件大小要碰磁盘（几十个文件、几百 MB 的目录），别压在主线程上
+            let dir = QwenModels.localDirectory(for: repo)
+            DispatchQueue.global(qos: .utility).async {
+                let fm = FileManager.default
+                var localSizes: [String: Int64] = [:]
+                for file in manifest {
+                    let path = dir.appendingPathComponent(file.path).path
+                    if let attrs = try? fm.attributesOfItem(atPath: path),
+                       let size = attrs[.size] as? Int64 {
+                        localSizes[file.path] = size
+                    }
                 }
-                return
-            }
-
-            if let remoteModified = remote.lastModified, let localModified = localModified {
-                if remoteModified == localModified {
-                    completion(false, tr("已是最新（远端版本 ", "Up to date (remote ") + remote.displayLabel + tr("）", ")"))
-                } else {
-                    completion(true, tr("发现新版本：远端 ", "Update available: remote ") + remote.displayLabel + tr("，本地 ", ", local ") + String(localModified.prefix(10)) + tr("。点「重新下载 / 更新」", ". Click Re-download to update"))
-                }
-                return
-            }
-
-            if hasLocalModel {
-                completion(false, tr("本地模型没有版本记录；点「重新下载 / 更新」一次即可建立更新基准", "No local version record — click Re-download once to set a baseline"))
-            } else {
-                completion(false, tr("模型尚未下载；先点「下载模型」", "Model not downloaded yet — click Download first"))
-            }
-        }
-    }
-
-    private struct RemoteVersion {
-        let sha: String?
-        let lastModified: String?
-
-        var displayLabel: String {
-            if let sha = sha, !sha.isEmpty {
-                return String(sha.prefix(8))
-            }
-            if let lastModified = lastModified, !lastModified.isEmpty {
-                return String(lastModified.prefix(10))
-            }
-            return tr("未知", "unknown")
-        }
-    }
-
-    private static func store(_ version: RemoteVersion, for repo: String) {
-        let defaults = UserDefaults.standard
-        if let sha = version.sha {
-            defaults.set(sha, forKey: remoteSHAKey(repo))
-        }
-        if let modified = version.lastModified {
-            defaults.set(modified, forKey: remoteModifiedKey(repo))
-        }
-    }
-
-    private static func fetchRemoteVersion(repo: String,
-                                           hosts: [String] = defaultHosts,
-                                           completion: @escaping (RemoteVersion?) -> Void) {
-        func attempt(_ index: Int) {
-            guard index < hosts.count else {
-                DispatchQueue.main.async { completion(nil) }
-                return
-            }
-            guard let url = URL(string: "\(hosts[index])/api/models/\(repo)") else { return }
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 20
-            URLSession.shared.dataTask(with: request) { data, response, error in
-                guard error == nil,
-                      let http = response as? HTTPURLResponse, http.statusCode == 200,
-                      let data = data,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      ((json["sha"] as? String) != nil || (json["lastModified"] as? String) != nil) else {
-                    attempt(index + 1)
-                    return
-                }
-                let version = RemoteVersion(sha: json["sha"] as? String,
-                                            lastModified: json["lastModified"] as? String)
+                let mismatched = ModelUpgradeLogic.mismatchedFiles(manifest: manifest,
+                                                                   localSizes: localSizes)
+                let baseline = UserDefaults.standard.string(forKey: manifestBaselineKey(repo))
+                let baselineChanged = (baseline?.isEmpty == false) && baseline != fingerprint
+                let hasUpdate = !mismatched.isEmpty || baselineChanged
                 DispatchQueue.main.async {
-                    completion(version)
+                    if hasUpdate {
+                        completion(true, tr("发现新版本：仓库里的模型文件有更新。点「重新下载 / 更新」",
+                                            "Update available: the model files changed upstream. Click Re-download to update"),
+                                   fingerprint)
+                    } else {
+                        completion(false, tr("已是最新（模型文件与仓库一致）",
+                                             "Up to date (your files match the repo)"),
+                                   fingerprint)
+                    }
                 }
-            }.resume()
+            }
         }
-        attempt(0)
     }
 
     private func finishWithError(_ failure: QwenDownloadFailure) {

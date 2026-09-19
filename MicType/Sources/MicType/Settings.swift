@@ -232,12 +232,19 @@ enum SettingsKeys {
     static let recognitionLanguage = "recognitionLanguage"  // 识别语言（"" = 自动检测）
     static let recognitionEngine = "recognitionEngine"      // 识别引擎：local（默认）/ cloudAlibaba / cloudOpenAI
     static let cloudAlibabaModel = "cloudAlibabaModel"      // 云端·阿里云用哪个识别模型
-    static let modelCatalogLastCheck = "modelCatalogLastCheck"      // 上次查模型目录的时间（epoch 秒，0 = 没查过）
+    static let modelCatalogLastCheck = "modelCatalogLastCheck"      // 上次**成功**取到模型目录的时间（epoch 秒，0 = 没成功过）
+    static let modelCatalogRetryAfter = "modelCatalogRetryAfter"    // 上次取目录失败后的退避时间点（epoch 秒，0 = 没有）
     static let pendingModelCleanup = "pendingModelCleanup"          // 等着删的旧模型仓库（升级后、首次成功听写前）
     static let pendingCleanupLaunch = "pendingModelCleanupLaunch"   // 换模型发生在第几次启动（删旧模型要求之后至少重启过一次）
     static let pendingCleanupSucceeded = "pendingModelCleanupSucceeded"  // 新模型已经真实听写成功过一次
     static let appLaunchCount = "appLaunchCount"                    // App 启动过多少次（只用来判"换模型之后有没有重启过"）
     static let dismissedModelUpgradeRepo = "dismissedModelUpgradeRepo"  // 用户点过「以后再说」的那个模型仓库
+
+    /// 用户对「这个仓库有新修订」点过「以后再说」时，压住的那一份文件（远端清单指纹）。
+    /// 按指纹而不是按仓库存：上游真出下一版时指纹会变，提示该回来。
+    static func dismissedModelRefreshFingerprint(_ repo: String) -> String {
+        "dismissedModelRefresh_" + repo
+    }
     static let llmProvider = "llmProvider"
     static let appLanguage = "appLanguage"
     static let deepseekBaseURL = "deepseekBaseURL"
@@ -292,6 +299,7 @@ final class Settings {
             SettingsKeys.cloudAlibabaModel: AlibabaASRModel.qwenAudio30Flash.rawValue,
             // 模型目录 / 升级的本机状态（不进设置导出：跟这台机器的磁盘绑定）
             SettingsKeys.modelCatalogLastCheck: 0.0,
+            SettingsKeys.modelCatalogRetryAfter: 0.0,
             SettingsKeys.pendingModelCleanup: [String](),
             SettingsKeys.pendingCleanupLaunch: 0,
             SettingsKeys.pendingCleanupSucceeded: false,

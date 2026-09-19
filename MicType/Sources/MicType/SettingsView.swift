@@ -457,6 +457,10 @@ private struct RecognitionTab: View {
                     upgrader.startUpgrade()
                 }
                 .disabled(upgrader.isBusy || downloader.isDownloading)
+                // 这一条是三种提示里最该能拒绝的：重下几百 MB 换来的是同一个模型。
+                // 「以后再说」压住的是**这一份文件**，上游真出下一版时提示照样回来。
+                Button(tr("以后再说", "Not now")) { upgrader.dismissCurrentOffer() }
+                    .disabled(upgrader.isBusy)
                 Text(upgrader.sizeNote(for: repo))
                     .font(.caption)
                     .foregroundColor(.secondary)

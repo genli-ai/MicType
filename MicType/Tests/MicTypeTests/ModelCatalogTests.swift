@@ -175,6 +175,33 @@ final class ModelCatalogTests: XCTestCase {
                        "model-catalog.json 与 ModelCatalog.builtIn 不一致")
     }
 
+    /// 发出去的目录里，每一条的 minAppVersion 都必须被**这一版 App 自己**满足。
+    ///
+    /// 为什么要钉死这一对：两边分别在两个文件里改，一旦目录先写了下一版的号（Info.plist 还没跟上），
+    /// 用户就会在菜单栏和识别页看到一条无解的「新模型需要更新 MicType」——而那个模型此刻
+    /// 明明在下拉框里、跑得好好的，去查 App 更新还会被告知已是最新。这是一条死路。
+    /// 这里读的是仓库里的 Info.plist（不是 Bundle.main）：测试跑在哪个宿主里都得出同一个结论。
+    func testBundledCatalogRunsOnThisAppVersion() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // MicTypeTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // MicType
+            .deletingLastPathComponent()   // 仓库根
+        let plistData = try Data(contentsOf: repoRoot
+            .appendingPathComponent("MicType/Resources/Info.plist"))
+        let plist = try XCTUnwrap(try PropertyListSerialization.propertyList(
+            from: plistData, format: nil) as? [String: Any])
+        let appVersion = try XCTUnwrap(plist["CFBundleShortVersionString"] as? String)
+
+        let catalog = try ModelCatalog.decode(
+            try Data(contentsOf: repoRoot.appendingPathComponent("model-catalog.json")))
+        for model in catalog.models + ModelCatalog.builtIn.models {
+            XCTAssertTrue(AppVersionCompare.satisfiesMinimum(appVersion: appVersion,
+                                                             minimum: model.minAppVersion),
+                          "目录里 \(model.repo) 要求 \(model.minAppVersion)，而这一版 App 是 \(appVersion)")
+        }
+    }
+
     // MARK: 版本比较
 
     func testVersionCompare() {
@@ -231,5 +258,66 @@ final class ModelCatalogTests: XCTestCase {
         XCTAssertEqual(files.last?.size, 857_233_233)
         // 坏响应给空清单（调用方据此换镜像源，而不是当成「仓库是空的」）
         XCTAssertTrue(QwenModelDownloader.parseManifest(Data("nope".utf8)).isEmpty)
+    }
+
+    /// 内容指纹取的是 LFS 的 oid（权重文件走 LFS），没有 LFS 时取普通 oid
+    func testManifestParsingKeepsContentOIDs() {
+        let json = """
+        [
+          {"type":"file","size":7187,"path":"config.json","oid":"abc123"},
+          {"type":"file","size":857233233,"path":"model.safetensors","oid":"pointer",
+           "lfs":{"oid":"sha256:deadbeef","size":857233233}}
+        ]
+        """
+        let files = QwenModelDownloader.parseManifest(Data(json.utf8))
+        XCTAssertEqual(files.first?.oid, "abc123")
+        XCTAssertEqual(files.last?.oid, "sha256:deadbeef")
+    }
+
+    // MARK: 清单指纹（「有没有新修订」比的就是它）
+
+    /// 指纹只认**会被下载的那些文件**：改模型卡（.md 压根不进清单）不该换来 862 MB 重下
+    func testManifestFingerprintTracksFilesNotCommits() {
+        let base = [
+            QwenModelDownloader.ManifestFile(path: "config.json", size: 7187, oid: "a"),
+            QwenModelDownloader.ManifestFile(path: "model.safetensors", size: 857_233_233, oid: "b"),
+        ]
+        // 同一份清单，顺序不同 → 同一个指纹（HF 的返回顺序不稳定，不能因此谎报有更新）
+        XCTAssertEqual(QwenModelDownloader.manifestFingerprint(base),
+                       QwenModelDownloader.manifestFingerprint(base.reversed()))
+        // 大小变了 → 指纹变
+        let resized = [base[0], QwenModelDownloader.ManifestFile(path: "model.safetensors",
+                                                                 size: 857_233_999, oid: "b")]
+        XCTAssertNotEqual(QwenModelDownloader.manifestFingerprint(base),
+                          QwenModelDownloader.manifestFingerprint(resized))
+        // 大小没变但内容变了（重新量化出同样大小的权重）→ oid 变，指纹照样变
+        let recontented = [base[0], QwenModelDownloader.ManifestFile(path: "model.safetensors",
+                                                                     size: 857_233_233, oid: "c")]
+        XCTAssertNotEqual(QwenModelDownloader.manifestFingerprint(base),
+                          QwenModelDownloader.manifestFingerprint(recontented))
+        // 多一个文件 → 指纹变；空清单不崩
+        XCTAssertNotEqual(QwenModelDownloader.manifestFingerprint(base),
+                          QwenModelDownloader.manifestFingerprint(
+                            base + [QwenModelDownloader.ManifestFile(path: "extra.json", size: 1)]))
+        XCTAssertFalse(QwenModelDownloader.manifestFingerprint([]).isEmpty)
+    }
+
+    // MARK: 目录检查的节流
+
+    /// 成功之后 24 小时不再查；一次失败只退避半小时——"启动那一刻还没联上网"
+    /// 不等于"今天查过了"，否则用户整天在线却一整天看不到新模型
+    func testCatalogCheckThrottle() {
+        let now: TimeInterval = 1_000_000
+        let day = ModelCatalogStore.checkInterval
+        // 从来没成功过 → 查
+        XCTAssertTrue(ModelCatalogStore.isDue(now: now, lastSuccess: 0, retryAfter: 0))
+        // 刚成功过 → 不查
+        XCTAssertFalse(ModelCatalogStore.isDue(now: now, lastSuccess: now - 60, retryAfter: 0))
+        // 满 24 小时 → 查
+        XCTAssertTrue(ModelCatalogStore.isDue(now: now, lastSuccess: now - day, retryAfter: 0))
+        // 刚失败过（退避窗口还没过）→ 不查
+        XCTAssertFalse(ModelCatalogStore.isDue(now: now, lastSuccess: 0, retryAfter: now + 600))
+        // 退避窗口过了、且从没成功过 → 查（失败不该把窗口推成一整天）
+        XCTAssertTrue(ModelCatalogStore.isDue(now: now, lastSuccess: 0, retryAfter: now - 1))
     }
 }

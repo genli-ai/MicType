@@ -189,6 +189,63 @@ final class ModelUpgraderTests: XCTestCase {
         XCTAssertEqual(victims, ["old/gone", large])
     }
 
+    /// 目录不是这次从远端取到的（缓存丢了、退回内置那两条）→ 只删待清理的旧模型，
+    /// 不碰孤儿：一份退化的目录会把用户特意下载、只是没选中的那一档判成"目录里没有"
+    func testCleanupSkipsOrphansWhenCatalogIsNotFresh() {
+        let victims = ModelUpgradeLogic.directoriesToRemove(existingRepos: ["user/kept", small, large],
+                                                           selectedRepo: small,
+                                                           catalogRepos: [small],
+                                                           pendingRepos: [large],
+                                                           pruneOrphans: false)
+        XCTAssertEqual(victims, [large])
+    }
+
+    /// 没下完的目录（带 .incomplete）没被选中就回收：它按定义加载不了，只是在占几百 MB。
+    /// 目录里还列着它也一样——"在目录里"不代表这半份文件有用。
+    func testCleanupRemovesHalfDownloadedDirectories() {
+        let victims = ModelUpgradeLogic.directoriesToRemove(existingRepos: [small, large],
+                                                           selectedRepo: small,
+                                                           catalogRepos: [small, large],
+                                                           pendingRepos: [],
+                                                           incompleteRepos: [large])
+        XCTAssertEqual(victims, [large])
+        // 选中的那一份哪怕带着标记也不删（正在下载 / 正在续传的就是它）
+        XCTAssertTrue(ModelUpgradeLogic.directoriesToRemove(existingRepos: [small],
+                                                            selectedRepo: small,
+                                                            catalogRepos: [small],
+                                                            pendingRepos: [],
+                                                            incompleteRepos: [small]).isEmpty)
+    }
+
+    // MARK: 「以后再说」压住修订提示
+
+    /// 压住的是**这一份文件**（清单指纹），不是这个仓库
+    func testRefreshOfferIsDismissedPerFingerprint() {
+        // 没有新修订 → 本来就不提示
+        XCTAssertFalse(ModelUpgradeLogic.shouldOfferRefresh(hasUpdate: false,
+                                                            remoteFingerprint: "aaaa",
+                                                            dismissedFingerprint: nil))
+        // 有新修订、没压过 → 提示
+        XCTAssertTrue(ModelUpgradeLogic.shouldOfferRefresh(hasUpdate: true,
+                                                           remoteFingerprint: "aaaa",
+                                                           dismissedFingerprint: nil))
+        // 压过的就是这一份 → 不再提示
+        XCTAssertFalse(ModelUpgradeLogic.shouldOfferRefresh(hasUpdate: true,
+                                                            remoteFingerprint: "aaaa",
+                                                            dismissedFingerprint: "aaaa"))
+        // 上游又出了一版（指纹变了）→ 提示回来
+        XCTAssertTrue(ModelUpgradeLogic.shouldOfferRefresh(hasUpdate: true,
+                                                           remoteFingerprint: "bbbb",
+                                                           dismissedFingerprint: "aaaa"))
+        // 指纹拿不到时按"没压过"处理：宁可多问一次，也不要把真更新永久藏起来
+        XCTAssertTrue(ModelUpgradeLogic.shouldOfferRefresh(hasUpdate: true,
+                                                           remoteFingerprint: nil,
+                                                           dismissedFingerprint: "aaaa"))
+        XCTAssertTrue(ModelUpgradeLogic.shouldOfferRefresh(hasUpdate: true,
+                                                           remoteFingerprint: "",
+                                                           dismissedFingerprint: "aaaa"))
+    }
+
     /// 铁律：选中的模型永远不删——哪怕它被错误地写进了待清理列表
     func testCleanupNeverRemovesSelectedModel() {
         let victims = ModelUpgradeLogic.directoriesToRemove(existingRepos: [small, large],
