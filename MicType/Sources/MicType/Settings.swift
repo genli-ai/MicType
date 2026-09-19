@@ -116,6 +116,24 @@ enum PolishLevel: String, CaseIterable {
     }
 }
 
+// MARK: - 悬浮窗位置
+
+/// 悬浮窗落在屏幕的哪儿。默认底部居中 = 3.2 以来的老位置，升级的用户什么都不用动。
+/// 多屏永远跟随鼠标所在的那块屏，这个设置只决定屏幕内的落点。
+enum OverlayPosition: String, CaseIterable {
+    case bottomCenter
+    case topCenter
+    case nearCursor
+
+    var displayName: String {
+        switch self {
+        case .bottomCenter: return tr("底部居中（默认）", "Bottom center (default)")
+        case .topCenter: return tr("顶部居中", "Top center")
+        case .nearCursor: return tr("跟随鼠标指针", "Near the mouse pointer")
+        }
+    }
+}
+
 // MARK: - 大模型服务商
 
 enum LLMProvider: String, CaseIterable {
@@ -168,6 +186,7 @@ enum SettingsKeys {
     static let restoreClipboard = "restoreClipboard"
     static let autoStopSilenceSeconds = "autoStopSilenceSeconds"  // 静音自动停秒数（0 = 关）
     static let livePreview = "livePreview"                 // 录音中悬浮窗灰字预览（伪流式）
+    static let overlayPosition = "overlayPosition"         // 悬浮窗在屏幕上的落点
     static let keepHistory = "keepHistory"                 // 是否把听写结果记进历史（默认开）
     static let qwenModelRepo = "qwenModelRepo"
     static let llmProvider = "llmProvider"
@@ -202,6 +221,7 @@ final class Settings {
             SettingsKeys.restoreClipboard: true,
             SettingsKeys.autoStopSilenceSeconds: 0.0,
             SettingsKeys.livePreview: true,
+            SettingsKeys.overlayPosition: OverlayPosition.bottomCenter.rawValue,
             SettingsKeys.keepHistory: true,
             SettingsKeys.qwenModelRepo: QwenModels.defaultRepo,
             SettingsKeys.llmProvider: LLMProvider.openai.rawValue,
@@ -384,6 +404,13 @@ final class Settings {
     var livePreview: Bool {
         get { d.bool(forKey: SettingsKeys.livePreview) }
         set { d.set(newValue, forKey: SettingsKeys.livePreview) }
+    }
+
+    /// 悬浮窗落点。只影响"出现在哪"，不影响任何行为；多屏仍然永远跟随鼠标所在那块屏。
+    /// 读不出/读到脏值一律回退底部居中——位置这种东西绝不能因为一条坏设置就丢到屏幕外。
+    var overlayPosition: OverlayPosition {
+        get { OverlayPosition(rawValue: d.string(forKey: SettingsKeys.overlayPosition) ?? "") ?? .bottomCenter }
+        set { d.set(newValue.rawValue, forKey: SettingsKeys.overlayPosition) }
     }
 
     /// 是否把每次听写/指令的结果记进历史（Application Support/history.json，最多 200 条）。

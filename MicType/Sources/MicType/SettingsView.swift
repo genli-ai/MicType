@@ -59,6 +59,7 @@ private struct GeneralTab: View {
     @AppStorage(SettingsKeys.restoreClipboard) private var restoreClipboard = true
     @AppStorage(SettingsKeys.autoStopSilenceSeconds) private var autoStopSilence = 0.0
     @AppStorage(SettingsKeys.livePreview) private var livePreview = true
+    @AppStorage(SettingsKeys.overlayPosition) private var overlayPosition = OverlayPosition.bottomCenter.rawValue
     @AppStorage(SettingsKeys.keepHistory) private var keepHistory = true
     @State private var launchAtLogin = (SMAppService.mainApp.status == .enabled)
     @State private var micOK = Permissions.microphoneGranted
@@ -142,6 +143,18 @@ private struct GeneralTab: View {
                 // 5 分钟硬上限此前在界面上无处可查，用户第一次知道它存在就是被自动收尾那一刻
                 Text(tr("单次录音最长 5 分钟：到点自动收尾（照常识别并输入，不丢已录的部分），录到 2 分钟时悬浮窗会提示。",
                         "A single take runs at most 5 minutes; at the limit it is wrapped up normally (still transcribed and inserted — nothing recorded is lost), with a heads-up in the overlay at 2 minutes."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Section(tr("悬浮窗", "Overlay")) {
+                Picker(tr("悬浮窗位置：", "Overlay position:"), selection: $overlayPosition) {
+                    ForEach(OverlayPosition.allCases, id: \.rawValue) { position in
+                        Text(position.displayName).tag(position.rawValue)
+                    }
+                }
+                Text(tr("多屏时悬浮窗永远出现在鼠标所在的那块屏幕，这里只决定它落在这块屏的哪个位置。录音中和处理中可以直接点悬浮窗右端的「⎋ 取消」，和按 Esc 一样；点它不会切走当前应用的输入焦点。",
+                        "On multiple displays the overlay always appears on the screen holding the pointer; this only picks where it sits on that screen. While recording or processing you can click ⎋ Cancel at the right end of the capsule — same as pressing Esc, and it never takes focus away from the app you are typing into."))
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

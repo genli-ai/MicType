@@ -131,6 +131,11 @@ final class DictationController {
 
     // MARK: - 入口
 
+    init() {
+        // 点悬浮窗上的「⎋ 取消」＝按 Esc：出口只有一个实现，两条路进同一个 cancel()
+        overlay.onCancelTapped = { [weak self] in self?.cancel() }
+    }
+
     func toggle() {
         switch phase {
         case .idle: startRecording()
