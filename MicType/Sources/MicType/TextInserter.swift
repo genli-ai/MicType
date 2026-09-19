@@ -163,7 +163,11 @@ enum TextInserter {
                        allowClipboardRestore: Bool = true,
                        conservativePaste: Bool = false,
                        completion: @escaping (Outcome) -> Void) {
+        // 每条分叉都留一行日志：目标、走哪条路、为什么。少了这几行，
+        // 「文字没落到框里」在日志里和"什么都没发生"长得一模一样（4.0.1 踩过）。
+        let logTarget = targetBundleID.isEmpty ? "unknown" : targetBundleID
         guard Permissions.isAccessibilityTrusted else {
+            Log.warn("Insert target=\(logTarget) path=clipboard-only reason=no-accessibility")
             putOnClipboard(text)
             completion(.clipboardOnly)
             return
@@ -171,6 +175,7 @@ enum TextInserter {
 
         guard !targetBundleID.isEmpty else {
             // 不知道目标 App：无法确认焦点稳定，按 normal/conservative 时序直接粘进当前焦点
+            Log.info("Insert target=unknown path=current-focus")
             pasteIntoCurrentFocus(text, timing: conservativePaste ? .conservative : .normal,
                                   allowRestore: allowClipboardRestore, completion: completion)
             return
@@ -178,6 +183,7 @@ enum TextInserter {
 
         guard let app = NSRunningApplication
             .runningApplications(withBundleIdentifier: targetBundleID).first else {
+            Log.warn("Insert target=\(logTarget) path=clipboard-only reason=app-not-running")
             putOnClipboard(text)
             completion(.clipboardOnly)
             return
@@ -191,7 +197,8 @@ enum TextInserter {
         let tInsert = DispatchTime.now()
         if alreadyFrontmost && !conservativePaste {
             pasteIntoCurrentFocus(text, timing: .fast, allowRestore: allowClipboardRestore) { outcome in
-                Log.info("Timing insert=\(Log.ms(since: tInsert))ms path=fast")
+                Log.info("Insert target=\(logTarget) path=fast outcome=pasted"
+                         + " took=\(Log.ms(since: tInsert))ms")
                 completion(outcome)
             }
             return
@@ -205,10 +212,13 @@ enum TextInserter {
             if arrived {
                 pasteIntoCurrentFocus(text, timing: conservativePaste ? .conservative : .normal,
                                       allowRestore: allowClipboardRestore) { outcome in
-                    Log.info("Timing insert=\(Log.ms(since: tInsert))ms path=\(conservativePaste ? "activate-cold" : "activate")")
+                    Log.info("Insert target=\(logTarget)"
+                             + " path=\(conservativePaste ? "activate-cold" : "activate") outcome=pasted"
+                             + " took=\(Log.ms(since: tInsert))ms")
                     completion(outcome)
                 }
             } else {
+                Log.warn("Insert target=\(logTarget) path=clipboard-only reason=activate-timeout")
                 putOnClipboard(text)
                 completion(.clipboardOnly)
             }

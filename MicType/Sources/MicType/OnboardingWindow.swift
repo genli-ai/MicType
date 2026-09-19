@@ -35,6 +35,24 @@ final class OnboardingModel: ObservableObject {
     @Published var autoAdvanced = false
     /// AI 现在真的跑得起来吗（不是"点过没点过"）。最后一屏的三种收尾读这一个值。
     @Published var aiStatus: LLMCatalog.AIStatus = .off
+    /// 「试一下」那一页输入框里的字。放在模型里而不是页面的 @State 里，只为一件事：
+    /// 识别结果由窗口控制器**直接**写进来（TranscriptSink），视图外面够不着 @State。
+    @Published var tryItText = ""
+    /// 最近一次"字落进来了"的时刻，页面据此闪一下「已收到 ✓」。
+    /// 没有这道确认，用户分不清"没识别到"和"字落到别处去了"——4.0.1 那次正是后者。
+    @Published var tryItReceivedAt: Date?
+
+    /// 追加一段识别结果（只在主线程调）。追加而不是覆盖：这一页本来就该让人多试几次。
+    func appendTryItText(_ text: String) {
+        if tryItText.isEmpty {
+            tryItText = text
+        } else if tryItText.hasSuffix("\n") || tryItText.hasSuffix(" ") {
+            tryItText += text
+        } else {
+            tryItText += " " + text
+        }
+        tryItReceivedAt = Date()
+    }
 
     /// 「配好了而且润色开着」。footer 里那颗「跳过（只用本地）」按钮按它决定露不露面。
     var aiReady: Bool { aiStatus == .ready }
@@ -128,6 +146,10 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         // 上一轮点过「暂时跳过」的标记不能跨次留着：回头重走一遍引导的人，多半正是因为
         // 上次跳过导致热键不工作——第二遍不拦他，他很容易又一路点过去
         model.skippedPermissions = false
+        // 上一遍试出来的那几句同样不留：重走一遍引导的人看到的应该是一个空框，
+        // 而不是上次（很可能是没配好时）留下的半句话
+        model.tryItText = ""
+        model.tryItReceivedAt = nil
         // 「权限已经齐了就别再把他推走」和「开始下模型」原先都挂在权限页的 onAppear 上，
         // 而 onAppear 只在页码**变化**时才跑：上次就停在权限页关掉的窗口，再次
         // show(startAt: .permissions) 时页码没变，两件事一件都不做——模型不下，
@@ -157,8 +179,42 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
             }
         }
         window?.title = tr("欢迎使用 MicType", "Welcome to MicType")
+        // 「试一下」那一页的直接落字通道：窗口一开就挂上，关掉时摘下来。
+        // 挂着期间 DictationController 交付前会先问一句 isOnTryItPage，
+        // 所以停在别的页、或窗口没显示时行为和从前完全一样。
+        registerTranscriptSink()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// 引导窗开着、并且正停在「试一下」那一页吗——直接落字的唯一判据
+    var isOnTryItPage: Bool {
+        guard let window = window, window.isVisible else { return false }
+        return model.page == .tryIt
+    }
+
+    private func registerTranscriptSink() {
+        TranscriptSink.register(
+            isReady: { [weak self] in self?.isOnTryItPage ?? false },
+            accept: { [weak self] text in self?.acceptTranscript(text) ?? false })
+    }
+
+    /// 「试一下」那一页的落字入口（DictationController 在交付时调）。
+    /// 返回 false = 这一刻接不住，调用方必须退回粘贴那条路，绝不能让文字掉在地上。
+    @discardableResult
+    func acceptTranscript(_ text: String) -> Bool {
+        guard Thread.isMainThread else {
+            // 交付一律在主线程。万一不是，宁可退回粘贴，也不在别的线程上动 @Published
+            Log.warn("Try-it sink called off the main thread - falling back to paste")
+            return false
+        }
+        guard isOnTryItPage else { return false }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        model.appendTryItText(trimmed)
+        // 只记字数，绝不记内容：日志里永远看不到用户说了什么
+        Log.info("Onboarding try-it received chars=\(trimmed.count)")
+        return true
     }
 
     func finish() {
@@ -169,6 +225,8 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     /// 中途点红叉也算"看过了"：不纠缠用户，设置页里随时能重新打开。
     func windowWillClose(_ notification: Notification) {
+        // 窗口没了就别再截留文字：摘干净，之后的听写照常粘到光标处
+        TranscriptSink.unregister()
         if !Settings.shared.onboardingCompleted {
             Settings.shared.onboardingCompleted = true
             Log.info("Onboarding dismissed at page=\(model.page.rawValue)")
@@ -830,8 +888,12 @@ private struct TryItPage: View {
     @ObservedObject private var downloader = QwenModelDownloader.shared
     @AppStorage(SettingsKeys.qwenModelRepo) private var repo = QwenModels.defaultRepo
     @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
-    @State private var text = ""
     @FocusState private var editorFocused: Bool
+    /// 「已收到 ✓」那一下的开关（2.5 秒后自己熄）
+    @State private var flashReceived = false
+    /// 本机模型加载好了没有。QwenEngine 不是 ObservableObject，所以靠这个 1 秒的轮询刷新
+    @State private var modelReady = false
+    private let readinessTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     /// 这一屏让他"轻点试一次"，那就得先说清这一次能不能成。
     /// 4.0.1 只在"正在下"时提醒，于是在第二屏取消过下载、或者在第三屏把识别从云端
@@ -842,25 +904,52 @@ private struct TryItPage: View {
             && !QwenModels.isFullyDownloaded(repo: repo)
     }
 
+    /// 模型下好了、但还没加载完（首次启动、刚换过模型、刚「释放模型内存」）：
+    /// 这时候轻点是能用的，只是第一句要多等几秒。说一声，别让他以为卡死了。
+    private var localModelWarmingUp: Bool {
+        !RecognitionEngineChoice.parse(recognitionEngine).isCloud
+            && !localModelMissing && !downloader.isDownloading && !modelReady
+    }
+
     private var key: String { Settings.shared.hotkey.plainName }
 
     var body: some View {
         // 这一页把「试一次」和原来的收尾页合在一起，内容不短：套上滚动才不会有一句是看不见的
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text(tr("试一下", "Try it"))
-                    .font(.system(size: 16, weight: .semibold))
+                HStack(spacing: 8) {
+                    Text(tr("试一下", "Try it"))
+                        .font(.system(size: 16, weight: .semibold))
+                    // 字落进框里的那一下给一句看得见的确认：框里多了一段字，
+                    // 但用户的眼睛多半还在悬浮窗上，不点一下他不知道到底成没成
+                    if flashReceived {
+                        Text(tr("已收到 ✓", "Received ✓"))
+                            .font(.caption)
+                            .foregroundColor(.green)
+                    }
+                    Spacer()
+                }
                 Text(tr("光标已经在下面的框里。轻点 \(key)，说一句话，再轻点一次结束——文字会直接落进来。",
                         "The cursor is already in the box below. Tap \(key), say something, then tap again to finish — the text lands right here."))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                TextEditor(text: $text)
+                TextEditor(text: $model.tryItText)
                     .font(.system(size: 13))
                     .focused($editorFocused)
                     .frame(height: 96)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.35)))
+
+                // 模型在加载中：能试，只是第一句慢。和"没下载"分开说——
+                // 两句话的意思完全不同（一个要等几秒，一个得先下 860MB）
+                if localModelWarmingUp {
+                    Text(tr("识别模型正在载入，第一句可能要多等几秒。",
+                            "The speech model is still loading - your first sentence may take a few extra seconds."))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 if localModelMissing {
                     HStack(alignment: .firstTextBaseline) {
@@ -887,9 +976,9 @@ private struct TryItPage: View {
                         .font(.caption)
                         .foregroundColor(downloader.isDownloading ? .orange : .secondary)
                     Spacer()
-                    if !text.isEmpty {
+                    if !model.tryItText.isEmpty {
                         Button(tr("清空", "Clear")) {
-                            text = ""
+                            model.tryItText = ""
                             editorFocused = true
                         }
                         .controlSize(.small)
@@ -935,8 +1024,24 @@ private struct TryItPage: View {
         // 上一屏可能刚粘好 Key，也可能用户中途去设置页配了——进这一屏现算一次
         .onAppear {
             model.refreshAIReady()
-            // 稍等一拍再抢焦点：窗口刚翻页时 TextEditor 还没进响应链，立刻 focus 会落空
+            modelReady = QwenEngine.shared.isModelReady
+            // 稍等一拍再抢焦点：窗口刚翻页时 TextEditor 还没进响应链，立刻 focus 会落空。
+            // 焦点只影响用户自己打字——识别结果不靠它，走的是直接落字（TranscriptSink）
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { editorFocused = true }
+        }
+        .onReceive(readinessTimer) { _ in
+            let ready = QwenEngine.shared.isModelReady
+            if ready != modelReady { modelReady = ready }
+        }
+        // 字落进来了：闪 2.5 秒的「已收到 ✓」
+        .onChange(of: model.tryItReceivedAt) { _, received in
+            guard received != nil else { return }
+            withAnimation(.easeIn(duration: 0.12)) { flashReceived = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                // 这 2.5 秒里又落了一段：让新的那一次自己计时，别被这一下提前熄掉
+                guard model.tryItReceivedAt == received else { return }
+                withAnimation(.easeOut(duration: 0.2)) { flashReceived = false }
+            }
         }
     }
 }

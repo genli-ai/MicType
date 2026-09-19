@@ -50,6 +50,9 @@ final class HotkeyManager {
         let m1 = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
             self?.handleFlagsChanged(event)
         }
+        // 本地监听这一条不是可有可无的备份：MicType 自己是前台应用时（引导窗的「试一下」、
+        // 设置窗口），全局监听按设计**不会**收到事件，热键全靠它。本地监听在事件进入
+        // 响应链之前就跑，所以引导页那个 TextEditor 吃不掉修饰键——轻点照常开录。
         let m2 = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
             self?.handleFlagsChanged(event)
             return event

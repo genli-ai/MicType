@@ -1,5 +1,39 @@
 import AppKit
 
+/// 「直接落字」通道：MicType 自己的界面（目前只有引导窗的「试一下」那一页）开着时，
+/// 最终文字不走"写剪贴板 + 模拟 ⌘V"，而是直接交给那个界面写进自己的输入框。
+///
+/// 为什么非要这一条路（4.0.1 用户在另一台 Mac 上实测）：试一下那一页靠 ⌘V 落字，
+/// 而 ⌘V 永远打向"此刻的键盘焦点"——翻页动画刚结束 TextEditor 还没进响应链、
+/// 或者用户中途点过别处，这一下就落到别的地方去了。用户看到的是
+/// 「悬浮窗一切正常，框里一个字都没有」，还查不出所以然。
+/// 引导页是我们自己的视图，压根不需要模拟按键：把字给它自己 append 就行。
+///
+/// 两条纪律：
+///   • 没人注册时行为和从前**逐字一致**（isReady 恒 false，一律走 TextInserter）；
+///   • accept 返回 false（窗口刚关掉 / 刚翻页）时调用方必须退回粘贴那条路——
+///     绝不允许文字掉在地上。
+/// 只在主线程读写。
+enum TranscriptSink {
+
+    /// 现在接得住吗（引导窗开着、且停在「试一下」那一页）
+    private(set) static var isReady: () -> Bool = { false }
+    /// 把这段最终文字交给它；返回 false = 这一刻没接住
+    private(set) static var accept: (String) -> Bool = { _ in false }
+
+    static func register(isReady: @escaping () -> Bool, accept: @escaping (String) -> Bool) {
+        Self.isReady = isReady
+        Self.accept = accept
+        Log.info("Transcript sink registered")
+    }
+
+    static func unregister() {
+        Self.isReady = { false }
+        Self.accept = { _ in false }
+        Log.info("Transcript sink cleared")
+    }
+}
+
 /// 听写主流程：录音 → 本地识别 → AI 润色 → 插入光标处
 final class DictationController {
 
@@ -1729,6 +1763,20 @@ final class DictationController {
     /// 毫无关系。3.3 之前两者共用一个参数，于是冷启动那一次会静默忽略用户
     /// 「输入后恢复原剪贴板内容」的设置，把他的原剪贴板永久换成听写结果，界面上还不吭声。
     /// 恢复与否永远只听 Settings.restoreClipboard。
+    /// 这一段文字往哪儿送。纯函数、可单测：判据只有一条——
+    /// 引导窗开着且停在「试一下」那一页就直接落字，其余一律走剪贴板 + ⌘V。
+    /// 抽出来是因为"走错路"的代价是用户一个字都看不到，而那是查不出来的静默失败。
+    enum DeliveryRoute: String {
+        /// 直接写进我们自己的输入框（TranscriptSink）
+        case sink
+        /// 常规：写剪贴板 + 模拟 ⌘V 打到光标处（TextInserter）
+        case inserter
+    }
+
+    static func deliveryRoute(onboardingVisibleOnTryIt: Bool) -> DeliveryRoute {
+        onboardingVisibleOnTryIt ? .sink : .inserter
+    }
+
     private func deliver(raw: String, final text: String, note: String, warning: Bool = false,
                          coldStart: Bool = false, revertible: Bool = false,
                          citations: [Citation] = []) {
@@ -1755,18 +1803,43 @@ final class DictationController {
         // 这一轮的代数也要定格：上面刚把 phase 置回 .idle，而插入回调最长要等到
         // 前台切换完成（≤1.2s）+ 保守时序，这期间用户完全可能已经按键开了下一轮
         let generation = self.generation
-        Log.info("Deliver start chars=\(finalText.count) target=\(target)")
+        // 目标应用、走了哪条路、结果如何——每一次交付都把这三样写进日志。
+        // 4.0.1 那次「试一下不落字」之所以只能靠猜，就是因为日志里这三样一样都没有。
+        let logTarget = target.isEmpty ? "unknown" : target
+        let route = Self.deliveryRoute(onboardingVisibleOnTryIt: TranscriptSink.isReady())
+        Log.info("Deliver start chars=\(finalText.count) target=\(logTarget) route=\(route.rawValue)")
         // 插入这一段也计时：它包含切前台（最长 1.2s）+ 粘贴时序，是用户真实等待的一部分。
         // 草稿在这里定格成局部变量——回调最长要等一秒多，那时 pendingMetric 可能已经是下一轮的了。
         let tInsert = DispatchTime.now()
         let metric = pendingMetric
         pendingMetric = nil
+        if route == .sink, TranscriptSink.accept(finalText) {
+            let insertMs = Log.ms(since: tInsert)
+            Log.info("Deliver done target=\(logTarget) path=sink outcome=accepted insert=\(insertMs)ms")
+            // 指标照记：这一轮的耗时是既成事实，和走哪条路无关
+            if let metric = metric { Metrics.shared.record(metric.finished(insertMs: insertMs)) }
+            // 这条路**不**开放「换回识别原文」：撤销是对目标应用发一次 ⌘Z，
+            // 而这段字根本不是粘进去的，⌘Z 只会撤掉用户在别处的编辑。
+            // 提示与声音和粘贴那条路逐字一致（warning 时绝不打绿勾）。
+            if warning {
+                overlay.flashError(note)
+            } else {
+                overlay.flashSuccess(note)
+            }
+            Sounds.playSuccess()
+            return
+        }
+        if route == .sink {
+            // 注册着却没接住（窗口刚被关掉、或刚翻到别的页）：照常走粘贴，绝不让文字掉在地上
+            Log.warn("Deliver sink declined the text — falling back to paste")
+        }
         TextInserter.insert(finalText, targetBundleID: target,
                             allowClipboardRestore: true,
                             conservativePaste: coldStart) { [weak self] outcome in
             guard let self = self else { return }
             let insertMs = Log.ms(since: tInsert)
-            Log.info("Timing insert=\(insertMs)ms outcome=\(outcome == .pasted ? "pasted" : "clipboardOnly")")
+            Log.info("Deliver done target=\(logTarget) path=inserter"
+                     + " outcome=\(outcome == .pasted ? "pasted" : "clipboard-only") insert=\(insertMs)ms")
             // 先记指标再判代数：这一轮的耗时是既成事实，哪怕用户已经开了下一轮也照样算数
             if let metric = metric { Metrics.shared.record(metric.finished(insertMs: insertMs)) }
             // 对不上这一轮就到此为止：迟到的成功提示会把新一轮的录音悬浮窗盖成绿勾，
