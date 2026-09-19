@@ -180,7 +180,7 @@ struct ModelCatalog: Codable, Equatable {
                     en: "30 languages + 22 Chinese dialects; strongest on Chinese and English, usable on Arabic, fully on-device."),
                 recommended: true,
                 recommendedFor: [],
-                minAppVersion: "3.3.0",
+                minAppVersion: "4.0.0",
                 revision: nil),
             CatalogModel(
                 repo: "mlx-community/Qwen3-ASR-1.7B-4bit",
@@ -193,7 +193,7 @@ struct ModelCatalog: Codable, Equatable {
                     en: "A larger model: more accurate overall, but measured about twice as slow and heavier on memory. It responds to vocabulary hotwords less than the 0.6B model, so for speech with embedded English names the recommended model plus a vocabulary is still the better route."),
                 recommended: false,
                 recommendedFor: [],
-                minAppVersion: "3.3.0",
+                minAppVersion: "4.0.0",
                 revision: nil),
         ])
 }
