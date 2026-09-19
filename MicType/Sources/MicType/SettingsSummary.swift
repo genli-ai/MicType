@@ -15,10 +15,21 @@ import Foundation
 ///   • 没有需要处理的事就**没有徽章**：常驻的橙色标记两天之内就会被眼睛滤掉。
 enum SettingsSummary {
 
+    /// 徽章的分量。颜色由它决定，而不是由调用方顺手挑一个——
+    /// 「正在下载 42%」是一件自己会好的事，和「还没填 Key」长成同一个橙色，
+    /// 用户学会的是"橙色＝不用管"，那两枚徽章就都白挂了。
+    enum BadgeLevel: Equatable {
+        /// 要你动手（没下模型、没填 Key、配置没填完）
+        case attention
+        /// 正在进行，不需要你动手（下载中）
+        case progress
+    }
+
     /// 一张卡的文字。badge == nil = 这张卡现在不需要你管。
     struct Card: Equatable {
         let sentence: String
         let badge: String?
+        var level: BadgeLevel = .attention
     }
 
     /// 三段事实并排，不连成句子：卡片只有一行，一行装得下才有意义
@@ -76,7 +87,9 @@ enum SettingsSummary {
         parts.append(modelPhrase(modelState))
         let mic = micName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !mic.isEmpty { parts.append(tr("麦克风 \(mic)", "Microphone \(mic)")) }
-        return Card(sentence: parts.joined(separator: dot), badge: modelBadge(modelState))
+        return Card(sentence: parts.joined(separator: dot),
+                    badge: modelBadge(modelState),
+                    level: modelBadgeLevel(modelState))
     }
 
     /// 识别语言那一格。**认不出来的脏值一律当「自动」**——和 RecognitionLanguages.modelLanguage
@@ -99,6 +112,12 @@ enum SettingsSummary {
         case .downloading(let percent):
             return tr("模型下载中 \(percent)%", "Model downloading \(percent)%")
         }
+    }
+
+    /// 下载中是唯一一件"自己会好"的事：它不该和"你得去下一个模型"同色
+    private static func modelBadgeLevel(_ state: ModelState) -> BadgeLevel {
+        if case .downloading = state { return .progress }
+        return .attention
     }
 
     private static func modelBadge(_ state: ModelState) -> String? {

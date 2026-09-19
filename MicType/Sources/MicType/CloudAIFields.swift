@@ -80,11 +80,7 @@ struct ModelPickerField: View {
             if menu.isEmpty {
                 // 其他 OpenAI 兼容服务 / 本机模型没有内置型号（型号名只有用户自己知道）：
                 // 下拉整个藏掉，指路「高级」里那两个输入框，而不是摆一个点了没反应的控件
-                Text(tr("这一档没有内置型号：型号名在下面的「高级」里填。",
-                        "This provider has no built-in models: name the model under Advanced below."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Caption(SettingsCopy.modelNameInAdvanced)
             } else {
                 Picker(tr("模型：", "Model:"), selection: selection) {
                     ForEach(menu, id: \.id) { choice in
@@ -98,11 +94,10 @@ struct ModelPickerField: View {
                               text: customText)
                         .textFieldStyle(.roundedBorder)
                 }
+                // 下拉下面唯一那一行（润色和指令共用这一个型号、要分开去「高级」）。
+                // 价格与型号名是事实，不是解释，所以留在控件旁边
                 if let summary = LLMCatalog.modelMenuSummary(provider: provider) {
-                    Text(summary)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Caption(summary)
                 }
             }
         }
@@ -117,10 +112,6 @@ struct CloudRecognitionFields: View {
     /// 设置页给全套（探测接入地址 / 测试识别）；引导页只摆开关、说明和接入地址框——
     /// 首配的人手上还没有"上一次试通的那台"可以重新探测。
     var showsDiagnostics: Bool = true
-    /// 上传 / 计费 / 留存那几句（PrivacyCopy.cloudAlibabaLines）要不要逐句摆出来。
-    /// 引导页要（那是第一次做这个选择的地方）；设置页把它们收进段头那颗 ⓘ 里——
-    /// 回来改设置的人已经读过一遍，不该每次都被同样五行字推着往下滚（Plan C 的文案预算）。
-    var showsPrivacyLines: Bool = true
     /// 开关动过之后调用方要做的事（引导页据此重算"AI 现在跑不跑得起来"）
     var onEngineChange: (() -> Void)? = nil
 
@@ -170,26 +161,10 @@ struct CloudRecognitionFields: View {
                     hostProbeResult = ""
                     invalidateCloudTest()
                 }
-            Text(tr("识别模型 \(cloudAlibabaModel)（阿里云同步接口唯一可用的型号）· 音频上传 · 按秒计费",
-                    "Model \(cloudAlibabaModel) (the only model on Alibaba's synchronous API) · audio is uploaded · billed per second"))
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if isOn, showsPrivacyLines {
-                // 上传、计费、留存、先开通模型、出错回落——这几句只出现在做这个选择的地方
-                ForEach(PrivacyCopy.cloudAlibabaLines, id: \.self) { line in
-                    Text(line)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            } else if showsPrivacyLines {
-                Text(tr("默认关着：录音一个字节都不出这台 Mac。机器慢、录音长、或本机模型听不好你说的语言时才值得开。",
-                        "Off by default: not a byte of audio leaves this Mac. Worth turning on when this Mac is slow, the takes are long, or the on-device model handles your language poorly."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            // 开关旁边只留一行：开着说代价（上传 + 按秒计费），关着说默认（不出这台 Mac）。
+            // 单价、留存、先开通模型、出错回落全部收进段头那颗 ⓘ（SettingsCopy.cloudRecognitionInfo）
+            Caption(isOn ? cloudAlibabaModel + " · " + SettingsCopy.cloudRecognitionCost
+                         : SettingsCopy.cloudRecognitionOff)
 
             // 接入地址：**可选**输入框，不是选择器。地址由 MicType 自己试（见 AlibabaEndpoint），
             // 这个框只留给"我就是知道地址"的人，空着才是常态。输入框 / 说明 / 格式提示与引导页共用一份。
@@ -207,17 +182,14 @@ struct CloudRecognitionFields: View {
     @ViewBuilder
     private var hostRow: some View {
         if !qwenAPIHost.isEmpty {
-            Text(tr("已经填了接入地址，MicType 就只用它，不再自己试。",
-                    "With an API host filled in, MicType uses only that one and never probes."))
-                .font(.caption)
-                .foregroundColor(.secondary)
+            Caption(SettingsCopy.hostFilledManually)
         } else {
             // 这一行**在地址还没定下来时也要有**：钥匙串里已经有 Key 的人（从 4.0.0 升上来、
             // 或导入过设置）不会再粘一次 Key，而粘 Key 是原先唯一的探测入口。
             HStack(alignment: .firstTextBaseline) {
                 Text(qwenResolvedHost.isEmpty
-                     ? tr("接入地址还没试出来。", "The endpoint has not been detected yet.")
-                     : tr("已试通的接入地址：", "Endpoint in use: ") + qwenResolvedHost)
+                     ? SettingsCopy.hostNotDetectedYet
+                     : SettingsCopy.hostInUse + qwenResolvedHost)
                     .font(.caption)
                     .foregroundColor(qwenResolvedHost.isEmpty ? .orange : .secondary)
                     .textSelection(.enabled)
@@ -293,7 +265,7 @@ struct CloudRecognitionFields: View {
             case .success(let host):
                 CloudASRSettings.rememberResolution(host: host, model: nil)
                 hostProbeOK = true
-                hostProbeResult = tr("已试通的接入地址：", "Endpoint in use: ") + host
+                hostProbeResult = SettingsCopy.hostInUse + host
             case .failure(let failure):
                 hostProbeOK = false
                 hostProbeResult = failure.message
@@ -364,4 +336,151 @@ struct CloudRecognitionFields: View {
             }
         }
     }
+}
+
+// MARK: - 首配那一串控件（「云端 AI」页与引导第三屏同一份）
+
+/// 使用方式 → 服务商 → Key → 模型 →（阿里云的）云端识别开关：**整个首配只有这一串**。
+///
+/// 为什么非得共用到这一层：4.0.1 两处各写一份，于是「识别也用云端」那个开关只长在设置页上；
+/// 4.0.2 把控件逐个抽成了组件，可**顺序、标题、那一行说明、那颗 ⓘ** 仍然是各写各的——
+/// 结果同一个决定在两个地方读起来像两件事。现在连同这些一起收进这一个视图，
+/// 两处只剩下真正不同的那一点：设置页是"选了就生效"，引导页是"验证通过才采纳"
+/// （所以 Binding 的 setter 仍由调用方写，见 providerBinding 的两份注释）。
+struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
+
+    /// 摆成 Form 的分段（设置页），还是摆成一串行（引导页那一屏是 VStack）
+    enum Style { case settings, onboarding }
+
+    let style: Style
+    /// 这一刻看着的那一档（引导页可能还没被采纳为生效服务商）
+    let selected: LLMProvider
+    let usageMode: Binding<AIUsageMode>
+    let provider: Binding<LLMProvider>
+    let offered: [LLMProvider]
+    let polishModel: Binding<String>
+    let commandModel: Binding<String>
+    let customModelChosen: Binding<Bool>
+    /// 这把 Key 用哪条链路验（开着云端识别的阿里云档直接打识别端点）
+    let keyProbe: KeyVerifier.Probe
+    /// 拿来探活的型号（润色型号）
+    let keyProbeModel: String
+    /// 模型下拉与云端识别开关露不露面。引导页要"这一档真的通了"才露——
+    /// 还没连上就先摆一个花钱的选择，用户点下去也不知道点没点上
+    let showsModel: Bool
+    /// 云端识别那一段带不带「探测接入地址 / 测试识别」（首配的人手上还没有"上一次试通的那台"）
+    let showsDiagnostics: Bool
+    var onKeyStatus: ((KeyVerifier.Status) -> Void)? = nil
+    var onEngineChange: (() -> Void)? = nil
+    /// 「使用方式」下面的边界状态（存着的 Key、润色被关掉、识别停在老档……）
+    @ViewBuilder var usageNotices: () -> UsageNotices
+    /// 「服务商」下面的边界状态（地址被改过、这一档还没 Key……）
+    @ViewBuilder var providerNotices: () -> ProviderNotices
+
+    private var usingAI: Bool { usageMode.wrappedValue == .withAI }
+
+    var body: some View {
+        switch style {
+        case .settings: settingsSections
+        case .onboarding: onboardingRows
+        }
+    }
+
+    // MARK: 设置页：一段一个 ⓘ
+
+    @ViewBuilder
+    private var settingsSections: some View {
+        Section {
+            usagePicker
+            // 这一档现在是什么，一行说完；两档各自的代价收在段头那颗 ⓘ 里
+            Caption(usageMode.wrappedValue == .localOnly ? SettingsCopy.usageLocalOnly
+                                                         : SettingsCopy.usageWithAI)
+            usageNotices()
+        } header: {
+            SectionHeader(title: usageTitle, info: SettingsCopy.usageInfo)
+        }
+        // 「只用本地」时下面一个控件都不摆：那一档的全部事实就是"不联网、不花钱"，
+        // 再摆一排 AI 设置只会让人以为自己还有什么没配完
+        if usingAI {
+            Section {
+                ProviderPickerField(selection: provider, offered: offered)
+                providerNotices()
+            } header: {
+                SectionHeader(title: providerTitle, info: SettingsCopy.providerInfo)
+            }
+            Section {
+                keyField
+            } header: {
+                SectionHeader(title: keyTitle, info: SettingsCopy.keyInfo(cloudASRProbe: keyProbe != .llm))
+            }
+            if showsModel {
+                Section {
+                    modelField
+                } header: {
+                    SectionHeader(title: modelTitle)
+                }
+            }
+            if selected == .qwen, showsModel {
+                Section {
+                    CloudRecognitionFields(showsDiagnostics: showsDiagnostics,
+                                           onEngineChange: onEngineChange)
+                } header: {
+                    SectionHeader(title: cloudRecognitionTitle, info: SettingsCopy.cloudRecognitionInfo)
+                }
+            }
+        }
+    }
+
+    // MARK: 引导页：同样的顺序、同样的标题、同样那几颗 ⓘ，只是没有 Form 的分段
+
+    @ViewBuilder
+    private var onboardingRows: some View {
+        usagePicker
+        usageNotices()
+        if usingAI {
+            ProviderPickerField(selection: provider, offered: offered)
+            providerNotices()
+            SectionHeader(title: keyTitle, info: SettingsCopy.keyInfo(cloudASRProbe: keyProbe != .llm))
+            keyField
+            if showsModel {
+                SectionHeader(title: modelTitle)
+                modelField
+            }
+            if selected == .qwen, showsModel {
+                SectionHeader(title: cloudRecognitionTitle, info: SettingsCopy.cloudRecognitionInfo)
+                CloudRecognitionFields(showsDiagnostics: showsDiagnostics,
+                                       onEngineChange: onEngineChange)
+            }
+        }
+    }
+
+    // MARK: 控件本体（两种摆法共用这四个）
+
+    private var usagePicker: some View {
+        Picker(tr("使用方式：", "How you use MicType:"), selection: usageMode) {
+            ForEach(AIUsageMode.allCases, id: \.rawValue) { mode in
+                Text(mode.displayName).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+    }
+
+    private var keyField: some View {
+        KeyEntryView(provider: selected, model: keyProbeModel, probe: keyProbe,
+                     onStatusChange: onKeyStatus)
+    }
+
+    private var modelField: some View {
+        ModelPickerField(provider: selected,
+                         polishModel: polishModel,
+                         commandModel: commandModel,
+                         customChosen: customModelChosen)
+    }
+
+    // 段名只写一处：引导页指路「设置 → 云端 AI → …」时，用户要在那边认得出同一个名字
+    private var usageTitle: String { tr("使用方式", "How you use MicType") }
+    private var providerTitle: String { tr("服务商", "Provider") }
+    private var keyTitle: String { "API Key" }
+    private var modelTitle: String { tr("模型", "Model") }
+    private var cloudRecognitionTitle: String { tr("云端识别（可选）", "Cloud recognition (optional)") }
 }

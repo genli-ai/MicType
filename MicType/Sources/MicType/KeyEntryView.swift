@@ -225,10 +225,10 @@ struct KeyEntryView: View {
     /// 用哪条链路验这把 Key。默认走 LLM（AI 页）；识别页传 `.cloudASR(...)`，
     /// 直接打识别端点、发 1 秒合成音（理由见 KeyVerifier.Probe）
     var probe: KeyVerifier.Probe = .llm
-    /// Key 存储与费用那两句要不要跟在输入框下面。引导第 5 屏把它们钉在整屏底部
-    /// （那是"固定的成本声明"该在的位置），所以那一处传 false——**文字仍是同两个常量**，
-    /// 只是摆的地方不同（同一个事实只写一处，见 C10）。
-    var showsStorageNotes: Bool = true
+    /// 输入框下面那一行**价格**（LLMCatalog.billingNote，全 App 唯一出处）要不要显示。
+    /// Plan C 的文案预算：Key 怎么存、新账号要先充值这些细则全部收进段头那颗 ⓘ
+    /// （SettingsCopy.keyInfo），控件旁边只留代价——代价不是解释，永远不进 ⓘ。
+    var showsCostLine: Bool = true
     /// 验证结束时通知外面（true = 通过）。菜单栏的「配置 AI…」之类要据此刷新。
     var onStatusChange: ((KeyVerifier.Status) -> Void)? = nil
 
@@ -268,26 +268,12 @@ struct KeyEntryView: View {
                         .lineLimit(3)
                         .textSelection(.enabled)
                 }
-                if showsStorageNotes {
-                    Text(LLMCatalog.keyStorageNote + " " + LLMCatalog.billingNote)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                if LLMCatalog.apiKeyConsoleURL(for: provider) == nil {
-                    Text(tr("在这家服务商自己的控制台里创建 Key。", "Create the key in this provider's own console."))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } else {
-                    Text(LLMCatalog.newAccountNote)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                if showsCostLine {
+                    Caption(LLMCatalog.billingNote)
                 }
             } else {
                 // 本机模型：没有 Key 不是"还没配好"，是这一档的正常状态
-                Text(tr("本机模型不需要 API Key（Ollama 忽略它，LM Studio 压根不要）。模型在你自己的机器上跑，文字不出网、不花钱。",
-                        "Local models need no API key (Ollama ignores it, LM Studio does not ask for one). The model runs on your own Mac, so nothing leaves it and nothing is billed."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                Caption(SettingsCopy.localModelNeedsNoKey)
             }
         }
         .onAppear { load() }
@@ -357,17 +343,10 @@ enum QwenHostField {
     static func field(host: Binding<String>) -> some View {
         TextField(tr("接入地址（可选）", "API host (optional)"), text: host)
             .textFieldStyle(.roundedBorder)
-        Text(tr("留空即可：粘 Key 的时候 MicType 会自己把接入地址试出来，试通之后就记住，以后不再探测。\n只有自动没试对时才需要填——到阿里云百炼控制台复制「接入地址」那一串（apiHost 或整条 URL 都行）。",
-                "Leave it empty: when you paste the key, MicType finds the right endpoint itself and remembers it, so it never probes again.\nFill it in only if that fails - copy the API host from the Alibaba Model Studio console (the bare host or the full URL both work)."))
-            .font(.caption)
-            .foregroundColor(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+        // 空着是常态（交给自动探测），所以这里只留一行；"去哪儿复制这一串"收进段头那颗 ⓘ
+        Caption(SettingsCopy.hostAutoDetected)
         if isMalformed(host.wrappedValue) {
-            Text(tr("这串不像一个接入地址（主机名里不能有空格或中文）。清空它就交回给自动探测。",
-                    "That does not look like a host name (no spaces or non-ASCII characters). Clear it to hand the job back to auto-detection."))
-                .font(.caption)
-                .foregroundColor(.orange)
-                .fixedSize(horizontal: false, vertical: true)
+            Caption(SettingsCopy.hostMalformed, warning: true)
         }
     }
 }

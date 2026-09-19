@@ -175,9 +175,6 @@ final class MicTestSession: ObservableObject {
 /// 两处共用同一份实现，行为与文案只有一处可改，不会再出现"引导里能换麦、设置里不能"这种偏差。
 struct MicCheckPanel: View {
 
-    /// 设置页要那段"测试会录 3 秒、只看音量"的长说明；引导页寸土寸金，只留控件
-    let showsFootnote: Bool
-
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKeys.inputDeviceUID) private var inputDeviceUID = ""
     @StateObject private var session = MicTestSession()
@@ -185,16 +182,8 @@ struct MicCheckPanel: View {
     /// 插拔 AirPods / 接上声卡时下拉框要立刻跟上（否则得关掉窗口再打开才看得见）
     @State private var deviceObserver: InputDevices.DeviceChangeObserver?
 
-    init(showsFootnote: Bool = true) {
-        self.showsFootnote = showsFootnote
-    }
-
-    /// 那段"测试会录 3 秒、只看音量"的说明。**只写一处**：设置页把它收进段头那颗 ⓘ 里
-    /// （Plan C 的文案预算），引导页仍然摆在控件下面——两边逐字同一句。
-    static var footnote: String {
-        tr("测试会录 3 秒，只看音量：录到的声音当场丢弃，不识别、不保存。\n选定的麦克风在开始录音时没插上，会自动退回系统默认（这次录音照常进行），设置本身不改动。",
-           "The test records for 3 seconds and only meters the level - the audio is discarded, never transcribed or saved.\nIf the selected microphone is not connected when recording starts, MicType falls back to the system default for that session and leaves your choice untouched.")
-    }
+    /// 那段"测试会录 3 秒、只看音量"的说明**不在这个组件里**：设置页把它收进段头那颗 ⓘ
+    /// （SettingsCopy.micCheckInfo），引导页那一屏寸土寸金，本来就只摆控件。
 
     /// 「系统默认」当前实际指向谁——写在选项里，用户不用去系统设置里对照
     private var systemDefaultLabel: String {
@@ -238,12 +227,6 @@ struct MicCheckPanel: View {
             }
             if !session.message.isEmpty {
                 Text(session.message)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if showsFootnote {
-                Text(Self.footnote)
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

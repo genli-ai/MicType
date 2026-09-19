@@ -82,22 +82,18 @@ struct InputEditor: View {
                     Text(selectedHotkey.displayName).tag(selectedHotkey.rawValue)
                 }
             }
-            Caption(tr("轻点听写 · 按住说指令 · Esc 取消",
-                       "Tap to dictate · hold to command · Esc cancels"))
+            Caption(SettingsCopy.hotkeyGestures)
             // Fn / 🌐 不在可选那三档里了，但老设置和导入的设置文件仍然能把它存进来——
             // 存着它的人**必须**先去系统设置里让系统放手，否则每次轻点都被系统抢去切输入法
             if selectedHotkey == .fn {
-                BoundaryRow(text: tr("Fn / 🌐 要先在系统设置里改成「不执行任何操作」。",
-                                     "Set the 🌐 key to “Do Nothing” in System Settings first.")) {
+                BoundaryRow(text: SettingsCopy.fnNeedsSystemSetting) {
                     Button(tr("打开键盘设置", "Open Keyboard Settings")) {
                         Permissions.openKeyboardSettings()
                     }
                 }
             }
             if selectedHotkey.isLeftSideModifier {
-                Caption(tr("左侧键天天参与组合键，误触更多",
-                           "Left-side modifiers mistrigger more in everyday shortcuts"),
-                        warning: true)
+                Caption(SettingsCopy.leftSideModifier, warning: true)
             }
             HStack {
                 Text(tr("上手引导：", "Welcome guide:"))
@@ -107,14 +103,10 @@ struct InputEditor: View {
                 }
             }
         } header: {
-            SectionHeader(title: tr("快捷键", "Hotkey"), info: hotkeyInfo)
+            SectionHeader(title: tr("快捷键", "Hotkey"), info: SettingsCopy.hotkeyInfo)
         }
     }
 
-    private var hotkeyInfo: String {
-        tr("轻点开始、再轻点结束听写；按住说完松手执行语音指令。录音中按 Esc 取消，一个字都不会输入。长录音已经转出前几段时，第一次 Esc 是「收尾并输入」——停掉还没转的部分，把转好的照常插入，再按一次才彻底丢弃。",
-           "Tap to start dictation and tap again to stop; hold, speak and release to run a voice command. Esc cancels while recording and nothing is inserted. Once a long take has already produced text, the first Esc means finish and insert — the untranscribed tail is dropped and the rest goes in as usual. Press it again to discard everything.")
-    }
 
     // MARK: ② 悬浮窗
 
@@ -126,14 +118,10 @@ struct InputEditor: View {
                 }
             }
         } header: {
-            SectionHeader(title: tr("悬浮窗", "Overlay"), info: overlayInfo)
+            SectionHeader(title: tr("悬浮窗", "Overlay"), info: SettingsCopy.overlayInfo)
         }
     }
 
-    private var overlayInfo: String {
-        tr("多屏时悬浮窗永远出现在鼠标所在的那块屏幕，这里只决定它落在这块屏的哪个位置。录音中和处理中可以直接点胶囊右端那颗小按钮，它这一刻写着什么就是什么（「⎋ 取消」或「⎋ 收尾并输入」），和按 Esc 完全一样，而且不会把输入焦点从当前应用抢走。",
-           "On multiple displays the overlay always appears on the screen holding the pointer; this only picks where it sits on that screen. While recording or processing you can click the small button at the right end of the capsule — it does exactly what it says at that moment (⎋ Cancel, or ⎋ Finish & insert), same as pressing Esc, and it never takes focus away from the app you are typing into.")
-    }
 
     // MARK: ③ 录音
 
@@ -148,33 +136,25 @@ struct InputEditor: View {
             }
             // 开着的时候那句「默认关」就成了废话：步进器已经把行为说全了
             if autoStopSilence == 0 {
-                Caption(tr("默认关：什么时候说完由你决定",
-                           "Off by default: you decide when you are done"))
+                Caption(SettingsCopy.autoStopOff)
             }
             Toggle(tr("录音时显示实时识别草稿", "Show live transcript while recording"), isOn: $livePreview)
             // 草稿是本机模型转的（云端档不会为了看草稿把每一秒都上传一遍）。只用云端、
             // 从没下过本机模型的人打开这个开关什么也不会发生——与其让他录一遍再来报 bug，
             // 不如当面说清这个开关这会儿没有用武之地。
             if !QwenEngine.shared.isModelAvailable {
-                Caption(tr("没有本机模型，草稿不会出现",
-                           "No on-device model, so no draft appears"),
-                        warning: true)
+                Caption(SettingsCopy.draftNeedsLocalModel, warning: true)
             } else {
-                Caption(tr("草稿只出现在悬浮窗里", "The draft only ever shows in the overlay"))
+                Caption(SettingsCopy.draftOverlayOnly)
             }
             // 时长上限此前在界面上无处可查，用户第一次知道它存在就是被自动收尾那一刻。
             // 数字由识别链路自己给（读的是上限那个常量），界面这边一个数字都不写死。
             Caption(DictationController.recordingLimitShort)
         } header: {
-            SectionHeader(title: tr("录音", "Recording"), info: recordingInfo)
+            SectionHeader(title: tr("录音", "Recording"), info: SettingsCopy.recordingInfo)
         }
     }
 
-    private var recordingInfo: String {
-        tr("自动结束＝正常收尾这一段（照常识别并输入），不是丢弃。实时草稿只出现在悬浮窗里，永远不会输入到光标处；最终结果始终是识别管线自己转出来的那一版，与草稿无关。\n",
-           "Auto-stop finishes the take normally (it is still transcribed and inserted) — nothing is discarded. The live draft only appears in the floating window and never reaches your cursor; the final text always comes from the recognition pipeline itself.\n")
-            + DictationController.recordingLimitCopy
-    }
 
     // MARK: ④ 行为
 
@@ -197,14 +177,10 @@ struct InputEditor: View {
                     }
                 }
         } header: {
-            SectionHeader(title: tr("行为", "Behavior"), info: behaviourInfo)
+            SectionHeader(title: tr("行为", "Behavior"), info: SettingsCopy.behaviourInfo)
         }
     }
 
-    private var behaviourInfo: String {
-        tr("听写历史保存在本机 ~/Library/Application Support/MicType/history.json，最多 200 条，从不上传。关掉后立即停止记录；已有的记录不会自动删除，可在菜单栏「最近记录 → 清空记录」清空，或在历史记录窗口（⌘Y）里逐条删。",
-           "Transcripts are kept on this Mac in ~/Library/Application Support/MicType/history.json (up to 200) and are never uploaded. Turning this off stops recording immediately; existing entries are left alone — clear them from the menu bar (Recent Transcripts → Clear History) or delete them one by one in the History window (⌘Y).")
-    }
 
     // MARK: ⑤ 语言与备份
 
@@ -231,16 +207,10 @@ struct InputEditor: View {
                 Caption(backupStatus)
             }
         } header: {
-            SectionHeader(title: tr("语言与备份", "Language & Backup"), info: backupInfo)
+            SectionHeader(title: tr("语言与备份", "Language & Backup"), info: SettingsCopy.backupInfo)
         }
     }
 
-    /// 清单要跟着 SettingsBackup.Key.all 走。「导入可能把识别改成云端」也写在这里——
-    /// 导入后那张模态摘要确实会讲，但**决定要不要信这个文件**是在点「导入设置…」之前发生的。
-    private var backupInfo: String {
-        tr("导出一个 JSON 文件：词汇表、关于我、自定义规则、润色档位与型号、识别引擎与识别语言、阿里云接入地址、本机识别模型、热键与界面语言。导入是合并——词表取并集，其余只覆盖文件里出现的项。\n别人给的文件可能把识别改成云端（导入后会明确提示一次）。API Key 从不导出、也从不导入：它只在钥匙串里。文件格式 Mac 与 Windows 通用。",
-           "Exports one JSON file: vocabulary, about-me, custom rules, polish mode and model names, recognition engine and language, the Alibaba API host, on-device speech model, hotkey and interface language. Import merges — vocabulary lists are unioned and other settings are overwritten only where the file has them.\nA file from someone else can switch recognition to a cloud engine (the import summary says so).\nAPI keys are never exported or imported: they live in the Keychain. The format is shared with the Windows build.")
-    }
 }
 
 // MARK: - 本地识别（麦克风 / 语言 / 词汇表 / 本机模型）
@@ -296,34 +266,34 @@ struct RecognitionEditor: View {
         Form {
             // 麦克风选择 + 电平自检：与引导第二屏共用同一个组件（MicCheck.swift）
             Section {
-                MicCheckPanel(showsFootnote: false)
+                MicCheckPanel()
             } header: {
-                SectionHeader(title: tr("麦克风", "Microphone"), info: MicCheckPanel.footnote)
+                SectionHeader(title: tr("麦克风", "Microphone"), info: SettingsCopy.micCheckInfo)
             }
 
             Section {
                 languageSection
             } header: {
-                SectionHeader(title: tr("识别语言", "Recognition language"), info: languageInfo)
+                SectionHeader(title: tr("识别语言", "Recognition language"), info: SettingsCopy.languageInfo)
             }
 
             Section {
                 localModelSection
             } header: {
-                SectionHeader(title: tr("识别模型", "Speech model"), info: modelInfo)
+                SectionHeader(title: tr("识别模型", "Speech model"), info: SettingsCopy.modelInfo)
             }
 
             Section {
                 vocabularySection
             } header: {
-                SectionHeader(title: tr("词汇表", "Vocabulary"), info: vocabularyInfo)
+                SectionHeader(title: tr("词汇表", "Vocabulary"), info: SettingsCopy.vocabularyInfo)
             }
 
             // 性能：只是照镜子，不提供任何"自动优化"开关——快慢的原因摆出来，怎么调由用户决定
             Section {
                 performanceSection
             } header: {
-                SectionHeader(title: tr("性能", "Performance"), info: performanceInfo)
+                SectionHeader(title: tr("性能", "Performance"), info: SettingsCopy.performanceInfo)
             }
         }
         .formStyle(.grouped)
@@ -359,19 +329,12 @@ struct RecognitionEditor: View {
         // 必须当面换一句话——挑语言的人图的恰恰是"说小语种更稳"。
         if engineChoice.isCloud,
            !CloudASRSettings.cloudHintDelivered(recognitionLanguage: recognitionLanguage) {
-            Caption(tr("云端不收这个语言的提示",
-                       "The cloud engine takes no hint for this language"),
-                    warning: true)
+            Caption(SettingsCopy.cloudTakesNoHint, warning: true)
         } else {
-            Caption(tr("自动检测对中英文很准，一般不用动",
-                       "Automatic detection is reliable for Chinese and English"))
+            Caption(SettingsCopy.languageAutoIsFine)
         }
     }
 
-    private var languageInfo: String {
-        tr("说小语种（或中英夹杂被判错）时指定语言更稳；指定只影响识别，不改任何别的行为。云端引擎读的是同一条设置：选了具体语言就作为语言提示送过去，「自动检测」交给云端自己判；云端不认识的语言码一个提示都不会送出去。",
-           "Pick a language when you speak something else, or when mixed speech gets detected wrong. It only affects recognition. Cloud engines read the same setting: a specific language is sent as a hint and Detect automatically leaves the decision to the provider. A language the provider does not know is never sent as a hint at all.")
-    }
 
     // MARK: 本地模型（下载 / 升级 / 体量）
 
@@ -386,8 +349,7 @@ struct RecognitionEditor: View {
             // 目录里已经不列这一档了（换代下架），但用户正在用它：如实列出来，
             // 不自动替他换（Picker 少一个能选中的选项会显示空白，那才是真的看不懂）
             if !selectedModelListed {
-                Text(tr("当前模型（目录里已不再列出）", "Current model (no longer listed)"))
-                    .tag(qwenRepo)
+                Text(SettingsCopy.modelNoLongerListed).tag(qwenRepo)
             }
         }
         if !selectedModelLanguagesNote.isEmpty {
@@ -396,8 +358,7 @@ struct RecognitionEditor: View {
         HStack {
             Image(systemName: modelExists ? "checkmark.circle.fill" : "arrow.down.circle")
                 .foregroundColor(modelExists ? .green : .orange)
-            Text(modelExists ? tr("模型已就绪", "Model ready")
-                             : tr("模型未下载", "Model not downloaded"))
+            Text(modelExists ? SettingsCopy.modelReady : SettingsCopy.modelNotDownloaded)
             Spacer()
             if downloader.isDownloading {
                 Button(tr("取消", "Cancel")) { downloader.cancel() }
@@ -435,15 +396,10 @@ struct RecognitionEditor: View {
         // 云端识别开着的时候，本机模型并没有变成多余的东西——不说清的话，用户会把它删掉，
         // 然后发现草稿没了、云端一出错就整段丢了
         if engineChoice.isCloud {
-            Caption(tr("本机模型仍用于草稿与回落",
-                       "The on-device model still does drafts and fallback"))
+            Caption(SettingsCopy.localModelStillUsed)
         }
     }
 
-    private var modelInfo: String {
-        tr("Qwen3-ASR（2026）：约 30 种语言 + 22 种中文方言，自动检测语言，识别完全在本机进行。模型来自 HuggingFace（hf-mirror 加速）。\n云端识别开着时日常听写走云端，本机模型仍然有用——录音时那行实时草稿由它转，云端出错时也由它把这一段接住。",
-           "Qwen3-ASR (2026): ~30 languages plus 22 Chinese dialects, automatic language detection, fully on-device. Models come from HuggingFace.\nWith cloud recognition on, everyday dictation goes to the cloud, but the on-device model still matters: it produces the live draft while you record, and it catches the take if the cloud call fails.")
-    }
 
     /// 模型升级横幅。非模态、可「以后再说」，按钮上写清这次要下多少——
     /// 一个会花掉几百 MB 流量的动作，绝不能让用户点下去才知道代价。
@@ -462,9 +418,7 @@ struct RecognitionEditor: View {
             }
         case .upgrade(let repo):
             bannerBox(icon: "sparkles",
-                      title: tr("有更合适的识别模型：", "A better speech model is available: ")
-                          + upgrader.displayName(for: repo),
-                      detail: upgrader.languagesNote(for: repo)) {
+                      title: SettingsCopy.modelUpgradeAvailable + upgrader.displayName(for: repo)) {
                 Button(upgradeButtonTitle(repo: repo)) {
                     updateMessage = ""
                     upgrader.startUpgrade()
@@ -473,11 +427,9 @@ struct RecognitionEditor: View {
                 Button(tr("以后再说", "Not now")) { upgrader.dismissCurrentOffer() }
                     .disabled(upgrader.isBusy)
             }
-        case .refresh(let repo):
+        case .refresh:
             bannerBox(icon: "arrow.triangle.2.circlepath",
-                      title: tr("当前识别模型有新修订", "The current speech model has a newer revision"),
-                      detail: tr("重新下载后会校验一遍再启用；失败则保留现在这份。\(upgrader.sizeNote(for: repo))",
-                                 "The re-download is verified before it is used; if it fails, the current copy is kept. \(upgrader.sizeNote(for: repo))")) {
+                      title: SettingsCopy.modelHasNewRevision) {
                 Button(tr("重新下载并校验", "Re-download and verify")) {
                     updateMessage = ""
                     upgrader.startUpgrade()
@@ -488,11 +440,9 @@ struct RecognitionEditor: View {
                 Button(tr("以后再说", "Not now")) { upgrader.dismissCurrentOffer() }
                     .disabled(upgrader.isBusy)
             }
-        case .needsAppUpdate(let repo, let minVersion):
+        case .needsAppUpdate(_, let minVersion):
             bannerBox(icon: "exclamationmark.triangle",
-                      title: tr("需要更新 MicType", "MicType needs an update"),
-                      detail: tr("新模型「\(upgrader.displayName(for: repo))」要求 MicType \(minVersion) 或更高版本，当前是 \(UpdateChecker.currentVersion)。",
-                                 "The new model “\(upgrader.displayName(for: repo))” needs MicType \(minVersion) or newer; this copy is \(UpdateChecker.currentVersion).")) {
+                      title: SettingsCopy.modelNeedsAppUpdate(version: minVersion)) {
                 Button(tr("去检查 MicType 更新", "Check for MicType updates")) {
                     SettingsNavigator.shared.go(to: .about, intent: .checkUpdate)
                 }
@@ -512,15 +462,12 @@ struct RecognitionEditor: View {
     }
 
     @ViewBuilder
-    private func bannerBox<Actions: View>(icon: String, title: String, detail: String,
+    private func bannerBox<Actions: View>(icon: String, title: String,
                                           @ViewBuilder actions: () -> Actions) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: icon).foregroundColor(.orange)
                 Text(title).fontWeight(.medium)
-            }
-            if !detail.isEmpty {
-                Caption(detail)
             }
             HStack(spacing: 10) { actions() }
             if upgrader.isBusy || !upgrader.statusText.isEmpty {
@@ -546,19 +493,13 @@ struct RecognitionEditor: View {
             // 这条提示就摆在词汇表这一段里：它要用户做的动作正是"往上面这个框里填词"。
             // 与引擎无关——词汇表对云端同样作为热词生效。
             if showsArabicVocabularyTip {
-                Caption(tr("阿语：把英文专名填进来最有效",
-                           "Arabic: adding English product names here helps most"))
+                Caption(SettingsCopy.vocabularyArabicTip)
             } else {
-                Caption(tr("也支持「错写=正写」的硬替换",
-                           "Supports hard replacement, written as wrong=right"))
+                Caption(SettingsCopy.vocabularyHardReplace)
             }
         }
     }
 
-    private var vocabularyInfo: String {
-        tr("这些词作为热词直接送进识别模型，并参与 AI 润色纠错——专有名词准确率的第一杠杆。\n硬替换：「杰文=捷文」表示识别出的「杰文」一律改成「捷文」，零耗时；一个正写可挂多个错写：「杰文|捷纹=捷文」。西文词条大小写不敏感、按整词匹配。\n云端引擎吃同一张表（按权重 4 送过去）。口水词内置，不用自己列。",
-           "These terms are fed to the speech model as hotwords and used by AI polish — the number one lever for proper-noun accuracy.\nHard replacement: an entry like \"Jevin=Jaywen\" rewrites every occurrence at zero latency, and one correct form can take several wrong spellings: \"Jevin|Javin=Jaywen\". Latin entries match whole words, case-insensitively.\nCloud engines use the same list (sent with weight 4). Filler words are built in — there is no list to fill in.")
-    }
 
     // MARK: 性能
 
@@ -574,15 +515,10 @@ struct RecognitionEditor: View {
         }
         if engineChoice.isCloud {
             // "识别在本机完成"对云端档不成立，得当面更正，别让用户拿本机的账去读云端的数
-            Caption(tr("云端档：「识别」量的是往返",
-                       "Cloud engine: that figure is a round trip"))
+            Caption(SettingsCopy.performanceCloudRoundTrip)
         }
     }
 
-    private var performanceInfo: String {
-        tr("识别与插入都在本机完成；「模型」那一段是到大模型接口的网络往返（轻点是润色，按住是指令），和这台 Mac 快慢无关，后面括号里是它实际统计了几轮。\n只统计数字，不保存任何听写内容。",
-           "Recognition and insertion run on this Mac; the “Model” figure is the network round trip to your model endpoint (polish when you tap, the command model when you hold) — not bound by this machine. The number in brackets is how many rounds actually went through it.\nOnly timings are stored — never any transcribed text.")
-    }
 }
 
 // MARK: - 云端 AI（润色 + 语音指令 + 可选的云端识别）
@@ -700,52 +636,36 @@ struct CloudEditor: View {
 
     var body: some View {
         Form {
-            Section {
-                usageSection
-            } header: {
-                SectionHeader(title: tr("使用方式", "How you use MicType"), info: usageInfo)
+            // 使用方式 → 服务商 → Key → 模型 →（阿里云的）云端识别开关：
+            // 与引导第三屏**同一个视图**（CloudSetupCore），顺序、标题、说明、ⓘ 全都只写一处。
+            // 这一页与引导页真正不同的只有一点：这里是"选了就生效"，引导页要验证通过才采纳。
+            CloudSetupCore(style: .settings,
+                           selected: selected,
+                           usageMode: usageModeBinding,
+                           provider: providerBinding,
+                           offered: offeredProviders,
+                           polishModel: polishModelBinding,
+                           commandModel: commandModelBinding,
+                           customModelChosen: $customModelChosen,
+                           keyProbe: keyProbe,
+                           keyProbeModel: polishModelBinding.wrappedValue,
+                           showsModel: true,
+                           showsDiagnostics: true) {
+                usageNotices
+            } providerNotices: {
+                providerNotices
             }
-            // 「只用本地」时下面一个控件都不摆：那一档的全部事实就是"不联网、不花钱"，
-            // 再摆一排 AI 设置只会让人以为自己还有什么没配完
             if usageMode == .withAI {
-                Section {
-                    providerSection
-                } header: {
-                    SectionHeader(title: tr("服务商", "Provider"), info: providerInfo)
-                }
-                Section {
-                    keySection
-                } header: {
-                    SectionHeader(title: "API Key", info: keyInfo)
-                }
-                Section {
-                    ModelPickerField(provider: selected,
-                                     polishModel: polishModelBinding,
-                                     commandModel: commandModelBinding,
-                                     customChosen: $customModelChosen)
-                } header: {
-                    SectionHeader(title: tr("模型", "Model"))
-                }
-                if selected == .qwen {
-                    // 开关 + 说明 + 接入地址 + 「测试识别」：与引导第三屏共用同一个组件。
-                    // 上传 / 计费 / 留存那几句收进 ⓘ（引导页仍然逐句摆出来——那里是第一次
-                    // 做这个选择的地方，而这里的人是回来改设置的）
-                    Section {
-                        CloudRecognitionFields(showsPrivacyLines: false)
-                    } header: {
-                        SectionHeader(title: tr("云端识别（可选）", "Cloud recognition (optional)"),
-                                      info: cloudRecognitionInfo)
-                    }
-                }
                 Section {
                     personalFields
                 } header: {
-                    SectionHeader(title: tr("关于我与自定义规则", "About me and rules"), info: personalInfo)
+                    SectionHeader(title: tr("关于我与自定义规则", "About me and rules"), info: SettingsCopy.personalInfo)
                 }
                 Section {
                     advancedSection
                 } header: {
-                    SectionHeader(title: tr("高级", "Advanced"), info: advancedInfo)
+                    SectionHeader(title: tr("高级", "Advanced"),
+                                  info: SettingsCopy.advancedInfo(provider: selected))
                 }
             }
         }
@@ -757,27 +677,17 @@ struct CloudEditor: View {
         }
     }
 
-    // MARK: 段 1 使用方式（整页唯一的决定）
+    // MARK: 段 1「使用方式」下面的边界状态
 
+    /// 全都是"现在这台 Mac 处在一个说不通的状态"，所以一律一行结论 + 一颗按钮，**绝不替他改**
     @ViewBuilder
-    private var usageSection: some View {
-        Picker(tr("使用方式：", "How you use MicType:"), selection: usageModeBinding) {
-            ForEach(AIUsageMode.allCases, id: \.rawValue) { mode in
-                Text(mode.displayName).tag(mode)
-            }
-        }
-        .pickerStyle(.segmented)
-        Caption(usageMode == .localOnly
-                ? tr("不联网、不花钱、不用填 Key", "No network, no cost, no key to fill in")
-                : tr("本机识别，再交服务商润色",
-                     "Recognized on this Mac, then polished by your provider"))
+    private var usageNotices: some View {
         // 「只用本地」只写回"润色关掉 + 识别回本机"两条，**钥匙串里那把 Key 不动**
         // （删 Key 是破坏性动作，只能由用户自己点）。可指令路径不看档位：按住说指令照样
         // 会把选区和这句话发给服务商、照样计费——不说的话他既看不到那把 Key，也不知道它还在花钱。
         if usageMode == .localOnly,
            AISetup.showsStoredKeyNotice(mode: usageMode, hasCredential: hasStoredKey) {
-            BoundaryRow(text: tr("钥匙串里还存着 \(selected.segmentName) 的 Key，按住说指令仍会计费。",
-                                 "A \(selected.segmentName) key is still in your Keychain; hold-to-command keeps billing you.")) {
+            BoundaryRow(text: SettingsCopy.storedKeyWhileLocalOnly(provider: selected.segmentName)) {
                 Button(tr("删掉这把 Key", "Remove that key")) {
                     KeychainHelper.deleteAPIKey(account: selected.keychainAccount)
                     Log.info("API key removed provider=\(selected.rawValue) reason=local only")
@@ -795,8 +705,7 @@ struct CloudEditor: View {
         // 从菜单栏把润色关掉、云端识别却还开着：这一页会显示「本地 + AI」，
         // 而轻点听写其实不润色。说出来，并给一颗打开的按钮——不替他改
         if usageMode == .withAI, currentPolishLevel == .off {
-            BoundaryRow(text: tr("润色在菜单栏里关着，轻点听写只出识别原文。",
-                                 "Polish is switched off in the menu bar, so tapping gives the raw transcript.")) {
+            BoundaryRow(text: SettingsCopy.polishOffInMenuBar) {
                 Button(tr("打开润色", "Turn polish on")) {
                     polishLevel = PolishLevel.smart.rawValue
                 }
@@ -805,8 +714,7 @@ struct CloudEditor: View {
         // 4.0.0 的「云端 · OpenAI」识别：界面上已经没有这一档了，但设置里可能还存着。
         // 绝不替他改（音频出不出这台 Mac 只由用户点），但必须当面说，并给一颗回本机的按钮。
         if AISetup.showsLegacyOpenAICloudNotice(engine: engineChoice) {
-            BoundaryRow(text: tr("这台 Mac 还在用 OpenAI 云端识别，每段录音都会上传。",
-                                 "This Mac still uses OpenAI cloud recognition, so every take is uploaded.")) {
+            BoundaryRow(text: SettingsCopy.legacyOpenAICloudRecognition) {
                 Button(tr("改回本机识别", "Back to on-device")) {
                     recognitionEngine = RecognitionEngineChoice.local.rawValue
                     Log.info("Legacy cloudOpenAI recognition switched back to local")
@@ -816,8 +724,7 @@ struct CloudEditor: View {
         // 云端识别停在阿里云、服务商却不是阿里云：下面那个开关只在阿里云档渲染，于是音频
         // 一直在上传、界面上却没有关掉它的控件。同样处理：当面说 + 一颗按钮，绝不替他改。
         if AISetup.showsStrandedAlibabaCloudNotice(engine: engineChoice, provider: selected) {
-            BoundaryRow(text: tr("识别还走着阿里云（按秒计费），但服务商已经不是阿里云了。",
-                                 "Recognition still goes to Alibaba (billed per second) although your provider is not Alibaba.")) {
+            BoundaryRow(text: SettingsCopy.strandedAlibabaRecognition) {
                 Button(tr("改回本机识别", "Back to on-device")) {
                     recognitionEngine = RecognitionEngineChoice.local.rawValue
                     Log.info("Stranded cloudAlibaba recognition switched back to local")
@@ -826,10 +733,6 @@ struct CloudEditor: View {
         }
     }
 
-    private var usageInfo: String {
-        tr("「只用本地」：识别和输入全在这台 Mac 上，不联网、不花钱，也不需要填 Key；按住快捷键说指令需要 AI，那一档没有。\n「本地 + AI」：轻点听写照旧在本机识别，识别完的文字交给你选的服务商润色，按住说指令也走这家。费用由服务商直接结给你，MicType 不经手、不加价。",
-           "Local only: recognition and typing all happen on this Mac — no network, no cost, no key. Hold-to-command needs AI, so it is not available there.\nLocal + AI: tapping still recognizes on this Mac and the text is then polished by the provider you pick; hold-to-command uses the same one. You pay that provider directly and MicType never takes a cut.")
-    }
 
     /// 「使用方式」这一下到底改了什么，全在 AISetup 那几个纯函数里（单测钉死）。
     /// 这里只负责把结果写进设置，并记一行日志——用户看得见的每一次状态变化都要能在日志里找到。
@@ -848,17 +751,14 @@ struct CloudEditor: View {
                 })
     }
 
-    // MARK: 段 2 服务商（选择器与引导第三屏共用同一个组件）
+    // MARK: 段 2「服务商」下面的边界状态
 
     @ViewBuilder
-    private var providerSection: some View {
-        ProviderPickerField(selection: providerBinding, offered: offeredProviders)
-
+    private var providerNotices: some View {
         // 官方几档的地址被老版本改过时必须看得见：看不见的自定义地址是查不出来的故障。
         // 正常情况下这里什么都不显示。
         if (selected == .openai || selected == .deepseek), effectiveBaseURL != selected.defaultBaseURL {
-            BoundaryRow(text: tr("这一档的接口地址被改过：", "This provider's endpoint was overridden: ")
-                        + effectiveBaseURL) {
+            BoundaryRow(text: SettingsCopy.endpointOverridden + effectiveBaseURL) {
                 Button(tr("恢复官方地址", "Restore the official URL")) {
                     if selected == .openai { baseURL = selected.defaultBaseURL }
                     else { dsBaseURL = selected.defaultBaseURL }
@@ -869,8 +769,7 @@ struct CloudEditor: View {
         // 还在用自定义端点 / 本机模型的人：说清界面上为什么没有那些输入框了，并给一条回官方三档
         // 的路。**绝不替他改**——那一档可能正好好用着。
         if selected == .custom || selected == .local {
-            BoundaryRow(text: tr("「\(selected.displayName)」的接口地址改由「导入设置…」配置，现有配置照常工作。",
-                                 "The endpoint for \(selected.displayName) is now configured through Import Settings; your current setup keeps working.")) {
+            BoundaryRow(text: SettingsCopy.endpointConfiguredByImport(provider: selected.displayName)) {
                 Menu(tr("改用官方三档", "Switch provider")) {
                     ForEach([LLMProvider.openai, .deepseek, .qwen], id: \.rawValue) { target in
                         Button(target.displayName) { providerBinding.wrappedValue = target }
@@ -880,10 +779,6 @@ struct CloudEditor: View {
         }
     }
 
-    private var providerInfo: String {
-        tr("三家官方档位的接口地址都是内置的，换一家只要贴那一家的 Key——每档各有一条钥匙串条目，互不覆盖，换回来不用重贴。\n「其他 OpenAI 兼容服务」与「本机模型」4.0.2 起没有入口了（那是给 Ollama、公司网关这类用户的高级动作，改由「导入设置…」配置），但正在用的人一切照旧，型号名仍然在「高级」里改。",
-           "The endpoints of the three official providers are built in, so switching means pasting that provider's key. Each has its own Keychain entry, so they never overwrite each other and switching back needs no re-paste.\nOther OpenAI-compatible services and on-device models no longer have an entry point here — that is an advanced setup for Ollama or a company gateway, configured through Import Settings — but an existing setup keeps working and its model name is still editable under Advanced.")
-    }
 
     /// 换服务商要做的事全在这个 setter 里（引导页那一处语义不同：看着的那一档要验证通过才采纳）
     private var providerBinding: Binding<LLMProvider> {
@@ -914,13 +809,6 @@ struct CloudEditor: View {
         return list
     }
 
-    // MARK: 段 3 Key（粘贴即验证）
-
-    @ViewBuilder
-    private var keySection: some View {
-        // 全 App **唯一**的 Key 输入框：粘上即验证，验证通过才写钥匙串（见 KeyEntryView）
-        KeyEntryView(provider: selected, model: polishModelBinding.wrappedValue, probe: keyProbe)
-    }
 
     /// 这把 Key 用哪条链路验。开了云端识别的阿里云档直接打识别端点——
     /// 「模型有没有在百炼控制台开通」只有真调一次识别才验得到（/models 那一趟验不出来），
@@ -929,17 +817,7 @@ struct CloudEditor: View {
         (selected == .qwen && engineChoice == .cloudAlibaba) ? .cloudASR(.alibaba) : .llm
     }
 
-    private var keyInfo: String {
-        LLMCatalog.keyStorageNote + "\n" + LLMCatalog.newAccountNote
-            + (keyProbe == .llm ? "" : "\n" + tr("开着云端识别，所以这把 Key 直接拿识别端点验：先找出你的接入地址（只查型号清单，不花钱），再发 1 秒合成音，连模型有没有在控制台开通一起验到，这一秒的费用可以忽略。",
-                                                 "With cloud recognition on, the key is verified against the recognition endpoint: first your API host is found (a free model-list request), then one second of synthetic tone is sent, which also proves the model is enabled. The cost of that second is negligible."))
-    }
 
-    /// 云端识别那一段的细则：上传、计费、留存、先开通模型、出错回落。
-    /// 这几句只出现在做这个选择的地方（PrivacyCopy 的云端那一组从不进关于页）。
-    private var cloudRecognitionInfo: String {
-        PrivacyCopy.cloudAlibabaLines.joined(separator: "\n")
-    }
 
     // MARK: 段 5 关于我 / 自定义规则
 
@@ -958,14 +836,10 @@ struct CloudEditor: View {
                 .font(.system(size: 12))
                 .frame(height: 70)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
-            Caption(tr("润色和指令都会读这两个框", "Both boxes are read by polish and by commands"))
+            Caption(SettingsCopy.personalBoxesShared)
         }
     }
 
-    private var personalInfo: String {
-        tr("「关于我」例如：「署名用 Gen」「邮件偏正式、聊天随意」——按住说指令、草拟邮件时会代入这些信息。\n「自定义规则」例如：「邮件场景用正式语气」「英文术语保留原文不翻译」「数字用阿拉伯数字」。\n两个框的内容都会跟着请求发给服务商。",
-           "About me, for example: “sign as Gen”, “formal in email, casual in chat” — voice commands use this when drafting emails and replies.\nCustom rules, for example: “formal tone for emails”, “keep English jargon untranslated”, “use Arabic numerals”.\nThe contents of both boxes go to your provider with the request.")
-    }
 
     // MARK: 段 6 高级（默认折叠）
 
@@ -984,27 +858,6 @@ struct CloudEditor: View {
         }
     }
 
-    private var advancedInfo: String {
-        let shared = tr("上面的「模型」下拉一次改两个型号；在这里可以把它们分开：润色每句话都要跑，求快求省；指令低频，求质量。右侧下拉是内置快选，「刷新」会问端点它当前有哪些型号；也可以手填任意型号名。",
-                        "The Model drop-down above writes both model fields at once; here you can split them: polish runs on every sentence, so it wants speed and low cost, while commands are rare and want quality. The drop-down holds the built-in picks, Refresh asks the endpoint what it serves today, and you can always type any model name.")
-        switch selected {
-        case .openai:
-            return shared + tr("\nluna 最便宜，terra 平衡，sol 旗舰，astra 最强也最贵。",
-                               "\nluna is the cheapest, terra is balanced, sol is the flagship, astra is the strongest and the priciest.")
-        case .deepseek:
-            return shared + tr("\ndeepseek-flash 快且便宜，润色时 MicType 会替你关掉思考模式；deepseek-v4-pro 更强。",
-                               "\ndeepseek-flash is fast and cheap — MicType turns thinking mode off for polish; deepseek-v4-pro is stronger.")
-        case .qwen:
-            return shared + tr("\nqwen3.8-flash / qwen3.8-max 是当前代；qwen-flash / qwen-plus / qwen-max 是稳定别名，换代时自动指向新模型。",
-                               "\nqwen3.8-flash / qwen3.8-max are the current generation; qwen-flash / qwen-plus / qwen-max are stable aliases that follow each new generation.")
-        case .custom:
-            return shared + tr("\n这一档没有内置清单：型号名照服务商文档填，或点「刷新」。",
-                               "\nNo built-in list here: type the model id from your provider's docs, or hit Refresh.")
-        case .local:
-            return shared + tr("\n填你本机已经拉下来的模型名，例如 Ollama 里的 llama3.1:8b。",
-                               "\nUse the model you have pulled locally, such as llama3.1:8b in Ollama.")
-        }
-    }
 
     // MARK: 高级 · 分开设型号
 
@@ -1020,7 +873,7 @@ struct CloudEditor: View {
                    testing: testing, refreshing: refreshing,
                    onTest: { runModelTest(tr("指令模型", "Command model"), commandModelBinding.wrappedValue) },
                    onRefresh: refreshModelList)
-        Caption(tr("润色求快求省，指令求质量", "Polish wants speed and cost; commands want quality"))
+        Caption(SettingsCopy.splitModelsRationale)
         if !refreshStatus.isEmpty {
             Caption(refreshStatus)
         }

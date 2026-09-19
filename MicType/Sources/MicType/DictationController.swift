@@ -664,19 +664,17 @@ final class DictationController {
         let limit = minutesLabel(maxRecordingSeconds)
         let warn = secondsLabel(preFinishWarningSeconds)
         let segment = secondsLabel(AudioSegmenter.targetSeconds)
-        let head = tr("单次录音上限 \(limit)：接近上限时悬浮窗会显示已录时长与上限，"
-                      + "到点前 \(warn) 先提醒一次。",
-                      "A single take is capped at \(limit). As you get close, the overlay shows how long you have "
-                      + "been recording against the cap and warns you \(warn) before the end. ")
+        // Plan C 的 ⓘ 预算（中文 ≤ 120 字）把这三句都压短了一轮：数字一个没少，
+        // 少掉的是"悬浮窗会显示已录时长与上限"这类屏幕上自己看得见的话
+        let head = tr("单次录音上限 \(limit)，到点前 \(warn) 提醒一次。",
+                      "A take is capped at \(limit), with a warning \(warn) before the end. ")
         let segmenting = progressive
-            ? tr("长段口述在录音过程中就按每段约 \(segment) 边说边转，每转完一段就显示一段；",
-                 "Long dictation is transcribed while you speak, in segments of about \(segment), each shown as "
-                 + "soon as it is ready; ")
-            : tr("长段口述在松手之后按每段约 \(segment) 分段上传识别，每转完一段就显示一段（云端引擎不在录音过程中上传）；",
-                 "Long dictation is uploaded and transcribed in segments of about \(segment) after you release the "
-                 + "hotkey, each shown as soon as it is ready — a cloud engine uploads nothing while you are still "
-                 + "speaking; ")
-        let tail = tr("到上限时 MicType 会收尾，把你已经说的内容全部识别、全部插入。",
+            ? tr("长段口述边说边转，每段约 \(segment)，转完一段显示一段；",
+                 "Long dictation is transcribed while you speak, in segments of about \(segment); ")
+            : tr("长段口述在松手后按每段约 \(segment) 上传识别，转完一段显示一段；",
+                 "Long dictation is uploaded in segments of about \(segment) after you release the hotkey, "
+                 + "each shown as soon as it is ready; ")
+        let tail = tr("到上限自动收尾，说过的内容全部识别并插入。",
                       "at the cap MicType wraps up and inserts everything you have said.")
         return head + segmenting + tail
     }

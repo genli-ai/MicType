@@ -57,25 +57,22 @@ struct SettingsOverview: View {
                 if !micOK || !axOK { permissionsBanner }
 
                 OverviewCard(title: tr("输入", "Input"),
-                             sentence: SettingsSummary.inputSummary(hotkey: selectedHotkey,
-                                                                    overlayPosition: selectedOverlay,
-                                                                    sounds: playSounds,
-                                                                    launchAtLogin: launchAtLogin),
-                             badge: nil) {
+                             card: SettingsSummary.Card(
+                                sentence: SettingsSummary.inputSummary(hotkey: selectedHotkey,
+                                                                       overlayPosition: selectedOverlay,
+                                                                       sounds: playSounds,
+                                                                       launchAtLogin: launchAtLogin),
+                                badge: nil)) {
                     SettingsNavigator.shared.go(to: .input)
                 }
 
-                let recognition = recognitionCard
                 OverviewCard(title: tr("本地识别", "On-device recognition"),
-                             sentence: recognition.sentence,
-                             badge: recognition.badge) {
+                             card: recognitionCard) {
                     SettingsNavigator.shared.go(to: .recognition)
                 }
 
-                let cloud = cloudCard
                 OverviewCard(title: tr("云端 AI", "Cloud AI"),
-                             sentence: cloud.sentence,
-                             badge: cloud.badge) {
+                             card: cloudCard) {
                     SettingsNavigator.shared.go(to: .cloud)
                 }
 
@@ -165,16 +162,14 @@ struct SettingsOverview: View {
     private var permissionsBanner: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !micOK {
-                BoundaryRow(text: tr("麦克风还没授权：现在录不到任何声音。",
-                                     "Microphone is not granted yet: nothing is recorded.")) {
+                BoundaryRow(text: SettingsCopy.microphoneMissing) {
                     Button(tr("打开麦克风设置", "Open Microphone Settings")) {
                         Permissions.openMicrophoneSettings()
                     }
                 }
             }
             if !axOK {
-                BoundaryRow(text: tr("辅助功能还没授权：热键和输入都用不了。",
-                                     "Accessibility is not granted yet: no hotkey and no typing.")) {
+                BoundaryRow(text: SettingsCopy.accessibilityMissing) {
                     Button(tr("打开辅助功能设置", "Open Accessibility Settings")) {
                         Permissions.openAccessibilitySettings()
                     }
@@ -209,20 +204,25 @@ struct SettingsOverview: View {
 
 // MARK: - 一张卡
 
+/// 标题（+ 徽章）、一句话、一颗「更改」——三者共用一套内边距与基线，整张卡是**一个**对象。
+/// 「更改」保持系统默认的按钮样式：键盘导航开着时它自带焦点环，自绘一套就把那圈环弄丢了。
 private struct OverviewCard: View {
     let title: String
-    let sentence: String
-    let badge: String?
+    let card: SettingsSummary.Card
     let action: () -> Void
+
+    @State private var hovering = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 6) {
                     Text(title).fontWeight(.medium)
-                    if let badge = badge { BadgeChip(text: badge) }
+                    if let badge = card.badge {
+                        BadgeChip(text: badge, level: card.level)
+                    }
                 }
-                Text(sentence)
+                Text(card.sentence)
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -233,19 +233,36 @@ private struct OverviewCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08)))
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                // 半透明的 secondary：浅色下是淡灰，深色下自动变成提亮的一层，两种外观都不用各写一份
+                .fill(Color.secondary.opacity(hovering ? 0.14 : 0.08))
+        )
+        // 悬停只动背景，不动尺寸：卡片一跳，整页跟着重排
+        .onHover { hovering = $0 }
+        .animation(SettingsNavigator.reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
     }
 }
 
-/// 需要处理的那件事。只说动作，不复述状态——句子里已经讲过现在是什么样了
+/// 需要处理的那件事。只说动作，不复述状态——句子里已经讲过现在是什么样了。
+/// 颜色由分量决定（SettingsSummary.BadgeLevel），不由调用方顺手挑。
 private struct BadgeChip: View {
     let text: String
+    let level: SettingsSummary.BadgeLevel
+
+    private var tint: Color {
+        switch level {
+        case .attention: return .orange
+        case .progress: return .accentColor
+        }
+    }
+
     var body: some View {
         Text(text)
             .font(.caption2)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(Capsule().fill(Color.orange.opacity(0.18)))
-            .foregroundColor(.orange)
+            .background(Capsule().fill(tint.opacity(0.18)))
+            .foregroundColor(tint)
     }
 }

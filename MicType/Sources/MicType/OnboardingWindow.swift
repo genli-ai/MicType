@@ -106,11 +106,6 @@ enum OnboardingCopy {
            "Skipping is fine - tap-to-dictate is fully usable, and you can add a key later under Settings → Cloud AI.")
     }
 
-    /// 模型下拉下面那一句：默认已经替他选好了，而且这不是一次性的、不可回头的决定
-    static var modelHint: String {
-        tr("默认已经选好了这家最好的型号，以后在 设置 → 云端 AI 里随时能改。",
-           "The strongest model of that provider is picked for you; change it any time in Settings → Cloud AI.")
-    }
 
     /// 最后一屏按「AI 到底配到哪一步」给**三种**收尾（LLMCatalog.aiStatus 判，纯函数）。
     /// 用"点过跳过没有"来判会在用户中途去设置页配好 Key 时说反话；
@@ -403,18 +398,14 @@ private struct WelcomePage: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
 
-            // 数据流向先说清楚，再谈功能：句子取自 PrivacyCopy，和关于页、最后一屏逐字相同。
-            // fixedSize：这一屏没有 ScrollView，句子换行时必须让它把高度撑开——
-            // 少了它，窄窗口下"还有什么东西会离开这台 Mac"那半句会被直接截掉。
-            VStack(alignment: .leading, spacing: 3) {
-                ForEach(PrivacyCopy.dataFlowLines, id: \.self) { line in
-                    Text(line)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .font(.caption)
-            .foregroundColor(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // 引导里**唯一**一句隐私文案（Plan C：那六句只在关于页逐句摆出来，这里只说
+            // 第一次打开的人最该知道的那一条——默认不上传）。fixedSize：这一屏没有
+            // ScrollView，句子换行时必须让它把高度撑开，否则窄窗口下后半句会被直接截掉。
+            Text(PrivacyCopy.audioStaysLocal)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity)
     }
@@ -501,7 +492,7 @@ private struct PermissionsPage: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
-                        MicCheckPanel(showsFootnote: false)
+                        MicCheckPanel()
                     }
                     .padding(12)
                     .background(Color.secondary.opacity(0.08))
@@ -529,8 +520,8 @@ private struct PermissionsPage: View {
                 }
 
                 if !(model.micOK && model.axOK) {
-                    Text(tr("在系统设置的列表里勾选 MicType 即可。若列表里已勾选但这里仍是红叉，是旧授权失效了：选中 MicType 点「−」删掉，再点「+」加回来。",
-                            "Tick MicType in the System Settings list. If it is already ticked but still shows red, the old grant is stale: select MicType, press “−”, then add it back with “+”."))
+                    Text(tr("在系统设置里勾上 MicType；已经勾了还是红叉，就把它删掉再加回来。",
+                            "Tick MicType in System Settings; if it is ticked but still red, remove it from the list and add it back."))
                         .font(.caption)
                         .foregroundColor(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -669,7 +660,7 @@ private struct HowYouUsePage: View {
 
     var body: some View {
         // ScrollView 是保险绳：验证失败那行可能三行，阿里云还多一个接入地址框——
-        // 挤爆时宁可能滚，也不要把底部的成本声明裁掉。
+        // 挤爆时宁可能滚，也不要把底部的控件裁掉。
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 Text(OnboardingCopy.usageHeadline)
@@ -679,69 +670,34 @@ private struct HowYouUsePage: View {
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Picker(tr("使用方式：", "How you use MicType:"), selection: usageModeBinding) {
-                    ForEach(AIUsageMode.allCases, id: \.rawValue) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
+                // 使用方式 → 服务商 → Key → 模型 →（阿里云的）云端识别开关：与设置页
+                // 「云端 AI」**同一个视图**（CloudSetupCore），顺序、标题、说明、那几颗 ⓘ
+                // 全都只写一处。这一屏与那一页真正不同的只有语义：看着的那一档要验证通过
+                // 才采纳（adoptIfUsable），所以两处各写自己的 Binding setter。
+                CloudSetupCore(style: .onboarding,
+                               selected: selected,
+                               usageMode: usageModeBinding,
+                               provider: providerBinding,
+                               offered: offered,
+                               polishModel: polishModelBinding,
+                               commandModel: commandModelBinding,
+                               customModelChosen: $customModelChosen,
+                               keyProbe: keyProbe,
+                               keyProbeModel: polishModel(for: selected),
+                               showsModel: showsModel,
+                               showsDiagnostics: false,
+                               onKeyStatus: { status in
+                                   keyStatus = status
+                                   adoptIfUsable(selected)
+                                   model.refreshAIReady()
+                               },
+                               onEngineChange: { model.refreshAIReady() }) {
+                    EmptyView()
+                } providerNotices: {
+                    providerNotices
                 }
-                .pickerStyle(.segmented)
 
-                if usageMode == .withAI {
-                    // 选择器本身与「云端 AI」页共用；"换档要做什么"两处语义不同，各写在 setter 里
-                    ProviderPickerField(selection: providerBinding, offered: offered)
-
-                    // 看着的这一档还没配好 Key：生效的仍是原来那一档，这件事必须写出来，
-                    // 否则他以为自己已经换过去了，回头发现润色还是老样子
-                    if selected.requiresAPIKey, Settings.shared.llmProvider != selected,
-                       KeychainHelper.loadAPIKey(account: selected.keychainAccount) == nil {
-                        Text(tr("这一档还没有 Key：粘一把验证通过才会真的换过去，在此之前 MicType 仍用 \(Settings.shared.llmProvider.segmentName)。",
-                                "No key for this provider yet: MicType switches over only once one is pasted and verified, and keeps using \(Settings.shared.llmProvider.segmentName) until then."))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    KeyEntryView(provider: selected,
-                                 model: polishModel(for: selected),
-                                 probe: keyProbe,
-                                 showsStorageNotes: false) { status in
-                        keyStatus = status
-                        adoptIfUsable(selected)
-                        model.refreshAIReady()
-                    }
-
-                    if showsModel { modelRow }
-
-                    // 阿里云那一档的「识别也用云端」开关：与设置页同一个组件，连说明都是同一份。
-                    // 首配这一屏不摆「探测接入地址 / 测试识别」——他手上还没有"上一次试通的那台"。
-                    //
-                    // 和模型下拉同一个出现条件（这一档真的通了）：这个开关写的是识别引擎，
-                    // 而服务商要验证通过才会被采纳——没 Key 就打开它，等于把识别指到一家
-                    // 还没生效的服务商去（音频在传、这一页却没有那个服务商），
-                    // 正是设置页那条「云端识别停在阿里云、服务商却不是阿里云」要收拾的烂摊子。
-                    if selected == .qwen, showsModel {
-                        CloudRecognitionFields(showsDiagnostics: false) {
-                            model.refreshAIReady()
-                        }
-                    }
-
-                    // 本机模型 / 其他兼容服务没有内置型号，型号名只有用户自己知道。
-                    // 不说这一句的话，这一档看着像配好了，实际每次调用都是"型号名是空的"。
-                    if LLMCatalog.modelMenu(for: selected).isEmpty,
-                       polishModelBinding.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text(tr("这一档还要填一个模型名才跑得起来（填好之前 MicType 仍用原来的服务商）：去 设置 → 云端 AI → 高级 填上你本机已经下载好的那个，例如 llama3.1:8b。",
-                                "This provider needs a model name before it works, and MicType keeps using the previous provider until then: name the one you have downloaded, such as llama3.1:8b, under Settings → Cloud AI → Advanced."))
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if selected.requiresAPIKey {
-                        Text(LLMCatalog.keyStorageNote + " " + LLMCatalog.billingNote)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                } else {
+                if usageMode == .localOnly {
                     Text(OnboardingCopy.aiSkipReassurance)
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -758,6 +714,25 @@ private struct HowYouUsePage: View {
         }
         // 接入地址一改，阿里云的地址就变了，能不能连得上也跟着变
         .onChange(of: qwenAPIHost) { _, _ in model.refreshAIReady() }
+    }
+
+    /// 服务商选择器下面的边界状态。两条都是"你以为换过去了，其实还没有"——
+    /// 一行结论，动作就在下面那个 Key 输入框里，所以不另给按钮。
+    @ViewBuilder
+    private var providerNotices: some View {
+        if selected.requiresAPIKey, Settings.shared.llmProvider != selected,
+           KeychainHelper.loadAPIKey(account: selected.keychainAccount) == nil {
+            Caption(tr("验证通过才会换过去，在此之前仍用 \(Settings.shared.llmProvider.segmentName)",
+                       "MicType switches over only once a key is verified, and keeps using \(Settings.shared.llmProvider.segmentName)"))
+        }
+        // 本机模型 / 其他兼容服务没有内置型号，型号名只有用户自己知道。不说这一句的话，
+        // 这一档看着像配好了，实际每次调用都是"型号名是空的"。
+        if LLMCatalog.modelMenu(for: selected).isEmpty,
+           polishModelBinding.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Caption(tr("这一档还要在 设置 → 云端 AI → 高级 填一个型号名",
+                       "This provider needs a model name under Settings - Cloud AI - Advanced"),
+                    warning: true)
+        }
     }
 
     /// 选择器上换一档：只换"正在看"的那一档，真正生效要等 adoptIfUsable 认可
@@ -798,7 +773,7 @@ private struct HowYouUsePage: View {
                 })
     }
 
-    // MARK: 模型（验证通过后才出现）
+    // MARK: 模型下拉的出现条件
 
     /// 模型下拉只在"这一档真的通了"之后出现：还没连上就先摆一个花钱的选择，
     /// 用户点下去也不知道点没点上——那正是 3.3 之前"看着像成功"的界面的来路。
@@ -810,18 +785,6 @@ private struct HowYouUsePage: View {
             && KeychainHelper.loadAPIKey(account: selected.keychainAccount) != nil
     }
 
-    @ViewBuilder
-    private var modelRow: some View {
-        // 下拉本身与「云端 AI」页共用（含「自定义…」那一项和默认型号那句说明）
-        ModelPickerField(provider: selected,
-                         polishModel: polishModelBinding,
-                         commandModel: commandModelBinding,
-                         customChosen: $customModelChosen)
-        Text(OnboardingCopy.modelHint)
-            .font(.caption)
-            .foregroundColor(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-    }
 
     /// 这一档的两个型号字段（与设置页同一种写法：@AppStorage 投影出来的 Binding，
     /// 写下去界面立刻重绘）
@@ -1002,16 +965,6 @@ private struct TryItPage: View {
                            text: tr("人名、术语老是听错？在 设置 → 本地识别 的词汇表里填「错写=正写」，一次搞定。",
                                     "Names or jargon misheard? Add \"wrong=right\" to the vocabulary in Settings → On-device recognition."))
                 }
-
-                // Key 与费用：四句和关于页逐字相同（PrivacyCopy），免得用户在两处读到两种说法
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(PrivacyCopy.keyAndCostLines, id: \.self) { line in
-                        Text(line)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .font(.caption)
-                .foregroundColor(.secondary)
 
                 // 页名跟着设置窗口走：4.0.2 的 Plan C 把「通用」改成了「输入」，
                 // 指路的句子指向一个不存在的页名比不指路更糟

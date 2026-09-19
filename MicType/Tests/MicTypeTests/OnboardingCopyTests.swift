@@ -140,13 +140,6 @@ final class OnboardingCopyTests: XCTestCase {
                       OnboardingCopy.usageHeadline)
     }
 
-    /// 模型那一句要说清两件事：默认已经替他选好了，而且这不是不可回头的决定
-    func testModelHintSaysItIsChangeableLater() {
-        L10n.shared.language = .zh
-        XCTAssertTrue(OnboardingCopy.modelHint.contains("设置"), OnboardingCopy.modelHint)
-        L10n.shared.language = .en
-        XCTAssertTrue(OnboardingCopy.modelHint.contains("Settings"), OnboardingCopy.modelHint)
-    }
 
     /// 跳过那句必须是"没关系"的口吻，不能留一句像警告的话
     func testSkipReassuranceIsReassuring() {
@@ -160,7 +153,7 @@ final class OnboardingCopyTests: XCTestCase {
     func testEveryOnboardingCopyIsCleanInEnglish() {
         L10n.shared.language = .en
         let all = [OnboardingCopy.usageHeadline, OnboardingCopy.usageExplanation,
-                   OnboardingCopy.aiSkipReassurance, OnboardingCopy.modelHint,
+                   OnboardingCopy.aiSkipReassurance,
                    OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥"),
                    OnboardingCopy.doneAIStatus(status: .commandsOnly, hotkey: "⌥"),
                    OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")]
@@ -174,10 +167,10 @@ final class OnboardingCopyTests: XCTestCase {
     func testCopyActuallyDiffersBetweenLanguages() {
         L10n.shared.language = .zh
         let zh = [OnboardingCopy.usageHeadline, OnboardingCopy.usageExplanation,
-                  OnboardingCopy.aiSkipReassurance, OnboardingCopy.modelHint]
+                  OnboardingCopy.aiSkipReassurance]
         L10n.shared.language = .en
         let en = [OnboardingCopy.usageHeadline, OnboardingCopy.usageExplanation,
-                  OnboardingCopy.aiSkipReassurance, OnboardingCopy.modelHint]
+                  OnboardingCopy.aiSkipReassurance]
         for (a, b) in zip(zh, en) { XCTAssertNotEqual(a, b, a) }
     }
 }

@@ -632,8 +632,10 @@ enum LLMCatalog {
         }
         guard !pairs.isEmpty else { return nil }
         let list = pairs.joined(separator: tr("、", ", "))
-        return tr("这次升级把默认型号换成了各家最好的那一档：\(list)。你没有手动选过型号，所以它跟着默认走了。想省钱就在上面的「模型」里选便宜的那一项。",
-                  "This update moved the default model up to each provider's best tier: \(list). You had never picked a model by hand, so it followed the default. Pick a cheaper one under Model above to spend less.")
+        // 一行结论 + 一颗「知道了」（Plan C 的边界状态预算）：为什么会变、怎么省钱
+        // 各占一句话的那一版是一段话，用户扫一眼就跳过去了
+        return tr("默认型号跟着升级换成了 \(list)，想省钱在「模型」里挑。",
+                  "The default model moved up to \(list) - pick a cheaper one under Model to spend less.")
     }
 
     // MARK: - 错误话术

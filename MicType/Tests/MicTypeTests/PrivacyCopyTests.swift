@@ -71,30 +71,24 @@ final class PrivacyCopyTests: XCTestCase {
         }
     }
 
-    /// 云端那几句不进 allLines（关于页讲的是默认状态），但它们同样要两种语言都在、英文侧干净。
-    /// 这几句是用户点下"云端"之前唯一能读到的代价说明，一句都不能空。
-    func testCloudLinesAreCompleteInBothLanguages() {
-        for language in AppLanguage.allCases {
-            L10n.shared.language = language
-            for line in PrivacyCopy.cloudAlibabaLines + PrivacyCopy.cloudOpenAILines {
-                XCTAssertFalse(line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            XCTAssertEqual(Set(PrivacyCopy.cloudAlibabaLines).count, PrivacyCopy.cloudAlibabaLines.count,
-                           "ForEach(id: \\.self) 渲染，重复会丢行")
+    /// 云端识别那几句 4.0.2 起不在 PrivacyCopy 里：它们搬去了做那个选择的地方
+    /// （SettingsCopy.cloudRecognitionInfo，由 SettingsCopyBudgetTests 把四件代价钉死）。
+    /// 这里守住"别再搬回来"：这六句讲的是**默认状态**下的承诺，按秒计费、先去控制台开通模型
+    /// 这类只有开着那个开关才成立的话，混进来就成了对所有人说的假话。
+    func testCloudRecognitionCostDoesNotLiveHere() {
+        L10n.shared.language = .zh
+        for line in PrivacyCopy.allLines {
+            XCTAssertFalse(line.contains("按秒计费"), line)
+            XCTAssertFalse(line.contains("开通"), line)
         }
         L10n.shared.language = .en
-        for line in PrivacyCopy.cloudAlibabaLines + PrivacyCopy.cloudOpenAILines {
-            XCTAssertFalse(CJKSourceScanner.containsFlagged(line), "英文侧混进了中文：\(line)")
+        for line in PrivacyCopy.allLines {
+            XCTAssertFalse(line.lowercased().contains("billed by the second"), line)
+            XCTAssertFalse(line.lowercased().contains("enable the model"), line)
         }
-        // 三件必须说的事：音频会上传、按秒计费、失败还有本地退路
-        XCTAssertTrue(PrivacyCopy.cloudAudioLeaves.lowercased().contains("uploaded"))
-        XCTAssertTrue(PrivacyCopy.cloudBilledPerSecond.lowercased().contains("billed by the second"))
-        XCTAssertTrue(PrivacyCopy.cloudFallsBackToLocal.lowercased().contains("locally"))
-        // 阿里云那一档多一句"先去控制台开通模型"，OpenAI 那一档没有这一步
-        XCTAssertTrue(PrivacyCopy.cloudAlibabaLines.contains(PrivacyCopy.cloudEnableModelFirst))
-        XCTAssertFalse(PrivacyCopy.cloudOpenAILines.contains(PrivacyCopy.cloudEnableModelFirst))
-        XCTAssertFalse(PrivacyCopy.allLines.contains(PrivacyCopy.cloudAudioLeaves),
-                       "云端那几句不该混进关于页的六句")
+        // 反过来，默认那一档必须仍然把"只有选了云端才上传"说清楚——收口不是删掉边界
+        L10n.shared.language = .zh
+        XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("云端引擎"))
     }
 
     /// 六句话各自对应一条能在代码里指出来的行为，关键词漏了就说明句子被改空了
