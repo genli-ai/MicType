@@ -25,17 +25,45 @@ enum PolishService {
         let model = Settings.shared.currentPolishModel
         let temperature: Double? = LLMCatalog.rejectsCustomTemperature(model)
             ? nil : Settings.shared.polishTemperature
-        // 15s：润色是"顺手加工"，等超过这个数就该退回识别原文，而不是让用户干等
         return LLMClient.complete(system: instructions,
                                   user: input,
                                   purpose: .polish,
                                   temperature: temperature,
-                                  timeout: 15,
+                                  timeout: timeout(inputCharacters: rawText.count),
                                   model: model,
                                   maxOutputTokens: LLMCatalog.maxOutputTokens(
                                       inputCharacters: rawText.count,
                                       minimum: LLMCatalog.polishMinOutputTokens),
+                                  networkRetries: networkRetries(inputCharacters: rawText.count),
                                   completion: completion)
+    }
+
+    // MARK: - 超时预算
+
+    /// 短输入的超时。润色是"顺手加工"，一两句话等超过这个数就该退回识别原文，别让用户干等。
+    static let baseTimeout: TimeInterval = 15
+    /// 封顶。再长就不是"顺手加工"了：悬浮窗上那句「润色中…」带着秒数，但等一分半还没结果的话，
+    /// 先把识别原文给他更有用。
+    static let maxTimeout: TimeInterval = 90
+    /// 每多这么多字就多给 1 秒（gpt-5.6-luna 在 UAE 这条链路上的实测量级）
+    static let timeoutCharsPerSecond: Double = 60
+    /// 超过这个字数就不做网络重试（见 networkRetries）
+    static let noRetryCharacters = 600
+
+    /// 这一篇该给多少秒。**必须跟着输入长度走**：v4.0 把单次录音提到 600 s、
+    /// maxOutputTokens 也按输入放大到最多 32768，而润色走的是**非流式**请求——生成期间一个
+    /// 字节都不回来，URLRequest 的空闲超时因此等价于"整篇生成的总时长上限"。
+    /// 写死 15 s 的话，两千字的口述必然超时 → 长段口述永远用不上润色，
+    /// 而那恰恰是最需要分点、重排的场景。纯函数，可单测。
+    static func timeout(inputCharacters: Int) -> TimeInterval {
+        min(maxTimeout, baseTimeout + Double(max(0, inputCharacters)) / timeoutCharsPerSecond)
+    }
+
+    /// 这一篇要不要在网络故障后重发一遍。短输入照旧重试一次（15 s 的预算，重试很便宜）；
+    /// 长输入一律 0 —— 那时的超时意味着"整篇没在一分钟量级的预算内生成完"，原样重发只会让
+    /// 用户的等待翻倍，最后拿到的仍然是那句「润色失败（超时），已输出识别原文」。纯函数，可单测。
+    static func networkRetries(inputCharacters: Int) -> Int {
+        inputCharacters > noRetryCharacters ? 0 : 1
     }
 
     // MARK: - 提示词

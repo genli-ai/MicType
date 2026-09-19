@@ -178,8 +178,13 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
     /// **已经转出来的段**交出去——第 3 段炸了不等于前 2 段没说过（TranscriptionOutcome.isPartial）。
     /// 与本机引擎逐字同义：取消 = 不再开新段，已转好的照常交付（所以这里不沿用
     /// transcribeDetailed「取消后不回调」的约定，那一版是给集成层自己收口用的）。
+    ///
+    /// language / previousText 与本机引擎同义，只是换成云端的口径：语言锁走 language_hints
+    /// （本机是把英文全名拼进 prompt），上文走这一段的 context turn。
     @discardableResult
     func transcribe(samples: [Float],
+                    language: String?,
+                    previousText: String,
                     onSegment: ((String, Int, Int) -> Void)?,
                     completion: @escaping (TranscriptionOutcome) -> Void) -> TranscriptionHandle {
         let outer = TranscriptionHandle()
@@ -196,7 +201,8 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
             completion(outcome)
         }
 
-        inner = transcribeDetailed(samples: samples, onSegment: { text, index, total in
+        inner = transcribeDetailed(samples: samples, language: language, previousText: previousText,
+                                   onSegment: { text, index, total in
             joined = text
             totalSegments = total
             outer.noteSegmentCompleted()
@@ -228,10 +234,19 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
     /// completion 在主线程；被 cancel() 之后不回调。返回的句柄也可单独用来取消这一次。
     @discardableResult
     func transcribeDetailed(samples: [Float],
+                            language: String? = nil,
+                            previousText: String = "",
                             onSegment: ((String, Int, Int) -> Void)? = nil,
                             completion: @escaping (Result<CloudASRTranscription, CloudASRFailure>) -> Void)
         -> CloudASRHandle {
-        let cfg = currentConfig
+        var cfg = currentConfig
+        // 调用方给了显式语言（本机那边是"锁定的英文全名"）就按云端的口径换成 hints。
+        // 认不出来的名字 sanitize 会滤掉，那时宁可沿用设置里的 hints，也不送一个云端不认的码
+        // （阿里云会直接回 InvalidParameter）。
+        if let name = language {
+            let hints = CloudASRLanguage.sanitize(hints: [CloudASRLanguage.code(forName: name)])
+            if !hints.isEmpty { cfg.languageHints = hints }
+        }
         let client = cfg.makeClient()
         let handle = CloudASRHandle()
         lock.lock()
@@ -267,7 +282,8 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
                      + "model=\(cfg.provider == .alibaba ? cfg.alibabaModel.rawValue : "gpt-transcribe") "
                      + "seconds=\(String(format: "%.1f", seconds)) segments=\(segments.count)")
             self.run(segmentIndex: 0, segments: segments, samples: samples,
-                     config: cfg, client: client, texts: [], billed: nil, language: nil,
+                     config: cfg, client: client, texts: [], contextSeed: previousText,
+                     billed: nil, language: nil,
                      handle: handle, started: DispatchTime.now(),
                      onSegment: onSegment, finish: finish)
         }
@@ -283,6 +299,8 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
                      config: CloudASRConfig,
                      client: CloudTranscriptionProviding,
                      texts: [String],
+                     // contextSeed：第一段的上文种子（录音中已经定稿、不在这次音频里的那段文字）
+                     contextSeed: String,
                      billed: Double?,
                      language: String?,
                      handle: CloudASRHandle,
@@ -309,9 +327,11 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
         // 400 字的上下文额度留给"上一段的尾巴"
         let vocabularyInContext = config.provider == .alibaba
             && !config.alibabaModel.supportsInlineVocabulary
+        // 第一段的上文是调用方给的种子（预转写好的前半段），之后每段接上一段的尾巴
+        let previousText = texts.last ?? contextSeed
         let context = CloudASRContext.text(
             vocabulary: config.vocabulary,
-            previousTail: texts.last.flatMap { CloudASRContext.tail(of: $0, chars: Self.contextTailChars) },
+            previousTail: CloudASRContext.tail(of: previousText, chars: Self.contextTailChars),
             includeVocabulary: vocabularyInContext)
         Log.info("CloudASR seg=\(index + 1)/\(segments.count) "
                  + "seconds=\(String(format: "%.1f", segment.seconds)) wavBytes=\(wav.count)")
@@ -341,6 +361,7 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
                         let nextBilled = segResult.billedSeconds.map { (billed ?? 0) + $0 } ?? billed
                         self.run(segmentIndex: index + 1, segments: segments, samples: samples,
                                  config: config, client: client, texts: texts,
+                                 contextSeed: contextSeed,
                                  billed: nextBilled, language: language ?? segResult.detectedLanguage,
                                  handle: handle, started: started,
                                  onSegment: onSegment, finish: finish)

@@ -362,15 +362,21 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
 
     /// 识别整段录音。**长音频按段顺序跑**（分段规则见 AudioSegmenter，brief §3.1–3.3）：
     ///
-    ///   • 每段显式传 `maxTokens = ceil(秒数*20)+64`。库的默认值是 4096，而它内部又取
-    ///     `min(maxTokens, ceil(时长*20)+64)` —— 5 分钟密集语音的上限是 6064，默认值先撞线，
-    ///     于是**静默截断且不报错**。显式传这个数就是把那道暗闸解开。
+    ///   • 每段显式传 `QwenModels.segmentMaxTokens(seconds:)` ＝ **秒数 × 8 + 64**。
+    ///     库的默认值是 4096，而它内部又取 `min(maxTokens, ceil(秒数*20)+64)`——密集语音超过
+    ///     约 3.4 分钟就会撞上 4096 那道暗闸，**静默截断且不报错**。我们传的这个数比库内部的
+    ///     ×20 紧 2.5 倍，所以它才是**实际生效**的那道上限；8 这个系数的实测依据见 :101-110
+    ///     （峰值出字速率 英语 3.5 字/秒，已留两倍余量）。换更"出字密集"的语言或模型时要复核它。
     ///   • 段间 `flushMemoryPool()`：否则每段的 mask / KV 叠着涨，长音频吃到几个 GB。
-    ///   • 上一段的尾巴进下一段的 context（热词在前），见 RecognitionLanguages.segmentContext。
+    ///   • 上一段的尾巴进下一段的 context（热词在前），见 RecognitionLanguages.segmentContext；
+    ///     `previousText` 是这条上下文链的**种子**——录音中预转写好的前半段从这里接进来，
+    ///     否则整条链路上最后那道接缝（尾巴的第一段）是唯一没有上文的一段。
     ///   • 每完成一段就回调一次：文字先落到界面上，用户看得见进度；失败或被叫停时
     ///     已经出来的段落照常交付（TranscriptionOutcome.isPartial）。
     @discardableResult
     func transcribe(samples: [Float],
+                    language: String?,
+                    previousText: String,
                     onSegment: ((String, Int, Int) -> Void)?,
                     completion: @escaping (TranscriptionOutcome) -> Void) -> TranscriptionHandle {
         let handle = TranscriptionHandle()
@@ -387,8 +393,10 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
 
         let vocabTerms = Settings.shared.vocabularyTerms
         let languageCode = Settings.shared.recognitionLanguage
-        // 英文全名或 nil，见 RecognitionLanguages.modelLanguage（语言代码会被原样拼进 prompt）
-        let language = Settings.shared.recognitionModelLanguage
+        // 英文全名或 nil，见 RecognitionLanguages.modelLanguage（语言代码会被原样拼进 prompt）。
+        // 调用方传下来的语言锁优先：「自动」档下 Settings 这一侧恒为 nil，而录音中的预转写
+        // 可能已经替这一轮锁定了语言——尾巴要接着用同一个，不能自己重新检测一遍。
+        let sessionLanguage = language ?? Settings.shared.recognitionModelLanguage
 
         let load = ensureLoadTask()
         Task {
@@ -422,18 +430,22 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
             var failure: MTError?
             // 语言锁：第一段自动检测出什么语言，后面几段就**显式**按那个语言转。
             // 探针里那次 11 分钟的失败就是从语言漂移开始的——模型锁在英语上，开始把阿语
-            // 翻译成英语，翻着翻着掉进复读循环，直到烧完 token 预算。用户显式选过语言时
-            // （language != nil）本来就每段都传，这里只管"自动"那一档。
-            var lockedLanguage = language
+            // 翻译成英语，翻着翻着掉进复读循环，直到烧完 token 预算。用户显式选过语言、
+            // 或录音中的预转写已经锁定过语言时，sessionLanguage 一开始就不是 nil，
+            // 这里只管"自动 + 这一轮还没人锁过"那一档。
+            var lockedLanguage = sessionLanguage
             for (index, range) in plan.enumerated() {
                 // 取消的语义是"不再开新段"：正在解码的这一段停不下来（MLX 一次解码到底）
                 if handle.isCancelled { break }
                 let chunk = total == 1 ? samples : Array(samples[range])
                 let seconds = Double(chunk.count) / 16000.0
                 let maxTokens = QwenModels.segmentMaxTokens(seconds: seconds)
-                let context = RecognitionLanguages.segmentContext(terms: vocabTerms,
-                                                                  languageCode: languageCode,
-                                                                  previousText: joined)
+                // 跨段上下文从 previousText（录音中已定稿的前半段）起算：第一段的上文因此
+                // 不再是空串。parts / joined 仍从空开始——交付的文本里绝不能带上这段前缀。
+                let context = RecognitionLanguages.segmentContext(
+                    terms: vocabTerms,
+                    languageCode: languageCode,
+                    previousText: TextPostProcessor.joinSegments([previousText, joined]))
                 let started = DispatchTime.now()
                 do {
                     // language 为 nil 时走模型自动检测（默认）；用户显式选过、或第一段已经
@@ -520,6 +532,8 @@ final class QwenEngine: SpeechEngine {
     }
     @discardableResult
     func transcribe(samples: [Float],
+                    language: String?,
+                    previousText: String,
                     onSegment: ((String, Int, Int) -> Void)?,
                     completion: @escaping (TranscriptionOutcome) -> Void) -> TranscriptionHandle {
         let handle = TranscriptionHandle()

@@ -94,6 +94,19 @@ final class HistoryStore: ObservableObject {
         return item.id
     }
 
+    /// 把 addRaw 落下的那一条的**识别原文本身**改写成新的（polished 跟着回到同一份原文）。
+    /// 用在 Esc 部分交付那条路上：按下 Esc 的那一刻先落了一条保底记录（手上已有的几分钟文字），
+    /// 随后停不下来的那一段又转完了 —— 同一轮口述只该有一条记录，而它的原文必须是最终那一份，
+    /// 不是保底时的半截。条目已被删 / 被上限挤掉就什么都不做。
+    func replaceRaw(id: UUID, raw: String) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        let old = items[index]
+        guard old.raw != raw || old.polished != raw else { return }
+        items[index] = HistoryItem(id: old.id, date: old.date, raw: raw, polished: raw,
+                                   citations: old.citations)
+        save()
+    }
+
     /// 把 addRaw 落下的那一条补成最终文字。条目已经被用户删掉 / 被 200 条上限挤掉就什么都不做。
     /// citations：这一轮联网搜到的来源（只有自由指令 / 改选区那条路会有）。传空就保留原有的，
     /// 不把已经记下的来源抹掉。

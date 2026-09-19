@@ -58,10 +58,34 @@ protocol SpeechEngine: AnyObject {
     func preload()
     func unloadModel()
     /// samples：16kHz 单声道 Float32。
+    ///
+    /// - language: 已经**锁定**的识别语言（英文全名，口径见 RecognitionLanguages.modelLanguage）。
+    ///   nil = 按设置来（「自动」档交给引擎自己判）。录音中的预转写锁定过语言之后**必须**把它
+    ///   传下来：松手后要转的那截尾巴通常只有十几秒，是整条链路上最短、最容易被判错语言的一段，
+    ///   而判错语言正是"模型开始翻译 → 掉进复读"那条链的起点（探针里 11 分钟那次就是这么废的）。
+    /// - previousText: 这段音频**之前**已经定稿的文字（预转写好的前半段）。只做跨段上下文的种子，
+    ///   **绝不进 TranscriptionOutcome.text**——前后怎么拼由调用方负责，
+    ///   引擎再拼一遍就等于把同一段话交付两遍。
+    ///
     /// onSegment 每完成一段在主线程回调一次（参数是"到此为止拼好的全文"与段序号/总段数），
     /// completion 同样在主线程回调。返回的句柄用来叫停后续段落。
     @discardableResult
     func transcribe(samples: [Float],
+                    language: String?,
+                    previousText: String,
                     onSegment: ((String, Int, Int) -> Void)?,
                     completion: @escaping (TranscriptionOutcome) -> Void) -> TranscriptionHandle
+}
+
+extension SpeechEngine {
+
+    /// 便利版：没有语言锁、也没有上文（短录音、连通性探针与单测走的都是这条）。
+    /// 协议要求本身不许带默认值，所以补在这里——调用点不必为"本来就没有上文"写两个空参数。
+    @discardableResult
+    func transcribe(samples: [Float],
+                    onSegment: ((String, Int, Int) -> Void)?,
+                    completion: @escaping (TranscriptionOutcome) -> Void) -> TranscriptionHandle {
+        transcribe(samples: samples, language: nil, previousText: "",
+                   onSegment: onSegment, completion: completion)
+    }
 }

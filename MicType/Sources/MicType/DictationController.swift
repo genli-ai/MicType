@@ -135,6 +135,13 @@ final class DictationController {
     /// 预转写这一轮还作不作数。任何一段失败就置 false 并丢掉已转的部分——
     /// 松手后照老路子把整段重转一遍。宁可白跑一次 GPU，也不交付一段来路不明的拼接文本。
     private var liveActive = false
+    /// 松手这一刻定格的"已经转好的前半段"（没开预转写就是空串）。留成字段只为一件事：
+    /// Esc 那条部分交付的路要能就地把它落进历史（见 cancel()）——那几分钟的字在 resolve
+    /// 回来之前没有任何持久化，用户再按一次 Esc 就全没了。
+    private var committedText = ""
+    /// 松手后那一遍识别**已经报上来的**最新草稿（onSegment 的全文快照）。同样只为 Esc 那条保底路：
+    /// 云端那一档没有预转写，能救的就是这些已经转完的段落。
+    private var deliveredDraft = ""
     /// 本轮的耗时草稿（P20 性能指标）：识别/润色各阶段算完填一格，插入完成时提交进 Metrics。
     /// 只在主线程读写。取消 / 识别失败的那些轮不提交——它们没有完整的一条耗时可记。
     private var pendingMetric: SessionMetricDraft?
@@ -440,6 +447,11 @@ final class DictationController {
                 Log.info("Transcription stopped by user after \(handle.completedSegments) segment(s)"
                          + " live=\(liveParts.count)")
                 handle.cancel()
+                // 手上这些字**立刻**落一条历史保底。当前这一段停不下来（MLX 一次解码到底），
+                // 「收尾中…」可能还要好几秒；用户以为没生效再按一次 Esc 就走 endSession()，
+                // 结果被代数挡掉——在这之前它们没有任何持久化，几分钟口述会一个字不剩。
+                // 落下的这一条随后由 resolve 那边补成完整原文（见 pendingHistoryID）。
+                saveCancelSafetyHistory()
                 overlay.updateProcessing(label: tr("收尾中…", "Wrapping up…"))
                 Sounds.playCancel()
                 return
@@ -451,6 +463,20 @@ final class DictationController {
             overlay.flashNotice(tr("已取消", "Cancelled"))
             Sounds.playCancel()
         }
+    }
+
+    /// Esc 部分交付那一刻的保底记录：把此刻手上的文字（预转写好的前半段 + 已经报上来的段落）
+    /// 按纯听写的口径落进历史，并记住这一条的 id——之后 resolve 回来时就地补成完整原文，
+    /// 同一轮口述永远只有一条记录。keepHistory 关着时 addRaw 返回 nil，那就什么都不做
+    /// （用户明确不要历史，这里不是偷偷替他留一份的地方）。
+    private func saveCancelSafetyHistory() {
+        guard pendingHistoryID == nil else { return }
+        let salvaged = TextPostProcessor.joinSegments([committedText, deliveredDraft])
+        guard !salvaged.isEmpty else { return }
+        pendingHistoryID = HistoryStore.shared.addRaw(
+            TextPostProcessor.applyVocabReplacements(salvaged))
+        Log.info("Cancel safety history saved chars=\(salvaged.count)"
+                 + " kept=\(pendingHistoryID != nil)")
     }
 
     /// 这一轮用哪个识别引擎。默认档直接是本机的 QwenEngine；选了云端就把 Settings + 钥匙串
@@ -487,6 +513,8 @@ final class DictationController {
         if sessionUsesCloud { cloudEngine?.cancel() }
         // 指针清掉，但**不动已经写进历史的那一条**——那正是"取消也不丢字"的落点
         pendingHistoryID = nil
+        committedText = ""
+        deliveredDraft = ""
         skillSession = false
         pressSession = false
         pressRevealed = false
@@ -704,6 +732,11 @@ final class DictationController {
         }
         let consumed = chunk.count
         let windowFull = chunkSeconds >= Self.previewWindowSeconds
+        // 发起时的窗口起点。预览和预转写是两条各自在飞的任务：这一遍还没回来时，预转写落一段
+        // 就会把 previewWindowStart / previewCommitted 换成权威文本，那之后这一遍算出来的
+        // 「窗口往后滚 consumed」和「接在 previewCommitted 后面」都是按旧窗算的（滚过头会跳过
+        // 一整窗草稿，拼接则让同一句话在灰字里出现两遍）。所以回来时先比对，对不上就只丢草稿。
+        let startedAt = previewWindowStart
         previewTask = QwenEngine.shared.transcribePartial(samples: chunk) { [weak self] text, ms in
             guard let self = self else { return }
             self.previewTask = nil
@@ -716,6 +749,15 @@ final class DictationController {
             let latency = Double(ms) / 1000.0
             self.previewInterval = min(Self.previewMaxInterval,
                                        max(Self.previewBaseInterval, latency * 1.5))
+            // 这一遍在飞期间预转写落了段（窗口已经被权威文本重排）：草稿作废，
+            // 窗口一动不动——下一遍预览会按新窗口重新解码，音频一个采样都不会丢。
+            guard self.previewWindowStart == startedAt else {
+                Log.info("Preview draft dropped (a live segment moved the window)")
+                self.scheduleNextPartial(after: Self.previewIdleDelay(interval: self.previewInterval,
+                                                                      latency: latency),
+                                         generation: generation)
+                return
+            }
             if let text = text, !text.isEmpty {
                 let draft = self.joinDraft(self.previewCommitted, text)
                 self.overlay.showDraft(draft)
@@ -792,7 +834,14 @@ final class DictationController {
     private func updateLiveSegments() {
         guard liveActive, phase == .recording, !skillSession, liveTask == nil else { return }
         guard recorder.recordedDuration >= Self.liveSegmentAfterSeconds else { return }
+        // 帧电平照常增量累计（只算新录进来的那几帧，很便宜），模型一就绪就能立刻下刀。
         updateLiveFrames()
+        // 第一道闸门里"模型已就绪"那一条。少了它，模型没加载时 transcribeLiveSegment 每次都
+        // 返回 nil、liveConsumed 永不推进，于是每次电平回调（约 85 ms）都白做一遍
+        // 45 s 片段的拷贝 + nextLiveCut 里的两次全量 sorted()，一直烧到松手为止。
+        // 这里不动 liveActive：这是"还没开跑"，不是"跑失败了"（失败由 abandonLiveSegments 收口），
+        // 模型加载完这一轮照样能接着切段。
+        guard QwenEngine.shared.isModelReady else { return }
         guard let range = AudioSegmenter.nextLiveCut(frameRMS: liveFrames,
                                                      consumed: liveConsumed,
                                                      available: liveFramedSamples) else { return }
@@ -1077,6 +1126,9 @@ final class DictationController {
         recordingStartedAt = nil
         // 录音已结束，这一段再也不会被"当成修饰键用"而作废了
         pressSession = false
+        // 上一轮的保底快照绝不带进这一轮（Esc 那条路会拿它们去落历史）
+        committedText = ""
+        deliveredDraft = ""
         let duration = Double(samples.count) / 16000.0
 
         // 电平判据一趟算完，交给 SilenceGate 这条纯函数决定这段音频的去向（判据与理由见 SilenceGate）。
@@ -1144,16 +1196,24 @@ final class DictationController {
         // 任何一环不对劲（预转写作废 / 下标越界）都退回"整段重转"，绝不交付来路不明的拼接。
         var pending = samples
         var committed = ""
+        // 尾巴要显式按"预转写已经锁定的语言"转。这一截通常只有十几秒，是整条链路上最短、
+        // 最容易被判错语言的一段，而前面几分钟已经锁在某个语言上了——接缝处断掉语言锁，
+        // 模型就会从这里开始把口述"翻译"成另一种语言，再被复读截断收尾（3.3 之前的失败）。
+        var tailLanguage: String?
         if liveWasActive, !liveParts.isEmpty, liveConsumed > 0, liveConsumed < samples.count {
             committed = TextPostProcessor.joinSegments(liveParts)
             pending = Array(samples[liveConsumed...])
+            tailLanguage = liveLanguage
             Log.info("Live segmentation delivered parts=\(liveParts.count)"
                      + " tail=\(String(format: "%.1f", Double(pending.count) / 16000.0))s"
-                     + " chars=\(committed.count)")
+                     + " chars=\(committed.count) language=\(tailLanguage ?? "auto")")
         }
+        // Esc 那条部分交付的路要能立刻把它落进历史（见 saveCancelSafetyHistory）
+        committedText = committed
 
         startTranscription(engine: sessionEngine, usesCloud: sessionUsesCloud, samples: pending,
-                           committed: committed, faintAudio: faintAudio, isColdStart: isColdStart,
+                           committed: committed, language: tailLanguage,
+                           faintAudio: faintAudio, isColdStart: isColdStart,
                            tASR: tASR, generation: generation)
     }
 
@@ -1173,10 +1233,13 @@ final class DictationController {
 
     /// 把这段音频交给某个引擎跑一遍。抽出来是为了云端失败之后能**原样再跑一遍本地引擎**
     /// （同一条交付链路、同一套提示），而不是在回调里复制一份下游逻辑。
-    /// - committed: 录音中已经预转写好的前半段文字（没开预转写就是空串）。它**只在这里**
-    ///   与尾巴拼起来——resolve 之后的所有下游（润色、指令、历史、插入）拿到的都是完整文本。
+    /// - committed: 录音中已经预转写好的前半段文字（没开预转写就是空串）。它有两个去处：
+    ///   在这里与尾巴拼成完整文本（resolve 之后的所有下游——润色、指令、历史、插入——
+    ///   拿到的都是全文），以及作为 previousText 给引擎当跨段上下文的种子（尾巴的第一段
+    ///   因此不再是"从零开始的一句话"）。
+    /// - language: 已经锁定的识别语言（英文全名）；nil = 按设置走。
     private func startTranscription(engine: SpeechEngine, usesCloud: Bool, samples: [Float],
-                                    committed: String = "",
+                                    committed: String = "", language: String? = nil,
                                     faintAudio: Bool, isColdStart: Bool, tASR: DispatchTime,
                                     generation: Int) {
         // 长音频一段一段来：每完成一段就把已识别的文字贴到悬浮窗上（用户看得见进度），
@@ -1184,8 +1247,13 @@ final class DictationController {
         // 彻底取消仍然靠"丢结果"：正在解码的那一段停不下来，代数对不上就当这轮没发生过。
         inflightTranscription = engine.transcribe(
             samples: samples,
+            language: language,
+            previousText: committed,
             onSegment: { [weak self] draft, done, total in
-                guard let self = self, self.isCurrent(generation), total > 1 else { return }
+                guard let self = self, self.isCurrent(generation) else { return }
+                // Esc 那条保底路要的是"到此为止已经转出来的字"，和进度条显不显示无关
+                self.deliveredDraft = draft
+                guard total > 1 else { return }
                 self.overlay.updateProcessing(
                     label: Self.segmentLabel(usesCloud: usesCloud, done: done, total: total),
                     draft: draft)
@@ -1204,6 +1272,7 @@ final class DictationController {
                     self.overlay.showProcessing(Self.transcribingLabel(usesCloud: false))
                     self.startTranscription(engine: QwenEngine.shared, usesCloud: false,
                                             samples: samples, committed: committed,
+                                            language: language,
                                             faintAudio: faintAudio,
                                             // 本地这一遍多半是冷的（云端用户不会预加载模型）
                                             isColdStart: !QwenEngine.shared.isModelReady,
@@ -1219,6 +1288,9 @@ final class DictationController {
             case .failure(let error):
                 Log.error("Transcription failed: \(error.message)")
                 self.phase = .idle
+                // Esc 那一刻可能已经落过一条保底记录：记录本身留着（那正是"取消也不丢字"），
+                // 但指针到此为止——绝不能让下一轮口述去补全上一轮的那一条
+                self.pendingHistoryID = nil
                 self.overlay.flashError(error.message)
                 Sounds.playError()
             case .success(let transcribed):
@@ -1235,6 +1307,7 @@ final class DictationController {
                                                  minHits: 1) {
                     Log.info("Faint audio vocab echo discarded chars=\(transcribed.count)")
                     self.phase = .idle
+                    self.pendingHistoryID = nil
                     self.overlay.flashError(tr("声音太小，请靠近麦克风再试",
                                                "Too quiet — move closer to the microphone and try again"))
                     Sounds.playError()
@@ -1244,6 +1317,7 @@ final class DictationController {
                 let rawText = TextPostProcessor.applyVocabReplacements(transcribed)
                 guard !rawText.isEmpty else {
                     self.phase = .idle
+                    self.pendingHistoryID = nil
                     // 这里和静音闸门不同：音频过了电平闸门、识别也真跑过一遍，却什么都没出来
                     // ——这不是误触，是实打实的一次失败，和其它失败出口一样要出声。
                     self.overlay.flashError(
@@ -1283,7 +1357,13 @@ final class DictationController {
                 // **润色之前**先把识别原文落进历史（brief §3.3）：接下来是一次网络往返 +
                 // 一次切前台粘贴，任何一步失败、被 Esc 掐断、或者用户切走了窗口，
                 // 从前都意味着刚说的那几分钟一个字都不剩。交付时 deliver 会把同一条补全。
-                self.pendingHistoryID = HistoryStore.shared.addRaw(rawText)
+                // Esc 部分交付那一刻可能已经落过一条保底记录（saveCancelSafetyHistory）：
+                // 那就把它就地改写成完整原文，别让同一轮口述在历史里占两行。
+                if let id = self.pendingHistoryID {
+                    HistoryStore.shared.replaceRaw(id: id, raw: rawText)
+                } else {
+                    self.pendingHistoryID = HistoryStore.shared.addRaw(rawText)
+                }
                 let level = Settings.shared.polishLevel
                 if level != .off, LLMClient.isConfigured {
                     self.overlay.showProcessing(tr("润色中…", "Polishing…"))

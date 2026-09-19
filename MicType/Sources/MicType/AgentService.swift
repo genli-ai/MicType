@@ -106,22 +106,27 @@ enum LLMClient {
     /// - apiKeyOverride: 只有「粘贴即验证」那一趟会传——拿**还没进钥匙串**的候选 Key 发一次真请求。
     ///   验证必须走与真实润色完全相同的这条路（否则「测试通过」证明不了真用的时候也通），
     ///   而验证不过的 Key 一个字节都不该落进钥匙串（3.3 之前的「保存 Key」能存一把废 Key 还显示绿对勾）。
+    /// - networkRetries: 瞬时网络故障（含超时）之后原样重发几次。默认 1。
+    ///   长输入的润色会传 0：那一趟的超时预算本身就有一分钟量级，超时说明"整篇没在预算内生成完"，
+    ///   再原样发一遍只是把用户的等待翻倍（见 PolishService.networkRetries）。
     static func complete(system: String, user: String, purpose: Purpose, temperature: Double?,
                          timeout: TimeInterval, model: String, maxOutputTokens: Int,
                          apiKeyOverride: String? = nil,
+                         networkRetries: Int = 1,
                          completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle {
         let handle = LLMRequestHandle()
         if Settings.shared.llmProvider == .openai,
            usesResponsesAPI(baseURL: Settings.shared.currentBaseURL) {
             respond(system: system, user: user, purpose: purpose, temperature: temperature,
                     timeout: timeout, model: model, maxOutputTokens: maxOutputTokens,
-                    handle: handle, apiKeyOverride: apiKeyOverride, completion: completion)
+                    handle: handle, apiKeyOverride: apiKeyOverride,
+                    networkRetries: networkRetries, completion: completion)
         } else {
             chat(messages: [["role": "system", "content": system],
                             ["role": "user", "content": user]],
                  temperature: temperature, timeout: timeout, model: model,
                  purpose: purpose, handle: handle, apiKeyOverride: apiKeyOverride,
-                 completion: completion)
+                 networkRetries: networkRetries, completion: completion)
         }
         return handle
     }
@@ -150,13 +155,15 @@ enum LLMClient {
                         timeout: TimeInterval, model: String, maxOutputTokens: Int,
                         handle: LLMRequestHandle = LLMRequestHandle(),
                         apiKeyOverride: String? = nil,
+                        networkRetries: Int = 1,
                         completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle {
         let body = responsesBody(model: model, system: system, user: user, purpose: purpose,
                                  temperature: temperature, maxOutputTokens: maxOutputTokens,
                                  fastTier: Settings.shared.fastTier,
                                  searchStyle: searchStyle(for: purpose))
         dispatch(path: "/responses", body: body, endpoint: .responses, timeout: timeout,
-                 handle: handle, apiKeyOverride: apiKeyOverride, completion: completion)
+                 handle: handle, apiKeyOverride: apiKeyOverride,
+                 networkRetries: networkRetries, completion: completion)
         return handle
     }
 
@@ -172,13 +179,15 @@ enum LLMClient {
                      purpose: Purpose? = nil,
                      handle: LLMRequestHandle = LLMRequestHandle(),
                      apiKeyOverride: String? = nil,
+                     networkRetries: Int = 1,
                      completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle {
         let body = chatBody(model: model, messages: messages, temperature: temperature,
                             purpose: purpose, provider: Settings.shared.llmProvider,
                             fastTier: Settings.shared.fastTier,
                             searchStyle: purpose.map { searchStyle(for: $0) } ?? .unsupported)
         dispatch(path: "/chat/completions", body: body, endpoint: .chat, timeout: timeout,
-                 handle: handle, apiKeyOverride: apiKeyOverride, completion: completion)
+                 handle: handle, apiKeyOverride: apiKeyOverride,
+                 networkRetries: networkRetries, completion: completion)
         return handle
     }
 
@@ -522,6 +531,7 @@ enum LLMClient {
     private static func dispatch(path: String, body: [String: Any], endpoint: Endpoint,
                                  timeout: TimeInterval, handle: LLMRequestHandle,
                                  apiKeyOverride: String? = nil,
+                                 networkRetries: Int = 1,
                                  completion: @escaping (String?, String?) -> Void) {
         guard !handle.isCancelled else { return }
         // 候选 Key（验证中）优先；它只存在于这一趟请求里，别处读不到，也没写进钥匙串
@@ -555,7 +565,8 @@ enum LLMClient {
             return
         }
         send(url: url, body: body, apiKey: apiKey, timeout: timeout, endpoint: endpoint,
-             networkRetriesLeft: 1, stripAttemptsLeft: 2, handle: handle, completion: completion)
+             networkRetriesLeft: max(0, networkRetries), stripAttemptsLeft: 2,
+             handle: handle, completion: completion)
     }
 
     /// networkRetriesLeft：瞬时网络故障的重试次数。
