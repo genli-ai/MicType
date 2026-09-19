@@ -47,6 +47,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             SettingsWindowController.shared.show(tab: .ai)
         }
 
+        // 悬浮窗上的「去设置」：云端识别没填 Key / 区域配不出接入点时，落到识别页
+        dictation.onNeedRecognitionSettings = {
+            SettingsWindowController.shared.show(tab: .recognition)
+        }
+
+        // 云端识别的 Key 统一到润色那把（qwen_api_key）：开发期存过旧账号的搬过来再删
+        KeychainHelper.migrateLegacyDashScopeKey()
+
         hotkeys.onTapToggle = { [weak self] in self?.dictation.toggle() }
         hotkeys.onPressStart = { [weak self] in self?.dictation.pressStart() }
         hotkeys.onPressTapConfirm = { [weak self] in self?.dictation.pressTapConfirm() }
@@ -89,9 +97,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// 首启动去哪儿：新用户走引导；已经配好的老用户一个字都不打扰。
-    /// 判据用"模型在 + 辅助功能已授权"——这两项齐了说明他早就在用了，弹引导只会像退步。
+    /// 判据用"当前这一档识别引擎就绪 + 辅助功能已授权"——这两项齐了说明他早就在用了，
+    /// 弹引导只会像退步。**引擎按用户选的那一档判**：选了云端的人明确决定不下那 860MB，
+    /// 每次启动还把他拽到下载页就是在跟他较劲。
     private func routeFirstLaunch() {
-        let ready = QwenEngine.shared.isModelAvailable && Permissions.isAccessibilityTrusted
+        let ready = RecognitionEngineReadiness.current().isReady && Permissions.isAccessibilityTrusted
 
         if !Settings.shared.onboardingCompleted {
             if ready {
@@ -102,8 +112,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 OnboardingWindowController.shared.show()
                 return
             }
-        } else if !QwenEngine.shared.isModelAvailable {
-            // 走过引导但模型没了（换了模型 / 被删）：仍然带去下载页，而不是把人扔进设置页
+        } else if RecognitionEngineReadiness.current() == .localModelMissing {
+            // 走过引导但模型没了（换了模型 / 被删）：仍然带去下载页，而不是把人扔进设置页。
+            // 只对本地档成立——云端档缺 Key 不抢启动，按下热键时悬浮窗上那个「去设置」胶囊接住他
             OnboardingWindowController.shared.show(startAt: .model)
             return
         }

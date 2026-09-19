@@ -108,6 +108,11 @@ struct CloudASRFailure: Error {
 
     var message: String { error.message }
 
+    /// HTTP 200 回来了、只是这段音频一个字都没识别出来。**这不是一次真正的故障**：
+    /// 鉴权、区域、模型开通全都通过了。粘贴即验证的探针（CloudASRProbe）据此判"Key 是好的"，
+    /// 所以这个码必须稳定，别改字面量。
+    static let emptyTranscriptCode = "EmptyTranscript"
+
     init(_ message: String, retryable: Bool = false, code: String? = nil, status: Int = 0) {
         self.error = MTError(message)
         self.retryable = retryable
@@ -555,12 +560,16 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
                     return .success(CloudASRSegmentResult(text: text, billedSeconds: billed))
                 }
             }
-            return .failure(CloudASRFailure(tr("云端没有返回识别文本", "Provider returned no transcript")))
+            return .failure(CloudASRFailure(tr("云端没有返回识别文本", "Provider returned no transcript"),
+                                            code: CloudASRFailure.emptyTranscriptCode,
+                                            status: 200))
 
         case .qwen3Flash:
             guard let choices = output["choices"] as? [[String: Any]],
                   let message = choices.first?["message"] as? [String: Any] else {
-                return .failure(CloudASRFailure(tr("云端没有返回识别文本", "Provider returned no transcript")))
+                return .failure(CloudASRFailure(tr("云端没有返回识别文本", "Provider returned no transcript"),
+                                                code: CloudASRFailure.emptyTranscriptCode,
+                                                status: 200))
             }
             var text: String?
             if let content = message["content"] as? [[String: Any]] {
@@ -570,7 +579,9 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
                 text = plain
             }
             guard let text = text else {
-                return .failure(CloudASRFailure(tr("云端没有返回识别文本", "Provider returned no transcript")))
+                return .failure(CloudASRFailure(tr("云端没有返回识别文本", "Provider returned no transcript"),
+                                                code: CloudASRFailure.emptyTranscriptCode,
+                                                status: 200))
             }
             var language: String?
             if let annotations = message["annotations"] as? [[String: Any]] {
@@ -671,7 +682,9 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
 struct OpenAITranscribeClient: CloudTranscriptionProviding {
 
     var apiKey: String
-    var model: String = "gpt-transcribe"
+    /// 型号名写成常量：界面上「已连通 ✓ … · gpt-transcribe」那一行也要用它，别在两处各写一遍
+    static let defaultModel = "gpt-transcribe"
+    var model: String = defaultModel
     /// languages[]：语言代码（可多个）
     var languages: [String] = []
     /// keywords[]：词汇表词条（相当于热词）
@@ -775,7 +788,9 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
                                     message: err["message"] as? String))
         }
         guard let text = json["text"] as? String else {
-            return .failure(CloudASRFailure(tr("云端没有返回识别文本", "Provider returned no transcript")))
+            return .failure(CloudASRFailure(tr("云端没有返回识别文本", "Provider returned no transcript"),
+                                            code: CloudASRFailure.emptyTranscriptCode,
+                                            status: 200))
         }
         var language: String?
         if let languages = json["languages"] as? [[String: Any]],

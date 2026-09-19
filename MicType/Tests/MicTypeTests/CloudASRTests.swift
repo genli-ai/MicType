@@ -687,10 +687,17 @@ final class CloudASRTests: XCTestCase {
         wait(for: [done], timeout: 2)
     }
 
+    /// 两家云端都**复用润色那一档的 Key**：同一个控制台里的同一把 Key，分两处存
+    /// 只会存出两个不一致的值（改了一处、另一处还是旧的，表现是随机 401）
     func testCloudKeychainAccountNames() {
-        XCTAssertEqual(KeychainHelper.dashScopeAccount, "dashscope_api_key")
-        XCTAssertEqual(CloudASRProvider.alibaba.keychainAccount, "dashscope_api_key")
+        XCTAssertEqual(KeychainHelper.dashScopeAccount, "qwen_api_key")
+        XCTAssertEqual(CloudASRProvider.alibaba.keychainAccount, "qwen_api_key",
+                       "阿里云识别与 Qwen 润色共用一把百炼 Key")
+        XCTAssertEqual(CloudASRProvider.alibaba.keychainAccount, LLMProvider.qwen.keychainAccount)
         XCTAssertEqual(CloudASRProvider.openai.keychainAccount, "openai_api_key",
                        "OpenAI 云端识别复用润色那把 Key")
+        XCTAssertEqual(CloudASRProvider.openai.keychainAccount, LLMProvider.openai.keychainAccount)
+        XCTAssertNotEqual(KeychainHelper.legacyDashScopeAccount, KeychainHelper.dashScopeAccount,
+                          "旧账号名留着只为迁移，不能和统一账号同名")
     }
 }

@@ -19,6 +19,8 @@ final class DictationController {
     var onNeedSettings: (() -> Void)?
     /// 需要打开「设置 → AI」的回调（没配 Key 却按住说了指令时，悬浮窗上那个「去配置」胶囊）
     var onNeedAISettings: (() -> Void)?
+    /// 需要打开「设置 → 识别」的回调（选了云端引擎却没填 Key / 区域配不出接入点时的「去设置」胶囊）
+    var onNeedRecognitionSettings: (() -> Void)?
 
     private let recorder = AudioRecorder()
     let overlay = OverlayController()
@@ -37,7 +39,19 @@ final class DictationController {
     private var pressRevealed = false
     /// 按下沿发现的拦路问题：按下这一刻还不知道用户是要说话还是只把热键当修饰键用，
     /// 所以先记下来，等手势确认了再提示（3.3 之前每一次 ⌥+字母 都会响错误音并把引导窗抢到前台）
-    private enum BlockedReason: String { case model, accessibility }
+    private enum BlockedReason: Equatable {
+        /// 当前这一档识别引擎开不了工（本地模型没下载 / 云端没 Key / 云端区域没接入点）
+        case engine(RecognitionEngineReadiness)
+        case accessibility
+
+        /// 只进日志，不上界面
+        var logName: String {
+            switch self {
+            case .engine(let readiness): return "engine:\(readiness)"
+            case .accessibility: return "accessibility"
+            }
+        }
+    }
     private var pressBlockedReason: BlockedReason?
     /// 上一次「拦路问题」提示的时刻：同一类问题短时间内只提示一次，别让用户被连珠炮淹没
     private var lastBlockedPromptAt: Date?
@@ -82,6 +96,13 @@ final class DictationController {
     /// 当前在飞的分段识别。Esc 按下时用它叫停**后续段落**（正在解码的那一段停不下来），
     /// 已经出来的段落照常交付 —— 长段口述最怕的就是"全没了"
     private var inflightTranscription: TranscriptionHandle?
+    /// 云端识别引擎。**用到才建**：默认档的用户这辈子都不会创建它。
+    /// 建一次就一直留着（内部只有一把锁和一条队列，不占资源），每轮开录前用 update(config:) 刷新配置。
+    private var cloudEngine: CloudASREngine?
+    /// 这一轮实际用的引擎与它是不是云端。都在**开录这一刻**定格：录到一半去设置里改引擎，
+    /// 不该让正在录的这一段换一条链路（与 autoStopSilence 的快照同理）。
+    private var sessionEngine: SpeechEngine = QwenEngine.shared
+    private var sessionUsesCloud = false
     /// 润色之前先落进历史的那一条（见 HistoryStore.addRaw）：交付时补成最终文字，
     /// 交付不成也留着识别原文。nil = 这一轮还没落过（指令模式永远是 nil）
     private var pendingHistoryID: UUID?
@@ -203,8 +224,9 @@ final class DictationController {
         pressBlockedReason = nil
         // 模型与权限的提示同样推迟：按下这一刻用户很可能只是拿热键当修饰键用，
         // 这时候响错误音、把引导窗抢到前台，等于让他连字都打不成
-        guard QwenEngine.shared.isModelAvailable else {
-            pressBlockedReason = .model
+        let readiness = Self.engineReadiness()
+        guard readiness.isReady else {
+            pressBlockedReason = .engine(readiness)
             pressSession = true
             return
         }
@@ -261,22 +283,41 @@ final class DictationController {
         pressSession = false
         if let last = lastBlockedPromptAt,
            Date().timeIntervalSince(last) < Self.blockedPromptThrottleSeconds {
-            Log.info("Press blocked (\(reason.rawValue)) — prompt throttled")
+            Log.info("Press blocked (\(reason.logName)) — prompt throttled")
             return
         }
         lastBlockedPromptAt = Date()
-        Log.info("Press blocked (\(reason.rawValue))")
+        Log.info("Press blocked (\(reason.logName))")
         switch reason {
-        case .model:
-            // 文案要和实际落点一致：模型缺失时 onNeedSettings 打开的是引导向导的下载页
-            // （标题「欢迎使用 MicType」），不是设置窗口——说"请在设置中下载"只会让用户
-            // 以为弹错了窗口，去关掉它再自己找设置。
-            overlay.flashError(tr("识别模型未下载——已为你打开下载页",
-                                  "Speech model not downloaded — opening the download page"))
-            Sounds.playError()
-            onNeedSettings?()
+        case .engine(let readiness):
+            reportEngineNotReady(readiness)
         case .accessibility:
             promptAccessibilityNeeded()
+        }
+    }
+
+    /// 当前这一档识别引擎能不能开工（判据本身是纯函数，可单测；这里只是取当前设置那一版）
+    private static func engineReadiness() -> RecognitionEngineReadiness {
+        RecognitionEngineReadiness.current()
+    }
+
+    /// 引擎没就绪时的统一出口：说清哪儿不对，并把该去的那一页直接打开。
+    /// 本地档和云端档指向的是两个不同的落点，所以这里分两条路走。
+    private func reportEngineNotReady(_ readiness: RecognitionEngineReadiness) {
+        guard !readiness.isReady else { return }
+        Sounds.playError()
+        // 文案要和实际落点一致：模型缺失时 onNeedSettings 打开的是引导向导的下载页
+        // （标题「欢迎使用 MicType」），不是设置窗口——说"请在设置中下载"只会让用户
+        // 以为弹错了窗口，去关掉它再自己找设置。
+        guard let chip = readiness.settingsChipLabel else {
+            overlay.flashError(readiness.message)
+            onNeedSettings?()
+            return
+        }
+        // 云端那两档不自动抢窗口：用户可能只是临时没网/没充值，硬把设置页弹到脸上很烦。
+        // 给一个可点的胶囊（与「去配置」同一套机制），要去的人一下就到。
+        overlay.flashError(readiness.message, actionLabel: chip) { [weak self] in
+            self?.onNeedRecognitionSettings?()
         }
     }
 
@@ -385,6 +426,25 @@ final class DictationController {
         }
     }
 
+    /// 这一轮用哪个识别引擎。默认档直接是本机的 QwenEngine；选了云端就把 Settings + 钥匙串
+    /// 组装成一份配置交给 CloudASREngine（引擎自己永远不读设置）。
+    /// 配不出配置（区域没接入点等）时退回本机：走到这里说明 engineReadiness 已经放行过，
+    /// 但设置可能在这半秒里被改动——宁可用本机跑一遍，也不能让这段录音掉在地上。
+    private func prepareSessionEngine() {
+        guard let config = CloudASRSettings.currentConfig() else {
+            sessionEngine = QwenEngine.shared
+            sessionUsesCloud = false
+            return
+        }
+        let engine = cloudEngine ?? CloudASREngine(config: config)
+        engine.update(config: config)
+        cloudEngine = engine
+        sessionEngine = engine
+        sessionUsesCloud = true
+        Log.info("Session engine=cloud provider=\(config.provider.rawValue) "
+                 + "hints=\(config.languageHints.joined(separator: ","))")
+    }
+
     /// 结束当前一轮：作废所有在途回调 + 掐断网络请求 + 清掉本轮上下文，状态回 idle
     private func endSession() {
         generation &+= 1
@@ -394,6 +454,9 @@ final class DictationController {
         // 彻底取消时连后续段落也别跑了：结果反正会被代数挡掉，白占 GPU
         inflightTranscription?.cancel()
         inflightTranscription = nil
+        // 云端那一路还要把在飞的 HTTP 请求真的掐掉（取消之后引擎不再回调，与 LLMClient 同约定）：
+        // 只叫停"后续段落"的话，用户按了 Esc 还得等当前这一段传完、转完
+        if sessionUsesCloud { cloudEngine?.cancel() }
         // 指针清掉，但**不动已经写进历史的那一条**——那正是"取消也不丢字"的落点
         pendingHistoryID = nil
         skillSession = false
@@ -729,15 +792,10 @@ final class DictationController {
     /// 录音起点。fromPress = 由热键按下触发（按下即录，这一刻还没判定听写还是指令）；
     /// 菜单等其它入口触发的一律是纯听写，永远不读选区、不碰剪贴板。
     private func startRecording(fromPress: Bool = false) {
-        // 检查模型
-        guard QwenEngine.shared.isModelAvailable else {
-            // 文案要和实际落点一致：模型缺失时 onNeedSettings 打开的是引导向导的下载页
-            // （标题「欢迎使用 MicType」），不是设置窗口——说"请在设置中下载"只会让用户
-            // 以为弹错了窗口，去关掉它再自己找设置。
-            overlay.flashError(tr("识别模型未下载——已为你打开下载页",
-                                  "Speech model not downloaded — opening the download page"))
-            Sounds.playError()
-            onNeedSettings?()
+        // 检查这一档识别引擎（本地模型有没有下载 / 云端 Key 与区域配全了没有）
+        let readiness = Self.engineReadiness()
+        guard readiness.isReady else {
+            reportEngineNotReady(readiness)
             return
         }
         // 检查辅助功能权限（粘贴需要）
@@ -779,8 +837,13 @@ final class DictationController {
             self.skillSession = false
             self.targetSelection = nil
             self.sessionNotes = []
+            // 这一轮用哪个引擎在开录这一刻定格（录到一半改设置不影响这一段）
+            self.prepareSessionEngine()
             // 用户说话期间把到 API 的 DNS+TLS 握手做完，润色/指令请求省下首包延迟
             LLMClient.prewarm()
+            // 云端识别同理：UAE → 云端这条链路上，预热能省下 0.5–1.5s 的首包延迟。
+            // 与 LLMClient.prewarm 一样**不带 Key**，只热 DNS/TLS。
+            if self.sessionUsesCloud { self.cloudEngine?.prewarm() }
             self.recorder.onLevel = { [weak self] level in
                 DispatchQueue.main.async {
                     guard let self = self else { return }
@@ -898,8 +961,10 @@ final class DictationController {
 
         Log.info("Recording stop \(levelLog) gate=\(decision.rawValue)")
         phase = .processing
-        overlay.showProcessing(tr("识别中…", "Transcribing…"))
-        let isColdStart = !QwenEngine.shared.isModelReady
+        overlay.showProcessing(Self.transcribingLabel(usesCloud: sessionUsesCloud))
+        // 冷启动只对本机模型有意义（它决定粘贴时序要不要放宽）：云端那一档没有"模型还没加载"
+        // 这回事，硬填 true 只会让每次插入都白等一段保守时序
+        let isColdStart = sessionUsesCloud ? false : !QwenEngine.shared.isModelReady
         let tASR = DispatchTime.now()
         let generation = self.generation
         // 这一轮的耗时草稿从这里开始攒：模式在松手这一刻就定了（skillSession 还没被清），
@@ -909,20 +974,65 @@ final class DictationController {
                                            partialCount: partialCount,
                                            cold: isColdStart)
 
+        startTranscription(engine: sessionEngine, usesCloud: sessionUsesCloud, samples: samples,
+                           faintAudio: faintAudio, isColdStart: isColdStart, tASR: tASR,
+                           generation: generation)
+    }
+
+    /// 悬浮窗上"处理中"那句话。云端那一档必须当面写明音频正在上传——
+    /// 同一句"识别中…"既盖住本机也盖住云端的话，用户永远不知道自己刚才把录音发出去了。
+    private static func transcribingLabel(usesCloud: Bool) -> String {
+        usesCloud ? tr("云端识别中…", "Transcribing in the cloud…")
+                  : tr("识别中…", "Transcribing…")
+    }
+
+    private static func segmentLabel(usesCloud: Bool, done: Int, total: Int) -> String {
+        usesCloud ? tr("云端识别中…（第 \(done)/\(total) 段）",
+                       "Transcribing in the cloud… (part \(done) of \(total))")
+                  : tr("识别中…（第 \(done)/\(total) 段）",
+                       "Transcribing… (part \(done) of \(total))")
+    }
+
+    /// 把这段音频交给某个引擎跑一遍。抽出来是为了云端失败之后能**原样再跑一遍本地引擎**
+    /// （同一条交付链路、同一套提示），而不是在回调里复制一份下游逻辑。
+    private func startTranscription(engine: SpeechEngine, usesCloud: Bool, samples: [Float],
+                                    faintAudio: Bool, isColdStart: Bool, tASR: DispatchTime,
+                                    generation: Int) {
         // 长音频一段一段来：每完成一段就把已识别的文字贴到悬浮窗上（用户看得见进度），
         // 失败或被叫停时前面的段落照常交付。单段识别（≤90s）的行为与分段之前完全一致。
         // 彻底取消仍然靠"丢结果"：正在解码的那一段停不下来，代数对不上就当这轮没发生过。
-        inflightTranscription = QwenEngine.shared.transcribe(
+        inflightTranscription = engine.transcribe(
             samples: samples,
             onSegment: { [weak self] draft, done, total in
                 guard let self = self, self.isCurrent(generation), total > 1 else { return }
                 self.overlay.updateProcessing(
-                    label: tr("识别中…（第 \(done)/\(total) 段）",
-                              "Transcribing… (part \(done) of \(total))"),
+                    label: Self.segmentLabel(usesCloud: usesCloud, done: done, total: total),
                     draft: draft)
             }) { [weak self] outcome in
             guard let self = self, self.isCurrent(generation) else { return }
             self.inflightTranscription = nil
+            // 云端炸了先想退路：本地模型在就整段重跑一遍本地识别，用户一个字都不丢。
+            // 判据是纯函数（CloudFallbackDecision），引擎自己不做这个决定。
+            if usesCloud, let failure = outcome.failure, !outcome.cancelled {
+                switch CloudFallbackDecision.decide(partialText: outcome.text,
+                                                    localModelAvailable: QwenEngine.shared.isModelAvailable) {
+                case .retryLocally:
+                    Log.warn("Cloud transcription failed — retrying on the local engine")
+                    // 原因挂进本轮附注，交付时会并进结果提示：用户得知道这一段是本地转的
+                    self.addSessionNote(CloudFallbackDecision.fallbackNote(reason: failure.message))
+                    self.overlay.showProcessing(Self.transcribingLabel(usesCloud: false))
+                    self.startTranscription(engine: QwenEngine.shared, usesCloud: false,
+                                            samples: samples, faintAudio: faintAudio,
+                                            // 本地这一遍多半是冷的（云端用户不会预加载模型）
+                                            isColdStart: !QwenEngine.shared.isModelReady,
+                                            tASR: DispatchTime.now(), generation: generation)
+                    return
+                case .deliverPartial, .reportFailure:
+                    // 没有本地退路：已经转出来的段落照常交付、什么都没有就报错——
+                    // 这两件事 resolve() 本来就在做，不必在这里另起一套
+                    break
+                }
+            }
             switch self.resolve(outcome) {
             case .failure(let error):
                 Log.error("Transcription failed: \(error.message)")

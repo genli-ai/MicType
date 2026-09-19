@@ -233,6 +233,8 @@ enum SettingsKeys {
     static let keepHistory = "keepHistory"                 // 是否把听写结果记进历史（默认开）
     static let qwenModelRepo = "qwenModelRepo"
     static let recognitionLanguage = "recognitionLanguage"  // 识别语言（"" = 自动检测）
+    static let recognitionEngine = "recognitionEngine"      // 识别引擎：local（默认）/ cloudAlibaba / cloudOpenAI
+    static let cloudAlibabaModel = "cloudAlibabaModel"      // 云端·阿里云用哪个识别模型
     static let modelCatalogLastCheck = "modelCatalogLastCheck"      // 上次查模型目录的时间（epoch 秒，0 = 没查过）
     static let pendingModelCleanup = "pendingModelCleanup"          // 等着删的旧模型仓库（升级后、首次成功听写前）
     static let dismissedModelUpgradeRepo = "dismissedModelUpgradeRepo"  // 用户点过「以后再说」的那个模型仓库
@@ -285,6 +287,9 @@ final class Settings {
             SettingsKeys.keepHistory: true,
             SettingsKeys.qwenModelRepo: QwenModels.defaultRepo,
             SettingsKeys.recognitionLanguage: RecognitionLanguages.autoCode,
+            // 识别引擎默认永远是本地：音频出不出这台 Mac 这种事，只能由用户自己点
+            SettingsKeys.recognitionEngine: RecognitionEngineChoice.local.rawValue,
+            SettingsKeys.cloudAlibabaModel: AlibabaASRModel.qwenAudio30Flash.rawValue,
             // 模型目录 / 升级的本机状态（不进设置导出：跟这台机器的磁盘绑定）
             SettingsKeys.modelCatalogLastCheck: 0.0,
             SettingsKeys.pendingModelCleanup: [String](),
@@ -727,6 +732,22 @@ final class Settings {
     /// 脏值也回 nil，见 RecognitionLanguages.modelLanguage。
     var recognitionModelLanguage: String? {
         RecognitionLanguages.modelLanguage(for: recognitionLanguage)
+    }
+
+    // MARK: 识别引擎（本地 / 云端）
+
+    /// 用哪个识别引擎。默认、且脏值一律回落 `.local`——**音频离不离开这台 Mac 只由用户决定**，
+    /// 一条读不懂的设置绝不能把录音送上云端。
+    var recognitionEngine: RecognitionEngineChoice {
+        get { RecognitionEngineChoice.parse(d.string(forKey: SettingsKeys.recognitionEngine) ?? "") }
+        set { d.set(newValue.rawValue, forKey: SettingsKeys.recognitionEngine) }
+    }
+
+    /// 云端·阿里云那一档用哪个模型（默认 qwen-audio-3.0-asr-flash：它支持带权重的热词）
+    var cloudAlibabaModel: AlibabaASRModel {
+        get { AlibabaASRModel(rawValue: d.string(forKey: SettingsKeys.cloudAlibabaModel) ?? "")
+                ?? .qwenAudio30Flash }
+        set { d.set(newValue.rawValue, forKey: SettingsKeys.cloudAlibabaModel) }
     }
 
 }

@@ -50,9 +50,24 @@ final class KeyVerifier: ObservableObject {
         return trimmed != verifiedKey
     }
 
+    /// 这把 Key 用哪条链路去验。
+    ///
+    /// 为什么必须可插拔：LLMClient 那条路永远发往**当前选中的服务商**的 Base URL
+    /// （dispatch 读的是 Settings.currentBaseURL）。识别页上的 Key 属于 Qwen/OpenAI 的云端识别，
+    /// 用户的润色服务商完全可能是另一家——照搬 LLM 探针就等于把阿里云的 Key 发到 OpenAI 去。
+    /// 所以识别页走 `.cloudASR`：直接打识别端点，发 1 秒合成音，
+    /// 顺带把区域、WorkspaceId、模型有没有在控制台开通一起验了（LLM 的 /models 探针验不到这些）。
+    enum Probe: Equatable {
+        /// 走润色/指令那条链路（AI 页默认）
+        case llm
+        /// 走云端识别端点，1 秒合成音（识别页）
+        case cloudASR(CloudASRProvider)
+    }
+
     /// 发一次真请求验证这把 Key。通过才写钥匙串；不通过**一个字节都不写**。
     /// - model: 拿来探活的型号（用润色型号：它是每句话都要跑的那个）
-    func verify(key: String, provider: LLMProvider, model: String) {
+    /// - probe: 走哪条链路，见 Probe
+    func verify(key: String, provider: LLMProvider, model: String, probe: Probe = .llm) {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         generation += 1
         let gen = generation
@@ -71,18 +86,46 @@ final class KeyVerifier: ObservableObject {
 
         status = .verifying
         let hadPrevious = KeychainHelper.loadAPIKey(account: provider.keychainAccount) != nil
-        // 走 testModel = 走与真实润色完全相同的那条路（含 Responses / chat 的分叉）
-        LLMClient.testModel(model, candidateKey: trimmed) { [weak self] ok, message in
+        /// 两条探针回来之后做的事一模一样：过了就写钥匙串，没过就一个字节都不动
+        let settle: (Bool, String, String, String) -> Void = { [weak self] ok, label, model, message in
             guard let self = self, self.generation == gen else { return }
             if ok {
                 KeychainHelper.saveAPIKey(trimmed, account: provider.keychainAccount)
                 self.verifiedKey = trimmed
-                self.status = .connected(provider: provider.segmentName, model: model)
+                self.status = .connected(provider: label, model: model)
                 Log.info("API key verified provider=\(provider.rawValue) model=\(model)")
             } else {
                 // 失败不动钥匙串：原来那把要是好的，不该被一次手滑的粘贴连累
                 self.status = .failed(reason: message, keptPrevious: hadPrevious)
                 Log.warn("API key verification failed provider=\(provider.rawValue) model=\(model)")
+            }
+        }
+
+        switch probe {
+        case .llm:
+            // 走 testModel = 走与真实润色完全相同的那条路（含 Responses / chat 的分叉）
+            LLMClient.testModel(model, candidateKey: trimmed) { ok, message in
+                settle(ok, provider.segmentName, model, message)
+            }
+        case .cloudASR(let cloudProvider):
+            // 识别页：直接打识别端点。配不出配置（区域没接入点）就当面说，别偷偷换一个区域去验
+            guard var config = CloudASRSettings.currentConfig(), config.provider == cloudProvider else {
+                status = .failed(reason: tr("云端识别在当前接入区域没有接入点，请先改区域",
+                                            "Cloud recognition has no endpoint in the selected region - change the region first"),
+                                 keptPrevious: hadPrevious)
+                return
+            }
+            config.apiKey = trimmed
+            let modelName = cloudProvider == .alibaba
+                ? Settings.shared.cloudAlibabaModel.rawValue
+                : OpenAITranscribeClient.defaultModel
+            CloudASRProbe.run(config: config) { result in
+                switch result {
+                case .success:
+                    settle(true, cloudProvider.displayName, modelName, "")
+                case .failure(let failure):
+                    settle(false, cloudProvider.displayName, modelName, failure.message)
+                }
             }
         }
     }
@@ -123,6 +166,9 @@ struct KeyEntryView: View {
     let provider: LLMProvider
     /// 拿来探活的型号（润色型号）
     let model: String
+    /// 用哪条链路验这把 Key。默认走 LLM（AI 页）；识别页传 `.cloudASR(...)`，
+    /// 直接打识别端点、发 1 秒合成音（理由见 KeyVerifier.Probe）
+    var probe: KeyVerifier.Probe = .llm
     /// Key 存储与费用那两句要不要跟在输入框下面。引导第 5 屏把它们钉在整屏底部
     /// （那是"固定的成本声明"该在的位置），所以那一处传 false——**文字仍是同两个常量**，
     /// 只是摆的地方不同（同一个事实只写一处，见 C10）。
@@ -224,10 +270,10 @@ struct KeyEntryView: View {
         if trimmed.isEmpty {
             // 从来没填过就别在屏幕上留一行「已清空」
             guard KeychainHelper.loadAPIKey(account: provider.keychainAccount) != nil else { return }
-            verifier.verify(key: "", provider: provider, model: model)
+            verifier.verify(key: "", provider: provider, model: model, probe: probe)
             return
         }
         guard verifier.needsVerification(trimmed), !verifier.isVerifying else { return }
-        verifier.verify(key: trimmed, provider: provider, model: model)
+        verifier.verify(key: trimmed, provider: provider, model: model, probe: probe)
     }
 }

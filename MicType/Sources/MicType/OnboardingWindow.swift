@@ -500,6 +500,14 @@ private struct ModelPage: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            // 不想下这几百 MB 的人有第二条路，但**只给一行链接**：云端要填 Key、要花钱、
+            // 音频要上传，把它做成引导里的一整屏等于在推销它。默认档仍然是本地模型。
+            Button(tr("不想下载？可以改用云端识别（音频会上传，按秒计费）",
+                      "Prefer not to download? Use cloud recognition instead (audio is uploaded, billed per second)")) {
+                SettingsWindowController.shared.show(tab: .recognition)
+            }
+            .buttonStyle(.link)
+            .font(.caption)
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

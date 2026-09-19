@@ -367,6 +367,12 @@ private struct RecognitionTab: View {
     @AppStorage(SettingsKeys.recognitionLanguage) private var recognitionLanguage = RecognitionLanguages.autoCode
     @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
     @AppStorage(SettingsKeys.fillerWords) private var fillerWords = ""
+    // 识别引擎（默认本地）与云端那一档的设置。区域 / WorkspaceId 与「AI」页共用同一条设置——
+    // 同一个百炼账号、同一把 Key，分两处存只会存出两个不一致的值
+    @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
+    @AppStorage(SettingsKeys.cloudAlibabaModel) private var cloudAlibabaModel = AlibabaASRModel.qwenAudio30Flash.rawValue
+    @AppStorage(SettingsKeys.qwenRegion) private var qwenRegion = LLMCatalog.QwenRegion.international.rawValue
+    @AppStorage(SettingsKeys.qwenWorkspaceID) private var qwenWorkspace = ""
     @ObservedObject private var downloader = QwenModelDownloader.shared
     @ObservedObject private var upgrader = ModelUpgrader.shared
     /// 模型目录到货时下拉框要立刻跟上（首启动时目录还在路上）
@@ -375,6 +381,10 @@ private struct RecognitionTab: View {
     @State private var refreshTick = 0
     @State private var updateMessage = ""
     @State private var checkingUpdate = false
+    /// 「测试识别」那一行结论（快照，切语言 / 换引擎就清掉）
+    @State private var cloudTestResult = ""
+    @State private var cloudTestOK = false
+    @State private var cloudTesting = false
 
     private var modelExists: Bool {
         _ = refreshTick
@@ -505,6 +515,16 @@ private struct RecognitionTab: View {
         .cornerRadius(8)
     }
 
+    /// 当前选中的识别引擎。脏值一律回落本地（RecognitionEngineChoice.parse）：
+    /// 一条读不懂的设置绝不能把音频送上云端。
+    private var engineChoice: RecognitionEngineChoice { RecognitionEngineChoice.parse(recognitionEngine) }
+
+    /// 云端·阿里云这一档当前的区域配得出接入点吗（东京 / 香港没有识别主机）
+    private var cloudRegionOK: Bool {
+        CloudASRSettings.regionSupported(choice: engineChoice,
+                                         region: LLMCatalog.QwenRegion(rawValue: qwenRegion) ?? .international)
+    }
+
     var body: some View {
         Form {
             // 麦克风选择 + 电平自检：与引导第二屏共用同一个组件（MicCheck.swift）
@@ -512,158 +532,34 @@ private struct RecognitionTab: View {
                 MicCheckPanel()
             }
 
+            // 引擎在最前：它决定下面那一段是"下模型"还是"填 Key"
             Section {
-                Picker(tr("识别语言：", "Recognition language:"), selection: $recognitionLanguage) {
-                    Text(tr("自动检测（默认）", "Detect automatically (default)"))
-                        .tag(RecognitionLanguages.autoCode)
-                    ForEach(RecognitionLanguages.pickerOrdered) { lang in
-                        Text(lang.displayName).tag(lang.code)
-                    }
-                }
-                Text(tr("自动检测对中英文很准，几乎不用动。说小语种（或中英夹杂被判错）时指定语言更稳；指定只影响识别，不改任何别的行为。",
-                        "Automatic detection is reliable for Chinese and English, so most people never touch this. Pick a language when you speak something else, or when mixed speech gets detected wrong. It only affects recognition."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                if showsArabicModelHint {
-                    Divider()
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Image(systemName: "lightbulb")
-                                .foregroundColor(.orange)
-                            Text(tr("阿拉伯语建议换 1.7B 模型", "Arabic works noticeably better on the 1.7B model"))
-                                .fontWeight(.medium)
-                        }
-                        Text(tr("阿语上 1.7B 比 0.6B 准得多（Fleurs 词错率 25.5% → 17.0%，Common Voice 46.0% → 38.0%）。\n能用的是现代标准阿语和朗读级内容；海湾、埃及等方言**不承诺**能用——那是模型的已知短板，不是设置问题。",
-                                "On Arabic the 1.7B model is far more accurate than the 0.6B one (Fleurs WER 25.5% to 17.0%, Common Voice 46.0% to 38.0%).\nModern Standard Arabic and read-aloud speech are usable. Gulf, Egyptian and other dialects are NOT promised - that is a known weakness of the model, not a setting you can fix."))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        // 体量从模型目录取，不写死：模型换版、量化改了，这句话不该还是旧数字
-                        Button(largeModelExists
-                                ? tr("切换到 1.7B 模型", "Switch to the 1.7B model")
-                                : tr("切换并下载 1.7B 模型（\(QwenModels.sizeNote(bytes: largeModelSizeBytes))）",
-                                     "Switch and download the 1.7B model (\(QwenModels.sizeNote(bytes: largeModelSizeBytes)))")) {
-                            updateMessage = ""
-                            QwenEngine.shared.unloadModel()
-                            qwenRepo = QwenModels.largeRepo
-                            if !largeModelExists {
-                                downloader.download(repo: QwenModels.largeRepo, force: false)
-                            }
-                            refreshTick += 1
-                        }
-                        .disabled(downloader.isDownloading)
-                    }
-                }
-                // 升级横幅：非模态、可忽略，永不自动换模型（换代要下几百 MB，这种事只由用户点）
-                upgradeBanner
-                Picker(tr("识别模型：", "Speech model:"), selection: $qwenRepo) {
-                    ForEach(QwenModels.all, id: \.repo) { m in
-                        Text(m.sizeNote.isEmpty ? m.title : "\(m.title) · \(m.sizeNote)").tag(m.repo)
-                    }
-                    // 目录里已经不列这一档了（换代下架），但用户正在用它：如实列出来，
-                    // 不自动替他换（Picker 少一个能选中的选项会显示空白，那才是真的看不懂）
-                    if !selectedModelListed {
-                        Text(tr("当前模型（目录里已不再列出）", "Current model (no longer listed)"))
-                            .tag(qwenRepo)
-                    }
-                }
-                if !selectedModelLanguagesNote.isEmpty {
-                    Text(selectedModelLanguagesNote)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                HStack {
-                    Image(systemName: modelExists ? "checkmark.circle.fill" : "arrow.down.circle")
-                        .foregroundColor(modelExists ? .green : .orange)
-                    Text(modelExists ? tr("模型已就绪", "Model ready")
-                                     : tr("模型未下载", "Model not downloaded"))
-                    Spacer()
-                    if downloader.isDownloading {
-                        Button(tr("取消", "Cancel")) { downloader.cancel() }
-                    } else {
-                        Button(modelExists ? tr("重新下载 / 更新", "Re-download / Update")
-                                           : tr("下载模型", "Download Model")) {
-                            updateMessage = ""
-                            QwenEngine.shared.unloadModel()
-                            downloader.download(repo: qwenRepo, force: modelExists)
-                        }
-                        // 一个按钮查两件事：模型目录里有没有更好的模型，以及当前仓库有没有新修订。
-                        // 结论落在下面那行文字里，横幅（如果有）负责给「一键升级」的按钮。
-                        Button(checkingUpdate ? tr("检查中…", "Checking…")
-                                              : tr("检查模型更新", "Check for model updates")) {
-                            checkingUpdate = true
-                            updateMessage = ""
-                            upgrader.checkNow { message in
-                                checkingUpdate = false
-                                updateMessage = message
-                            }
-                        }
-                        .disabled(checkingUpdate || upgrader.isBusy)
-                    }
-                }
-                if downloader.isDownloading {
-                    ProgressView(value: downloader.progress)
-                }
-                if !downloader.statusText.isEmpty {
-                    Text(downloader.statusText)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                if !updateMessage.isEmpty {
-                    Text(updateMessage)
-                        .font(.caption)
-                        // 有事可做才用橙色：「已是最新」不该长得像警告
-                        .foregroundColor(upgrader.decision == .none ? .secondary : .orange)
-                }
-                Text(tr("Qwen3-ASR（2026）：约 30 种语言 + 22 种中文方言，自动检测语言，识别完全在本机进行。模型来自 HuggingFace（hf-mirror 加速）。",
-                        "Qwen3-ASR (2026): ~30 languages + 22 Chinese dialects, automatic language detection, fully on-device. Models from HuggingFace."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                engineSection
             }
 
             Section {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(tr("专有词汇表（人名、品牌、术语等，用逗号或换行分隔）：",
-                            "Custom vocabulary (names, brands, jargon — comma or newline separated):"))
-                    TextEditor(text: $vocabulary)
-                        .font(.system(size: 12))
-                        .frame(height: 80)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
-                    Text(tr("这些词会作为热词直接送入识别模型，并参与 AI 润色纠错——专有名词识别准确率的第一杠杆，强烈建议填写。\n支持硬替换：填「杰文=捷文」表示识别出的「杰文」一律改成「捷文」——确定性替换、零耗时，对完全同音的人名最有效。\n一个正写可挂多个错写：「杰文|捷纹|结文=捷文」。西文词条大小写不敏感、按整词匹配。",
-                            "These terms are fed to the speech model as hotwords and used by AI polish — the #1 lever for proper-noun accuracy.\nHard replacement supported: an entry like \"Jevin=Jaywen\" deterministically rewrites every occurrence — zero latency, ideal for exact-homophone names.\nOne correct form can take several wrong spellings: \"Jevin|Jevan|Javin=Jaywen\". Latin entries match whole words, case-insensitively."))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                languageSection
+            }
+
+            Section {
+                switch engineChoice {
+                case .local: localModelSection
+                case .cloudAlibaba: cloudAlibabaSection
+                case .cloudOpenAI: cloudOpenAISection
                 }
             }
 
             Section {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(tr("口水词过滤（用逗号或换行分隔，默认空 = 不过滤）：",
-                            "Filler words to drop (comma or newline separated; empty = off):"))
-                    TextEditor(text: $fillerWords)
-                        .font(.system(size: 12))
-                        .frame(height: 56)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
-                    Text(tr("在本机删掉，不联网、不花润色额度——「仅识别」档也生效。\n分寸是保守的：西文词按整词删（填 um 不会动 umbrella）；中文词只在前后都是标点或空白时删（填「那个」不会动「那个人」）。",
-                            "Removed on-device — no network, no polish tokens; works even in transcribe-only mode.\nDeliberately conservative: Latin entries are dropped as whole words only (\"um\" never touches \"umbrella\"); other entries are dropped only when standing alone between punctuation or spaces."))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
+                vocabularySection
+            }
+
+            Section {
+                fillerSection
             }
 
             // 性能：只是照镜子，不提供任何"自动优化"开关——快慢的原因摆出来，怎么调由用户决定
             Section(tr("性能", "Performance")) {
-                if let digest = Metrics.digest(metrics.items) {
-                    Text(Metrics.summaryLine(digest))
-                        .monospacedDigit()
-                } else {
-                    Text(tr("还没有可统计的记录——正常用几次就会出现。",
-                            "No sessions recorded yet — dictate a few times and this will fill in."))
-                        .foregroundColor(.secondary)
-                }
-                Text(tr("识别与插入都在本机完成；「模型」那一段是到大模型接口的网络往返（轻点是润色，按住是指令），和这台 Mac 快慢无关，后面括号里是它实际统计了几轮。\n只统计数字，不保存任何听写内容。",
-                        "Recognition and insertion run on this Mac; the “Model” figure is the network round trip to your model endpoint (polish when you tap, the command model when you hold) — not bound by this machine. The number in brackets is how many rounds actually went through it.\nOnly timings are stored — never any transcribed text."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                performanceSection
             }
         }
         .formStyle(.grouped)
@@ -676,13 +572,350 @@ private struct RecognitionTab: View {
             QwenEngine.shared.unloadModel()
             refreshTick += 1
         }
+        // 换引擎 / 换区域 / 换云端模型之后，上一次的测试结论不再算数
+        .onChange(of: recognitionEngine) { _, _ in cloudTestResult = "" }
+        .onChange(of: qwenRegion) { _, _ in cloudTestResult = "" }
+        .onChange(of: cloudAlibabaModel) { _, _ in cloudTestResult = "" }
         // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言。
         // 下载状态不在其列：它现在存的是语言中性的 phase，文字由 tr() 现场渲染，下载中也跟着切
         .onChange(of: l10n.language) { _, _ in
             updateMessage = ""
+            cloudTestResult = ""
             // 下载状态已经是语言中性的 phase，麦克风自检的文字归 MicCheckPanel 自己管；
             // 升级器那句结论仍是快照，照旧清掉
             if !upgrader.isBusy { upgrader.clearStatus() }
+        }
+    }
+
+    // MARK: 引擎（本地 / 云端，永远是用户自己选）
+
+    @ViewBuilder
+    private var engineSection: some View {
+        Picker(tr("识别引擎：", "Recognition engine:"), selection: $recognitionEngine) {
+            ForEach(RecognitionEngineChoice.allCases, id: \.rawValue) { choice in
+                Text(choice.segmentName).tag(choice.rawValue)
+            }
+        }
+        .pickerStyle(.segmented)
+        Text(tr("本地引擎不联网、不花钱，是默认档。云端引擎把每一段录音上传给服务商识别，按秒计费——机器慢、录音长、或者要识别本地模型不擅长的语言时才值得开。随时可以换回来。",
+                "The on-device engine needs no network and costs nothing; it is the default. A cloud engine uploads every recording to that provider and is billed by the second - worth it when this Mac is slow, the takes are long, or you need a language the local model handles poorly. You can switch back any time."))
+            .font(.caption)
+            .foregroundColor(.secondary)
+    }
+
+    // MARK: 识别语言（本地与云端共用这一条设置）
+
+    @ViewBuilder
+    private var languageSection: some View {
+        Picker(tr("识别语言：", "Recognition language:"), selection: $recognitionLanguage) {
+            Text(tr("自动检测（默认）", "Detect automatically (default)"))
+                .tag(RecognitionLanguages.autoCode)
+            ForEach(RecognitionLanguages.pickerOrdered) { lang in
+                Text(lang.displayName).tag(lang.code)
+            }
+        }
+        Text(tr("自动检测对中英文很准，几乎不用动。说小语种（或中英夹杂被判错）时指定语言更稳；指定只影响识别，不改任何别的行为。",
+                "Automatic detection is reliable for Chinese and English, so most people never touch this. Pick a language when you speak something else, or when mixed speech gets detected wrong. It only affects recognition."))
+            .font(.caption)
+            .foregroundColor(.secondary)
+        if engineChoice.isCloud {
+            Text(tr("云端引擎同样读这一条：选了具体语言就作为语言提示送过去，「自动检测」则交给云端自己判。",
+                    "Cloud engines read the same setting: a specific language is sent as a language hint, while Detect automatically leaves the decision to the provider."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: 本地模型（下载 / 升级 / 体量）
+
+    @ViewBuilder
+    private var localModelSection: some View {
+        if showsArabicModelHint {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "lightbulb")
+                        .foregroundColor(.orange)
+                    Text(tr("阿拉伯语建议换 1.7B 模型", "Arabic works noticeably better on the 1.7B model"))
+                        .fontWeight(.medium)
+                }
+                Text(tr("阿语上 1.7B 比 0.6B 准得多（Fleurs 词错率 25.5% → 17.0%，Common Voice 46.0% → 38.0%）。\n能用的是现代标准阿语和朗读级内容；海湾、埃及等方言**不承诺**能用——那是模型的已知短板，不是设置问题。",
+                        "On Arabic the 1.7B model is far more accurate than the 0.6B one (Fleurs WER 25.5% to 17.0%, Common Voice 46.0% to 38.0%).\nModern Standard Arabic and read-aloud speech are usable. Gulf, Egyptian and other dialects are NOT promised - that is a known weakness of the model, not a setting you can fix."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                // 体量从模型目录取，不写死：模型换版、量化改了，这句话不该还是旧数字
+                Button(largeModelExists
+                        ? tr("切换到 1.7B 模型", "Switch to the 1.7B model")
+                        : tr("切换并下载 1.7B 模型（\(QwenModels.sizeNote(bytes: largeModelSizeBytes))）",
+                             "Switch and download the 1.7B model (\(QwenModels.sizeNote(bytes: largeModelSizeBytes)))")) {
+                    updateMessage = ""
+                    QwenEngine.shared.unloadModel()
+                    qwenRepo = QwenModels.largeRepo
+                    if !largeModelExists {
+                        downloader.download(repo: QwenModels.largeRepo, force: false)
+                    }
+                    refreshTick += 1
+                }
+                .disabled(downloader.isDownloading)
+            }
+        }
+        // 升级横幅：非模态、可忽略，永不自动换模型（换代要下几百 MB，这种事只由用户点）
+        upgradeBanner
+        Picker(tr("识别模型：", "Speech model:"), selection: $qwenRepo) {
+            ForEach(QwenModels.all, id: \.repo) { m in
+                Text(m.sizeNote.isEmpty ? m.title : "\(m.title) · \(m.sizeNote)").tag(m.repo)
+            }
+            // 目录里已经不列这一档了（换代下架），但用户正在用它：如实列出来，
+            // 不自动替他换（Picker 少一个能选中的选项会显示空白，那才是真的看不懂）
+            if !selectedModelListed {
+                Text(tr("当前模型（目录里已不再列出）", "Current model (no longer listed)"))
+                    .tag(qwenRepo)
+            }
+        }
+        if !selectedModelLanguagesNote.isEmpty {
+            Text(selectedModelLanguagesNote)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        HStack {
+            Image(systemName: modelExists ? "checkmark.circle.fill" : "arrow.down.circle")
+                .foregroundColor(modelExists ? .green : .orange)
+            Text(modelExists ? tr("模型已就绪", "Model ready")
+                             : tr("模型未下载", "Model not downloaded"))
+            Spacer()
+            if downloader.isDownloading {
+                Button(tr("取消", "Cancel")) { downloader.cancel() }
+            } else {
+                Button(modelExists ? tr("重新下载 / 更新", "Re-download / Update")
+                                   : tr("下载模型", "Download Model")) {
+                    updateMessage = ""
+                    QwenEngine.shared.unloadModel()
+                    downloader.download(repo: qwenRepo, force: modelExists)
+                }
+                // 一个按钮查两件事：模型目录里有没有更好的模型，以及当前仓库有没有新修订。
+                // 结论落在下面那行文字里，横幅（如果有）负责给「一键升级」的按钮。
+                Button(checkingUpdate ? tr("检查中…", "Checking…")
+                                      : tr("检查模型更新", "Check for model updates")) {
+                    checkingUpdate = true
+                    updateMessage = ""
+                    upgrader.checkNow { message in
+                        checkingUpdate = false
+                        updateMessage = message
+                    }
+                }
+                .disabled(checkingUpdate || upgrader.isBusy)
+            }
+        }
+        if downloader.isDownloading {
+            ProgressView(value: downloader.progress)
+        }
+        if !downloader.statusText.isEmpty {
+            Text(downloader.statusText)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        if !updateMessage.isEmpty {
+            Text(updateMessage)
+                .font(.caption)
+                // 有事可做才用橙色：「已是最新」不该长得像警告
+                .foregroundColor(upgrader.decision == .none ? .secondary : .orange)
+        }
+        Text(tr("Qwen3-ASR（2026）：约 30 种语言 + 22 种中文方言，自动检测语言，识别完全在本机进行。模型来自 HuggingFace（hf-mirror 加速）。",
+                "Qwen3-ASR (2026): ~30 languages + 22 Chinese dialects, automatic language detection, fully on-device. Models from HuggingFace."))
+            .font(.caption)
+            .foregroundColor(.secondary)
+    }
+
+    // MARK: 云端 · 阿里云百炼
+
+    @ViewBuilder
+    private var cloudAlibabaSection: some View {
+        // 区域与 WorkspaceId 与 AI 页共用同一条设置：同一个百炼账号、同一把 Key，
+        // 让用户为润色和识别各选一次区域，只会选出两个不一致的值（见 CloudASRSettings.alibabaRegion）
+        Picker(tr("接入区域：", "Region:"), selection: $qwenRegion) {
+            ForEach(LLMCatalog.QwenRegion.allCases, id: \.rawValue) { region in
+                Text(region.displayName).tag(region.rawValue)
+            }
+        }
+        Text(tr("区域与 Key 都与「AI」页的 Qwen 档共用：粘一次，润色和云端识别都能用；在任何一处清空，两边都会没有。Key 是分区域的：国际站的 Key 打到中国站主机上一定 401。",
+                "The region and the key are shared with the Qwen provider on the AI tab: paste it once and it serves both polish and cloud recognition, and clearing it in either place clears it for both. Keys are region-specific: an international key always fails with 401 against the China host."))
+            .font(.caption)
+            .foregroundColor(.secondary)
+        if !cloudRegionOK {
+            Text(tr("云端识别在这个区域没有接入点，请改选 国际站/新加坡、美国 或 中国·北京。",
+                    "Cloud recognition has no endpoint in this region - switch to International/Singapore, United States or China (Beijing)."))
+                .font(.caption)
+                .foregroundColor(.orange)
+        }
+        TextField(tr("WorkspaceId（可选）", "Workspace ID (optional)"), text: $qwenWorkspace)
+            .textFieldStyle(.roundedBorder)
+        Text(tr("填了就走专属主机。美国区域**必须**填：那边没有共享主机，不填连不上。",
+                "Fill it in to use your workspace host. The United States region requires it - there is no shared US host, so it will not connect without one."))
+            .font(.caption)
+            .foregroundColor((LLMCatalog.QwenRegion(rawValue: qwenRegion) == .us
+                              && qwenWorkspace.trimmingCharacters(in: .whitespaces).isEmpty)
+                             ? .orange : .secondary)
+
+        // Key 与 AI 页的 Qwen 档共用同一条钥匙串条目：粘一次，润色和识别都能用
+        KeyEntryView(provider: .qwen,
+                     model: cloudAlibabaModel,
+                     probe: .cloudASR(.alibaba))
+        Text(cloudKeyProbeNote)
+            .font(.caption)
+            .foregroundColor(.secondary)
+
+        Picker(tr("云端识别模型：", "Cloud model:"), selection: $cloudAlibabaModel) {
+            ForEach(AlibabaASRModel.allCases, id: \.rawValue) { model in
+                Text(model.displayName).tag(model.rawValue)
+            }
+        }
+        cloudTestRow
+        cloudNotes(PrivacyCopy.cloudAlibabaLines)
+    }
+
+    // MARK: 云端 · OpenAI
+
+    @ViewBuilder
+    private var cloudOpenAISection: some View {
+        // 与润色那一档共用同一把 OpenAI Key（同一个钥匙串条目，不重复让用户填）
+        Text(tr("这把 Key 与「AI」页的 OpenAI 档是同一把：粘一次，润色和云端识别都能用；在任何一处清空，两边都会没有。",
+                "This is the same key as the OpenAI provider on the AI tab: paste it once and it serves both polish and cloud recognition. Clearing it in either place clears it for both."))
+            .font(.caption)
+            .foregroundColor(.secondary)
+        KeyEntryView(provider: .openai,
+                     model: OpenAITranscribeClient.defaultModel,
+                     probe: .cloudASR(.openai))
+        Text(cloudKeyProbeNote)
+            .font(.caption)
+            .foregroundColor(.secondary)
+        Text(tr("模型：\(OpenAITranscribeClient.defaultModel)（转写专用端点，不走润色那条链路）。",
+                "Model: \(OpenAITranscribeClient.defaultModel) (the dedicated transcription endpoint, not the polish path)."))
+            .font(.caption)
+            .foregroundColor(.secondary)
+        cloudTestRow
+        cloudNotes(PrivacyCopy.cloudOpenAILines)
+    }
+
+    // MARK: 云端两档共用的零件
+
+    /// 粘贴即验证到底做了什么——写清楚才不会显得"它偷偷发了什么东西"
+    private var cloudKeyProbeNote: String {
+        tr("粘贴 Key 会立刻发 1 秒合成音到识别端点验一次：区域、WorkspaceId、模型有没有开通都一起验到了，这一秒的费用可以忽略。",
+           "Pasting a key immediately verifies it by sending one second of synthetic tone to the recognition endpoint - that also checks the region, the workspace ID and whether the model is enabled. The cost of that second is negligible.")
+    }
+
+    @ViewBuilder
+    private var cloudTestRow: some View {
+        HStack {
+            Button(cloudTesting ? tr("测试中…", "Testing…") : tr("测试识别", "Test recognition")) {
+                runCloudTest()
+            }
+            .disabled(cloudTesting)
+            Spacer()
+        }
+        if !cloudTestResult.isEmpty {
+            Text(cloudTestResult)
+                .font(.caption)
+                .foregroundColor(cloudTestOK ? .green : .orange)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private func cloudNotes(_ lines: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(lines, id: \.self) { line in
+                Text(line)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// 发一次 1 秒合成音，报往返毫秒数。失败时把云端的原话摆出来（它本来就带"下一步怎么办"）
+    private func runCloudTest() {
+        guard let config = CloudASRSettings.currentConfig() else {
+            cloudTestOK = false
+            cloudTestResult = tr("云端识别在当前接入区域没有接入点，请先改区域",
+                                 "Cloud recognition has no endpoint in the selected region - change the region first")
+            return
+        }
+        cloudTesting = true
+        cloudTestResult = ""
+        CloudASRProbe.run(config: config) { result in
+            cloudTesting = false
+            switch result {
+            case .success(let outcome):
+                cloudTestOK = true
+                cloudTestResult = CloudASRProbe.successText(outcome)
+            case .failure(let failure):
+                cloudTestOK = false
+                cloudTestResult = failure.message
+            }
+        }
+    }
+
+    // MARK: 词汇表 / 口水词 / 性能（与引擎无关，两档都生效）
+
+    @ViewBuilder
+    private var vocabularySection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(tr("专有词汇表（人名、品牌、术语等，用逗号或换行分隔）：",
+                    "Custom vocabulary (names, brands, jargon — comma or newline separated):"))
+            TextEditor(text: $vocabulary)
+                .font(.system(size: 12))
+                .frame(height: 80)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
+            Text(tr("这些词会作为热词直接送入识别模型，并参与 AI 润色纠错——专有名词识别准确率的第一杠杆，强烈建议填写。\n支持硬替换：填「杰文=捷文」表示识别出的「杰文」一律改成「捷文」——确定性替换、零耗时，对完全同音的人名最有效。\n一个正写可挂多个错写：「杰文|捷纹|结文=捷文」。西文词条大小写不敏感、按整词匹配。",
+                    "These terms are fed to the speech model as hotwords and used by AI polish — the #1 lever for proper-noun accuracy.\nHard replacement supported: an entry like \"Jevin=Jaywen\" deterministically rewrites every occurrence — zero latency, ideal for exact-homophone names.\nOne correct form can take several wrong spellings: \"Jevin|Jevan|Javin=Jaywen\". Latin entries match whole words, case-insensitively."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+            if engineChoice.isCloud {
+                Text(tr("云端引擎也吃这张表：词条按权重 4 作为热词一起送过去（含「错写=正写」里的正写）。",
+                        "Cloud engines use the same list: every term is sent as a hotword with weight 4, including the correct form of each replacement rule."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var fillerSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(tr("口水词过滤（用逗号或换行分隔，默认空 = 不过滤）：",
+                    "Filler words to drop (comma or newline separated; empty = off):"))
+            TextEditor(text: $fillerWords)
+                .font(.system(size: 12))
+                .frame(height: 56)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
+            Text(tr("在本机删掉，不联网、不花润色额度——「仅识别」档也生效。\n分寸是保守的：西文词按整词删（填 um 不会动 umbrella）；中文词只在前后都是标点或空白时删（填「那个」不会动「那个人」）。",
+                    "Removed on-device — no network, no polish tokens; works even in transcribe-only mode.\nDeliberately conservative: Latin entries are dropped as whole words only (\"um\" never touches \"umbrella\"); other entries are dropped only when standing alone between punctuation or spaces."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var performanceSection: some View {
+        if let digest = Metrics.digest(metrics.items) {
+            Text(Metrics.summaryLine(digest))
+                .monospacedDigit()
+        } else {
+            Text(tr("还没有可统计的记录——正常用几次就会出现。",
+                    "No sessions recorded yet — dictate a few times and this will fill in."))
+                .foregroundColor(.secondary)
+        }
+        Text(tr("识别与插入都在本机完成；「模型」那一段是到大模型接口的网络往返（轻点是润色，按住是指令），和这台 Mac 快慢无关，后面括号里是它实际统计了几轮。\n只统计数字，不保存任何听写内容。",
+                "Recognition and insertion run on this Mac; the “Model” figure is the network round trip to your model endpoint (polish when you tap, the command model when you hold) — not bound by this machine. The number in brackets is how many rounds actually went through it.\nOnly timings are stored — never any transcribed text."))
+            .font(.caption)
+            .foregroundColor(.secondary)
+        if engineChoice.isCloud {
+            // 上面那句"识别在本机完成"对云端档不成立，得当面更正，别让用户拿本机的账去读云端的数
+            Text(tr("你现在用的是云端识别：「识别」那一段量的是到服务商的往返，不是这台 Mac 的快慢。",
+                    "You are on a cloud engine: the recognition figure measures the round trip to the provider, not the speed of this Mac."))
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
     }
 }

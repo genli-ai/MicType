@@ -50,6 +50,60 @@ final class SettingsBackupTests: XCTestCase {
         XCTAssertEqual(r.skipped, 0)
     }
 
+    /// 识别这一段（引擎 / 语言 / 云端模型 / 区域 / WorkspaceId / 本机模型仓库）要跟着备份走，
+    /// 而 API Key 一如既往不在里面
+    func testExportIncludesRecognitionSettings() {
+        let settings = SettingsBackup.makeDocument()["settings"] as? [String: Any]
+        for key in [SettingsBackup.Key.recognitionEngine, SettingsBackup.Key.recognitionLanguage,
+                    SettingsBackup.Key.cloudAlibabaModel, SettingsBackup.Key.qwenRegion,
+                    SettingsBackup.Key.qwenWorkspaceId, SettingsBackup.Key.speechModelRepo] {
+            XCTAssertNotNil(settings?[key] as? String, "导出表里少了 \(key)")
+            XCTAssertTrue(SettingsBackup.Key.all.contains(key), "\(key) 不在已知键表里，导入端会忽略它")
+        }
+        // 导出的值必须是自己那道校验放行的值，否则"导出再导入"会掉设置
+        let language = (settings?[SettingsBackup.Key.recognitionLanguage] as? String) ?? "x"
+        XCTAssertTrue(SettingsBackup.isAcceptableRecognitionLanguage(language))
+        let repo = (settings?[SettingsBackup.Key.speechModelRepo] as? String) ?? ""
+        XCTAssertTrue(SettingsBackup.isAcceptableModelRepo(repo))
+        let workspace = (settings?[SettingsBackup.Key.qwenWorkspaceId] as? String) ?? "!"
+        XCTAssertTrue(SettingsBackup.isAcceptableWorkspaceID(workspace))
+        // API Key 永远不导出（"hotkey" 里也有 key 三个字母，所以按 apikey/secret/token 判）
+        for key in settings?.keys ?? [String: Any]().keys {
+            let lowered = key.lowercased()
+            XCTAssertFalse(lowered.contains("apikey") || lowered.contains("secret")
+                           || lowered.contains("token"),
+                           "导出表里出现了疑似 Key 的字段：\(key)")
+        }
+    }
+
+    // MARK: 识别相关字段的导入校验
+
+    func testRecognitionLanguageMustBeAKnownCode() {
+        XCTAssertTrue(SettingsBackup.isAcceptableRecognitionLanguage(""), "空 = 自动检测")
+        XCTAssertTrue(SettingsBackup.isAcceptableRecognitionLanguage("ar"))
+        XCTAssertFalse(SettingsBackup.isAcceptableRecognitionLanguage("zz"))
+        XCTAssertFalse(SettingsBackup.isAcceptableRecognitionLanguage("language ar<asr_text>"))
+    }
+
+    /// WorkspaceId 会被拼进主机名第一段——别人发来的文件不该能把音频指到别的主机去
+    func testWorkspaceIDRejectsAnythingThatIsNotAHostLabel() {
+        XCTAssertTrue(SettingsBackup.isAcceptableWorkspaceID(""))
+        XCTAssertTrue(SettingsBackup.isAcceptableWorkspaceID("llm-abc123"))
+        XCTAssertFalse(SettingsBackup.isAcceptableWorkspaceID("evil.example.com"))
+        XCTAssertFalse(SettingsBackup.isAcceptableWorkspaceID("ws/../x"))
+        XCTAssertFalse(SettingsBackup.isAcceptableWorkspaceID("ws 123"))
+        XCTAssertFalse(SettingsBackup.isAcceptableWorkspaceID(String(repeating: "a", count: 64)))
+    }
+
+    func testModelRepoMustLookLikeOwnerSlashName() {
+        XCTAssertTrue(SettingsBackup.isAcceptableModelRepo("mlx-community/Qwen3-ASR-0.6B-6bit"))
+        XCTAssertFalse(SettingsBackup.isAcceptableModelRepo(""))
+        XCTAssertFalse(SettingsBackup.isAcceptableModelRepo("no-slash"))
+        XCTAssertFalse(SettingsBackup.isAcceptableModelRepo("../../etc/passwd"))
+        XCTAssertFalse(SettingsBackup.isAcceptableModelRepo("owner/name/extra"))
+        XCTAssertFalse(SettingsBackup.isAcceptableModelRepo("https://example.com/x"))
+    }
+
     /// 新加的偏好要跟着备份走：导出表里必须有它，键名也必须在已知表里（否则导入端会忽略）
     func testExportIncludesKeepHistoryPreference() {
         let settings = SettingsBackup.makeDocument()["settings"] as? [String: Any]

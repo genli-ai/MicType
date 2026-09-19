@@ -58,10 +58,39 @@ final class PrivacyCopyTests: XCTestCase {
         }
     }
 
+    /// 云端那几句不进 allLines（关于页讲的是默认状态），但它们同样要两种语言都在、英文侧干净。
+    /// 这几句是用户点下"云端"之前唯一能读到的代价说明，一句都不能空。
+    func testCloudLinesAreCompleteInBothLanguages() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            for line in PrivacyCopy.cloudAlibabaLines + PrivacyCopy.cloudOpenAILines {
+                XCTAssertFalse(line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            XCTAssertEqual(Set(PrivacyCopy.cloudAlibabaLines).count, PrivacyCopy.cloudAlibabaLines.count,
+                           "ForEach(id: \\.self) 渲染，重复会丢行")
+        }
+        L10n.shared.language = .en
+        for line in PrivacyCopy.cloudAlibabaLines + PrivacyCopy.cloudOpenAILines {
+            XCTAssertFalse(CJKSourceScanner.containsFlagged(line), "英文侧混进了中文：\(line)")
+        }
+        // 三件必须说的事：音频会上传、按秒计费、失败还有本地退路
+        XCTAssertTrue(PrivacyCopy.cloudAudioLeaves.lowercased().contains("uploaded"))
+        XCTAssertTrue(PrivacyCopy.cloudBilledPerSecond.lowercased().contains("billed by the second"))
+        XCTAssertTrue(PrivacyCopy.cloudFallsBackToLocal.lowercased().contains("locally"))
+        // 阿里云那一档多一句"先去控制台开通模型"，OpenAI 那一档没有这一步
+        XCTAssertTrue(PrivacyCopy.cloudAlibabaLines.contains(PrivacyCopy.cloudEnableModelFirst))
+        XCTAssertFalse(PrivacyCopy.cloudOpenAILines.contains(PrivacyCopy.cloudEnableModelFirst))
+        XCTAssertFalse(PrivacyCopy.allLines.contains(PrivacyCopy.cloudAudioLeaves),
+                       "云端那几句不该混进关于页的六句")
+    }
+
     /// 六句话各自对应一条能在代码里指出来的行为，关键词漏了就说明句子被改空了
     func testEachClaimKeepsItsKeyword() {
         L10n.shared.language = .en
-        XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("Audio never leaves"))
+        // v4.0 起多了一档可选的云端识别：这句话必须同时说清"默认在本机"和"云端才会上传"，
+        // 不能再是一句无条件的承诺（那在云端档下不成立）
+        XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("On-device recognition by default"))
+        XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("only if you choose a cloud engine"))
         XCTAssertTrue(PrivacyCopy.onlyTextLeaves.lowercased().contains("only the recognized text"))
         XCTAssertTrue(PrivacyCopy.noRetention.contains("store:false"))
         XCTAssertTrue(PrivacyCopy.keyInKeychain.contains("Keychain"))
@@ -69,6 +98,8 @@ final class PrivacyCopyTests: XCTestCase {
         XCTAssertTrue(PrivacyCopy.webSearchBilled.contains("off by default"))
 
         L10n.shared.language = .zh
+        XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("默认本地识别"))
+        XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("只有选择云端引擎时音频才会上传"))
         XCTAssertTrue(PrivacyCopy.noRetention.contains("store:false"))
         XCTAssertTrue(PrivacyCopy.keyInKeychain.contains("钥匙串"))
         XCTAssertTrue(PrivacyCopy.webSearchBilled.contains("默认关闭"))

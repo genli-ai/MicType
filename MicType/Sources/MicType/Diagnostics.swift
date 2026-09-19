@@ -30,6 +30,15 @@ enum Diagnostics {
         lines.append("Speech model: \(s.qwenModelRepo)"
                      + " downloaded=\(QwenEngine.shared.isModelAvailable)"
                      + " loaded=\(QwenEngine.shared.isModelReady)")
+        // 识别引擎这一行是排障第一问：他的音频到底出没出这台 Mac。
+        // 只报档位、区域、语言与"有没有 Key"——Key 本身一个字符都不出现
+        lines.append("Recognition: engine=\(s.recognitionEngine.rawValue)"
+                     + " language=\(s.recognitionLanguage.isEmpty ? "auto" : s.recognitionLanguage)"
+                     + " cloudModel=\(s.cloudAlibabaModel.rawValue)"
+                     + " region=\(s.qwenRegion.rawValue)"
+                     + " workspace=\(s.qwenWorkspaceID.isEmpty ? "unset" : "set")"
+                     + " cloudKey=\(CloudASRSettings.hasKey(for: s.recognitionEngine) ? "configured" : "absent")"
+                     + " ready=\(RecognitionEngineReadiness.current().isReady)")
         lines.append("Hotkey: \(s.hotkey.rawValue)")
         lines.append("Polish: level=\(s.polishLevel.rawValue) model=\(s.currentPolishModel)"
                      + " command=\(s.currentCommandModel)")

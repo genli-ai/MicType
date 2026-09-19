@@ -52,8 +52,18 @@ import UniformTypeIdentifiers
 //   playSounds              ← playSounds             / PlaySounds           布尔
 //   restoreClipboard        ← restoreClipboard       / RestoreClipboard     布尔
 //   keepHistory             ← keepHistory            / （Windows 暂无）      布尔
+//   recognitionEngine       ← recognitionEngine      / （Windows 暂无）      "local" | "cloudAlibaba" | "cloudOpenAI"
+//   recognitionLanguage     ← recognitionLanguage    / （Windows 暂无）      语言代码，"" = 自动检测
+//   cloudAlibabaModel       ← cloudAlibabaModel      / （Windows 暂无）      "qwen-audio-3.0-asr-flash" | "qwen3-asr-flash"
+//   qwenRegion              ← qwenRegion             / （Windows 暂无）      DashScope 接入区域（润色与云端识别共用）
+//   qwenWorkspaceId         ← qwenWorkspaceID        / （Windows 暂无）      区域端点主机名第一段
+//   speechModelRepo         ← qwenModelRepo          / （Windows 暂无）      HuggingFace 仓库 ID（"owner/name"）
 //
-// 不进这个文件：API Key（安全）、模型仓库 / 下载状态（跟本机磁盘绑定）、登录启动（系统级注册）、
+// 关于 speechModelRepo：它确实和本机磁盘有关（导过去那台机器多半还没下这个模型），但它是
+// **用户的选择**而不是下载状态——换机之后自己会在识别页看到"模型未下载"并下载。导出它是为了
+// 「我用的是 1.7B 那一档」这件事别在换机时丢掉；下载进度、待删仓库这些状态仍然不进文件。
+//
+// 不进这个文件：API Key（安全）、模型下载状态（跟本机磁盘绑定）、登录启动（系统级注册）、
 // 历史记录（另有 history.json）、引导是否走过（本机一次性状态）。
 // ---------------------------------------------------------------------------
 
@@ -85,6 +95,12 @@ enum SettingsBackup {
         static let playSounds = "playSounds"
         static let restoreClipboard = "restoreClipboard"
         static let keepHistory = "keepHistory"
+        static let recognitionEngine = "recognitionEngine"
+        static let recognitionLanguage = "recognitionLanguage"
+        static let cloudAlibabaModel = "cloudAlibabaModel"
+        static let qwenRegion = "qwenRegion"
+        static let qwenWorkspaceId = "qwenWorkspaceId"
+        static let speechModelRepo = "speechModelRepo"
 
         /// 已知键全集——不在这里面的一律忽略并计数（含任何伪装成设置的 Key 字段）
         static let all: Set<String> = [
@@ -93,6 +109,8 @@ enum SettingsBackup {
             openaiPolishModel, openaiCommandModel, deepseekPolishModel, deepseekCommandModel,
             polishTemperature, commandTemperature, appLanguage,
             autoStopSilenceSeconds, livePreview, playSounds, restoreClipboard, keepHistory,
+            recognitionEngine, recognitionLanguage, cloudAlibabaModel,
+            qwenRegion, qwenWorkspaceId, speechModelRepo,
         ]
     }
 
@@ -123,6 +141,14 @@ enum SettingsBackup {
             Key.playSounds: s.playSounds,
             Key.restoreClipboard: s.restoreClipboard,
             Key.keepHistory: s.keepHistory,
+            // 识别这一段：引擎档位、语言、云端模型、区域 / WorkspaceId、本机模型仓库。
+            // Key 一如既往不在里面（云端识别用的就是 AI 页那两把 Key）
+            Key.recognitionEngine: s.recognitionEngine.rawValue,
+            Key.recognitionLanguage: s.recognitionLanguage,
+            Key.cloudAlibabaModel: s.cloudAlibabaModel.rawValue,
+            Key.qwenRegion: s.qwenRegion.rawValue,
+            Key.qwenWorkspaceId: s.qwenWorkspaceID,
+            Key.speechModelRepo: s.qwenModelRepo,
         ]
 
         let stamp = ISO8601DateFormatter()
@@ -197,6 +223,35 @@ enum SettingsBackup {
         return true
     }
 
+    /// 导入进来的识别语言必须是本版认得的代码（或 "" = 自动检测）。
+    /// 认不出就忽略：脏代码会让本机引擎收到一句「language 某个乱码」，比没有语言设置更糟。
+    static func isAcceptableRecognitionLanguage(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return true }
+        return RecognitionLanguages.all.contains { $0.code == trimmed }
+    }
+
+    /// WorkspaceId 会被拼进**主机名第一段**（{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com），
+    /// 所以这道闸和 base URL 那道是同一个理由：别人发来的文件不该能把你的音频指到别的主机去。
+    /// 只放行主机名标签允许的字符。
+    static func isAcceptableWorkspaceID(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return true }   // 空 = 不用专属主机，是合法状态
+        guard trimmed.count <= 63 else { return false }
+        return trimmed.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
+    }
+
+    /// 模型仓库 ID 只接受 "owner/name" 这种形状：它会被拼成本地目录名，也会被拿去拼下载地址。
+    static func isAcceptableModelRepo(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 128, !trimmed.contains("..") else { return false }
+        let parts = trimmed.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts.allSatisfy({ !$0.isEmpty }) else { return false }
+        return trimmed.allSatisfy {
+            $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "." || $0 == "/")
+        }
+    }
+
     /// 把文档应用到设置上（合并语义）。抛错只发生在「这压根不是一份 MicType 设置文件」。
     @discardableResult
     static func apply(document: [String: Any]) throws -> ImportSummary {
@@ -236,6 +291,22 @@ enum SettingsBackup {
             assign(value)
             summary.updatedKeys.append(key)
             if notable { summary.notableChanges.append("\(key) = \(value)") }
+        }
+        /// 带校验的字符串：不合格就忽略并记一条。和 baseURL 那道闸同一个理由——
+        /// 别人发来的文件不该能把你的音频、你的 Key 指到别处去。
+        func checkedString(_ key: String, notable: Bool = false,
+                           isValid: (String) -> Bool, _ assign: (String) -> Void) {
+            guard let raw = settings[key] else { return }
+            guard let value = raw as? String else { summary.ignoredKeys.append(key); return }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard isValid(trimmed) else {
+                summary.ignoredKeys.append(key)
+                Log.warn("Settings import: rejected \(key) (failed validation)")
+                return
+            }
+            assign(trimmed)
+            summary.updatedKeys.append(key)
+            if notable { summary.notableChanges.append("\(key) = \(trimmed)") }
         }
         /// 接口地址：类型对还不够，还得是个我们敢把 Key 发过去的地址
         func baseURL(_ key: String, _ assign: (String) -> Void) {
@@ -297,6 +368,23 @@ enum SettingsBackup {
         // 0 = 关；其余落在设置界面允许的 1–5 秒内
         number(Key.autoStopSilenceSeconds, range: 0...5) {
             Settings.shared.autoStopSilenceSeconds = ($0 > 0 && $0 < 1) ? 1 : $0
+        }
+
+        // 识别引擎要当面念出来：这一项决定录音会不会离开这台 Mac，是整份文件里最该被看见的一条
+        enumValue(Key.recognitionEngine) { (v: RecognitionEngineChoice) in
+            Settings.shared.recognitionEngine = v
+            summary.notableChanges.append("\(Key.recognitionEngine) = \(v.rawValue)")
+        }
+        enumValue(Key.cloudAlibabaModel) { (v: AlibabaASRModel) in Settings.shared.cloudAlibabaModel = v }
+        enumValue(Key.qwenRegion) { (v: LLMCatalog.QwenRegion) in Settings.shared.qwenRegion = v }
+        checkedString(Key.recognitionLanguage, isValid: isAcceptableRecognitionLanguage) {
+            Settings.shared.recognitionLanguage = $0
+        }
+        checkedString(Key.qwenWorkspaceId, notable: true, isValid: isAcceptableWorkspaceID) {
+            Settings.shared.qwenWorkspaceID = $0
+        }
+        checkedString(Key.speechModelRepo, notable: true, isValid: isAcceptableModelRepo) {
+            Settings.shared.qwenModelRepo = $0
         }
 
         bool(Key.livePreview) { Settings.shared.livePreview = $0 }
@@ -415,6 +503,13 @@ extension SettingsBackup {
             if summary.notableChanges.contains(where: { $0.hasPrefix(Key.openaiBaseURL) || $0.hasPrefix(Key.deepseekBaseURL) }) {
                 lines.append(tr("接口地址决定你的 API Key 和文本发往哪里——不是自己写的地址请改回去。",
                                 "The endpoint decides where your API key and text are sent — change it back if you didn't choose it."))
+            }
+            // 引擎被文件改成云端 = 从此每段录音都会上传。这句重话必须说
+            if summary.notableChanges.contains(where: {
+                $0.hasPrefix(Key.recognitionEngine) && !$0.hasSuffix(RecognitionEngineChoice.local.rawValue)
+            }) {
+                lines.append(tr("这份文件把识别引擎改成了云端：以后每段录音都会上传给服务商，并按秒计费。不是自己选的请在「识别」页改回本地。",
+                                "This file switched recognition to a cloud engine: every recording will be uploaded to that provider and billed by the second. Change it back to on-device on the Recognition tab if you did not choose it."))
             }
         }
         if !summary.ignoredKeys.isEmpty {
