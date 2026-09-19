@@ -104,8 +104,13 @@ final class PrivacyCopyTests: XCTestCase {
         // 不能再是一句无条件的承诺（那在云端档下不成立）
         XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("On-device recognition by default"))
         XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("only if you choose a cloud engine"))
-        XCTAssertTrue(PrivacyCopy.onlyTextLeaves.lowercased().contains("only the recognized text"))
-        XCTAssertTrue(PrivacyCopy.noRetention.contains("store:false"))
+        // 指令模式会把**前台应用的选区原文**发出去（常常不是用户自己说的话），
+        // 这句话必须把它点名说出来——以前写的"只有识别出的文字"在主路径上就不成立
+        XCTAssertTrue(PrivacyCopy.onlyTextLeaves.lowercased().contains("recognized text"))
+        XCTAssertTrue(PrivacyCopy.onlyTextLeaves.lowercased().contains("selected"))
+        XCTAssertTrue(PrivacyCopy.onlyTextLeaves.lowercased().contains("vocabulary"))
+        XCTAssertFalse(PrivacyCopy.onlyTextLeaves.lowercased().contains("only the recognized text"),
+                       "这句话不能再声称只有识别文字出门")
         XCTAssertTrue(PrivacyCopy.keyInKeychain.contains("Keychain"))
         XCTAssertTrue(PrivacyCopy.youPayProvider.contains("pay the provider directly"))
         // 单价那句由 LLMCatalog 提供（唯一出处），所以只认意思、不认大小写
@@ -114,9 +119,46 @@ final class PrivacyCopyTests: XCTestCase {
         L10n.shared.language = .zh
         XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("默认本地识别"))
         XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("只有选择云端引擎时音频才会上传"))
-        XCTAssertTrue(PrivacyCopy.noRetention.contains("store:false"))
+        XCTAssertTrue(PrivacyCopy.onlyTextLeaves.contains("选中"))
         XCTAssertTrue(PrivacyCopy.keyInKeychain.contains("钥匙串"))
         XCTAssertTrue(PrivacyCopy.webSearchBilled.contains("默认关闭"))
+    }
+
+    /// 「请求带 store:false」这句话只有在**真的会发 store:false 的那条路**上才许出现。
+    /// 代码里 `store: false` 只存在于 responsesBody，而那条路的判据就是
+    /// `provider == .openai && LLMClient.usesResponsesAPI(baseURL:)`——所以这条测试直接用同一个谓词。
+    func testRetentionSentenceTracksTheResponsesPath() {
+        L10n.shared.language = .en
+        let cases: [(LLMProvider, String)] = [
+            (.openai, "https://api.openai.com/v1"),
+            (.openai, "https://gateway.example.com/v1"),   // OpenAI 档改了 Base URL → 走 chat
+            (.deepseek, "https://api.deepseek.com"),
+            (.qwen, "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
+            (.custom, "https://api.moonshot.cn/v1"),
+            (.local, "http://localhost:11434/v1"),
+        ]
+        for (provider, baseURL) in cases {
+            let line = PrivacyCopy.retention(provider: provider, baseURL: baseURL)
+            let onResponsesPath = provider == .openai && LLMClient.usesResponsesAPI(baseURL: baseURL)
+            XCTAssertEqual(line.contains("store:false"), onResponsesPath,
+                           "\(provider.rawValue) @ \(baseURL) 的留存文案和实际请求体对不上")
+            XCTAssertFalse(line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            XCTAssertFalse(CJKSourceScanner.containsFlagged(line), "英文侧混进了中文：\(line)")
+        }
+        // 本机模型那一档说的是"请求不出网"，不是"服务商不留存"
+        XCTAssertTrue(PrivacyCopy.retention(provider: .local, baseURL: "http://localhost:11434/v1")
+                        .lowercased().contains("no request leaves it"))
+        // 第三方云端那一档必须把留存交回给服务商的政策，不许留下任何"我们保证"的暗示
+        XCTAssertTrue(PrivacyCopy.retention(provider: .deepseek, baseURL: "https://api.deepseek.com")
+                        .lowercased().contains("its own policy"))
+    }
+
+    /// 界面上那一句必须就是按当前生效服务商现算出来的那一句（不是一句写死的承诺）
+    func testKeyAndCostLinesUseTheLiveRetentionSentence() {
+        XCTAssertEqual(PrivacyCopy.keyAndCostLines.first, PrivacyCopy.retentionLine)
+        XCTAssertEqual(PrivacyCopy.retentionLine,
+                       PrivacyCopy.retention(provider: Settings.shared.llmProvider,
+                                             baseURL: Settings.shared.baseURL(for: Settings.shared.llmProvider)))
     }
 }
 

@@ -333,8 +333,31 @@ final class LLMCatalogTests: XCTestCase {
     func testLocalHostDetection() {
         XCTAssertTrue(LLMCatalog.isLocalHost("http://localhost:11434/v1"))
         XCTAssertTrue(LLMCatalog.isLocalHost("http://127.0.0.1:1234/v1"))
+        XCTAssertTrue(LLMCatalog.isLocalHost("http://[::1]:1234/v1"))
         XCTAssertFalse(LLMCatalog.isLocalHost("https://api.openai.com/v1"))
         XCTAssertFalse(LLMCatalog.isLocalHost(""))
+        // `.local` 是 mDNS 名字，指向的是**局域网里别人的机器**，不是这台 Mac。
+        // 当成"本机"的代价：校验不再提示明文，credential() 还会免掉 API Key 要求
+        XCTAssertFalse(LLMCatalog.isLocalHost("http://studio.local:11434/v1"))
+        XCTAssertFalse(LLMCatalog.isLocalHost("http://192.168.1.5:11434/v1"))
+    }
+
+    /// 明文发往非回环主机 = Key 和听写文本在局域网里裸奔。这道闸在 LLMClient 里真会拦请求，
+    /// 不是设置页那行橙字（那行只是提示，拦不住已经存进设置里的地址）。
+    func testCleartextToRemoteHostIsFlagged() {
+        XCTAssertTrue(LLMCatalog.isCleartextToRemoteHost("http://studio.local:11434/v1"))
+        XCTAssertTrue(LLMCatalog.isCleartextToRemoteHost("http://192.168.1.5:11434/v1"))
+        XCTAssertTrue(LLMCatalog.isCleartextToRemoteHost("  http://api.example.com/v1  "))
+        // 回环明文是唯一放行的情况（Ollama / LM Studio 就是这么跑的）
+        XCTAssertFalse(LLMCatalog.isCleartextToRemoteHost("http://localhost:11434/v1"))
+        XCTAssertFalse(LLMCatalog.isCleartextToRemoteHost("http://127.0.0.1:1234/v1"))
+        // https 一律放行；空串/不是 URL 交给别的闸门报错，不在这里拦
+        XCTAssertFalse(LLMCatalog.isCleartextToRemoteHost("https://api.openai.com/v1"))
+        XCTAssertFalse(LLMCatalog.isCleartextToRemoteHost(""))
+        // 两档本机运行时的预设地址必须过闸（否则本机模型整档不能用）
+        for runtime in LLMCatalog.LocalRuntime.allCases {
+            XCTAssertFalse(LLMCatalog.isCleartextToRemoteHost(runtime.baseURL), runtime.rawValue)
+        }
     }
 
     /// 本机运行时的地址就是这两个软件的招牌端口，改了就不叫预设了

@@ -277,10 +277,13 @@ private struct WelcomePage: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
 
-            // 数据流向先说清楚，再谈功能：句子取自 PrivacyCopy，和关于页、结束页逐字相同
+            // 数据流向先说清楚，再谈功能：句子取自 PrivacyCopy，和关于页、结束页逐字相同。
+            // fixedSize：这一屏没有 ScrollView，句子换行时必须让它把高度撑开——
+            // 少了它，窄窗口下"还有什么东西会离开这台 Mac"那半句会被直接截掉。
             VStack(alignment: .leading, spacing: 3) {
                 ForEach(PrivacyCopy.dataFlowLines, id: \.self) { line in
                     Text(line)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .font(.caption)
@@ -827,6 +830,7 @@ private struct DonePage: View {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(PrivacyCopy.keyAndCostLines, id: \.self) { line in
                         Text(line)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .font(.caption)

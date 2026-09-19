@@ -379,8 +379,11 @@ enum SettingsBackup {
             assign(value)
             summary.updatedKeys.append(key)
         }
-        /// 枚举一律大小写不敏感匹配——Windows 端写的是 PascalCase（RightControl / Smart / OpenAi）
-        func enumValue<T: CaseIterable & RawRepresentable>(_ key: String, _ assign: (T) -> Void)
+        /// 枚举一律大小写不敏感匹配——Windows 端写的是 PascalCase（RightControl / Smart / OpenAi）。
+        /// notable：这一项决定"Key 和文本/音频发给谁、发到哪个区域"，必须在摘要里当面念出来
+        /// （只报一句"其他设置：覆盖 12 项"等于把最该被看见的一条藏起来）。
+        func enumValue<T: CaseIterable & RawRepresentable>(_ key: String, notable: Bool = false,
+                                                           _ assign: (T) -> Void)
             where T.RawValue == String {
             guard let raw = settings[key] else { return }
             guard let text = raw as? String,
@@ -390,16 +393,14 @@ enum SettingsBackup {
             }
             assign(match)
             summary.updatedKeys.append(key)
+            if notable { summary.notableChanges.append("\(key) = \(match.rawValue)") }
         }
 
         enumValue(Key.hotkey) { (v: HotkeyChoice) in Settings.shared.hotkey = v }
         enumValue(Key.polishLevel) { (v: PolishLevel) in Settings.shared.polishLevel = v }
         // 服务商换了 = 从此刻起 Key 和听写文本发给另一家。和识别引擎同一条纪律：当面念出来，
         // 只报一句"导入成功"等于把最该被看见的一条藏起来了。
-        enumValue(Key.llmProvider) { (v: LLMProvider) in
-            Settings.shared.llmProvider = v
-            summary.notableChanges.append("\(Key.llmProvider) = \(v.rawValue)")
-        }
+        enumValue(Key.llmProvider, notable: true) { (v: LLMProvider) in Settings.shared.llmProvider = v }
         // 界面语言走 L10n（@Published，切了要立刻刷新界面；它自己负责落盘）
         enumValue(Key.appLanguage) { (v: AppLanguage) in L10n.shared.language = v }
 
@@ -433,12 +434,19 @@ enum SettingsBackup {
         }
 
         // 识别引擎要当面念出来：这一项决定录音会不会离开这台 Mac，是整份文件里最该被看见的一条
-        enumValue(Key.recognitionEngine) { (v: RecognitionEngineChoice) in
+        enumValue(Key.recognitionEngine, notable: true) { (v: RecognitionEngineChoice) in
             Settings.shared.recognitionEngine = v
-            summary.notableChanges.append("\(Key.recognitionEngine) = \(v.rawValue)")
         }
-        enumValue(Key.cloudAlibabaModel) { (v: AlibabaASRModel) in Settings.shared.cloudAlibabaModel = v }
-        enumValue(Key.qwenRegion) { (v: LLMCatalog.QwenRegion) in Settings.shared.qwenRegion = v }
+        // 这一项决定云端识别打的是哪个模型（也就是按什么价钱计费），和模型名同一条纪律
+        enumValue(Key.cloudAlibabaModel, notable: true) { (v: AlibabaASRModel) in
+            Settings.shared.cloudAlibabaModel = v
+        }
+        // 区域 = 收信主机所在的司法辖区：润色走 LLMCatalog.qwenBaseURL，云端识别走
+        // CloudASRIntegration 的区域映射（beijing → dashscope.aliyuncs.com）。
+        // 一个字段就能把 Key 与音频从新加坡搬到北京，这正是"必须念出来"那一类。
+        enumValue(Key.qwenRegion, notable: true) { (v: LLMCatalog.QwenRegion) in
+            Settings.shared.qwenRegion = v
+        }
         checkedString(Key.recognitionLanguage, isValid: isAcceptableRecognitionLanguage) {
             Settings.shared.recognitionLanguage = $0
         }
@@ -565,6 +573,11 @@ extension SettingsBackup {
             if summary.notableChanges.contains(where: { $0.hasPrefix(Key.openaiBaseURL) || $0.hasPrefix(Key.deepseekBaseURL) }) {
                 lines.append(tr("接口地址决定你的 API Key 和文本发往哪里——不是自己写的地址请改回去。",
                                 "The endpoint decides where your API key and text are sent — change it back if you didn't choose it."))
+            }
+            // 区域被改 = 收信主机换了一个司法辖区（润色与云端识别共用这一项）
+            if summary.notableChanges.contains(where: { $0.hasPrefix(Key.qwenRegion) }) {
+                lines.append(tr("这份文件改了 DashScope 接入区域：润色与云端识别会改发到另一个区域的服务器（不同司法辖区）。不是自己选的请在「AI」页改回去。",
+                                "This file changed the DashScope region: polish and cloud recognition will be sent to servers in a different region (a different jurisdiction). Change it back on the AI tab if you did not choose it."))
             }
             // 引擎被文件改成云端 = 从此每段录音都会上传。这句重话必须说
             if summary.notableChanges.contains(where: {

@@ -282,10 +282,36 @@ enum LLMCatalog {
     }
 
     /// 本机地址（Ollama / LM Studio）——明文 http 只在这里放行，也只有这里可以不填 API Key。
+    ///
+    /// **只认回环地址**。以前这里还放行任意 `*.local`，那是错的：`.local` 是 mDNS 名字，
+    /// 解析走的是局域网里没有鉴权的广播，指向的是**别人的机器**。把它当成"本机"有两个后果——
+    /// 校验不再提示明文风险，`credential()` 还会免掉 API Key 要求；于是
+    /// `http://studio.local:11434/v1` 这种地址会把听写文本、以及钥匙串里已存的那把 Key
+    /// （`credential()` 优先返回它）以明文 Bearer 发到办公室 Wi-Fi 上，谁应答 mDNS 谁收。
     static func isLocalHost(_ text: String) -> Bool {
         guard let host = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines))?
                 .host?.lowercased() else { return false }
-        return host == "localhost" || host == "127.0.0.1" || host == "::1" || host.hasSuffix(".local")
+        return host == "localhost" || host == "127.0.0.1" || host == "::1"
+    }
+
+    /// 这个地址是不是"明文 http 发往非回环主机"。
+    ///
+    /// 为什么要有这个判断、而且要放在**发请求的地方**：`validateCustomBaseURL` 只是设置页上
+    /// 一行橙字，既不拦保存也不拦请求（dispatch 从不调用它），而 ATS 的 `NSAllowsLocalNetworking`
+    /// 放行的是整个局域网（回环、`.local`、link-local、RFC1918），拦不住这件事。
+    /// 真正会泄漏 Key 与听写文本的是那一趟请求本身，所以闸门必须在 LLMClient 那一侧。
+    /// 纯函数，单测钉住。
+    static func isCleartextToRemoteHost(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), url.scheme?.lowercased() == "http" else { return false }
+        return !isLocalHost(trimmed)
+    }
+
+    /// 明文地址被拦下来时对用户说的那一句（不替他改地址——改成 https 可能压根连不上，
+    /// 那是"替用户做主"；说清楚为什么被拦、该怎么改就够了）。
+    static var cleartextBlockedCopy: String {
+        tr("这个接口地址是明文 http，而且指向的不是本机（localhost）——API Key 和听写文本会在网络上裸奔。请改成 https，或把服务跑在本机。",
+           "This endpoint is plain http and does not point at this Mac (localhost), so your API key and dictated text would travel unencrypted. Use https, or run the service locally.")
     }
 
     /// 自定义端点的校验（纯函数）。nil = 可用。

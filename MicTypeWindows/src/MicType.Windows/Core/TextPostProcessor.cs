@@ -240,7 +240,13 @@ public static partial class TextPostProcessor
         var polDigits = DigitMultiset(p);
         if (!DigitsEqual(rawDigits, polDigits))
         {
-            return $"digits changed raw={DigitSummary(rawDigits)} polished={DigitSummary(polDigits)}";
+            // **只报个数，绝不报数字本身**：这句话会被 DictationController 原样 Log.Warn 写进
+            // %LOCALAPPDATA%\MicType\logs\mictype-yyyyMMdd.log（明文、保留 7 天，报故障时会被
+            // 整包发出去）。带上数字等于把用户刚说的验证码 / 电话 / 金额漏出去——四位数按多重集
+            // 也就 24 种排列，等于没脱敏。Mac 端（Support.swift polishDriftCheck）同源。
+            return $"digits changed rawCount={rawDigits.Values.Sum()}"
+                 + $" polishedCount={polDigits.Values.Sum()}"
+                 + $" distinct={rawDigits.Count}/{polDigits.Count}";
         }
 
         // 2) 否定词计数：允许少量增减（删口头重复、句式改写会动一两个），差太多说明语义被翻转
@@ -287,7 +293,9 @@ public static partial class TextPostProcessor
         return true;
     }
 
-    private static string DigitSummary(Dictionary<char, int> counts)
+    /// 数字多重集摊成字符串，**只给单测用**：它带着用户说过的数字本身，永远不许进日志
+    /// （日志是明文落盘、保留 7 天，用户报故障时会整包带走）。
+    public static string DigitSummary(Dictionary<char, int> counts)
     {
         return string.Concat(counts.Keys.OrderBy(k => k).Select(k => new string(k, counts[k])));
     }

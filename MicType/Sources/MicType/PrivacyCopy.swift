@@ -22,16 +22,43 @@ enum PrivacyCopy {
            "On-device recognition by default: recording and recognition run on this Mac; audio is uploaded only if you choose a cloud engine.")
     }
 
-    /// 只有文字出门，而且只在润色 / 指令开着时
+    /// 出门的是哪些文字。
+    ///
+    /// **不能只说"只有识别出的文字"**：那句话在主功能路径上就不成立。真正跟着请求走的还有
+    /// 词汇表与自定义规则（润色与指令两条路都带，PolishService / AgentService 各自拼进 prompt）、
+    /// 「关于我」（只有指令那条路带），以及指令模式下**从前台应用读到的选区原文**
+    /// ——那常常是别人发来的消息、一封邮件、一段文档，压根不是用户自己口述的内容。
+    /// 用户按这句话判断"什么东西会离开这台 Mac"，所以它必须把选区点名说出来。
     static var onlyTextLeaves: String {
-        tr("开了润色或语音指令，只有识别出的文字发给你配置的服务商。",
-           "With polish or voice commands on, only the recognized text goes to your provider.")
+        tr("开了润色或语音指令，发给服务商的是识别出的文字，外加你选中的那段文字、词汇表、自定义规则和「关于我」。",
+           "With polish or voice commands on, what goes to your provider is the recognized text plus any text you selected, your vocabulary, your rules and your About-me.")
     }
 
-    /// 请求显式带 store:false（OpenAI 默认会留 30 天日志，见调研 §1.9）
-    static var noRetention: String {
-        tr("请求带 store:false 发出，服务商不留存这些请求。",
-           "Requests go out with store:false, so the provider keeps no copy.")
+    /// 留存那一句。**必须按当前生效的那一档说**，因为 `store: false` 只存在于 Responses 的请求体里
+    /// （AgentService.responsesBody），而那条路只有「OpenAI 档 + 官方域名」才走
+    /// （LLMClient.usesResponsesAPI）。DeepSeek、Qwen、自定义网关、以及把 Base URL 改指向
+    /// 第三方网关的 OpenAI 档，全部走 chat/completions —— 那个请求体里一个留存字段都没有。
+    /// 对着这些用户说"请求带 store:false 发出"，就是承诺了一件代码没做的事。
+    ///
+    /// 纯函数版本供单测把三态钉死：判据必须和 `LLMClient.usesResponsesAPI` 同一个。
+    static func retention(provider: LLMProvider, baseURL: String) -> String {
+        if provider == .local {
+            // 本机模型：请求根本不出这台 Mac，"服务商留不留存"这个问题不存在
+            return tr("本机模型：润色与指令都在这台 Mac 上跑，请求不出网。",
+                      "On-device model: polish and commands run on this Mac, so no request leaves it.")
+        }
+        if provider == .openai, LLMClient.usesResponsesAPI(baseURL: baseURL) {
+            return tr("请求带 store:false 发出，服务商不留存这些请求。",
+                      "Requests go out with store:false, so the provider keeps no copy.")
+        }
+        return tr("这一档没有「不留存」开关：这些请求留多久由这家服务商自己的政策决定。",
+                  "This provider has no no-retention switch: how long it keeps these requests is governed by its own policy.")
+    }
+
+    /// 当前这台机器上的那一句（界面用）
+    static var retentionLine: String {
+        let provider = Settings.shared.llmProvider
+        return retention(provider: provider, baseURL: Settings.shared.baseURL(for: provider))
     }
 
     /// Key 只在钥匙串里：不进设置文件、不随导出走（SettingsBackup 从不导出 Key）
@@ -56,8 +83,9 @@ enum PrivacyCopy {
     /// 数据流向那两句：讲"东西去了哪里"，引导第一屏用
     static var dataFlowLines: [String] { [audioStaysLocal, onlyTextLeaves] }
 
-    /// Key 与费用那四句：讲"谁收你的钱、Key 放在哪"，引导结束屏用
-    static var keyAndCostLines: [String] { [noRetention, keyInKeychain, youPayProvider, webSearchBilled] }
+    /// Key 与费用那四句：讲"谁收你的钱、Key 放在哪"，引导结束屏用。
+    /// 第一句按当前生效的服务商现算（见 retention），不是一句放之四海的承诺。
+    static var keyAndCostLines: [String] { [retentionLine, keyInKeychain, youPayProvider, webSearchBilled] }
 
     /// 完整六句，顺序固定（关于页用）。顺序本身是文案的一部分：先说数据去哪，再说钱谁收
     static var allLines: [String] { dataFlowLines + keyAndCostLines }

@@ -436,8 +436,14 @@ final class ModelUpgrader: ObservableObject {
             if let manifest = manifest {
                 var localSizes: [String: Int64] = [:]
                 for file in manifest {
-                    let path = dir.appendingPathComponent(file.path).path
-                    if let attrs = try? fm.attributesOfItem(atPath: path),
+                    // 清单来自第三方镜像：逃出模型目录的路径一律当"这个文件不存在"处理。
+                    // 这里只读不写，但放过去的话一份被做过手脚的清单可以拿目录外的文件
+                    // 来凑够大小校验（parseManifest 已经滤过一道，这是纵深防御）。
+                    guard let url = QwenModelDownloader.safeDestination(in: dir, path: file.path) else {
+                        Log.warn("Model verify: manifest path rejected (escapes the model directory)")
+                        continue
+                    }
+                    if let attrs = try? fm.attributesOfItem(atPath: url.path),
                        let size = attrs[.size] as? Int64 {
                         localSizes[file.path] = size
                     }

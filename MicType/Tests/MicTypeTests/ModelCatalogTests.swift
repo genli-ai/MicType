@@ -260,6 +260,43 @@ final class ModelCatalogTests: XCTestCase {
         XCTAssertTrue(QwenModelDownloader.parseManifest(Data("nope".utf8)).isEmpty)
     }
 
+    /// 清单来自 hf-mirror.com（第三方镜像），路径会被直接拼成本地落盘路径 → 逃逸路径一条都不许进清单。
+    /// 注意 `../x` 恰好会被"跳过隐藏文件"的规则挡掉，那是巧合；真正危险的是非开头的 `..` 段。
+    func testManifestParsingRejectsPathTraversal() {
+        let json = """
+        [
+          {"type":"file","size":512,"path":"weights/../../../../Library/LaunchAgents/com.evil.plist"},
+          {"type":"file","size":512,"path":"/etc/cron.d/evil"},
+          {"type":"file","size":512,"path":"~/Library/LaunchAgents/evil.plist"},
+          {"type":"file","size":512,"path":"a\\\\..\\\\..\\\\evil"},
+          {"type":"file","size":512,"path":"weights//evil"},
+          {"type":"file","size":512,"path":"a/./b"},
+          {"type":"file","size":7187,"path":"config.json"}
+        ]
+        """
+        let files = QwenModelDownloader.parseManifest(Data(json.utf8))
+        XCTAssertEqual(files.map(\.path), ["config.json"],
+                       "镜像给的逃逸路径必须一条都不进清单")
+    }
+
+    /// 形状校验与落盘前的前缀校验分别钉一遍：两道都在，中间不留缝
+    func testManifestPathSafetyAndDestination() {
+        for good in ["config.json", "weights/model.safetensors", "a/b/c.json", "model-00001-of-2.bin"] {
+            XCTAssertTrue(QwenModelDownloader.isSafeManifestPath(good), good)
+        }
+        for bad in ["", "/abs/x", "~/x", "a/../../x", "..", "a/..", "./x", "a//b", "a/", "a\\b",
+                    "x\u{0}y", String(repeating: "a", count: 513)] {
+            XCTAssertFalse(QwenModelDownloader.isSafeManifestPath(bad), "应当拒绝：\(bad)")
+        }
+        let dir = URL(fileURLWithPath: "/tmp/mictype-model-test")
+        XCTAssertEqual(QwenModelDownloader.safeDestination(in: dir, path: "weights/a.bin")?.path,
+                       "/tmp/mictype-model-test/weights/a.bin")
+        XCTAssertNil(QwenModelDownloader.safeDestination(in: dir, path: "a/../../../etc/passwd"))
+        XCTAssertNil(QwenModelDownloader.safeDestination(in: dir, path: "/etc/passwd"))
+        // 目录本身不是合法落点
+        XCTAssertNil(QwenModelDownloader.safeDestination(in: dir, path: "."))
+    }
+
     /// 内容指纹取的是 LFS 的 oid（权重文件走 LFS），没有 LFS 时取普通 oid
     func testManifestParsingKeepsContentOIDs() {
         let json = """

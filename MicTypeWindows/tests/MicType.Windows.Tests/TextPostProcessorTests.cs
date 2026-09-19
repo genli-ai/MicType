@@ -98,6 +98,25 @@ public sealed class TextPostProcessorTests
         Assert.NotNull(TextPostProcessor.PolishDriftCheck("预算是 1000 块", "预算是 100 块"));
     }
 
+    /// 润色保真校验的失败原因只报个数，绝不带用户说过的数字本身——
+    /// DictationController 会把它原样 Log.Warn 进明文日志（保留 7 天，报故障时整包带走）。
+    /// 与 Mac 端 TextPostProcessorTests.swift 的
+    /// testPolishDriftReasonNeverCarriesTheDigits 一一对应。
+    [Fact]
+    public void DriftReasonNeverCarriesTheDigits()
+    {
+        var reason = TextPostProcessor.PolishDriftCheck("验证码是 4821", "验证码是 4822");
+        Assert.NotNull(reason);
+        Assert.DoesNotContain("4821", reason);
+        Assert.DoesNotContain("4822", reason);
+        Assert.Contains("digits changed", reason);
+        // 数字字符一个都不许出现在"digits changed"之后的那几个字段名之外：
+        // 只许是计数（rawCount/polishedCount/distinct）
+        Assert.Contains("rawCount=", reason);
+        Assert.Contains("polishedCount=", reason);
+        Assert.Contains("distinct=", reason);
+    }
+
     [Fact]
     public void DriftCheckRejectsSwallowedNegations()
     {

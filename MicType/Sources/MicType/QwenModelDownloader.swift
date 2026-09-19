@@ -192,6 +192,39 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
         return String(format: "%016llx", hash)
     }
 
+    /// 清单里这条相对路径落盘安不安全。
+    ///
+    /// 这是一条**真实的信任边界**：清单先问 hf-mirror.com（第三方镜像，不是 HuggingFace），
+    /// 而这里的 `path` 会被直接拼成本地落盘路径。App 没有沙箱，所以
+    /// `a/../../../../Library/LaunchAgents/x.plist` 这种串一旦放过去，"下载模型"就变成了
+    /// 往用户家目录任意位置写文件（还会先 removeItem 掉原来那个）。
+    /// 注意 `..` 开头的那种会被下面的 `hasPrefix(".")` 顺手挡掉，但那是巧合不是防线——
+    /// 非开头的 `..` 段（`a/../..`）从来就不受它管。
+    ///
+    /// 同一个仓库 ID 走设置导入时早就有严格校验（SettingsBackup.isAcceptableModelRepo），
+    /// 这边的不对称是漏的，不是有意的。纯函数，单测钉住。
+    static func isSafeManifestPath(_ path: String) -> Bool {
+        guard !path.isEmpty, path.count <= 512 else { return false }
+        // 绝对路径 / 家目录展开 / 反斜杠（Windows 分隔符）/ NUL 一律不要
+        guard !path.hasPrefix("/"), !path.hasPrefix("~") else { return false }
+        guard !path.contains("\\"), !path.contains("\0") else { return false }
+        // 逐段看：`..`、`.`、空段（`a//b`、结尾斜杠）都不许出现
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        return parts.allSatisfy { $0 != ".." && $0 != "." && !$0.isEmpty }
+    }
+
+    /// 清单里这条路径在 `dir` 下的落点；逃出 `dir` 就返回 nil，一个字节都不许写。
+    /// 校验分两道：路径形状（上面那个）+ standardize 之后仍以 `dir` 为前缀。
+    /// 第二道是兜底——符号链接、大小写、未来某天 appendingPathComponent 的行为变化都归它管。
+    static func safeDestination(in dir: URL, path: String) -> URL? {
+        guard isSafeManifestPath(path) else { return nil }
+        let root = dir.standardizedFileURL.path
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        let dest = dir.appendingPathComponent(path).standardizedFileURL
+        guard dest.path.hasPrefix(prefix) else { return nil }
+        return dest
+    }
+
     /// HF `/api/models/<repo>/tree/main` 的响应 → 会下载的文件清单。
     /// 纯函数（不联网、不碰磁盘）以便单测：跳过隐藏文件与 .md 文档，与下载行为逐条一致。
     static func parseManifest(_ data: Data) -> [ManifestFile] {
@@ -202,6 +235,8 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
                   let path = item["path"] as? String else { continue }
             // 跳过隐藏文件和文档
             if path.hasPrefix(".") || path.lowercased().hasSuffix(".md") { continue }
+            // 镜像给的路径要能逃出模型目录，这一整条就当没看见（见 isSafeManifestPath）
+            if !isSafeManifestPath(path) { continue }
             let size = (item["size"] as? Int64) ?? Int64((item["size"] as? Int) ?? 0)
             // LFS 文件的内容指纹在 lfs.oid 里，普通文件在 oid 里
             let lfsOID = (item["lfs"] as? [String: Any])?["oid"] as? String
@@ -295,10 +330,21 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
             return
         }
         let file = files[fileIndex]
-        let url = URL(string: "\(hosts[hostIndex])/\(repo)/resolve/main/\(file.path)")!
+        // 下载地址也由清单里的路径拼出来：拼不出合法 URL 就当这一轮失败，别在这里崩
+        guard let url = URL(string: "\(hosts[hostIndex])/\(repo)/resolve/main/\(file.path)") else {
+            Log.warn("Manifest path rejected (not a usable URL)")
+            finishWithError(.fileListUnavailable)
+            return
+        }
 
+        // 落点必须还在模型目录里。parseManifest 已经滤过一道，这里是第二道：
+        // 写盘（下面 removeItem/moveItem）之前再算一次，路径校验和落盘之间不留缝。
+        guard let dest = Self.safeDestination(in: destDir, path: file.path) else {
+            Log.warn("Manifest path rejected (escapes the model directory)")
+            finishWithError(.fileListUnavailable)
+            return
+        }
         // 已存在且大小一致的文件直接跳过（断点续传粒度=文件）
-        let dest = destDir.appendingPathComponent(file.path)
         if let attrs = try? FileManager.default.attributesOfItem(atPath: dest.path),
            let size = attrs[.size] as? Int64, size == file.size, file.size > 0 {
             completedBytes += file.size
@@ -361,8 +407,10 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
                 let fm = FileManager.default
                 var localSizes: [String: Int64] = [:]
                 for file in manifest {
-                    let path = dir.appendingPathComponent(file.path).path
-                    if let attrs = try? fm.attributesOfItem(atPath: path),
+                    // 同 ModelUpgrader.verify：逃出模型目录的路径当"文件不存在"，
+                    // 免得一份被做过手脚的清单拿目录外的文件来凑大小
+                    guard let url = safeDestination(in: dir, path: file.path) else { continue }
+                    if let attrs = try? fm.attributesOfItem(atPath: url.path),
                        let size = attrs[.size] as? Int64 {
                         localSizes[file.path] = size
                     }
@@ -414,7 +462,13 @@ final class QwenModelDownloader: NSObject, ObservableObject, URLSessionDownloadD
             return
         }
         let file = files[fileIndex]
-        let dest = destDir.appendingPathComponent(file.path)
+        // 最后一道：createDirectory / removeItem / moveItem 这三步都会动磁盘，
+        // 落点逃出模型目录就是"下载模型"变成任意文件写，宁可整次失败
+        guard let dest = Self.safeDestination(in: destDir, path: file.path) else {
+            Log.warn("Manifest path rejected at save time (escapes the model directory)")
+            finishWithError(.saveFailed(detail: "unsafe path"))
+            return
+        }
         try? FileManager.default.createDirectory(at: dest.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
         try? FileManager.default.removeItem(at: dest)

@@ -297,6 +297,13 @@ enum LLMClient {
         }
         var base = Settings.shared.currentBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         if base.hasSuffix("/") { base = String(base.dropLast()) }
+        // 这一趟也带 Authorization（下面那行），所以和 dispatch 同一道闸：
+        // 明文发往非回环主机 = 把 Key 明文送上局域网
+        guard !LLMCatalog.isCleartextToRemoteHost(base) else {
+            Log.warn("Model list refresh blocked: cleartext http to a non-loopback host")
+            finish(nil)
+            return
+        }
         guard !base.isEmpty, let url = URL(string: base + "/models"), let apiKey = credential() else {
             Log.warn("Model list refresh skipped (endpoint or key not configured)")
             finish(nil)
@@ -636,6 +643,14 @@ enum LLMClient {
                 completion(nil, tr("这个服务商的接口地址还没填完（Qwen 区域端点需要 WorkspaceId）",
                                    "This provider's endpoint is incomplete (regional Qwen endpoints need a workspace ID)"))
             }
+            return
+        }
+        // 明文 http 只对本机（localhost）放行。ATS 的 NSAllowsLocalNetworking 放行的是整个局域网，
+        // 设置页那句"只接受 https"又只是一行提示——所以这道闸必须在真正发请求的地方。
+        // 拦下来的代价是这一趟失败；不拦的代价是 Key 和刚说的话在局域网里明文飞。
+        guard !LLMCatalog.isCleartextToRemoteHost(base) else {
+            Log.warn("Request blocked: cleartext http to a non-loopback host provider=\(provider.rawValue)")
+            DispatchQueue.main.async { completion(nil, LLMCatalog.cleartextBlockedCopy) }
             return
         }
         guard let url = URL(string: base + path) else {

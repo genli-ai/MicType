@@ -28,7 +28,14 @@
 	<true/>
 	<!-- 本机模型（Ollama 11434 / LM Studio 1234）走明文 http://localhost：
 	     ATS 默认会拦掉它，而 ad-hoc 调试构建看不出这个问题，签名构建才暴露。
-	     只开"本地网络"这一条例外，公网仍然一律 https。 -->
+	     公网仍然一律 https。
+
+	     注意这条例外的**真实范围**：NSAllowsLocalNetworking 放行的是整个本地网络
+	     ——回环、*.local（mDNS）、link-local、RFC1918 私网段，不只是 localhost。
+	     它无法收窄：ATS 的 NSExceptionDomains 不接受 IP 字面量，换成
+	     localhost 的例外域就会把 http://127.0.0.1 一起拦掉。
+	     所以"只发给本机"这条纪律由 App 自己守：LLMCatalog.isLocalHost 只认回环地址，
+	     LLMClient.dispatch / fetchModelIDs 会拒绝明文发往非回环主机。 -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
