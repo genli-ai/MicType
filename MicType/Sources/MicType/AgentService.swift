@@ -38,6 +38,32 @@ final class LLMRequestHandle {
     }
 }
 
+/// 一条联网搜索来源。**这个形状会被写进 history.json**（HistoryItem.citations），
+/// 所以字段名等于持久化格式，改名要连带处理老文件的解码。
+struct Citation: Codable, Equatable, Identifiable {
+    let title: String
+    let url: String
+    /// 列表渲染用；同一个 url 在一次回答里不会出现两次（解析时已去重）
+    var id: String { url }
+
+    /// 标题常常是空的（模型只给了链接），空标题时拿域名当标题——
+    /// 列表里一行空白比一个域名难用得多。
+    var displayTitle: String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        return URL(string: url)?.host ?? url
+    }
+
+    /// 只有 http(s) 才做成可点链接：模型偶尔会回 `data:` / `javascript:` 之类的东西，
+    /// 把它们交给 NSWorkspace 打开是白送一条执行路径。
+    var clickableURL: URL? {
+        guard let parsed = URL(string: url),
+              let scheme = parsed.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return nil }
+        return parsed
+    }
+}
+
 enum LLMClient {
 
     /// 这一趟调用是干什么用的。决定 Responses 的 reasoning.effort / text.verbosity、
@@ -95,6 +121,13 @@ enum LLMClient {
         return handle
     }
 
+    /// 这次调用该用哪种联网写法。**润色永远是 .unsupported**：润色的活是"改写我刚说的话"，
+    /// 联网既帮不上忙，又会让每句话都按次花钱——铁律级的分界，不看用户开没开那个开关。
+    static func searchStyle(for purpose: Purpose) -> LLMCatalog.WebSearchStyle {
+        guard purpose == .command, Settings.shared.webSearchEnabled else { return .unsupported }
+        return Settings.shared.webSearchStyle
+    }
+
     /// 这个 Base URL 能不能走 Responses。
     /// 为什么要判：OpenAI 档下那个 Base URL 输入框很多人用来指向第三方兼容网关（Kimi、自建代理、
     /// 本机 Ollama），那些端点**只实现 chat/completions**——对着它们发 /responses 会 404，
@@ -113,7 +146,9 @@ enum LLMClient {
                         handle: LLMRequestHandle = LLMRequestHandle(),
                         completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle {
         let body = responsesBody(model: model, system: system, user: user, purpose: purpose,
-                                 temperature: temperature, maxOutputTokens: maxOutputTokens)
+                                 temperature: temperature, maxOutputTokens: maxOutputTokens,
+                                 fastTier: Settings.shared.fastTier,
+                                 searchStyle: searchStyle(for: purpose))
         dispatch(path: "/responses", body: body, endpoint: .responses, timeout: timeout,
                  handle: handle, completion: completion)
         return handle
@@ -132,17 +167,45 @@ enum LLMClient {
                      handle: LLMRequestHandle = LLMRequestHandle(),
                      completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle {
         let body = chatBody(model: model, messages: messages, temperature: temperature,
-                            purpose: purpose, provider: Settings.shared.llmProvider)
+                            purpose: purpose, provider: Settings.shared.llmProvider,
+                            fastTier: Settings.shared.fastTier,
+                            searchStyle: purpose.map { searchStyle(for: $0) } ?? .unsupported)
         dispatch(path: "/chat/completions", body: body, endpoint: .chat, timeout: timeout,
                  handle: handle, completion: completion)
         return handle
     }
 
+    // MARK: - 凭据（容忍空 Key）
+
+    /// 这次请求要带的凭据。
+    /// - 返回非空字符串：钥匙串里有 Key。
+    /// - 返回 ""：**这一档本来就不需要 Key**（本机 Ollama / LM Studio；自定义端点指向 localhost 时同理）
+    ///   —— Ollama 要求填但忽略内容，LM Studio 的官方示例压根不带凭据。这种情况下不带
+    ///   Authorization 头直接发，绝不因为"没填 Key"就拦下一次本来能成的调用。
+    /// - 返回 nil：这个服务商需要 Key，但还没配。
+    static func credential(for provider: LLMProvider = Settings.shared.llmProvider) -> String? {
+        if let key = KeychainHelper.loadAPIKey(account: provider.keychainAccount), !key.isEmpty {
+            return key
+        }
+        if !provider.requiresAPIKey || LLMCatalog.isLocalHost(Settings.shared.currentBaseURL) {
+            return ""
+        }
+        return nil
+    }
+
+    /// 现在这套配置能不能真的发请求（判"缺不缺 Key"一律走这里，别再各处写 loadAPIKey() == nil：
+    /// 本机模型那一档没有 Key 才是正常状态）
+    static var isConfigured: Bool { credential() != nil }
+
     /// 测试某个模型的连通性与速度。completion 在主线程回调（是否成功, 含耗时的提示）。
     /// 走的是与真实润色完全同一条代码路径——否则「测试通过」证明不了真用的时候也通。
     static func testModel(_ model: String, completion: @escaping (Bool, String) -> Void) {
-        guard KeychainHelper.loadAPIKey() != nil else {
+        guard isConfigured else {
             completion(false, tr("还没有填 API Key", "No API key yet"))
+            return
+        }
+        guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            completion(false, tr("还没有填模型名", "No model name yet"))
             return
         }
         let start = Date()
@@ -165,22 +228,82 @@ enum LLMClient {
     /// （按下这一刻还不知道是轻点还是长按，按铁律不能猜，所以只能从请求里把 Key 拿掉）。
     /// 端点大多回 401，但 DNS/TLS/连接池已经热好了，省下的首包延迟一点不少。
     static func prewarm() {
-        // 没配 Key = 这台机器压根不会调 LLM，连接也不用热
-        guard KeychainHelper.loadAPIKey() != nil else { return }
+        // 没配 Key = 这台机器压根不会调 LLM，连接也不用热（本机模型不需要 Key，照热）
+        guard isConfigured else { return }
         var base = Settings.shared.currentBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         if base.hasSuffix("/") { base = String(base.dropLast()) }
-        guard let url = URL(string: base + "/models") else { return }
+        guard !base.isEmpty, let url = URL(string: base + "/models") else { return }
         var request = URLRequest(url: url)
         request.timeoutInterval = 5
         URLSession.shared.dataTask(with: request).resume()
+    }
+
+    // MARK: - 模型列表
+
+    /// `GET {base}/models` → 这个端点当前真的有哪些型号。
+    ///
+    /// 为什么要有它：写死在 Swift 字面量里的型号清单**一定**会过时（v4.0 这次就整体落后两三代），
+    /// 而端点自己永远知道答案。拿不到就静默回退字面量——刷新是锦上添花，
+    /// 失败了下拉框照样能用，绝不弹一个"刷新失败"的框挡在用户面前。
+    /// completion 在主线程回调；nil = 这次没拿到（调用方保持原清单不动）。
+    static func fetchModelIDs(completion: @escaping ([String]?) -> Void) {
+        func finish(_ ids: [String]?) {
+            DispatchQueue.main.async { completion(ids) }
+        }
+        var base = Settings.shared.currentBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if base.hasSuffix("/") { base = String(base.dropLast()) }
+        guard !base.isEmpty, let url = URL(string: base + "/models"), let apiKey = credential() else {
+            Log.warn("Model list refresh skipped (endpoint or key not configured)")
+            finish(nil)
+            return
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                Log.warn("Model list refresh failed: \((error as NSError).code)")
+                finish(nil)
+                return
+            }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard status == 200, let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) else {
+                // Kimi 这类端点压根没有 /models（404）——这是已知情况，记一条 WARN 就够
+                Log.warn("Model list refresh HTTP \(status)")
+                finish(nil)
+                return
+            }
+            // 标准形状 {data:[{id:…}]}；少数端点直接回一个数组
+            let rows: [[String: Any]] = (json as? [String: Any])?["data"] as? [[String: Any]]
+                ?? (json as? [[String: Any]]) ?? []
+            let ids = rows.compactMap { $0["id"] as? String }
+            guard !ids.isEmpty else {
+                Log.warn("Model list refresh returned no ids")
+                finish(nil)
+                return
+            }
+            let usable = LLMCatalog.usableModelIDs(from: ids)
+            Log.info("Model list refreshed: \(ids.count) reported, \(usable.count) usable")
+            finish(usable)
+        }.resume()
     }
 
     // MARK: - 请求体（纯函数，形状由单测钉住）
 
     /// Responses 请求体。字段顺序有意义：不变的指令块进 `instructions`，每次都变的转写进 `input`——
     /// prompt caching 只认**共享前缀**，把变的东西放后面才有命中的可能（GPT-5.6+ 要 ≥1024 token 才起算）。
+    /// - fastTier: `service_tier:"fast"`（约 2 倍 token 单价换低延迟，默认关）
+    /// - searchStyle: 联网写法。`.openaiResponsesTool` 时才挂 web_search 工具；润色路径调用方已置 .unsupported
+    /// - userLocation: `user_location`（approximate）。默认参数在调用时求值，单测可以注入固定值
     static func responsesBody(model: String, system: String, user: String, purpose: Purpose,
-                              temperature: Double?, maxOutputTokens: Int) -> [String: Any] {
+                              temperature: Double?, maxOutputTokens: Int,
+                              fastTier: Bool = false,
+                              searchStyle: LLMCatalog.WebSearchStyle = .unsupported,
+                              userLocation: [String: String] = LLMCatalog.approximateUserLocation())
+        -> [String: Any] {
         var body: [String: Any] = [
             "model": model,
             "instructions": system,
@@ -200,12 +323,31 @@ enum LLMClient {
         if let temperature = temperature, !LLMCatalog.rejectsCustomTemperature(model) {
             body["temperature"] = temperature
         }
+        if fastTier {
+            // 官方 2026-07-30 把 Priority Processing 改名 Fast mode，字段值 "fast"（"priority" 等价）
+            body["service_tier"] = "fast"
+        }
+        // 联网搜索：**再判一次 purpose**。入口那层（searchStyle(for:)）已经把润色挡住了，
+        // 这里是第二道——"润色永不联网"是铁律，不能只靠调用方传对参数来保证。
+        // search_context_size 取 low：听写指令要的是一两条事实，不是一篇综述，越小越快越省。
+        if purpose == .command, searchStyle == .openaiResponsesTool {
+            body["tools"] = [[
+                "type": "web_search",
+                "search_context_size": "low",
+                "user_location": userLocation,
+            ]]
+            body["tool_choice"] = "auto"
+            // 没有这一行，回答里就只有 annotations 没有 action.sources —— 来源列表少一半
+            body["include"] = ["web_search_call.action.sources"]
+        }
         return body
     }
 
-    /// chat/completions 请求体
+    /// chat/completions 请求体（DeepSeek / Qwen / 自定义端点 / 本机模型）
     static func chatBody(model: String, messages: [[String: String]], temperature: Double?,
-                         purpose: Purpose?, provider: LLMProvider) -> [String: Any] {
+                         purpose: Purpose?, provider: LLMProvider,
+                         fastTier: Bool = false,
+                         searchStyle: LLMCatalog.WebSearchStyle = .unsupported) -> [String: Any] {
         var body: [String: Any] = [
             "model": model,
             "messages": messages,
@@ -218,34 +360,87 @@ enum LLMClient {
         if provider == .deepseek, purpose == .polish {
             body["thinking"] = ["type": "disabled"]
         }
+        // service_tier 是 OpenAI 的字段；别的服务商收到只会多一个它不认识的键（有的直接 400）
+        if fastTier, provider == .openai {
+            body["service_tier"] = "fast"
+        }
+        // 同一条铁律的第二道闸：润色路径一个搜索参数都不发
+        switch purpose == .command ? searchStyle : .unsupported {
+        case .qwenEnableSearch:
+            // DashScope 兼容模式：body 里两个字段。agent 策略会自己决定搜几次、搜什么。
+            // **这一档不回传来源**（OpenAI 兼容端点的限制），所以设置页要当面写清楚。
+            body["enable_search"] = true
+            body["search_options"] = ["search_strategy": "agent"]
+        case .openrouterPlugin:
+            body["plugins"] = [["id": "web"]]
+        case .openaiResponsesTool, .unsupported:
+            break
+        }
         return body
     }
 
     // MARK: - 响应解析与去参重试（纯函数）
 
-    /// Responses 响应里要拿的三样东西
+    /// Responses 响应里要拿的东西
     struct ResponsesPayload: Equatable {
         let text: String?
         /// prompt 缓存命中的输入 token 数（usage.input_tokens_details.cached_tokens），进诊断面板
         let cachedTokens: Int?
         /// 输出撞上 max_output_tokens（status=incomplete）——半截文本不能当成功交付
         let truncated: Bool
+        /// 这一趟**实际**跑在哪个档位。勾了 fast 也可能被服务商降回 default，
+        /// 那就得让用户看见——不然他会以为多付的钱买到了低延迟。
+        let serviceTier: String?
+        /// 联网搜索回传的来源（annotations[].url_citation），进历史与悬浮窗
+        let citations: [Citation]
+
+        init(text: String?, cachedTokens: Int?, truncated: Bool,
+             serviceTier: String? = nil, citations: [Citation] = []) {
+            self.text = text
+            self.cachedTokens = cachedTokens
+            self.truncated = truncated
+            self.serviceTier = serviceTier
+            self.citations = citations
+        }
+    }
+
+    /// `annotations[]` → 去重后的来源列表（纯函数）。
+    /// 只认 `type == "url_citation"`：同一个数组里还会有别的注解类型（文件引用等）。
+    static func parseURLCitations(_ annotations: [[String: Any]]) -> [Citation] {
+        var seen = Set<String>()
+        var out: [Citation] = []
+        for annotation in annotations {
+            // 形状有两种：{type:"url_citation", url:…, title:…}（Responses / OpenRouter）
+            // 和 {type:"url_citation", url_citation:{url:…, title:…}}（部分兼容端点）
+            let nested = annotation["url_citation"] as? [String: Any]
+            guard (annotation["type"] as? String) == "url_citation" || nested != nil else { continue }
+            let source = nested ?? annotation
+            guard let url = (source["url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !url.isEmpty, seen.insert(url).inserted else { continue }
+            out.append(Citation(title: (source["title"] as? String) ?? "", url: url))
+        }
+        return out
     }
 
     /// 官方明确警告不要假设 `output[0].content[0].text`：推理条目、web_search 调用都会排在 message 前面。
     /// 所以按 `type == "message"` 找条目，再在它的 content 里按 `type == "output_text"` 取文本。
     static func parseResponsesPayload(_ json: [String: Any]) -> ResponsesPayload {
         var text: String?
+        var annotations: [[String: Any]] = []
         if let output = json["output"] as? [[String: Any]] {
             for item in output where (item["type"] as? String) == "message" {
+                // 注解挂在 message 上还是挂在 output_text 上，文档与实际回包都见过 → 两处都收
+                annotations += (item["annotations"] as? [[String: Any]]) ?? []
                 guard let content = item["content"] as? [[String: Any]] else { continue }
+                for part in content {
+                    annotations += (part["annotations"] as? [[String: Any]]) ?? []
+                }
                 let chunks = content.compactMap { part -> String? in
                     guard (part["type"] as? String) == "output_text" else { return nil }
                     return part["text"] as? String
                 }
-                if !chunks.isEmpty {
+                if !chunks.isEmpty, text == nil {
                     text = chunks.joined()
-                    break
                 }
             }
         }
@@ -258,7 +453,9 @@ enum LLMClient {
         let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
         return ResponsesPayload(text: (trimmed?.isEmpty ?? true) ? nil : trimmed,
                                 cachedTokens: cached,
-                                truncated: (json["status"] as? String) == "incomplete")
+                                truncated: (json["status"] as? String) == "incomplete",
+                                serviceTier: json["service_tier"] as? String,
+                                citations: parseURLCitations(annotations))
     }
 
     /// 400 的报错里被点名的那个参数名。
@@ -309,12 +506,31 @@ enum LLMClient {
                                  timeout: TimeInterval, handle: LLMRequestHandle,
                                  completion: @escaping (String?, String?) -> Void) {
         guard !handle.isCancelled else { return }
-        guard let apiKey = KeychainHelper.loadAPIKey() else {
+        guard let apiKey = credential() else {
             DispatchQueue.main.async { completion(nil, tr("未配置 API Key", "No API key configured")) }
+            return
+        }
+        // 模型名为空（自定义端点 / 本机模型这两档没有预设默认值）：直接说清楚。
+        // 不拦的话服务商回的是一句它自己的 400，用户照着去查 Key 和网络，查不到头上。
+        if let model = body["model"] as? String,
+           model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            DispatchQueue.main.async {
+                completion(nil, tr("还没填模型名——在设置里填一个，或点「刷新模型列表」从端点取",
+                                   "No model name yet - type one in Settings, or hit Refresh model list"))
+            }
             return
         }
         var base = Settings.shared.currentBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         if base.hasSuffix("/") { base = String(base.dropLast()) }
+        // 地址不完整（Qwen 区域端点缺 WorkspaceId / 自定义端点还没填）：宁可报错也不替用户
+        // 换一个能连上的地址——那等于把 Key 和听写文本发到他没选的地方去。
+        guard !base.isEmpty else {
+            DispatchQueue.main.async {
+                completion(nil, tr("这个服务商的接口地址还没填完（Qwen 区域端点需要 WorkspaceId）",
+                                   "This provider's endpoint is incomplete (regional Qwen endpoints need a workspace ID)"))
+            }
+            return
+        }
         guard let url = URL(string: base + path) else {
             DispatchQueue.main.async { completion(nil, tr("Base URL 格式不对", "Invalid base URL")) }
             return
@@ -336,7 +552,10 @@ enum LLMClient {
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        // 空 Key = 本机模型那一档（见 credential）：**不发**这个头，别给本机服务塞一个空 Bearer
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         let task = URLSession.shared.dataTask(with: request) { data, response, error in
@@ -344,7 +563,7 @@ enum LLMClient {
             guard !handle.isCancelled else { return }
             var result: String? = nil
             var failure: String? = nil
-            var cachedTokens: Int? = nil
+            var usage = LLMUsage()
 
             var json: [String: Any]? = nil
             if let data = data, let object = try? JSONSerialization.jsonObject(with: data) {
@@ -389,7 +608,9 @@ enum LLMClient {
                 switch endpoint {
                 case .responses:
                     let payload = parseResponsesPayload(json)
-                    cachedTokens = payload.cachedTokens
+                    usage = LLMUsage(cachedTokens: payload.cachedTokens,
+                                     serviceTier: payload.serviceTier,
+                                     citations: payload.citations)
                     if let text = payload.text, !payload.truncated {
                         result = text
                     } else if payload.truncated {
@@ -399,9 +620,14 @@ enum LLMClient {
                         failure = tr("模型返回了空内容", "Model returned empty content")
                     }
                 case .chat:
-                    if let choices = json["choices"] as? [[String: Any]],
-                       let message = choices.first?["message"] as? [String: Any],
-                       let content = message["content"] as? String {
+                    let message = (json["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any]
+                    // 兼容端点大多不报缓存；service_tier 与 annotations 有的会报（OpenRouter 回来源，
+                    // Qwen 的兼容模式不回——那一档的设置文案已经当面说明了）
+                    usage = LLMUsage(cachedTokens: nil,
+                                     serviceTier: json["service_tier"] as? String,
+                                     citations: parseURLCitations(
+                                        (message?["annotations"] as? [[String: Any]]) ?? []))
+                    if let content = message?["content"] as? String {
                         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
                         if trimmed.isEmpty {
                             failure = tr("模型返回了空内容", "Model returned empty content")
@@ -417,8 +643,9 @@ enum LLMClient {
             }
             DispatchQueue.main.async {
                 guard !handle.isCancelled else { return }
-                // 缓存命中数在主线程落进沉淀点，紧接着由 completion 里的计量代码取走
-                LLMUsageSink.shared.record(cachedTokens: cachedTokens)
+                // 用量（缓存命中 / 实际档位 / 联网来源）在主线程落进沉淀点，
+                // 紧接着由 completion 里的计量代码取走
+                LLMUsageSink.shared.record(usage)
                 completion(result, failure)
             }
         }

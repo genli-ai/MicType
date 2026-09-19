@@ -216,13 +216,35 @@ final class LLMClientTests: XCTestCase {
 
     // MARK: - 用量沉淀点
 
-    /// 取走即清空：上一轮的缓存命中绝不能被记到下一轮头上
+    /// 取走即清空：上一轮的缓存命中 / 来源绝不能被记到下一轮头上
     func testUsageSinkIsConsumedOnce() {
-        LLMUsageSink.shared.record(cachedTokens: 1024)
-        XCTAssertEqual(LLMUsageSink.shared.take(), 1024)
+        LLMUsageSink.shared.record(LLMUsage(cachedTokens: 1024, serviceTier: "fast"))
+        let taken = LLMUsageSink.shared.take()
+        XCTAssertEqual(taken?.cachedTokens, 1024)
+        XCTAssertEqual(taken?.serviceTier, "fast")
         XCTAssertNil(LLMUsageSink.shared.take())
-        LLMUsageSink.shared.record(cachedTokens: nil)
-        XCTAssertNil(LLMUsageSink.shared.take())
+    }
+
+    /// 草稿只在真有用量时才被填——"没走大模型"和"值为 0"在这张表里是两回事
+    func testDraftAbsorbsUsageOnlyWhenPresent() {
+        var draft = SessionMetricDraft(mode: .command, audioSeconds: 1, partialCount: 0, cold: false)
+        draft.absorb(nil)
+        XCTAssertNil(draft.cachedTokens)
+        XCTAssertNil(draft.serviceTier)
+        draft.absorb(LLMUsage(cachedTokens: 0, serviceTier: "default"))
+        XCTAssertEqual(draft.cachedTokens, 0)
+        XCTAssertEqual(draft.serviceTier, "default")
+    }
+
+    /// 勾了 fast 却被降回 default 必须看得见：诊断行里要有 tier=
+    func testDiagnosticRowShowsActualServiceTier() {
+        let metric = SessionMetric(date: Date(), mode: .command, asrMs: 10, polishMs: 20,
+                                   insertMs: 30, audioSeconds: 1, partialCount: 0, cold: false,
+                                   cachedTokens: nil, serviceTier: "default")
+        XCTAssertTrue(metric.diagnosticRow.contains("tier=default"))
+        let plain = SessionMetric(date: Date(), mode: .command, asrMs: 10, polishMs: 20,
+                                  insertMs: 30, audioSeconds: 1, partialCount: 0, cold: false)
+        XCTAssertFalse(plain.diagnosticRow.contains("tier="))
     }
 
     /// 诊断行里多出的那一格只在真有缓存数字时出现（老记录不会凭空长出字段）
@@ -234,5 +256,174 @@ final class LLMClientTests: XCTestCase {
         let without = SessionMetric(date: Date(), mode: .dictation, asrMs: 10, polishMs: 20,
                                     insertMs: 30, audioSeconds: 1, partialCount: 0, cold: false)
         XCTAssertFalse(without.diagnosticRow.contains("cached="))
+    }
+
+    // MARK: - Fast 档与联网搜索（B7 / B8 / B11）
+
+    /// 勾了 Fast 才发 service_tier；没勾一个字都不发（默认就是不花这笔钱）
+    func testFastTierIsOptInOnly() {
+        let plain = LLMClient.responsesBody(model: "gpt-5.6-luna", system: "S", user: "U",
+                                            purpose: .polish, temperature: nil, maxOutputTokens: 2048)
+        XCTAssertNil(plain["service_tier"])
+        let fast = LLMClient.responsesBody(model: "gpt-5.6-luna", system: "S", user: "U",
+                                           purpose: .polish, temperature: nil, maxOutputTokens: 2048,
+                                           fastTier: true)
+        XCTAssertEqual(fast["service_tier"] as? String, "fast")
+    }
+
+    /// service_tier 是 OpenAI 的字段：别的服务商收到只会多一个它不认识的键
+    func testFastTierOnlyGoesToOpenAIOnChatCompletions() {
+        let deepseek = LLMClient.chatBody(model: "deepseek-flash", messages: [], temperature: nil,
+                                          purpose: .polish, provider: .deepseek, fastTier: true)
+        XCTAssertNil(deepseek["service_tier"])
+        let openai = LLMClient.chatBody(model: "gpt-5.6-luna", messages: [], temperature: nil,
+                                        purpose: .polish, provider: .openai, fastTier: true)
+        XCTAssertEqual(openai["service_tier"] as? String, "fast")
+    }
+
+    /// 开着搜索开关的指令调用：工具、tool_choice、include 一个都不能少
+    func testCommandWebSearchToolShape() {
+        let body = LLMClient.responsesBody(model: "gpt-5.6-terra", system: "S", user: "U",
+                                           purpose: .command, temperature: nil, maxOutputTokens: 4096,
+                                           searchStyle: .openaiResponsesTool,
+                                           userLocation: ["type": "approximate", "country": "AE",
+                                                          "timezone": "Asia/Dubai"])
+        let tools = body["tools"] as? [[String: Any]]
+        XCTAssertEqual(tools?.count, 1)
+        XCTAssertEqual(tools?.first?["type"] as? String, "web_search")
+        XCTAssertEqual(tools?.first?["search_context_size"] as? String, "low")
+        XCTAssertEqual((tools?.first?["user_location"] as? [String: String])?["country"], "AE")
+        XCTAssertEqual(body["tool_choice"] as? String, "auto")
+        XCTAssertEqual((body["include"] as? [String])?.first, "web_search_call.action.sources")
+    }
+
+    /// 关着搜索时请求体里连 tools 这个键都没有（B8 的验收标准）
+    func testWebSearchOffMeansNoToolsAtAll() {
+        let body = LLMClient.responsesBody(model: "gpt-5.6-terra", system: "S", user: "U",
+                                           purpose: .command, temperature: nil, maxOutputTokens: 4096)
+        XCTAssertNil(body["tools"])
+        XCTAssertNil(body["tool_choice"])
+        XCTAssertNil(body["include"])
+    }
+
+    /// **铁律**：润色路径永不联网。就算调用方把搜索写法传进来，润色的请求体里也不许出现工具——
+    /// 润色是"改写我刚说的话"，联网既没用又按次花钱。
+    func testPolishNeverGetsSearchTools() {
+        let body = LLMClient.responsesBody(model: "gpt-5.6-luna", system: "S", user: "U",
+                                           purpose: .polish, temperature: nil, maxOutputTokens: 2048,
+                                           searchStyle: .openaiResponsesTool)
+        XCTAssertNil(body["tools"])
+        XCTAssertNil(body["include"])
+    }
+
+    /// 同一条铁律在入口那一层也钉住：润色永远拿不到 .unsupported 以外的写法
+    func testSearchStyleForPolishIsAlwaysUnsupported() {
+        let saved = Settings.shared.webSearchEnabled
+        defer { Settings.shared.webSearchEnabled = saved }
+        Settings.shared.webSearchEnabled = true
+        XCTAssertEqual(LLMClient.searchStyle(for: .polish), .unsupported)
+    }
+
+    /// Qwen 走 body 字段，OpenRouter 走 plugins，DeepSeek 什么都没有
+    func testChatWebSearchShapesPerProvider() {
+        let qwen = LLMClient.chatBody(model: "qwen3.8-max", messages: [], temperature: nil,
+                                      purpose: .command, provider: .qwen,
+                                      searchStyle: .qwenEnableSearch)
+        XCTAssertEqual(qwen["enable_search"] as? Bool, true)
+        XCTAssertEqual((qwen["search_options"] as? [String: String])?["search_strategy"], "agent")
+        XCTAssertNil(qwen["plugins"])
+
+        let router = LLMClient.chatBody(model: "anything", messages: [], temperature: nil,
+                                        purpose: .command, provider: .custom,
+                                        searchStyle: .openrouterPlugin)
+        XCTAssertEqual((router["plugins"] as? [[String: String]])?.first?["id"], "web")
+        XCTAssertNil(router["enable_search"])
+
+        let deepseek = LLMClient.chatBody(model: "deepseek-v4-pro", messages: [], temperature: nil,
+                                          purpose: .command, provider: .deepseek,
+                                          searchStyle: .unsupported)
+        XCTAssertNil(deepseek["enable_search"])
+        XCTAssertNil(deepseek["plugins"])
+    }
+
+    // MARK: - 来源解析
+
+    /// 两种形状都要认（扁平的和套一层 url_citation 的），并且按 url 去重
+    func testURLCitationsAreParsedAndDeduplicated() {
+        let annotations: [[String: Any]] = [
+            ["type": "url_citation", "url": "https://a.example/x", "title": "A"],
+            ["type": "url_citation", "url_citation": ["url": "https://b.example/y", "title": "B"]],
+            ["type": "url_citation", "url": "https://a.example/x", "title": "A again"],
+            ["type": "file_citation", "url": "https://c.example/z"],
+        ]
+        let citations = LLMClient.parseURLCitations(annotations)
+        XCTAssertEqual(citations.map(\.url), ["https://a.example/x", "https://b.example/y"])
+        XCTAssertEqual(citations.first?.title, "A")
+    }
+
+    /// 标题为空时拿域名顶上（列表里一行空白比域名难用得多）；非 http 一律不做成可点链接
+    func testCitationDisplayTitleAndClickability() {
+        XCTAssertEqual(Citation(title: "  ", url: "https://news.example/a").displayTitle, "news.example")
+        XCTAssertNotNil(Citation(title: "t", url: "https://news.example/a").clickableURL)
+        XCTAssertNil(Citation(title: "t", url: "javascript:alert(1)").clickableURL)
+    }
+
+    /// 完整回包：正文在 message 里，来源在 output_text 的 annotations 上，档位在顶层
+    func testResponsesPayloadCarriesCitationsAndServiceTier() {
+        let json: [String: Any] = [
+            "status": "completed",
+            "service_tier": "default",
+            "output": [
+                ["type": "web_search_call", "action": ["type": "search"]],
+                ["type": "message", "content": [
+                    ["type": "output_text", "text": "答案",
+                     "annotations": [["type": "url_citation",
+                                      "url": "https://src.example/1", "title": "来源一"]]],
+                ]],
+            ],
+        ]
+        let payload = LLMClient.parseResponsesPayload(json)
+        XCTAssertEqual(payload.text, "答案")
+        XCTAssertEqual(payload.serviceTier, "default")
+        XCTAssertEqual(payload.citations.count, 1)
+        XCTAssertEqual(payload.citations.first?.url, "https://src.example/1")
+    }
+
+    /// 没联网的普通回包不该凭空长出来源
+    func testPlainResponseHasNoCitations() {
+        let json: [String: Any] = [
+            "output": [["type": "message", "content": [["type": "output_text", "text": "hi"]]]],
+        ]
+        let payload = LLMClient.parseResponsesPayload(json)
+        XCTAssertTrue(payload.citations.isEmpty)
+        XCTAssertNil(payload.serviceTier)
+    }
+
+    /// OpenRouter 的来源挂在 chat 的 message.annotations 上（同一个解析器要能兼容）
+    func testChatMessageAnnotationsUseTheSameParser() {
+        let annotations: [[String: Any]] = [["type": "url_citation",
+                                             "url": "https://r.example/1", "title": "R"]]
+        XCTAssertEqual(LLMClient.parseURLCitations(annotations).count, 1)
+    }
+
+    // MARK: - 历史里的来源
+
+    /// 老的 history.json 没有 citations 这个键：解不出来就等于 200 条历史全丢了
+    func testHistoryItemDecodesOldRecordsWithoutCitations() throws {
+        let legacy = """
+        {"id":"\(UUID().uuidString)","date":0,"raw":"a","polished":"b"}
+        """.data(using: .utf8)!
+        let item = try JSONDecoder().decode(HistoryItem.self, from: legacy)
+        XCTAssertEqual(item.polished, "b")
+        XCTAssertTrue(item.citations.isEmpty)
+    }
+
+    /// 新记录编码后再解回来，来源一条不少
+    func testHistoryItemRoundTripsCitations() throws {
+        let item = HistoryItem(date: Date(timeIntervalSince1970: 0), raw: "a", polished: "b",
+                               citations: [Citation(title: "T", url: "https://x.example/1")])
+        let data = try JSONEncoder().encode(item)
+        let back = try JSONDecoder().decode(HistoryItem.self, from: data)
+        XCTAssertEqual(back.citations, item.citations)
     }
 }

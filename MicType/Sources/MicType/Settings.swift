@@ -139,23 +139,56 @@ enum OverlayPosition: String, CaseIterable {
 enum LLMProvider: String, CaseIterable {
     case openai
     case deepseek
+    /// 通义千问（DashScope 兼容模式）。与自带的 Qwen3-ASR 同一家族，中国大陆可直连。
+    case qwen
+    /// 任意 OpenAI 兼容端点（Kimi、Gemini 兼容层、z.ai、OpenRouter、自建网关…）——地址由用户填。
+    case custom
+    /// 本机模型（Ollama / LM Studio）：完全不出网、不花钱、**可以不填 API Key**。
+    case local
 
     var displayName: String {
         switch self {
         case .openai: return "OpenAI (GPT)"
         case .deepseek: return "DeepSeek"
+        case .qwen: return "Qwen (DashScope)"
+        case .custom: return tr("自定义端点", "Custom endpoint")
+        case .local: return tr("本机模型", "Local model")
         }
     }
+
+    /// 徽章那种放不下长名字的地方用短名（纯品牌名，中英通用）
+    var shortName: String {
+        switch self {
+        case .openai: return "GPT"
+        case .deepseek: return "DeepSeek"
+        case .qwen: return "Qwen"
+        case .custom: return tr("自定义", "Custom")
+        case .local: return tr("本机", "Local")
+        }
+    }
+
+    /// 每个服务商一条独立的钥匙串条目：换服务商试用时互不覆盖（老用户的两条保持原名不动）
     var keychainAccount: String {
         switch self {
         case .openai: return "openai_api_key"
         case .deepseek: return "deepseek_api_key"
+        case .qwen: return "qwen_api_key"
+        case .custom: return "custom_api_key"
+        case .local: return "local_api_key"
         }
     }
+
+    /// 本机模型不需要 Key：Ollama 要求填但忽略内容，LM Studio 的示例压根不带凭据。
+    /// 所以这一档的"没填 Key"是**正常状态**，不是配置错误——整条链路都要容忍空 Key。
+    var requiresAPIKey: Bool { self != .local }
+
     var defaultBaseURL: String {
         switch self {
         case .openai: return "https://api.openai.com/v1"
         case .deepseek: return "https://api.deepseek.com"
+        case .qwen: return LLMCatalog.qwenBaseURL(region: .international, workspaceID: "")
+        case .custom: return ""
+        case .local: return LLMCatalog.LocalRuntime.ollama.baseURL
         }
     }
     /// 该服务商的默认润色/指令型号（型号名一律来自 LLMCatalog，换代只改那一处）
@@ -191,6 +224,18 @@ enum SettingsKeys {
     static let appLanguage = "appLanguage"
     static let deepseekBaseURL = "deepseekBaseURL"
     static let deepseekModel = "deepseekModel"
+    static let qwenRegion = "qwenRegion"                    // DashScope 接入区域（Base URL 由它推出）
+    static let qwenWorkspaceID = "qwenWorkspaceID"          // 区域端点的 WorkspaceId（主机名第一段）
+    static let qwenModel = "qwenModel"
+    static let qwenCommandModel = "qwenCommandModel"
+    static let customBaseURL = "customBaseURL"              // 自定义端点地址（唯一可见的 URL 输入框）
+    static let customModel = "customModel"
+    static let customCommandModel = "customCommandModel"
+    static let localRuntime = "localRuntime"                // ollama / lmstudio（端口固定）
+    static let localModel = "localModel"
+    static let localCommandModel = "localCommandModel"
+    static let fastTier = "fastTier"                        // service_tier:"fast"（贵一倍换低延迟，默认关）
+    static let webSearchEnabled = "webSearchEnabled"        // 指令模式联网搜索（按次计费，默认关）
     static let onboardingCompleted = "onboardingCompleted"  // 首启动引导是否走过（老用户按"已配置好"自动置真）
 }
 
@@ -226,6 +271,19 @@ final class Settings {
             SettingsKeys.llmProvider: LLMProvider.openai.rawValue,
             SettingsKeys.deepseekBaseURL: LLMProvider.deepseek.defaultBaseURL,
             SettingsKeys.deepseekModel: LLMCatalog.deepseekPolishDefault,
+            SettingsKeys.qwenRegion: LLMCatalog.QwenRegion.international.rawValue,
+            SettingsKeys.qwenWorkspaceID: "",
+            SettingsKeys.qwenModel: LLMCatalog.qwenPolishDefault,
+            SettingsKeys.qwenCommandModel: LLMCatalog.qwenCommandDefault,
+            SettingsKeys.customBaseURL: "",
+            SettingsKeys.customModel: "",
+            SettingsKeys.customCommandModel: "",
+            SettingsKeys.localRuntime: LLMCatalog.LocalRuntime.ollama.rawValue,
+            SettingsKeys.localModel: "",
+            SettingsKeys.localCommandModel: "",
+            // 花钱的开关一律默认关：多付的钱必须是用户自己点下去的
+            SettingsKeys.fastTier: false,
+            SettingsKeys.webSearchEnabled: false,
             SettingsKeys.onboardingCompleted: false,
         ])
 
@@ -479,6 +537,95 @@ final class Settings {
         set { d.set(newValue, forKey: SettingsKeys.deepseekModel) }
     }
 
+    // MARK: Qwen / 自定义端点 / 本机模型
+
+    /// DashScope 接入区域。读到脏值回退国际站（一条坏设置不该让服务商整档失灵）。
+    var qwenRegion: LLMCatalog.QwenRegion {
+        get { LLMCatalog.QwenRegion(rawValue: d.string(forKey: SettingsKeys.qwenRegion) ?? "") ?? .international }
+        set { d.set(newValue.rawValue, forKey: SettingsKeys.qwenRegion) }
+    }
+
+    /// 区域端点主机名里的 WorkspaceId。国际站不需要它。
+    var qwenWorkspaceID: String {
+        get { d.string(forKey: SettingsKeys.qwenWorkspaceID) ?? "" }
+        set { d.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines),
+                    forKey: SettingsKeys.qwenWorkspaceID) }
+    }
+
+    /// Qwen 的 Base URL 永远是推出来的，没有输入框：URL 里带 WorkspaceId，手抄错的表现是鉴权失败。
+    var qwenBaseURL: String {
+        LLMCatalog.qwenBaseURL(region: qwenRegion, workspaceID: qwenWorkspaceID)
+    }
+
+    var qwenModel: String {
+        get { d.string(forKey: SettingsKeys.qwenModel) ?? LLMCatalog.qwenPolishDefault }
+        set { d.set(newValue, forKey: SettingsKeys.qwenModel) }
+    }
+
+    var qwenCommandModel: String {
+        get { d.string(forKey: SettingsKeys.qwenCommandModel) ?? LLMCatalog.qwenCommandDefault }
+        set { d.set(newValue, forKey: SettingsKeys.qwenCommandModel) }
+    }
+
+    /// 自定义端点地址。**唯一**可见的 Base URL 输入框——官方几档的地址由 MicType 自己拼，
+    /// 免得「Base URL 被改过却看不出来」变成一个查不出来的故障（见 SettingsView 的复位提示）。
+    var customBaseURL: String {
+        get { d.string(forKey: SettingsKeys.customBaseURL)?.trimmingCharacters(in: .whitespaces) ?? "" }
+        set { d.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines),
+                    forKey: SettingsKeys.customBaseURL) }
+    }
+
+    var customModel: String {
+        get { d.string(forKey: SettingsKeys.customModel) ?? "" }
+        set { d.set(newValue, forKey: SettingsKeys.customModel) }
+    }
+
+    var customCommandModel: String {
+        get { d.string(forKey: SettingsKeys.customCommandModel) ?? "" }
+        set { d.set(newValue, forKey: SettingsKeys.customCommandModel) }
+    }
+
+    var localRuntime: LLMCatalog.LocalRuntime {
+        get { LLMCatalog.LocalRuntime(rawValue: d.string(forKey: SettingsKeys.localRuntime) ?? "") ?? .ollama }
+        set { d.set(newValue.rawValue, forKey: SettingsKeys.localRuntime) }
+    }
+
+    var localModel: String {
+        get { d.string(forKey: SettingsKeys.localModel) ?? "" }
+        set { d.set(newValue, forKey: SettingsKeys.localModel) }
+    }
+
+    var localCommandModel: String {
+        get { d.string(forKey: SettingsKeys.localCommandModel) ?? "" }
+        set { d.set(newValue, forKey: SettingsKeys.localCommandModel) }
+    }
+
+    // MARK: 花钱的两个开关（默认关）
+
+    /// `service_tier:"fast"`：延迟更低更稳，token 单价约 2 倍。只有 OpenAI 认这个字段。
+    /// 默认关——多花的钱必须是用户自己点下去的。
+    var fastTier: Bool {
+        get { d.bool(forKey: SettingsKeys.fastTier) }
+        set { d.set(newValue, forKey: SettingsKeys.fastTier) }
+    }
+
+    /// 指令模式（按住）允许模型联网搜索。**只作用于指令**：润色是"改写我说的话"，
+    /// 联网既没用又要花钱，那条路一个搜索参数都不发。默认关，$ 单价写在开关旁。
+    var webSearchEnabled: Bool {
+        get { d.bool(forKey: SettingsKeys.webSearchEnabled) }
+        set { d.set(newValue, forKey: SettingsKeys.webSearchEnabled) }
+    }
+
+    /// 当前服务商的联网写法（各家形状不同，对外只有一个开关）
+    var webSearchStyle: LLMCatalog.WebSearchStyle {
+        LLMCatalog.searchStyle(provider: llmProvider, baseURL: currentBaseURL)
+    }
+
+    /// 这次调用到底要不要带搜索：开关开着 + 这个端点支持 + 是指令路径（由调用方保证）
+    var webSearchActive: Bool {
+        webSearchEnabled && webSearchStyle != .unsupported
+    }
+
     var openaiCommandModel: String {
         get { d.string(forKey: SettingsKeys.openaiCommandModel) ?? LLMCatalog.openaiCommandDefault }
         set { d.set(newValue, forKey: SettingsKeys.openaiCommandModel) }
@@ -510,18 +657,29 @@ final class Settings {
         switch llmProvider {
         case .openai: return openaiBaseURL
         case .deepseek: return deepseekBaseURL
+        // 可能是 ""（区域端点还没填 WorkspaceId / 自定义端点还没填地址）：
+        // 空地址由 LLMClient 当面报"地址还没填完"，绝不悄悄替用户换一个能连上的地址。
+        case .qwen: return qwenBaseURL
+        case .custom: return customBaseURL
+        case .local: return localRuntime.baseURL
         }
     }
     var currentPolishModel: String {
         switch llmProvider {
         case .openai: return chatModel
         case .deepseek: return deepseekModel
+        case .qwen: return qwenModel
+        case .custom: return customModel
+        case .local: return localModel
         }
     }
     var currentCommandModel: String {
         switch llmProvider {
         case .openai: return openaiCommandModel
         case .deepseek: return deepseekCommandModel
+        case .qwen: return qwenCommandModel
+        case .custom: return customCommandModel
+        case .local: return localCommandModel
         }
     }
 

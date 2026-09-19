@@ -634,6 +634,7 @@ private struct RecognitionTab: View {
 
 private struct PolishTab: View {
     @ObservedObject private var l10n = L10n.shared
+    @ObservedObject private var metrics = Metrics.shared
     @AppStorage(SettingsKeys.polishLevel) private var polishLevel = PolishLevel.smart.rawValue
     @AppStorage(SettingsKeys.llmProvider) private var provider = LLMProvider.openai.rawValue
     @AppStorage(SettingsKeys.openaiBaseURL) private var baseURL = "https://api.openai.com/v1"
@@ -642,36 +643,93 @@ private struct PolishTab: View {
     @AppStorage(SettingsKeys.deepseekBaseURL) private var dsBaseURL = LLMProvider.deepseek.defaultBaseURL
     @AppStorage(SettingsKeys.deepseekModel) private var dsModel = LLMCatalog.deepseekPolishDefault
     @AppStorage(SettingsKeys.deepseekCommandModel) private var dsCommandModel = LLMCatalog.deepseekCommandDefault
+    @AppStorage(SettingsKeys.qwenRegion) private var qwenRegion = LLMCatalog.QwenRegion.international.rawValue
+    @AppStorage(SettingsKeys.qwenWorkspaceID) private var qwenWorkspace = ""
+    @AppStorage(SettingsKeys.qwenModel) private var qwenModel = LLMCatalog.qwenPolishDefault
+    @AppStorage(SettingsKeys.qwenCommandModel) private var qwenCommandModel = LLMCatalog.qwenCommandDefault
+    @AppStorage(SettingsKeys.customBaseURL) private var customBaseURL = ""
+    @AppStorage(SettingsKeys.customModel) private var customModel = ""
+    @AppStorage(SettingsKeys.customCommandModel) private var customCommandModel = ""
+    @AppStorage(SettingsKeys.localRuntime) private var localRuntime = LLMCatalog.LocalRuntime.ollama.rawValue
+    @AppStorage(SettingsKeys.localModel) private var localModel = ""
+    @AppStorage(SettingsKeys.localCommandModel) private var localCommandModel = ""
+    @AppStorage(SettingsKeys.fastTier) private var fastTier = false
+    @AppStorage(SettingsKeys.webSearchEnabled) private var webSearch = false
     @AppStorage(SettingsKeys.polishTemperature) private var polishTemp = 0.5
     @AppStorage(SettingsKeys.commandTemperature) private var commandTemp = 1.0
     @AppStorage(SettingsKeys.aboutMe) private var aboutMe = ""
-    @State private var apiKey = KeychainHelper.loadAPIKey() ?? ""
-    @State private var openaiSaved = (KeychainHelper.loadAPIKey(account: LLMProvider.openai.keychainAccount) != nil)
-    @State private var dsSaved = (KeychainHelper.loadAPIKey(account: LLMProvider.deepseek.keychainAccount) != nil)
     @AppStorage(SettingsKeys.customPolishRules) private var customRules = ""
+    @State private var apiKey = KeychainHelper.loadAPIKey() ?? ""
+    /// 哪些服务商的钥匙串里已经有 Key（rawValue 集合）
+    @State private var savedProviders: Set<String> = []
     @State private var testResult = ""
     @State private var testing = false
+    /// 「刷新模型列表」从端点取回来的型号（只在内存里，切服务商就丢——上一个端点的清单
+    /// 放到下一个端点上纯属误导）
+    @State private var fetchedModels: [String] = []
+    @State private var refreshing = false
+    @State private var refreshStatus = ""
 
-    // 快选预设一律取自 LLMCatalog（型号换代只改那一处）；输入框仍可手填任意模型名
-    private static let openaiPresets = LLMCatalog.openaiPresets
-    private static let deepseekPresets = LLMCatalog.deepseekPresets
+    private var selected: LLMProvider { LLMProvider(rawValue: provider) ?? .openai }
+
+    /// 界面上这一刻生效的 Base URL。**从 @AppStorage 的值推**而不是读 Settings.currentBaseURL：
+    /// 后者不是 @Published，改了区域/地址界面不会重算。
+    private var effectiveBaseURL: String {
+        switch selected {
+        case .openai: return baseURL
+        case .deepseek: return dsBaseURL
+        case .qwen:
+            return LLMCatalog.qwenBaseURL(
+                region: LLMCatalog.QwenRegion(rawValue: qwenRegion) ?? .international,
+                workspaceID: qwenWorkspace)
+        case .custom: return customBaseURL
+        case .local: return (LLMCatalog.LocalRuntime(rawValue: localRuntime) ?? .ollama).baseURL
+        }
+    }
+
+    private var searchStyle: LLMCatalog.WebSearchStyle {
+        LLMCatalog.searchStyle(provider: selected, baseURL: effectiveBaseURL)
+    }
+
+    /// 润色/指令模型的输入框都绑到这两个 Binding 上——五个服务商共用一套控件，
+    /// 不必把「输入框 + 快选 + 刷新 + 测试」这一排抄五遍（抄五遍就一定会有一遍忘了跟着改）。
+    private var polishModelBinding: Binding<String> {
+        switch selected {
+        case .openai: return $chatModel
+        case .deepseek: return $dsModel
+        case .qwen: return $qwenModel
+        case .custom: return $customModel
+        case .local: return $localModel
+        }
+    }
+    private var commandModelBinding: Binding<String> {
+        switch selected {
+        case .openai: return $openaiCommandModel
+        case .deepseek: return $dsCommandModel
+        case .qwen: return $qwenCommandModel
+        case .custom: return $customCommandModel
+        case .local: return $localCommandModel
+        }
+    }
+
+    /// 下拉里显示的型号：内置预设在前，端点刷新来的在后
+    private var modelChoices: [String] {
+        LLMCatalog.mergedModelList(presets: LLMCatalog.presets(for: selected), fetched: fetchedModels)
+    }
 
     /// 选中的型号是不是推理系——是的话温度参数根本不会被发出去，滑杆必须看得见地置灰，
     /// 而不是让用户以为自己在调一个其实无效的旋钮（3.3 之前就是静默无效）。
     private var polishTempIgnored: Bool {
-        LLMCatalog.rejectsCustomTemperature(
-            provider == LLMProvider.deepseek.rawValue ? dsModel : chatModel)
+        LLMCatalog.rejectsCustomTemperature(polishModelBinding.wrappedValue)
     }
     private var commandTempIgnored: Bool {
-        LLMCatalog.rejectsCustomTemperature(
-            provider == LLMProvider.deepseek.rawValue ? dsCommandModel : openaiCommandModel)
+        LLMCatalog.rejectsCustomTemperature(commandModelBinding.wrappedValue)
     }
     /// 置灰说明里点名的那些型号（纯型号名，中英通用）
     private var ignoredTempModels: String {
-        let isDeepSeek = provider == LLMProvider.deepseek.rawValue
         var names: [String] = []
-        if polishTempIgnored { names.append(isDeepSeek ? dsModel : chatModel) }
-        if commandTempIgnored { names.append(isDeepSeek ? dsCommandModel : openaiCommandModel) }
+        if polishTempIgnored { names.append(polishModelBinding.wrappedValue) }
+        if commandTempIgnored { names.append(commandModelBinding.wrappedValue) }
         return names.joined(separator: " / ")
     }
 
@@ -697,113 +755,11 @@ private struct PolishTab: View {
                     .foregroundColor(.secondary)
             }
 
-            Section {
-                Picker(tr("当前使用：", "Active provider:"), selection: $provider) {
-                    ForEach(LLMProvider.allCases, id: \.rawValue) { p in
-                        Text(p.displayName).tag(p.rawValue)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .onChange(of: provider) { _, newValue in
-                    let account = LLMProvider(rawValue: newValue)?.keychainAccount
-                    apiKey = KeychainHelper.loadAPIKey(account: account) ?? ""
-                    testResult = ""
-                }
-                HStack(spacing: 14) {
-                    Text(tr("润色和语音指令将使用上方选中的服务商", "Polish and voice commands use the provider selected above"))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    KeyStatusBadge(name: "GPT", saved: openaiSaved)
-                    KeyStatusBadge(name: "DeepSeek", saved: dsSaved)
-                }
-                SecureField(provider == LLMProvider.deepseek.rawValue
-                            ? tr("DeepSeek API Key（sk-…）", "DeepSeek API key (sk-…)")
-                            : tr("OpenAI API Key（sk-…）", "OpenAI API key (sk-…)"),
-                            text: $apiKey)
-                    .textFieldStyle(.roundedBorder)
-                HStack {
-                    Button(tr("保存 Key", "Save Key")) {
-                        KeychainHelper.saveAPIKey(apiKey)
-                        refreshSavedStates()
-                        testResult = (KeychainHelper.loadAPIKey() != nil)
-                            ? tr("已保存 ✓", "Saved ✓") : tr("已清空", "Cleared")
-                    }
-                    Spacer()
-                }
-                Text(tr("Key 加密保存在 macOS 系统钥匙串里（可在「钥匙串访问」App 中查看），仅本机可读，不写入任何明文文件。两个服务商的 Key 都可以保存，互不覆盖。",
-                        "Keys are encrypted in the macOS Keychain (visible in the Keychain Access app), readable only on this Mac, never written to plain files. Both providers' keys can be saved independently."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                if !testResult.isEmpty {
-                    Text(testResult)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(3)
-                }
-                if provider == LLMProvider.deepseek.rawValue {
-                    TextField(tr("Base URL", "Base URL"), text: $dsBaseURL)
-                        .textFieldStyle(.roundedBorder)
-                    ModelField(label: tr("润色模型（求快）", "Polish model (fast)"),
-                               text: $dsModel, presets: Self.deepseekPresets,
-                               testing: testing,
-                               onTest: { runModelTest(tr("润色模型", "Polish model"), dsModel) })
-                    ModelField(label: tr("指令模型（求好）", "Command model (strong)"),
-                               text: $dsCommandModel, presets: Self.deepseekPresets,
-                               testing: testing,
-                               onTest: { runModelTest(tr("指令模型", "Command model"), dsCommandModel) })
-                    Text(tr("润色高频求快、指令低频求好，两个模型分开配。右侧下拉快选：deepseek-flash 快且便宜（润色默认，润色时 MicType 会替你关掉思考模式，省掉每句话干等的几秒），deepseek-v4-pro 更强（指令默认）。也可手填任意模型名。Key 在 platform.deepseek.com 申请。",
-                            "Polish runs often and wants speed; commands run rarely and want quality. Quick-pick on the right: deepseek-flash is fast and cheap (the polish default — MicType turns thinking mode off for polish, so you don't wait seconds on every sentence); deepseek-v4-pro is stronger (the command default). Or type any model name. Get a key at platform.deepseek.com."))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } else {
-                    TextField(tr("Base URL", "Base URL"), text: $baseURL)
-                        .textFieldStyle(.roundedBorder)
-                    ModelField(label: tr("润色模型（求快）", "Polish model (fast)"),
-                               text: $chatModel, presets: Self.openaiPresets,
-                               testing: testing,
-                               onTest: { runModelTest(tr("润色模型", "Polish model"), chatModel) })
-                    ModelField(label: tr("指令模型（求好）", "Command model (strong)"),
-                               text: $openaiCommandModel, presets: Self.openaiPresets,
-                               testing: testing,
-                               onTest: { runModelTest(tr("指令模型", "Command model"), openaiCommandModel) })
-                    Text(tr("润色每句话都要跑，求快求省（默认 gpt-5.6-luna）；指令低频，求质量（默认 gpt-5.6-terra）。右侧下拉是 OpenAI 当前在售型号：luna 最便宜，terra 平衡，sol 旗舰，astra 最强也最贵。也可手填任何 OpenAI 兼容服务的模型名。",
-                            "Polish runs on every sentence, so it wants speed and low cost (default gpt-5.6-luna); commands are rare and want quality (default gpt-5.6-terra). The quick-pick list is OpenAI's current line-up: luna is the cheapest, terra is balanced, sol is the flagship, astra is the strongest and the priciest. Or type any OpenAI-compatible model name."))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                HStack {
-                    Text(tr("润色温度：", "Polish temperature:"))
-                        .foregroundColor(polishTempIgnored ? .secondary : .primary)
-                    Slider(value: $polishTemp, in: 0...1.5)
-                        .disabled(polishTempIgnored)
-                    Text(String(format: "%.2f", polishTemp))
-                        .monospacedDigit()
-                        .foregroundColor(polishTempIgnored ? .secondary : .primary)
-                        .frame(width: 38, alignment: .trailing)
-                }
-                HStack {
-                    Text(tr("指令温度：", "Command temperature:"))
-                        .foregroundColor(commandTempIgnored ? .secondary : .primary)
-                    Slider(value: $commandTemp, in: 0...1.5)
-                        .disabled(commandTempIgnored)
-                    Text(String(format: "%.2f", commandTemp))
-                        .monospacedDigit()
-                        .foregroundColor(commandTempIgnored ? .secondary : .primary)
-                        .frame(width: 38, alignment: .trailing)
-                }
-                Text(tr("低 = 稳定保真，高 = 自然多样。默认：润色 0.5 / 指令 1.00（即模型默认值）。",
-                        "Lower = faithful and stable; higher = natural and varied. Defaults: polish 0.5 / commands 1.00 (the model default)."))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                if polishTempIgnored || commandTempIgnored {
-                    Text(tr("置灰的滑杆对应推理系模型（\(ignoredTempModels)）：这类模型只接受默认温度，MicType 干脆不发这个参数。换一个非推理型号就能再调。",
-                            "The greyed-out slider belongs to a reasoning model (\(ignoredTempModels)): those only accept their default temperature, so MicType does not send the parameter at all. Pick a non-reasoning model to re-enable it."))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
+            Section { providerAndKey }
+            Section { endpointFields }
+            Section { modelFields }
+            Section { costSwitches }
+            Section { temperatureSliders }
 
             Section {
                 VStack(alignment: .leading, spacing: 4) {
@@ -835,26 +791,320 @@ private struct PolishTab: View {
         }
         .formStyle(.grouped)
         .padding(.top, 4)
-        // 测试结果是快照，切换语言后清掉，避免残留旧语言
+        .onAppear { refreshSavedStates() }
+        // 测试结果与刷新结果都是快照，切换语言后清掉，避免残留旧语言
         .onChange(of: l10n.language) { _, _ in
             testResult = ""
+            refreshStatus = ""
         }
     }
 
+    // MARK: 服务商与 Key
+
+    @ViewBuilder
+    private var providerAndKey: some View {
+        Picker(tr("当前使用：", "Active provider:"), selection: $provider) {
+            ForEach(LLMProvider.allCases, id: \.rawValue) { p in
+                Text(p.displayName).tag(p.rawValue)
+            }
+        }
+        .pickerStyle(.menu)
+        .onChange(of: provider) { _, newValue in
+            let account = LLMProvider(rawValue: newValue)?.keychainAccount
+            apiKey = KeychainHelper.loadAPIKey(account: account) ?? ""
+            testResult = ""
+            // 上一个端点报上来的型号清单对新端点毫无意义
+            fetchedModels = []
+            refreshStatus = ""
+        }
+        HStack(spacing: 14) {
+            Text(tr("润色和语音指令将使用上方选中的服务商", "Polish and voice commands use the provider selected above"))
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Spacer()
+            ForEach(LLMProvider.allCases.filter(\.requiresAPIKey), id: \.rawValue) { p in
+                KeyStatusBadge(name: p.shortName, saved: savedProviders.contains(p.rawValue))
+            }
+        }
+        if selected.requiresAPIKey {
+            SecureField(tr("\(selected.shortName) API Key（sk-…）", "\(selected.shortName) API key (sk-…)"),
+                        text: $apiKey)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Button(tr("保存 Key", "Save Key")) {
+                    KeychainHelper.saveAPIKey(apiKey)
+                    refreshSavedStates()
+                    testResult = (KeychainHelper.loadAPIKey() != nil)
+                        ? tr("已保存 ✓", "Saved ✓") : tr("已清空", "Cleared")
+                }
+                Spacer()
+            }
+            Text(tr("Key 加密保存在 macOS 系统钥匙串里（可在「钥匙串访问」App 中查看），仅本机可读，不写入任何明文文件。每个服务商的 Key 各存一份，互不覆盖。",
+                    "Keys are encrypted in the macOS Keychain (visible in the Keychain Access app), readable only on this Mac, never written to plain files. Each provider's key is stored separately and never overwrites another."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        } else {
+            // 本机模型不需要 Key：这不是"还没配好"，是这一档的正常状态
+            Text(tr("本机模型不需要 API Key（Ollama 忽略它，LM Studio 压根不要）。模型在你自己的机器上跑，文字不出网、不花钱。",
+                    "Local models need no API key (Ollama ignores it, LM Studio does not ask for one). The model runs on your own Mac, so nothing leaves it and nothing is billed."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        if !testResult.isEmpty {
+            Text(testResult)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(3)
+        }
+    }
+
+    // MARK: 接口地址（只有自定义档有输入框）
+
+    @ViewBuilder
+    private var endpointFields: some View {
+        switch selected {
+        case .openai, .deepseek:
+            // 官方档的地址由 MicType 自己拼，不再给输入框（填错一个字符的表现是"找不到模型"）。
+            // 但**老版本里改过地址的人必须看得见**——看不见的自定义地址是查不出来的故障。
+            if effectiveBaseURL != selected.defaultBaseURL {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(tr("这一档的接口地址被改过：", "This provider's endpoint was overridden: "))
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                    Text(effectiveBaseURL)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                    HStack {
+                        Button(tr("恢复官方地址", "Restore the official URL")) {
+                            if selected == .openai { baseURL = selected.defaultBaseURL }
+                            else { dsBaseURL = selected.defaultBaseURL }
+                        }
+                        Spacer()
+                    }
+                    Text(tr("要长期用自建网关，请改用「自定义端点」那一档。", "To keep using a gateway, switch to the Custom endpoint provider."))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            } else {
+                Text(tr("接口地址：", "Endpoint: ") + effectiveBaseURL)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        case .qwen:
+            Picker(tr("接入区域：", "Region:"), selection: $qwenRegion) {
+                ForEach(LLMCatalog.QwenRegion.allCases, id: \.rawValue) { region in
+                    Text(region.displayName).tag(region.rawValue)
+                }
+            }
+            if (LLMCatalog.QwenRegion(rawValue: qwenRegion) ?? .international).requiresWorkspaceID {
+                TextField("WorkspaceId", text: $qwenWorkspace)
+                    .textFieldStyle(.roundedBorder)
+            }
+            if effectiveBaseURL.isEmpty {
+                Text(tr("这个区域的地址里带 WorkspaceId，填上才能用（在模型服务控制台的工作空间详情里）。",
+                        "This region puts your workspace ID in the URL - fill it in (you will find it in the Model Studio console)."))
+                    .font(.caption)
+                    .foregroundColor(.orange)
+            } else {
+                Text(tr("接口地址（自动拼好）：", "Endpoint (derived): ") + effectiveBaseURL)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        case .custom:
+            TextField(tr("Base URL（要带版本段，如 https://api.moonshot.ai/v1）",
+                         "Base URL (include the version segment, e.g. https://api.moonshot.ai/v1)"),
+                      text: $customBaseURL)
+                .textFieldStyle(.roundedBorder)
+            if let problem = LLMCatalog.validateCustomBaseURL(customBaseURL) {
+                Text(problem.message)
+                    .font(.caption)
+                    .foregroundColor(problem == .empty ? .secondary : .orange)
+            }
+            Text(tr("任何 OpenAI 兼容端点都能填：Kimi、Gemini 兼容层、z.ai、OpenRouter、自建网关。只接受 https（localhost 除外）。",
+                    "Any OpenAI-compatible endpoint works here: Kimi, the Gemini compatibility layer, z.ai, OpenRouter, your own gateway. https only (localhost excepted)."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        case .local:
+            Picker(tr("本机运行时：", "Local runtime:"), selection: $localRuntime) {
+                ForEach(LLMCatalog.LocalRuntime.allCases, id: \.rawValue) { runtime in
+                    Text(runtime.displayName).tag(runtime.rawValue)
+                }
+            }
+            Text(tr("接口地址：", "Endpoint: ") + effectiveBaseURL
+                 + tr("。先在本机把它跑起来，再点「刷新模型列表」把已下载的模型取过来。",
+                      ". Start it on this Mac first, then hit Refresh model list to pull in the models you have."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: 模型
+
+    @ViewBuilder
+    private var modelFields: some View {
+        ModelField(label: tr("润色模型（求快）", "Polish model (fast)"),
+                   text: polishModelBinding, presets: modelChoices,
+                   testing: testing, refreshing: refreshing,
+                   onTest: { runModelTest(tr("润色模型", "Polish model"), polishModelBinding.wrappedValue) },
+                   onRefresh: refreshModelList)
+        ModelField(label: tr("指令模型（求好）", "Command model (strong)"),
+                   text: commandModelBinding, presets: modelChoices,
+                   testing: testing, refreshing: refreshing,
+                   onTest: { runModelTest(tr("指令模型", "Command model"), commandModelBinding.wrappedValue) },
+                   onRefresh: refreshModelList)
+        Text(modelHelp)
+            .font(.caption)
+            .foregroundColor(.secondary)
+        if !refreshStatus.isEmpty {
+            Text(refreshStatus)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    /// 每档的型号说明。只写"贵不贵、快不快"这类会影响选择的事实，不吹参数。
+    private var modelHelp: String {
+        let shared = tr("润色每句话都要跑，求快求省；指令低频，求质量。右侧下拉是内置快选，「刷新」按钮会问端点它当前有哪些型号；也可以手填任意型号名。",
+                        "Polish runs on every sentence, so it wants speed and low cost; commands are rare and want quality. The drop-down holds the built-in picks, Refresh asks the endpoint what it serves today, and you can always type any model name.")
+        switch selected {
+        case .openai:
+            return shared + tr("（默认 gpt-5.6-luna / gpt-5.6-terra：luna 最便宜，terra 平衡，sol 旗舰，astra 最强也最贵。）",
+                               " (Defaults gpt-5.6-luna / gpt-5.6-terra: luna is the cheapest, terra is balanced, sol is the flagship, astra is the strongest and the priciest.)")
+        case .deepseek:
+            return shared + tr("（deepseek-flash 快且便宜，润色时 MicType 会替你关掉思考模式；deepseek-v4-pro 更强。Key 在 platform.deepseek.com 申请。）",
+                               " (deepseek-flash is fast and cheap - MicType turns thinking mode off for polish; deepseek-v4-pro is stronger. Get a key at platform.deepseek.com.)")
+        case .qwen:
+            return shared + tr("（qwen3.8-flash / qwen3.8-max 是当前代；qwen-flash / qwen-plus / qwen-max 是稳定别名，换代时自动指向新模型。）",
+                               " (qwen3.8-flash / qwen3.8-max are the current generation; qwen-flash / qwen-plus / qwen-max are stable aliases that follow each new generation.)")
+        case .custom:
+            return shared + tr("（这一档没有内置清单：型号名照服务商文档填，或点「刷新」。）",
+                               " (No built-in list here: type the model id from your provider's docs, or hit Refresh.)")
+        case .local:
+            return shared + tr("（填你本机已经拉下来的模型名，例如 Ollama 里的 llama3.1:8b。）",
+                               " (Use the model you have pulled locally, such as llama3.1:8b in Ollama.)")
+        }
+    }
+
+    // MARK: 花钱的两个开关
+
+    @ViewBuilder
+    private var costSwitches: some View {
+        Toggle(tr("低延迟档（Fast，多花钱换快）", "Fast tier (pay more for lower latency)"), isOn: $fastTier)
+            .disabled(selected != .openai)
+        Text(LLMCatalog.fastTierPriceNote
+             + (selected == .openai ? "" : tr("　只有 OpenAI 有这个档位。", " Only OpenAI offers this tier.")))
+            .font(.caption)
+            .foregroundColor(.secondary)
+        if let tier = lastServiceTier {
+            Text(tr("上一次请求实际跑在：", "Last request actually ran at: ") + tier)
+                .font(.caption)
+                .foregroundColor(tier == "fast" ? .secondary : .orange)
+        }
+
+        Toggle(tr("语音指令允许联网搜索", "Let voice commands search the web"), isOn: $webSearch)
+            .disabled(searchStyle == .unsupported)
+        Text(webSearchHelp)
+            .font(.caption)
+            .foregroundColor(.secondary)
+    }
+
+    /// 最近一轮拿到过 service_tier 的记录。勾了 Fast 却写着 default = 被服务商降级了，
+    /// 这件事必须看得见——不然用户以为多付的钱买到了低延迟。
+    private var lastServiceTier: String? {
+        metrics.items.compactMap(\.serviceTier).first
+    }
+
+    private var webSearchHelp: String {
+        switch searchStyle {
+        case .unsupported:
+            return tr("此服务商不支持。", "This provider does not support it.")
+        case .qwenEnableSearch:
+            return LLMCatalog.webSearchPriceNote
+                + tr("　只作用于按住说出的指令，润色永不联网。Qwen 的兼容端点不回传来源链接，所以历史里不会有来源。",
+                     " It applies only to held-down commands - polish never goes online. This Qwen endpoint returns no source links, so history will not show sources.")
+        case .openaiResponsesTool, .openrouterPlugin:
+            return LLMCatalog.webSearchPriceNote
+                + tr("　只作用于按住说出的指令，润色永不联网；模型给的来源会显示在悬浮窗和历史里。",
+                     " It applies only to held-down commands - polish never goes online. Sources come back with the answer and show up in the overlay and in History.")
+        }
+    }
+
+    // MARK: 温度
+
+    @ViewBuilder
+    private var temperatureSliders: some View {
+        HStack {
+            Text(tr("润色温度：", "Polish temperature:"))
+                .foregroundColor(polishTempIgnored ? .secondary : .primary)
+            Slider(value: $polishTemp, in: 0...1.5)
+                .disabled(polishTempIgnored)
+            Text(String(format: "%.2f", polishTemp))
+                .monospacedDigit()
+                .foregroundColor(polishTempIgnored ? .secondary : .primary)
+                .frame(width: 38, alignment: .trailing)
+        }
+        HStack {
+            Text(tr("指令温度：", "Command temperature:"))
+                .foregroundColor(commandTempIgnored ? .secondary : .primary)
+            Slider(value: $commandTemp, in: 0...1.5)
+                .disabled(commandTempIgnored)
+            Text(String(format: "%.2f", commandTemp))
+                .monospacedDigit()
+                .foregroundColor(commandTempIgnored ? .secondary : .primary)
+                .frame(width: 38, alignment: .trailing)
+        }
+        Text(tr("低 = 稳定保真，高 = 自然多样。默认：润色 0.5 / 指令 1.00（即模型默认值）。",
+                "Lower = faithful and stable; higher = natural and varied. Defaults: polish 0.5 / commands 1.00 (the model default)."))
+            .font(.caption)
+            .foregroundColor(.secondary)
+        if polishTempIgnored || commandTempIgnored {
+            Text(tr("置灰的滑杆对应推理系模型（\(ignoredTempModels)）：这类模型只接受默认温度，MicType 干脆不发这个参数。换一个非推理型号就能再调。",
+                    "The greyed-out slider belongs to a reasoning model (\(ignoredTempModels)): those only accept their default temperature, so MicType does not send the parameter at all. Pick a non-reasoning model to re-enable it."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: 动作
+
     private func refreshSavedStates() {
-        openaiSaved = (KeychainHelper.loadAPIKey(account: LLMProvider.openai.keychainAccount) != nil)
-        dsSaved = (KeychainHelper.loadAPIKey(account: LLMProvider.deepseek.keychainAccount) != nil)
+        savedProviders = Set(LLMProvider.allCases
+            .filter { KeychainHelper.loadAPIKey(account: $0.keychainAccount) != nil }
+            .map(\.rawValue))
     }
 
     /// 单个模型的连通性/速度测试（先把输入框里的 Key 存进钥匙串再测）
     private func runModelTest(_ name: String, _ model: String) {
         testing = true
         testResult = ""
-        KeychainHelper.saveAPIKey(apiKey)
-        refreshSavedStates()
+        if selected.requiresAPIKey {
+            KeychainHelper.saveAPIKey(apiKey)
+            refreshSavedStates()
+        }
         LLMClient.testModel(model) { _, message in
             testing = false
             testResult = name + "（\(model)）" + tr("：", ": ") + message
+        }
+    }
+
+    /// 问端点「你现在有哪些型号」。失败就保持内置清单不动——刷新是锦上添花，
+    /// 不该因为一次拉取失败在用户脸上弹个框。
+    private func refreshModelList() {
+        refreshing = true
+        refreshStatus = ""
+        if selected.requiresAPIKey {
+            KeychainHelper.saveAPIKey(apiKey)
+            refreshSavedStates()
+        }
+        LLMClient.fetchModelIDs { ids in
+            refreshing = false
+            guard let ids = ids, !ids.isEmpty else {
+                refreshStatus = tr("端点没有返回模型列表，下拉里仍是内置清单",
+                                   "The endpoint returned no model list - the built-in picks are unchanged")
+                return
+            }
+            fetchedModels = ids
+            refreshStatus = tr("已从端点取到 \(ids.count) 个可用型号", "Pulled \(ids.count) usable models from the endpoint")
         }
     }
 }
@@ -865,21 +1115,36 @@ private struct ModelField: View {
     @Binding var text: String
     let presets: [String]
     var testing: Bool = false
+    var refreshing: Bool = false
     var onTest: (() -> Void)? = nil
+    /// 「刷新模型列表」：问端点它现在有哪些型号。写死的清单一定会过时，端点自己不会。
+    var onRefresh: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 6) {
             TextField(label, text: $text)
                 .textFieldStyle(.roundedBorder)
-            Menu {
-                ForEach(presets, id: \.self) { name in
-                    Button(name) { text = name }
+            // 自定义端点与本机模型没有内置清单，空菜单不显示（一个点不开的箭头比没有箭头更糟）
+            if !presets.isEmpty {
+                Menu {
+                    ForEach(presets, id: \.self) { name in
+                        Button(name) { text = name }
+                    }
+                } label: {
+                    Image(systemName: "chevron.up.chevron.down")
                 }
-            } label: {
-                Image(systemName: "chevron.up.chevron.down")
+                .menuStyle(.borderlessButton)
+                .fixedSize()
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
+            if let onRefresh = onRefresh {
+                Button(action: onRefresh) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .disabled(refreshing)
+                .help(tr("刷新模型列表", "Refresh model list"))
+                .fixedSize()
+            }
             if let onTest = onTest {
                 Button(testing ? tr("测试中…", "Testing…") : tr("测试", "Test"), action: onTest)
                     .disabled(testing)
