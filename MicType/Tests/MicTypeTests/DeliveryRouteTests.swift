@@ -8,6 +8,12 @@ import XCTest
 /// 那一页靠 ⌘V 落字，⌘V 打向"此刻的键盘焦点"，翻页之后焦点不在框里，字就落到别处了。
 final class DeliveryRouteTests: XCTestCase {
 
+    private func route(sinkReady: Bool, sinkRegistered: Bool,
+                       targetIsSelf: Bool) -> DictationController.DeliveryRoute {
+        DictationController.deliveryRoute(sinkReady: sinkReady, sinkRegistered: sinkRegistered,
+                                          targetIsSelf: targetIsSelf)
+    }
+
     override func tearDown() {
         // 这是全 App 唯一的一份状态，测完必须摘干净，否则污染同批的其它用例
         TranscriptSink.unregister()
@@ -16,15 +22,36 @@ final class DeliveryRouteTests: XCTestCase {
 
     // MARK: - 判据本身
 
-    /// 引导窗停在「试一下」那一页 → 直接落字；其余一切情况 → 照常粘贴
+    /// 引导窗停在「试一下」那一页、而且人就在这扇窗里开的录 → 直接落字
     func testSinkOnlyWhenOnboardingSitsOnTheTryItPage() {
-        XCTAssertEqual(DictationController.deliveryRoute(onboardingVisibleOnTryIt: true), .sink)
-        XCTAssertEqual(DictationController.deliveryRoute(onboardingVisibleOnTryIt: false), .inserter)
+        XCTAssertEqual(route(sinkReady: true, sinkRegistered: true, targetIsSelf: true), .sink)
+        XCTAssertEqual(route(sinkReady: false, sinkRegistered: false, targetIsSelf: true), .inserter)
+    }
+
+    /// **开录时人在别的应用里 → 字必须落回那个应用**，哪怕引导正好开着、正好停在「试一下」。
+    /// 那扇窗此刻在别人后面（isVisible 对压在后面的窗口同样是真），用户要的是备忘录里的光标，
+    /// 不是他看不见的那个框——而且这条路连剪贴板都不写，字只存在于那个框里，退无可退。
+    func testTargetInAnotherAppNeverFeedsTheGuide() {
+        XCTAssertEqual(route(sinkReady: true, sinkRegistered: true, targetIsSelf: false), .inserter)
+        XCTAssertEqual(route(sinkReady: false, sinkRegistered: true, targetIsSelf: false), .inserter)
+    }
+
+    /// 引导开着、但停在**别的页**，而开录时人就在这扇窗里：只写剪贴板。
+    /// ⌘V 会打进引导自己的控件（「怎么用」那一屏的 Key 输入框首当其冲——
+    /// 一段识别结果被当成 API Key 拿去验证，验证失败那行红字还留着它）。
+    func testGuideOnAnotherPageKeepsTheTextOnTheClipboard() {
+        XCTAssertEqual(route(sinkReady: false, sinkRegistered: true, targetIsSelf: true), .clipboard)
+    }
+
+    /// 认不出前台应用（targetBundleID 是空的）时行为与从前一致：该落字的照样落字
+    func testUnknownTargetKeepsTheOldBehaviour() {
+        XCTAssertEqual(route(sinkReady: true, sinkRegistered: true, targetIsSelf: true), .sink)
     }
 
     /// 路由名会进日志（排障时"到底走了哪条"全靠它），别随手改
     func testRouteNamesAreStableForLogs() {
         XCTAssertEqual(DictationController.DeliveryRoute.sink.rawValue, "sink")
+        XCTAssertEqual(DictationController.DeliveryRoute.clipboard.rawValue, "clipboard")
         XCTAssertEqual(DictationController.DeliveryRoute.inserter.rawValue, "inserter")
     }
 
@@ -35,9 +62,11 @@ final class DeliveryRouteTests: XCTestCase {
     func testUnregisteredSinkIsInert() {
         TranscriptSink.unregister()
         XCTAssertFalse(TranscriptSink.isReady())
+        XCTAssertFalse(TranscriptSink.isRegistered)
         XCTAssertFalse(TranscriptSink.accept("hello"))
-        XCTAssertEqual(DictationController.deliveryRoute(
-            onboardingVisibleOnTryIt: TranscriptSink.isReady()), .inserter)
+        XCTAssertEqual(route(sinkReady: TranscriptSink.isReady(),
+                             sinkRegistered: TranscriptSink.isRegistered,
+                             targetIsSelf: true), .inserter)
     }
 
     /// 注册之后：问得到"接不接得住"，也真的把文字交过去
@@ -46,23 +75,27 @@ final class DeliveryRouteTests: XCTestCase {
         var ready = true
         TranscriptSink.register(isReady: { ready }, accept: { received.append($0); return true })
 
-        XCTAssertEqual(DictationController.deliveryRoute(
-            onboardingVisibleOnTryIt: TranscriptSink.isReady()), .sink)
+        XCTAssertTrue(TranscriptSink.isRegistered)
+        XCTAssertEqual(route(sinkReady: TranscriptSink.isReady(),
+                             sinkRegistered: TranscriptSink.isRegistered,
+                             targetIsSelf: true), .sink)
         XCTAssertTrue(TranscriptSink.accept("你好世界"))
         XCTAssertEqual(received, ["你好世界"])
 
-        // 翻到别的页 / 窗口收起来 → 立刻退回粘贴那条路
+        // 翻到别的页：窗口还开着、人还在这扇窗里 → 不落字，也绝不 ⌘V，留在剪贴板
         ready = false
-        XCTAssertEqual(DictationController.deliveryRoute(
-            onboardingVisibleOnTryIt: TranscriptSink.isReady()), .inserter)
+        XCTAssertEqual(route(sinkReady: TranscriptSink.isReady(),
+                             sinkRegistered: TranscriptSink.isRegistered,
+                             targetIsSelf: true), .clipboard)
     }
 
     /// 说"接得住"却没接住（窗口刚被关掉的那半秒）：accept 返回 false，
     /// 调用方据此退回粘贴——绝不能让这段文字掉在地上
     func testSinkCanDeclineSoTheTextIsNeverDropped() {
         TranscriptSink.register(isReady: { true }, accept: { _ in false })
-        XCTAssertEqual(DictationController.deliveryRoute(
-            onboardingVisibleOnTryIt: TranscriptSink.isReady()), .sink)
+        XCTAssertEqual(route(sinkReady: TranscriptSink.isReady(),
+                             sinkRegistered: TranscriptSink.isRegistered,
+                             targetIsSelf: true), .sink)
         XCTAssertFalse(TranscriptSink.accept("something"))
     }
 
@@ -71,6 +104,7 @@ final class DeliveryRouteTests: XCTestCase {
         TranscriptSink.register(isReady: { true }, accept: { _ in true })
         TranscriptSink.unregister()
         XCTAssertFalse(TranscriptSink.isReady())
+        XCTAssertFalse(TranscriptSink.isRegistered)
         XCTAssertFalse(TranscriptSink.accept("x"))
     }
 }

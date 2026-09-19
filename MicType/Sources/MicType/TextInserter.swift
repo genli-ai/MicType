@@ -260,6 +260,15 @@ enum TextInserter {
         }
     }
 
+    /// 只写剪贴板、不模拟 ⌘V。给"粘了反而更糟"的那条路用：开录那一刻人就在 MicType
+    /// 自己的窗口里（引导开着但停在别的页），⌘V 会打进我们自己的控件——
+    /// 引导「怎么用」那一屏的 Key 输入框首当其冲：一段识别结果被当成 API Key 拿去验证。
+    /// 文字留在剪贴板里，用户自己挑地方按 ⌘V。
+    static func copyForManualPaste(_ text: String) {
+        Log.info("Insert path=clipboard-only reason=frontmost-is-self chars=\(text.count)")
+        putOnClipboard(text)
+    }
+
     private static func putOnClipboard(_ text: String) {
         // 文本留在剪贴板等用户 ⌘V：任何待恢复任务都必须放弃，否则 5 秒后把它擦掉
         dropPendingRestore(reason: "text-left-on-clipboard")

@@ -64,13 +64,26 @@ final class OnboardingModel: ObservableObject {
     /// 「配好了而且润色开着」。footer 里那颗「跳过（只用本地）」按钮按它决定露不露面。
     var aiReady: Bool { aiStatus == .ready }
 
-    /// 三件必办的事此刻办到哪一步。权限读的是这里轮询到的那两位（界面上看到什么，
-    /// 判据就是什么），模型/云端 Key 现问一次。判断本身全在 FirstRunEssentials 里。
+    /// 当前这一档识别引擎能不能开工。**存着**而不是每次读界面时现算：
+    /// RecognitionEngineReadiness.current() 对本地档要 stat 一串模型文件、对云端档要读钥匙串，
+    /// 而 essentials() 一次 body 就被读两次（「继续」和那条「先跳过」各读一次），
+    /// 下载期间进度每跳一格整个引导都重算一遍——Security 框架的调用不许坐在这种路径上
+    /// （Settings.swift 里那条规矩）。刷新点只有真会改变它的那几处：打开引导、两个 1 秒轮询、
+    /// 改识别档、Key 验证有了结论。
+    @Published private(set) var engineReady = RecognitionEngineReadiness.current().isReady
+
+    func refreshEngineReady() {
+        let ready = RecognitionEngineReadiness.current().isReady
+        if ready != engineReady { engineReady = ready }
+    }
+
+    /// 三件必办的事此刻办到哪一步。权限和模型读的都是这里存着的那几位（界面上看到什么，
+    /// 判据就是什么）。判断本身全在 FirstRunEssentials 里。
     func essentials() -> FirstRunEssentials {
         FirstRunEssentials(hotkeyConfirmed: Settings.shared.hotkeyConfirmed,
                            microphone: micOK,
                            accessibility: axOK,
-                           modelReady: RecognitionEngineReadiness.current().isReady)
+                           modelReady: engineReady)
     }
 
     /// 第一屏点「继续」= 他确认了用这颗键。默认值（右 Option）也必须点这一下：
@@ -134,9 +147,43 @@ enum OnboardingCopy {
     /// 「下载模型」像是什么都没发生过，「重试下载」才对得上他看见的事。
     static var retryDownload: String { tr("重试下载", "Retry download") }
 
+    /// 最后一屏「完成」点不动时，下面那一行说的是**为什么**。
+    /// 4.1.0 之前「完成」只看模型下没下好，而 finish() 还多要求一件事（确认过快捷键）——
+    /// 被直接送到第二屏的新用户从没见过第一屏，那一位永远是假：按钮亮着，点下去什么都不发生，
+    /// 界面上一个字都不解释。灰着可以，灰着还不说为什么不行。
+    static var confirmHotkeyFirst: String {
+        tr("先回第一屏确认快捷键", "Confirm your hotkey on the first screen")
+    }
+
+    /// 同上，卡在权限上的那一种（点过「先跳过」的人才可能带着这个缺口走到最后一屏）
+    static var permissionsStillMissing: String {
+        tr("还差两项系统权限", "Two system permissions are still missing")
+    }
+
+    /// 「完成」为什么点不动。nil = 点得动，或者卡的是模型——模型那一件在这一页
+    /// 早有自己的一行（带「下载模型」按钮），不必再说第二遍。
+    static func finishBlockedReason(_ essentials: FirstRunEssentials) -> String? {
+        if !essentials.hotkeyConfirmed { return confirmHotkeyFirst }
+        if !essentials.permissionsGranted { return permissionsStillMissing }
+        return nil
+    }
+
+    /// 权限页开头那两句。第二句**只在模型真的在下**的时候才说：
+    /// 选了云端识别的人压根不下这 860MB，取消过 / 失败过的人下面那一行正写着「已取消」，
+    /// 而这句话还在说"已经在后台下载"——当面说假话比少说一句糟得多。
+    static func permissionsIntro(modelDownloading: Bool) -> String {
+        let base = tr("授权后这一页会自己变绿并继续，不用重启 MicType。",
+                      "The badges turn green on their own once granted and the guide moves on - no restart needed.")
+        guard modelDownloading else { return base }
+        return base + tr("识别模型正在后台下载。",
+                         " The speech model is downloading in the background.")
+    }
+
     /// 引导里计入文案预算的那几行（SettingsCopy.allCaptions 把它们并进同一张表逐条量：
     /// 设置页那条 16 字的线对引导同样成立，两处不该各有一套尺子）。
-    static var captions: [String] { [hotkeyChoice, dictationUnavailable] }
+    static var captions: [String] {
+        [hotkeyChoice, dictationUnavailable, confirmHotkeyFirst, permissionsStillMissing]
+    }
 
     /// 第三屏的标题。这一屏就是设置页那一个决定的首配版本，名字必须和那里一致。
     static var usageHeadline: String {
@@ -183,7 +230,33 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private let model = OnboardingModel()
 
     /// 打开引导。startAt 用于"模型缺失"这类定点跳转（落到权限那一屏，模型在那里开始下）。
-    func show(startAt page: OnboardingPage = .welcome) {
+    ///
+    /// 两道护栏，护的都是"别把用户自己的状态弄丢"：
+    ///   • **窗口已经开着就什么都不重置**，只把它带到前台。这类定点跳转多半正是用户
+    ///     在引导里照着提示轻点了一下（模型还没下完），把他从「试一下」弹回第二屏、
+    ///     顺手清掉他刚试出来的那几句字和「先跳过」那一位，是在惩罚他照做；
+    ///   • **落点不许跳过还没办完的那一屏**：被直接送到第二屏的新用户没见过第一屏，
+    ///     hotkeyConfirmed 永远是假，于是最后那颗「完成」亮着却点不动（4.1.0 踩过）。
+    func show(startAt requested: OnboardingPage = .welcome) {
+        if let window = window, window.isVisible {
+            model.micOK = Permissions.microphoneGranted
+            model.axOK = Permissions.isAccessibilityTrusted
+            OnboardingModel.startModelDownloadIfNeeded(force: false)
+            model.refreshEngineReady()
+            model.refreshAIReady()
+            Log.info("Onboarding already open page=\(model.page.rawValue) "
+                     + "requested=\(requested.rawValue) - keeping page and text")
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        var page = requested
+        if let first = FirstRunEssentials.current().firstIncompletePage,
+           first.rawValue < requested.rawValue {
+            page = first
+            Log.info("Onboarding start clamped to page=\(first.rawValue) "
+                     + "requested=\(requested.rawValue)")
+        }
         model.page = page
         model.micOK = Permissions.microphoneGranted
         model.axOK = Permissions.isAccessibilityTrusted
@@ -204,6 +277,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         if page == .permissions || page == .tryIt {
             OnboardingModel.startModelDownloadIfNeeded(force: false)
         }
+        model.refreshEngineReady()
         model.refreshAIReady()
         Log.info("Onboarding show page=\(page.rawValue) aiStatus=\(model.aiStatus) "
                  + model.essentials().logSummary)
@@ -269,7 +343,14 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     /// 最后一屏的「完成」。**只有这一下和「先跳过」会把 onboardingCompleted 写真**
     /// （用户 2026-09-20 拍板）。
     func finish() {
-        let essentials = model.essentials()
+        // 权限在这里**现问一次**，不读页面轮询留下的那两位：那个 1 秒的 Timer 只活在权限页里，
+        // 翻到后面几屏就停了。点过「先跳过」、然后在「试一下」这一页才把权限补上的人
+        // （热键那一下会弹系统麦克风框），用旧的那两位判就是"还缺权限"——
+        // 于是 onboardingSkippedEssentials 永远清不掉，以后模型真没了也不会再把他接回引导
+        // （AppDelegate 启动那条路读的正是这一位），日志里还写着 mic=false ax=false。
+        let essentials = FirstRunEssentials.current()
+        model.micOK = essentials.microphone
+        model.axOK = essentials.accessibility
         // 按钮在三件事齐活之前是灰的，走到这里只可能是齐了、或者他点过「先跳过」。
         // 仍然守一道：⌘⏎ 那个默认动作不该绕过这条规则
         guard essentials.canFinish || model.skippedEssentials else {
@@ -343,6 +424,7 @@ struct OnboardingView: View {
         // 权限页早就翻过去了，没有这一处的话，模型缺不缺要等到他真的轻点一次才发现
         .onChange(of: recognitionEngine) { _, _ in
             OnboardingModel.startModelDownloadIfNeeded(force: false)
+            model.refreshEngineReady()
         }
     }
 
@@ -437,7 +519,10 @@ struct OnboardingView: View {
         guard !model.skippedEssentials else { return false }
         switch model.page {
         case .permissions: return !essentials.permissionsGranted
-        case .tryIt: return !essentials.modelReady
+        // 三件事齐了才放行——和 finish() 那道守卫**同一条判据**。
+        // 只看模型的话，按钮会在还差别的事时亮起来，而点下去只在日志里留一行
+        // 「Onboarding finish blocked」，用户什么都看不到（4.1.0 踩过）
+        case .tryIt: return !essentials.canFinish
         // AI 那一屏永远不拦：轻点听写压根不需要 Key，把它做成关卡等于骗人
         case .welcome, .howYouUse: return false
         }
@@ -449,7 +534,8 @@ struct OnboardingView: View {
         guard !model.skippedEssentials else { return false }
         switch model.page {
         case .permissions: return !essentials.permissionsGranted
-        case .tryIt: return !essentials.modelReady && !downloader.isDownloading
+        // 与上面那颗按钮同一条判据：凡是「完成」点不动的时候，出口都必须在
+        case .tryIt: return !essentials.canFinish && !downloader.isDownloading
         case .welcome, .howYouUse: return false
         }
     }
@@ -457,7 +543,11 @@ struct OnboardingView: View {
     private func step(_ delta: Int) {
         let next = max(0, min(OnboardingPage.allCases.count - 1, model.page.rawValue + delta))
         guard let page = OnboardingPage(rawValue: next) else { return }
-        withAnimation(.easeInOut(duration: 0.15)) { model.page = page }
+        // 系统的「减弱动态效果」：设置窗口和悬浮窗都听它的，引导是用户见到的第一扇窗，
+        // 更没有理由例外
+        withAnimation(SettingsNavigator.reduceMotion ? nil : .easeInOut(duration: 0.15)) {
+            model.page = page
+        }
     }
 }
 
@@ -592,8 +682,7 @@ private struct PermissionsPage: View {
             VStack(alignment: .leading, spacing: 14) {
                 Text(tr("两项系统权限", "Two system permissions"))
                     .font(.system(size: 16, weight: .semibold))
-                Text(tr("授权后这一页会自己变绿并继续，不用重启 MicType。识别模型已经在后台下载。",
-                        "The badges turn green on their own once granted and the guide moves on - no restart needed. The speech model is already downloading in the background."))
+                Text(OnboardingCopy.permissionsIntro(modelDownloading: downloader.isDownloading))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -683,6 +772,7 @@ private struct PermissionsPage: View {
         .onReceive(timer) { _ in
             model.micOK = Permissions.microphoneGranted
             model.axOK = Permissions.isAccessibilityTrusted
+            model.refreshEngineReady()
             advanceIfPermissionsJustLanded()
         }
     }
@@ -702,7 +792,9 @@ private struct PermissionsPage: View {
         // 慢半拍：让那两个徽章先变绿，用户才看得出"是它自己好了"
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             guard model.page == .permissions else { return }
-            withAnimation(.easeInOut(duration: 0.15)) { model.page = .howYouUse }
+            withAnimation(SettingsNavigator.reduceMotion ? nil : .easeInOut(duration: 0.15)) {
+                model.page = .howYouUse
+            }
         }
     }
 }
@@ -778,6 +870,12 @@ private struct HowYouUsePage: View {
     /// ——adoptIfUsable 那道"只有真能用才换过去"的护栏里，`Settings.shared.llmProvider != provider`
     /// 永远不成立，护栏是死代码。点着看看的人很多，而原来那一档可能正配着一把好 Key。
     @State private var pendingProvider: LLMProvider = Settings.shared.llmProvider
+    /// 钥匙串里有没有**正在看**的这一档的 Key。存着而不是在 body 里读：
+    /// SecItemCopyMatching 坐在每帧都跑的路径上是明令禁止的（Settings.swift 那条规矩），
+    /// 而这一屏在模型下载期间会被进度条带着一秒重算十几次。
+    /// 刷新点：进页、换服务商、Key 验证有了结论（存进去、验失败、清空都会走到那里）。
+    @State private var selectedHasStoredKey = KeychainHelper
+        .loadAPIKey(account: Settings.shared.llmProvider.keychainAccount) != nil
 
     private var selected: LLMProvider { pendingProvider }
     private var currentPolishLevel: PolishLevel { PolishLevel(rawValue: polishLevel) ?? .smart }
@@ -827,9 +925,14 @@ private struct HowYouUsePage: View {
                                onKeyStatus: { status in
                                    keyStatus = status
                                    adoptIfUsable(selected)
+                                   refreshStoredKey()
+                                   model.refreshEngineReady()
                                    model.refreshAIReady()
                                },
-                               onEngineChange: { model.refreshAIReady() }) {
+                               onEngineChange: {
+                                   model.refreshEngineReady()
+                                   model.refreshAIReady()
+                               }) {
                     EmptyView()
                 } providerNotices: {
                     providerNotices
@@ -848,6 +951,7 @@ private struct HowYouUsePage: View {
         .onAppear {
             // 回头再走一遍引导的人：选择器要停在他**正在用**的那一档上
             pendingProvider = Settings.shared.llmProvider
+            refreshStoredKey()
             model.refreshAIReady()
         }
         // 接入地址一改，阿里云的地址就变了，能不能连得上也跟着变
@@ -859,7 +963,7 @@ private struct HowYouUsePage: View {
     @ViewBuilder
     private var providerNotices: some View {
         if selected.requiresAPIKey, Settings.shared.llmProvider != selected,
-           KeychainHelper.loadAPIKey(account: selected.keychainAccount) == nil {
+           !selectedHasStoredKey {
             Caption(tr("验证通过才会换过去，在此之前仍用 \(Settings.shared.llmProvider.segmentName)",
                        "MicType switches over only once a key is verified, and keeps using \(Settings.shared.llmProvider.segmentName)"))
         }
@@ -884,6 +988,8 @@ private struct HowYouUsePage: View {
                     keyStatus = .idle
                     customModelChosen = false
                     adoptIfUsable(next)
+                    refreshStoredKey()
+                    model.refreshEngineReady()
                     model.refreshAIReady()
                 })
     }
@@ -919,8 +1025,7 @@ private struct HowYouUsePage: View {
         guard !LLMCatalog.modelMenu(for: selected).isEmpty else { return false }
         if case .connected = keyStatus { return true }
         // 回头再走一遍引导的人：钥匙串里本来就有一把验证过的 Key，不该逼他重粘一次
-        return selected.requiresAPIKey
-            && KeychainHelper.loadAPIKey(account: selected.keychainAccount) != nil
+        return selected.requiresAPIKey && selectedHasStoredKey
     }
 
 
@@ -946,6 +1051,11 @@ private struct HowYouUsePage: View {
     }
 
     // MARK: 状态读写
+
+    /// 重读一次"钥匙串里有没有正在看的这一档的 Key"。只在事件上调，绝不在 body 里调。
+    private func refreshStoredKey() {
+        selectedHasStoredKey = KeychainHelper.loadAPIKey(account: selected.keychainAccount) != nil
+    }
 
     /// 这一档存着的润色型号（可能是空的：其他兼容服务 / 本机模型出厂没有型号名）
     private func storedPolishModel(for provider: LLMProvider) -> String {
@@ -1018,6 +1128,17 @@ private struct TryItPage: View {
 
     private var key: String { (HotkeyChoice(rawValue: hotkey) ?? .rightOption).plainName }
 
+    /// 权限那两位在这一页也要续着刷。它们原本只由权限页里那个 1 秒的 Timer 更新，
+    /// 而那个 Timer 随着页面一起被拆掉了：点过「先跳过」走到这一页、然后才补上权限的人
+    /// （轻点会弹系统麦克风框，或者他自己去系统设置里勾了），「完成」和它下面那一行
+    /// 读到的都还是一份过期的状态。
+    private func refreshPermissions() {
+        let mic = Permissions.microphoneGranted
+        let ax = Permissions.isAccessibilityTrusted
+        if mic != model.micOK { model.micOK = mic }
+        if ax != model.axOK { model.axOK = ax }
+    }
+
     var body: some View {
         // 这一页把「试一次」和原来的收尾页合在一起，内容不短：套上滚动才不会有一句是看不见的
         ScrollView {
@@ -1084,6 +1205,16 @@ private struct TryItPage: View {
                         .foregroundColor(.orange)
                 }
 
+                // 「完成」点不动的时候，这一行说为什么。模型那一件上面已经有自己的一行
+                // （还带一颗「下载模型」），所以这里只管另外两件
+                if !model.skippedEssentials,
+                   let reason = OnboardingCopy.finishBlockedReason(model.essentials()) {
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 HStack {
                     Text(downloader.isDownloading
                          ? tr("识别模型还在下载，下完就能说话了。",
@@ -1133,6 +1264,8 @@ private struct TryItPage: View {
         .onAppear {
             model.refreshAIReady()
             modelReady = QwenEngine.shared.isModelReady
+            refreshPermissions()
+            model.refreshEngineReady()
             // 稍等一拍再抢焦点：窗口刚翻页时 TextEditor 还没进响应链，立刻 focus 会落空。
             // 焦点只影响用户自己打字——识别结果不靠它，走的是直接落字（TranscriptSink）
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { editorFocused = true }
@@ -1140,15 +1273,22 @@ private struct TryItPage: View {
         .onReceive(readinessTimer) { _ in
             let ready = QwenEngine.shared.isModelReady
             if ready != modelReady { modelReady = ready }
+            refreshPermissions()
+            // 模型正是在这一页下完的：「完成」那颗按钮读的就是它
+            model.refreshEngineReady()
         }
         // 字落进来了：闪 2.5 秒的「已收到 ✓」
         .onChange(of: model.tryItReceivedAt) { _, received in
             guard received != nil else { return }
-            withAnimation(.easeIn(duration: 0.12)) { flashReceived = true }
+            withAnimation(SettingsNavigator.reduceMotion ? nil : .easeIn(duration: 0.12)) {
+                flashReceived = true
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
                 // 这 2.5 秒里又落了一段：让新的那一次自己计时，别被这一下提前熄掉
                 guard model.tryItReceivedAt == received else { return }
-                withAnimation(.easeOut(duration: 0.2)) { flashReceived = false }
+                withAnimation(SettingsNavigator.reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                    flashReceived = false
+                }
             }
         }
     }

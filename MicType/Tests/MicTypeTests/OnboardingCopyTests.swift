@@ -214,6 +214,9 @@ final class OnboardingCopyTests: XCTestCase {
          OnboardingCopy.aiSkipReassurance, OnboardingCopy.hotkeyChoice,
          OnboardingCopy.skipForNow, OnboardingCopy.dictationUnavailable,
          OnboardingCopy.retryDownload,
+         OnboardingCopy.confirmHotkeyFirst, OnboardingCopy.permissionsStillMissing,
+         OnboardingCopy.permissionsIntro(modelDownloading: true),
+         OnboardingCopy.permissionsIntro(modelDownloading: false),
          OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥"),
          OnboardingCopy.doneAIStatus(status: .commandsOnly, hotkey: "⌥"),
          OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")]
@@ -235,6 +238,70 @@ final class OnboardingCopyTests: XCTestCase {
         L10n.shared.language = .en
         let en = everyLine
         for (a, b) in zip(zh, en) { XCTAssertNotEqual(a, b, a) }
+    }
+
+    // MARK: - 「完成」为什么点不动
+
+    /// 三件事齐了就不该再有这一行（按钮这时是亮的）
+    func testNoBlockedReasonWhenEverythingIsDone() {
+        XCTAssertNil(OnboardingCopy.finishBlockedReason(
+            FirstRunEssentials(hotkeyConfirmed: true, microphone: true,
+                               accessibility: true, modelReady: true)))
+    }
+
+    /// 卡在快捷键上：这一行要把他指回第一屏——那一屏是他被直接送到第二屏时从没见过的。
+    /// 没有这一行，「完成」点下去只在日志里留一行，界面上一个字都不解释（4.1.0 踩过）
+    func testBlockedByTheHotkeyPointsBackAtTheFirstScreen() {
+        let reason = OnboardingCopy.finishBlockedReason(
+            FirstRunEssentials(hotkeyConfirmed: false, microphone: true,
+                               accessibility: true, modelReady: true))
+        XCTAssertEqual(reason, OnboardingCopy.confirmHotkeyFirst)
+    }
+
+    /// 权限缺一项就说权限。模型那一件**不在这里说**：那一页早有自己的一行 + 一颗「下载模型」，
+    /// 说第二遍只会让人以为是两件不同的事
+    func testBlockedByPermissionsAndNeverByTheModel() {
+        XCTAssertEqual(OnboardingCopy.finishBlockedReason(
+            FirstRunEssentials(hotkeyConfirmed: true, microphone: false,
+                               accessibility: true, modelReady: true)),
+                       OnboardingCopy.permissionsStillMissing)
+        XCTAssertEqual(OnboardingCopy.finishBlockedReason(
+            FirstRunEssentials(hotkeyConfirmed: true, microphone: true,
+                               accessibility: false, modelReady: true)),
+                       OnboardingCopy.permissionsStillMissing)
+        XCTAssertNil(OnboardingCopy.finishBlockedReason(
+            FirstRunEssentials(hotkeyConfirmed: true, microphone: true,
+                               accessibility: true, modelReady: false)))
+    }
+
+    /// 顺序 = 引导的顺序：先说最靠前那一件没办完的事（和 firstIncompletePage 同一条链）
+    func testBlockedReasonFollowsTheGuideOrder() {
+        XCTAssertEqual(OnboardingCopy.finishBlockedReason(
+            FirstRunEssentials(hotkeyConfirmed: false, microphone: false,
+                               accessibility: false, modelReady: false)),
+                       OnboardingCopy.confirmHotkeyFirst)
+    }
+
+    // MARK: - 权限页开头那两句
+
+    /// 「正在后台下载」只有真的在下的时候才说。选了云端识别、取消过、失败过的人看到的
+    /// 下一行正写着「已取消」——上面压一句"已经在后台下载"就是当面说假话
+    func testPermissionsIntroOnlyClaimsADownloadThatIsRunning() {
+        for language in [AppLanguage.zh, .en] {
+            L10n.shared.language = language
+            let idle = OnboardingCopy.permissionsIntro(modelDownloading: false)
+            let running = OnboardingCopy.permissionsIntro(modelDownloading: true)
+            XCTAssertTrue(running.hasPrefix(idle), running)
+            XCTAssertGreaterThan(running.count, idle.count)
+        }
+        L10n.shared.language = .zh
+        XCTAssertFalse(OnboardingCopy.permissionsIntro(modelDownloading: false).contains("下载"))
+        XCTAssertTrue(OnboardingCopy.permissionsIntro(modelDownloading: true).contains("下载"))
+        L10n.shared.language = .en
+        XCTAssertFalse(OnboardingCopy.permissionsIntro(modelDownloading: false)
+                        .lowercased().contains("download"))
+        XCTAssertTrue(OnboardingCopy.permissionsIntro(modelDownloading: true)
+                        .lowercased().contains("download"))
     }
 
     /// 计入预算的那两行确实被挂进了设置页那张总表——挂漏了，16 字那条线就量不到引导

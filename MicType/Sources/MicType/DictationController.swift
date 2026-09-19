@@ -18,18 +18,24 @@ enum TranscriptSink {
 
     /// 现在接得住吗（引导窗开着、且停在「试一下」那一页）
     private(set) static var isReady: () -> Bool = { false }
+    /// 引导窗**开着**吗（停在哪一页都算）。和 isReady 的区别正是"接不住"的那几页：
+    /// 那时候 MicType 自己在前台，一下 ⌘V 会打进引导自己的控件里（「怎么用」那一屏的
+    /// Key 输入框首当其冲：一段识别结果被当成 Key 拿去验证，还留在框里）。
+    private(set) static var isRegistered = false
     /// 把这段最终文字交给它；返回 false = 这一刻没接住
     private(set) static var accept: (String) -> Bool = { _ in false }
 
     static func register(isReady: @escaping () -> Bool, accept: @escaping (String) -> Bool) {
         Self.isReady = isReady
         Self.accept = accept
+        Self.isRegistered = true
         Log.info("Transcript sink registered")
     }
 
     static func unregister() {
         Self.isReady = { false }
         Self.accept = { _ in false }
+        Self.isRegistered = false
         Log.info("Transcript sink cleared")
     }
 }
@@ -1782,12 +1788,26 @@ final class DictationController {
     enum DeliveryRoute: String {
         /// 直接写进我们自己的输入框（TranscriptSink）
         case sink
+        /// 只写剪贴板，**不**模拟 ⌘V：开录时人就在 MicType 自己的窗口里，而这段字接不住
+        /// （引导开着但停在别的页）。⌘V 永远打向"此刻的键盘焦点"，那一刻的焦点是我们自己的
+        /// 控件——粘进去比不粘进去糟得多。
+        case clipboard
         /// 常规：写剪贴板 + 模拟 ⌘V 打到光标处（TextInserter）
         case inserter
     }
 
-    static func deliveryRoute(onboardingVisibleOnTryIt: Bool) -> DeliveryRoute {
-        onboardingVisibleOnTryIt ? .sink : .inserter
+    /// - sinkReady: 引导窗开着、且正停在「试一下」那一页
+    /// - sinkRegistered: 引导窗开着（停在哪一页都算）
+    /// - targetIsSelf: 开录那一刻的前台应用就是 MicType 自己（认不出来也算，行为与从前一致）
+    ///
+    /// 第一条判据是**开录时人在哪个应用**，不是引导窗开没开：引导留在后台、人在备忘录里
+    /// 轻点的那一段，字必须落在备忘录的光标处——4.1.0 之前只看 isReady()，那一段会被
+    /// 悄悄追加进后面那扇引导窗的框里，备忘录一个字都没有，还没有剪贴板可退。
+    static func deliveryRoute(sinkReady: Bool, sinkRegistered: Bool,
+                              targetIsSelf: Bool) -> DeliveryRoute {
+        guard targetIsSelf else { return .inserter }
+        if sinkReady { return .sink }
+        return sinkRegistered ? .clipboard : .inserter
     }
 
     private func deliver(raw: String, final text: String, note: String, warning: Bool = false,
@@ -1819,7 +1839,11 @@ final class DictationController {
         // 目标应用、走了哪条路、结果如何——每一次交付都把这三样写进日志。
         // 4.0.1 那次「试一下不落字」之所以只能靠猜，就是因为日志里这三样一样都没有。
         let logTarget = target.isEmpty ? "unknown" : target
-        let route = Self.deliveryRoute(onboardingVisibleOnTryIt: TranscriptSink.isReady())
+        // 开录那一刻人在不在 MicType 自己的窗口里——两条"不走常规粘贴"的路都以它为前提
+        let targetIsSelf = target.isEmpty || target == (Bundle.main.bundleIdentifier ?? "")
+        let route = Self.deliveryRoute(sinkReady: TranscriptSink.isReady(),
+                                       sinkRegistered: TranscriptSink.isRegistered,
+                                       targetIsSelf: targetIsSelf)
         Log.info("Deliver start chars=\(finalText.count) target=\(logTarget) route=\(route.rawValue)")
         // 插入这一段也计时：它包含切前台（最长 1.2s）+ 粘贴时序，是用户真实等待的一部分。
         // 草稿在这里定格成局部变量——回调最长要等一秒多，那时 pendingMetric 可能已经是下一轮的了。
@@ -1843,8 +1867,22 @@ final class DictationController {
             return
         }
         if route == .sink {
-            // 注册着却没接住（窗口刚被关掉、或刚翻到别的页）：照常走粘贴，绝不让文字掉在地上
-            Log.warn("Deliver sink declined the text — falling back to paste")
+            // 注册着却没接住（窗口刚被关掉、或刚翻到别的页）：退到剪贴板那条路。
+            // 不退回粘贴是因为这一路的前提就是"开录时人在 MicType 自己的窗口里"，
+            // 一下 ⌘V 只会打进我们自己的控件
+            Log.warn("Deliver sink declined the text - leaving it on the clipboard")
+        }
+        if route == .sink || route == .clipboard {
+            let insertMs = Log.ms(since: tInsert)
+            TextInserter.copyForManualPaste(finalText)
+            Log.info("Deliver done target=\(logTarget) path=clipboard outcome=copied"
+                     + " insert=\(insertMs)ms")
+            if let metric = metric { Metrics.shared.record(metric.finished(insertMs: insertMs)) }
+            // 绝不打绿勾：这段字**没有**落到任何输入框里，用户得知道还差他按一下 ⌘V
+            overlay.flashError(tr("MicType 自己的窗口在前台——文字已复制到剪贴板，按 ⌘V 粘贴",
+                                  "MicType's own window is frontmost - text copied to clipboard, press ⌘V to paste"))
+            Sounds.playError()
+            return
         }
         TextInserter.insert(finalText, targetBundleID: target,
                             allowClipboardRestore: true,
