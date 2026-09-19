@@ -117,6 +117,41 @@ enum LLMCatalog {
                   "Fast = \(fast.polish) for polish and \(fast.command) for commands. Best = \(best.polish) and \(best.command). Picking a tier writes both model fields - pick your own under Advanced.")
     }
 
+    /// 某个服务商的「润色型号 / 指令型号」分别存在哪两个 UserDefaults 键上。
+    /// 为什么值得一个纯函数：选一下质量档就要**同时**改这两个字段，而设置页与引导页各写一份
+    /// switch 的话，早晚有一处在加服务商时漏掉一档——漏掉的表现是「点了质量没反应」。
+    static func modelKeys(for provider: LLMProvider) -> (polish: String, command: String) {
+        switch provider {
+        case .openai: return (SettingsKeys.chatModel, SettingsKeys.openaiCommandModel)
+        case .deepseek: return (SettingsKeys.deepseekModel, SettingsKeys.deepseekCommandModel)
+        case .qwen: return (SettingsKeys.qwenModel, SettingsKeys.qwenCommandModel)
+        case .custom: return (SettingsKeys.customModel, SettingsKeys.customCommandModel)
+        case .local: return (SettingsKeys.localModel, SettingsKeys.localCommandModel)
+        }
+    }
+
+    /// 选中某一档质量要写回的键值（纯函数）。
+    /// 空字典 = 这个服务商没有内置两档（自定义端点 / 本机模型），一个字节都不该写。
+    static func qualityWrites(provider: LLMProvider, tier: QualityTier) -> [String: String] {
+        guard let pair = models(provider: provider, tier: tier) else { return [:] }
+        let keys = modelKeys(for: provider)
+        return [keys.polish: pair.polish, keys.command: pair.command]
+    }
+
+    // MARK: - 配置齐了没有
+
+    /// AI（润色 + 语音指令）现在到底跑不跑得起来：引导最后一屏的两种收尾话术、
+    /// 以及「没配 AI」的可见状态都据此二选一。三样都得有：
+    ///   • 凭据——本机模型那一档的"空 Key"由 LLMClient.credential 判成**有**凭据，这里只收结论；
+    ///   • 拼得出来的接口地址——Qwen 区域端点缺 WorkspaceId 时是空串；
+    ///   • 非空的润色型号——自定义端点与本机模型没有内置型号，用户没填就是没配好。
+    /// 纯函数、不读全局状态：调用方把三样喂进来，单测才钉得住。
+    static func aiReady(hasCredential: Bool, baseURL: String, polishModel: String) -> Bool {
+        guard hasCredential else { return false }
+        guard !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return !polishModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     // MARK: - 去哪儿申请 Key / 固定的 Key 与费用说法
 
     /// 「去申请 Key ↗」指向的页面。nil = 我们没有一条可以打包票的地址

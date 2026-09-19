@@ -123,6 +123,10 @@ struct KeyEntryView: View {
     let provider: LLMProvider
     /// 拿来探活的型号（润色型号）
     let model: String
+    /// Key 存储与费用那两句要不要跟在输入框下面。引导第 5 屏把它们钉在整屏底部
+    /// （那是"固定的成本声明"该在的位置），所以那一处传 false——**文字仍是同两个常量**，
+    /// 只是摆的地方不同（同一个事实只写一处，见 C10）。
+    var showsStorageNotes: Bool = true
     /// 验证结束时通知外面（true = 通过）。菜单栏的「配置 AI…」之类要据此刷新。
     var onStatusChange: ((KeyVerifier.Status) -> Void)? = nil
 
@@ -162,9 +166,11 @@ struct KeyEntryView: View {
                         .lineLimit(3)
                         .textSelection(.enabled)
                 }
-                Text(LLMCatalog.keyStorageNote + " " + LLMCatalog.billingNote)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                if showsStorageNotes {
+                    Text(LLMCatalog.keyStorageNote + " " + LLMCatalog.billingNote)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
                 if LLMCatalog.apiKeyConsoleURL(for: provider) == nil {
                     Text(tr("在这家服务商自己的控制台里创建 Key。", "Create the key in this provider's own console."))
                         .font(.caption)

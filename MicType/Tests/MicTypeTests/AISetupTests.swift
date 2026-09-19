@@ -109,6 +109,100 @@ final class AISetupTests: XCTestCase {
         XCTAssertFalse(containsCJKOrFullWidth(en), en)
     }
 
+    // MARK: - 型号存在哪两个键上 / 质量档写回什么
+
+    /// 五档服务商各有独立的两个键，十个键必须互不相同：
+    /// 撞一个的后果是换服务商时把另一档的型号改掉（用户完全看不出为什么突然 404）
+    func testModelKeysAreDistinctAcrossEveryProvider() {
+        var seen = Set<String>()
+        for provider in LLMProvider.allCases {
+            let keys = LLMCatalog.modelKeys(for: provider)
+            XCTAssertFalse(keys.polish.isEmpty)
+            XCTAssertFalse(keys.command.isEmpty)
+            XCTAssertNotEqual(keys.polish, keys.command, provider.rawValue)
+            XCTAssertTrue(seen.insert(keys.polish).inserted, keys.polish)
+            XCTAssertTrue(seen.insert(keys.command).inserted, keys.command)
+        }
+        XCTAssertEqual(seen.count, LLMProvider.allCases.count * 2)
+    }
+
+    /// 键名要与老版本用的那几个逐字相同：改一个字就是把老用户的型号设置清空
+    func testModelKeysMatchTheShippedSettingsKeys() {
+        XCTAssertEqual(LLMCatalog.modelKeys(for: .openai).polish, SettingsKeys.chatModel)
+        XCTAssertEqual(LLMCatalog.modelKeys(for: .openai).command, SettingsKeys.openaiCommandModel)
+        XCTAssertEqual(LLMCatalog.modelKeys(for: .deepseek).polish, SettingsKeys.deepseekModel)
+        XCTAssertEqual(LLMCatalog.modelKeys(for: .local).command, SettingsKeys.localCommandModel)
+    }
+
+    /// 选一档质量 = 同时写两个字段，值必须与那一档的型号表逐字相同
+    func testQualityWritesBothModelFieldsForEveryTier() {
+        for provider in [LLMProvider.openai, .deepseek, .qwen] {
+            for tier in LLMCatalog.QualityTier.allCases {
+                let writes = LLMCatalog.qualityWrites(provider: provider, tier: tier)
+                guard let pair = LLMCatalog.models(provider: provider, tier: tier) else {
+                    return XCTFail("no tier table for \(provider.rawValue)")
+                }
+                let keys = LLMCatalog.modelKeys(for: provider)
+                XCTAssertEqual(writes.count, 2, provider.rawValue)
+                XCTAssertEqual(writes[keys.polish], pair.polish)
+                XCTAssertEqual(writes[keys.command], pair.command)
+            }
+        }
+    }
+
+    /// 写回之后必须落回同一档（否则界面会立刻显示「自选」，像刚点的那一下没生效）
+    func testQualityWritesRoundTripBackToTheSameTier() {
+        for provider in [LLMProvider.openai, .deepseek, .qwen] {
+            for tier in LLMCatalog.QualityTier.allCases {
+                let writes = LLMCatalog.qualityWrites(provider: provider, tier: tier)
+                let keys = LLMCatalog.modelKeys(for: provider)
+                XCTAssertEqual(LLMCatalog.tier(provider: provider,
+                                               polish: writes[keys.polish] ?? "",
+                                               command: writes[keys.command] ?? ""),
+                               tier, "\(provider.rawValue)/\(tier.rawValue)")
+            }
+        }
+    }
+
+    /// 没有内置型号的两档一个字节都不写：写一个猜出来的型号名进去就是替用户做主
+    func testQualityWritesNothingWithoutABuiltInTierTable() {
+        for provider in [LLMProvider.custom, .local] {
+            for tier in LLMCatalog.QualityTier.allCases {
+                XCTAssertTrue(LLMCatalog.qualityWrites(provider: provider, tier: tier).isEmpty,
+                              provider.rawValue)
+            }
+        }
+    }
+
+    // MARK: - AI 配齐了没有
+
+    /// 三样齐了才算就绪（引导最后一屏据此二选一）
+    func testAIReadyNeedsCredentialEndpointAndModel() {
+        XCTAssertTrue(LLMCatalog.aiReady(hasCredential: true,
+                                         baseURL: "https://api.openai.com/v1",
+                                         polishModel: "gpt-5.6-luna"))
+        XCTAssertFalse(LLMCatalog.aiReady(hasCredential: false,
+                                          baseURL: "https://api.openai.com/v1",
+                                          polishModel: "gpt-5.6-luna"))
+    }
+
+    /// Qwen 区域端点缺 WorkspaceId 时地址是空串——那不是"就绪"，是根本拼不出地址
+    func testAIReadyIsFalseWhenTheEndpointCannotBeDerived() {
+        XCTAssertFalse(LLMCatalog.aiReady(hasCredential: true,
+                                          baseURL: LLMCatalog.qwenBaseURL(region: .beijing, workspaceID: ""),
+                                          polishModel: "qwen3.8-flash"))
+    }
+
+    /// 自定义端点 / 本机模型没填型号名同样不算就绪（空型号发出去是 400）
+    func testAIReadyIsFalseWithoutAPolishModel() {
+        XCTAssertFalse(LLMCatalog.aiReady(hasCredential: true,
+                                          baseURL: "http://localhost:11434/v1",
+                                          polishModel: "   "))
+        XCTAssertTrue(LLMCatalog.aiReady(hasCredential: true,
+                                         baseURL: "http://localhost:11434/v1",
+                                         polishModel: "llama3.1:8b"))
+    }
+
     // MARK: - 去申请 Key
 
     /// 只给确定的地址；猜不出来的一律 nil（宁可不给按钮，也不塞一个点进去 404 的链接）
