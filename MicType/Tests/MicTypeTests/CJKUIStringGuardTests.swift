@@ -59,7 +59,7 @@ final class CJKUIStringGuardTests: XCTestCase {
     private static let lineWhitelist: Set<String> = [
         // 界面语言选择器故意双语（"Language / 界面语言:"）：它是切回母语的唯一入口，
         // 界面已经是看不懂的那种语言时，用户也得认得出这一项。见 docs v4.0 调研 §4.3。
-        "SettingsView.swift:84",
+        "SettingsView.swift:294",
     ]
 
     // MARK: - 实际防线

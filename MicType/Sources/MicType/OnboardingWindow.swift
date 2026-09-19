@@ -188,8 +188,8 @@ private struct WelcomePage: View {
                 GestureCard(symbol: "hand.tap",
                             gesture: tr("轻点 \(key)", "Tap \(key)"),
                             title: tr("本地听写", "Dictate"),
-                            detail: tr("说什么，打什么。识别全在本机完成，音频不出这台 Mac。",
-                                       "Exactly what you said, typed out. Recognition runs on-device; audio never leaves this Mac."))
+                            detail: tr("说什么，打什么。识别全在本机完成。",
+                                       "Exactly what you said, typed out, recognized on this Mac."))
                 GestureCard(symbol: "hand.tap.fill",
                             gesture: tr("按住 \(key) 说", "Hold \(key)"),
                             title: tr("语音指令", "Command"),
@@ -202,6 +202,16 @@ private struct WelcomePage: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
+
+            // 数据流向先说清楚，再谈功能：句子取自 PrivacyCopy，和关于页、结束页逐字相同
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(PrivacyCopy.dataFlowLines, id: \.self) { line in
+                    Text(line)
+                }
+            }
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity)
     }
@@ -246,48 +256,66 @@ private struct PermissionsPage: View {
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(tr("两项系统权限", "Two system permissions"))
-                .font(.system(size: 16, weight: .semibold))
-            Text(tr("授权后这一页会自己变绿，不用重启 MicType。",
-                    "The badges turn green on their own once granted — no restart needed."))
-                .font(.caption)
-                .foregroundColor(.secondary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(tr("两项系统权限", "Two system permissions"))
+                    .font(.system(size: 16, weight: .semibold))
+                Text(tr("授权后这一页会自己变绿，不用重启 MicType。",
+                        "The badges turn green on their own once granted — no restart needed."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
 
-            PermissionRow(title: tr("麦克风", "Microphone"),
-                          detail: tr("录下你说的话，用于本机识别。", "Records your voice for on-device recognition."),
-                          ok: model.micOK) {
-                Permissions.ensureMicrophone { granted in
-                    model.micOK = granted
-                    // notDetermined 以外的状态系统不再弹窗，只能引导去设置里手动开
-                    if !granted { Permissions.openMicrophoneSettings() }
+                PermissionRow(title: tr("麦克风", "Microphone"),
+                              detail: tr("录下你说的话，用于本机识别。", "Records your voice for on-device recognition."),
+                              ok: model.micOK) {
+                    Permissions.ensureMicrophone { granted in
+                        model.micOK = granted
+                        // notDetermined 以外的状态系统不再弹窗，只能引导去设置里手动开
+                        if !granted { Permissions.openMicrophoneSettings() }
+                    }
+                }
+
+                PermissionRow(title: tr("辅助功能", "Accessibility"),
+                              detail: tr("监听快捷键，并把文字粘贴到光标处。", "Listens for the hotkey and pastes text at your cursor."),
+                              ok: model.axOK) {
+                    Permissions.promptAccessibility()
+                    Permissions.openAccessibilitySettings()
+                }
+
+                // 系统放行只说明"可以录"，不说明"收的是哪只麦、收得到不到声"——用户通常是在真的
+                // 要说话的时候才发现选错了麦克风。所以拿到权限就在同一页给出电平条与设备选择
+                // （复用设置 → 识别 的 MicCheckPanel，v4.0 调研 §4.5：Wispr Flow 也是这个顺序）。
+                if model.micOK {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(tr("说一句话，看电平条动起来——顺手也能在这里换麦克风。",
+                                "Say something and watch the meter move — you can switch microphones here too."))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        MicCheckPanel(showsFootnote: false)
+                    }
+                    .padding(12)
+                    .background(Color.secondary.opacity(0.08))
+                    .cornerRadius(8)
+                }
+
+                if !(model.micOK && model.axOK) {
+                    Text(tr("在系统设置的列表里勾选 MicType 即可。若列表里已勾选但这里仍是红叉，是旧授权失效了：选中 MicType 点「−」删掉，再点「+」加回来。",
+                            "Tick MicType in the System Settings list. If it is already ticked but still shows red, the old grant is stale: select MicType, press “−”, then add it back with “+”."))
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if model.skippedPermissions && !(model.micOK && model.axOK) {
+                    Text(tr("已跳过：在权限补齐之前，快捷键和文字插入都不会工作。",
+                            "Skipped: the hotkey and text insertion will not work until both are granted."))
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-
-            PermissionRow(title: tr("辅助功能", "Accessibility"),
-                          detail: tr("监听快捷键，并把文字粘贴到光标处。", "Listens for the hotkey and pastes text at your cursor."),
-                          ok: model.axOK) {
-                Permissions.promptAccessibility()
-                Permissions.openAccessibilitySettings()
-            }
-
-            if !(model.micOK && model.axOK) {
-                Text(tr("在系统设置的列表里勾选 MicType 即可。若列表里已勾选但这里仍是红叉，是旧授权失效了：选中 MicType 点「−」删掉，再点「+」加回来。",
-                        "Tick MicType in the System Settings list. If it is already ticked but still shows red, the old grant is stale: select MicType, press “−”, then add it back with “+”."))
-                    .font(.caption)
-                    .foregroundColor(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if model.skippedPermissions && !(model.micOK && model.axOK) {
-                Text(tr("已跳过：在权限补齐之前，快捷键和文字插入都不会工作。",
-                        "Skipped: the hotkey and text insertion will not work until both are granted."))
-                    .font(.caption)
-                    .foregroundColor(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .onReceive(timer) { _ in
             model.micOK = Permissions.microphoneGranted
             model.axOK = Permissions.isAccessibilityTrusted
@@ -488,36 +516,49 @@ private struct DonePage: View {
     private var key: String { Settings.shared.hotkey.shortSymbol }
 
     var body: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 40))
-                .foregroundColor(.green)
-            Text(tr("可以开始用了", "You're ready"))
-                .font(.system(size: 16, weight: .semibold))
+        // 这一页现在还带着 Key 与费用四句：窗口是固定 420 高，套上滚动才不会有一句是看不见的
+        ScrollView {
+            VStack(spacing: 14) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 40))
+                    .foregroundColor(.green)
+                Text(tr("可以开始用了", "You're ready"))
+                    .font(.system(size: 16, weight: .semibold))
 
-            VStack(alignment: .leading, spacing: 8) {
-                TipRow(symbol: "hand.tap",
-                       text: tr("轻点 \(key) 听写，再轻点一次结束。",
-                                "Tap \(key) to dictate, tap again to finish."))
-                TipRow(symbol: "hand.tap.fill",
-                       text: tr("按住 \(key) 说指令，松手执行。",
-                                "Hold \(key) to speak a command, release to run it."))
-                TipRow(symbol: "menubar.arrow.up.rectangle",
-                       text: tr("菜单栏的麦克风图标里有历史记录、润色档位和设置。",
-                                "The menu-bar mic icon holds your history, polish mode and settings."))
-                TipRow(symbol: "text.book.closed",
-                       text: tr("人名、术语老是听错？在 设置 → 识别 的词汇表里填「错写=正写」，一次搞定。",
-                                "Names or jargon misheard? Add \"wrong=right\" to the vocabulary in Settings → Recognition."))
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 8) {
+                    TipRow(symbol: "hand.tap",
+                           text: tr("轻点 \(key) 听写，再轻点一次结束。",
+                                    "Tap \(key) to dictate, tap again to finish."))
+                    TipRow(symbol: "hand.tap.fill",
+                           text: tr("按住 \(key) 说指令，松手执行。",
+                                    "Hold \(key) to speak a command, release to run it."))
+                    TipRow(symbol: "menubar.arrow.up.rectangle",
+                           text: tr("菜单栏的麦克风图标里有历史记录、润色档位和设置。",
+                                    "The menu-bar mic icon holds your history, polish mode and settings."))
+                    TipRow(symbol: "text.book.closed",
+                           text: tr("人名、术语老是听错？在 设置 → 识别 的词汇表里填「错写=正写」，一次搞定。",
+                                    "Names or jargon misheard? Add \"wrong=right\" to the vocabulary in Settings → Recognition."))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text(tr("随时可以在 设置 → 通用 里重新打开这份引导。",
-                    "You can reopen this guide any time from Settings → General."))
+                // Key 与费用：四句和关于页逐字相同（PrivacyCopy），免得用户在两处读到两种说法
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(PrivacyCopy.keyAndCostLines, id: \.self) { line in
+                        Text(line)
+                    }
+                }
                 .font(.caption)
                 .foregroundColor(.secondary)
-            Spacer(minLength: 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(tr("随时可以在 设置 → 通用 里重新打开这份引导。",
+                        "You can reopen this guide any time from Settings → General."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
     }
 }
 
