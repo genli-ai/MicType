@@ -36,14 +36,25 @@ import UniformTypeIdentifiers
 //   fillerWords             ← fillerWords            / FillerWords          整段原文（逗号/换行分隔）
 //   aboutMe                 ← aboutMe                / AboutMe
 //   customPolishRules       ← customPolishRules      / CustomPolishRules
-//   llmProvider             ← llmProvider            / LlmProvider          "openai" | "deepseek"
+//   llmProvider             ← llmProvider            / LlmProvider
+//                             "openai" | "deepseek" | "qwen" | "custom" | "local"
+//                             **切档要连它这一档的地址与型号一起带**：custom / local 出厂没有
+//                             内置端点或型号名，只搬一个档位过去等于把对方的 AI 关掉（见下面几行）
 //   openaiBaseURL           ← openaiBaseURL          / OpenAiBaseUrl
 //                             只接受 https 且带主机名的地址，别的一律忽略（见 isAcceptableBaseURL）
 //   deepseekBaseURL         ← deepseekBaseURL        / DeepSeekBaseUrl        同上
+//   customBaseURL           ← customBaseURL          / （Windows 暂无）        同上
 //   openaiPolishModel       ← chatModel              / OpenAiPolishModel
 //   openaiCommandModel      ← openaiCommandModel     / OpenAiCommandModel
 //   deepseekPolishModel     ← deepseekModel          / DeepSeekPolishModel
 //   deepseekCommandModel    ← deepseekCommandModel   / DeepSeekCommandModel
+//   qwenPolishModel         ← qwenModel              / （Windows 暂无）
+//   qwenCommandModel        ← qwenCommandModel       / （Windows 暂无）
+//   customPolishModel       ← customModel            / （Windows 暂无）
+//   customCommandModel      ← customCommandModel     / （Windows 暂无）
+//   localRuntime            ← localRuntime           / （Windows 暂无）        "ollama" | "lmstudio"
+//   localPolishModel        ← localModel             / （Windows 暂无）
+//   localCommandModel       ← localCommandModel      / （Windows 暂无）
 //   polishTemperature       ← polishTemperature      / PolishTemperature    数字 0–1.5
 //   commandTemperature      ← commandTemperature     / CommandTemperature   数字 0–1.5
 //   appLanguage             ← appLanguage            / AppLanguage          "zh" | "en"
@@ -83,10 +94,18 @@ enum SettingsBackup {
         static let llmProvider = "llmProvider"
         static let openaiBaseURL = "openaiBaseURL"
         static let deepseekBaseURL = "deepseekBaseURL"
+        static let customBaseURL = "customBaseURL"
         static let openaiPolishModel = "openaiPolishModel"
         static let openaiCommandModel = "openaiCommandModel"
         static let deepseekPolishModel = "deepseekPolishModel"
         static let deepseekCommandModel = "deepseekCommandModel"
+        static let qwenPolishModel = "qwenPolishModel"
+        static let qwenCommandModel = "qwenCommandModel"
+        static let customPolishModel = "customPolishModel"
+        static let customCommandModel = "customCommandModel"
+        static let localRuntime = "localRuntime"
+        static let localPolishModel = "localPolishModel"
+        static let localCommandModel = "localCommandModel"
         static let polishTemperature = "polishTemperature"
         static let commandTemperature = "commandTemperature"
         static let appLanguage = "appLanguage"
@@ -105,8 +124,10 @@ enum SettingsBackup {
         /// 已知键全集——不在这里面的一律忽略并计数（含任何伪装成设置的 Key 字段）
         static let all: Set<String> = [
             hotkey, polishLevel, vocabulary, fillerWords, aboutMe, customPolishRules,
-            llmProvider, openaiBaseURL, deepseekBaseURL,
+            llmProvider, openaiBaseURL, deepseekBaseURL, customBaseURL,
             openaiPolishModel, openaiCommandModel, deepseekPolishModel, deepseekCommandModel,
+            qwenPolishModel, qwenCommandModel, customPolishModel, customCommandModel,
+            localRuntime, localPolishModel, localCommandModel,
             polishTemperature, commandTemperature, appLanguage,
             autoStopSilenceSeconds, livePreview, playSounds, restoreClipboard, keepHistory,
             recognitionEngine, recognitionLanguage, cloudAlibabaModel,
@@ -129,10 +150,21 @@ enum SettingsBackup {
             Key.llmProvider: s.llmProvider.rawValue,
             Key.openaiBaseURL: s.openaiBaseURL,
             Key.deepseekBaseURL: s.deepseekBaseURL,
+            // custom / local 这两档的地址与型号必须一起导出：llmProvider 已经是五档了，
+            // 只把档位搬过去、不带地址和型号名，对面就落到一个"端点空着、型号空着"的档上——
+            // 轻点听写静默没了润色（custom 连凭据都判成没配），长按每次报"还没填模型名"。
+            Key.customBaseURL: s.customBaseURL,
             Key.openaiPolishModel: s.chatModel,
             Key.openaiCommandModel: s.openaiCommandModel,
             Key.deepseekPolishModel: s.deepseekModel,
             Key.deepseekCommandModel: s.deepseekCommandModel,
+            Key.qwenPolishModel: s.qwenModel,
+            Key.qwenCommandModel: s.qwenCommandModel,
+            Key.customPolishModel: s.customModel,
+            Key.customCommandModel: s.customCommandModel,
+            Key.localRuntime: s.localRuntime.rawValue,
+            Key.localPolishModel: s.localModel,
+            Key.localCommandModel: s.localCommandModel,
             Key.polishTemperature: s.polishTemperature,
             Key.commandTemperature: s.commandTemperature,
             Key.appLanguage: L10n.shared.language.rawValue,
@@ -308,6 +340,18 @@ enum SettingsBackup {
             summary.updatedKeys.append(key)
             if notable { summary.notableChanges.append("\(key) = \(trimmed)") }
         }
+        /// 「这台机器没配这一档时天然就是空」的字段（自定义端点 / 本机模型的型号名）：
+        /// **空值一律跳过**。导入是合并不是覆盖——导出方没用这一档而写出来的 ""，
+        /// 不该把导入方已经填好的型号名抹掉；也不该记成一条"被忽略的键"（那是留给格式错误的）。
+        func nonEmptyString(_ key: String, notable: Bool = false, _ assign: (String) -> Void) {
+            guard let raw = settings[key] else { return }
+            guard let value = raw as? String else { summary.ignoredKeys.append(key); return }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            assign(trimmed)
+            summary.updatedKeys.append(key)
+            if notable { summary.notableChanges.append("\(key) = \(trimmed)") }
+        }
         /// 接口地址：类型对还不够，还得是个我们敢把 Key 发过去的地址
         func baseURL(_ key: String, _ assign: (String) -> Void) {
             guard let raw = settings[key] else { return }
@@ -350,7 +394,12 @@ enum SettingsBackup {
 
         enumValue(Key.hotkey) { (v: HotkeyChoice) in Settings.shared.hotkey = v }
         enumValue(Key.polishLevel) { (v: PolishLevel) in Settings.shared.polishLevel = v }
-        enumValue(Key.llmProvider) { (v: LLMProvider) in Settings.shared.llmProvider = v }
+        // 服务商换了 = 从此刻起 Key 和听写文本发给另一家。和识别引擎同一条纪律：当面念出来，
+        // 只报一句"导入成功"等于把最该被看见的一条藏起来了。
+        enumValue(Key.llmProvider) { (v: LLMProvider) in
+            Settings.shared.llmProvider = v
+            summary.notableChanges.append("\(Key.llmProvider) = \(v.rawValue)")
+        }
         // 界面语言走 L10n（@Published，切了要立刻刷新界面；它自己负责落盘）
         enumValue(Key.appLanguage) { (v: AppLanguage) in L10n.shared.language = v }
 
@@ -358,10 +407,23 @@ enum SettingsBackup {
         string(Key.customPolishRules) { Settings.shared.customPolishRules = $0 }
         baseURL(Key.openaiBaseURL) { Settings.shared.openaiBaseURL = $0 }
         baseURL(Key.deepseekBaseURL) { Settings.shared.deepseekBaseURL = $0 }
+        // 自定义端点的地址走同一道闸（https + 有主机名）：它决定钥匙串里的 Key 发给谁。
+        // 空串先滤掉——那只是"导出方没用这一档"，不是一个坏地址，不该记进被忽略的键里。
+        if let raw = settings[Key.customBaseURL] as? String,
+           !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            baseURL(Key.customBaseURL) { Settings.shared.customBaseURL = $0 }
+        }
         string(Key.openaiPolishModel, notable: true) { Settings.shared.chatModel = $0 }
         string(Key.openaiCommandModel, notable: true) { Settings.shared.openaiCommandModel = $0 }
         string(Key.deepseekPolishModel, notable: true) { Settings.shared.deepseekModel = $0 }
         string(Key.deepseekCommandModel, notable: true) { Settings.shared.deepseekCommandModel = $0 }
+        nonEmptyString(Key.qwenPolishModel, notable: true) { Settings.shared.qwenModel = $0 }
+        nonEmptyString(Key.qwenCommandModel, notable: true) { Settings.shared.qwenCommandModel = $0 }
+        nonEmptyString(Key.customPolishModel, notable: true) { Settings.shared.customModel = $0 }
+        nonEmptyString(Key.customCommandModel, notable: true) { Settings.shared.customCommandModel = $0 }
+        nonEmptyString(Key.localPolishModel, notable: true) { Settings.shared.localModel = $0 }
+        nonEmptyString(Key.localCommandModel, notable: true) { Settings.shared.localCommandModel = $0 }
+        enumValue(Key.localRuntime) { (v: LLMCatalog.LocalRuntime) in Settings.shared.localRuntime = v }
 
         number(Key.polishTemperature, range: 0...1.5) { Settings.shared.polishTemperature = $0 }
         number(Key.commandTemperature, range: 0...1.5) { Settings.shared.commandTemperature = $0 }

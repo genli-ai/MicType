@@ -676,9 +676,12 @@ final class Settings {
         set { d.set(newValue, forKey: SettingsKeys.aboutMe) }
     }
 
-    /// 当前服务商生效的 Base URL / 润色模型（快）/ 指令模型（强）
-    var currentBaseURL: String {
-        switch llmProvider {
+    /// **某一档**服务商的 Base URL——不能只有"当前生效那档"。
+    /// 为什么：粘贴即验证要把候选 Key 发到用户**刚选中**的那一档去（引导第 5 屏选了 DeepSeek 时，
+    /// 生效档可能还是 OpenAI）。读全局当前档就等于把一家的 Key 送到另一家的端点上，
+    /// 而且那趟必然 401 → Key 存不进钥匙串 → 那一档永远采纳不了（见 KeyVerifier.Probe）。
+    func baseURL(for provider: LLMProvider) -> String {
+        switch provider {
         case .openai: return openaiBaseURL
         case .deepseek: return deepseekBaseURL
         // 可能是 ""（区域端点还没填 WorkspaceId / 自定义端点还没填地址）：
@@ -688,6 +691,9 @@ final class Settings {
         case .local: return localRuntime.baseURL
         }
     }
+
+    /// 当前服务商生效的 Base URL / 润色模型（快）/ 指令模型（强）
+    var currentBaseURL: String { baseURL(for: llmProvider) }
     var currentPolishModel: String {
         switch llmProvider {
         case .openai: return chatModel

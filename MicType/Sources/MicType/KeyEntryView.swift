@@ -52,9 +52,11 @@ final class KeyVerifier: ObservableObject {
 
     /// 这把 Key 用哪条链路去验。
     ///
-    /// 为什么必须可插拔：LLMClient 那条路永远发往**当前选中的服务商**的 Base URL
-    /// （dispatch 读的是 Settings.currentBaseURL）。识别页上的 Key 属于 Qwen/OpenAI 的云端识别，
-    /// 用户的润色服务商完全可能是另一家——照搬 LLM 探针就等于把阿里云的 Key 发到 OpenAI 去。
+    /// 为什么必须可插拔：识别页上的 Key 属于 Qwen/OpenAI 的**云端识别**，用户的润色服务商
+    /// 完全可能是另一家——照搬 LLM 探针就等于把阿里云的 Key 发到 OpenAI 去。
+    /// （`.llm` 这条路本身也曾有同一个毛病：dispatch 读全局当前档，于是引导页刚选中
+    /// 但还没生效的那一档会被发到上一档的端点上。现在 provider 一路显式传到 dispatch，
+    /// 验证打的永远是 KeyEntryView 手上这一档。）
     /// 所以识别页走 `.cloudASR`：直接打识别端点，发 1 秒合成音，
     /// 顺带把区域、WorkspaceId、模型有没有在控制台开通一起验了（LLM 的 /models 探针验不到这些）。
     enum Probe: Equatable {
@@ -104,7 +106,7 @@ final class KeyVerifier: ObservableObject {
         switch probe {
         case .llm:
             // 走 testModel = 走与真实润色完全相同的那条路（含 Responses / chat 的分叉）
-            LLMClient.testModel(model, candidateKey: trimmed) { ok, message in
+            LLMClient.testModel(model, provider: provider, candidateKey: trimmed) { ok, message in
                 settle(ok, provider.segmentName, model, message)
             }
         case .cloudASR(let cloudProvider):

@@ -527,9 +527,7 @@ enum LLMCatalog {
                                       "Invalid or revoked API key (401) — check that it was pasted in full") + detail,
                              actionLabel: nil, actionURL: nil)
         case 403:
-            // 用户在 UAE，这一条命中率不低：OpenAI 对部分国家/地区直接 403。
-            return ErrorCopy(text: tr("你所在的国家/地区不支持这个服务 (403)。可以改用 DeepSeek，或在设置里填一个自定义端点",
-                                      "This service is not supported in your country or region (403). Switch to DeepSeek, or point MicType at a custom endpoint in Settings") + detail,
+            return ErrorCopy(text: forbiddenText(for: provider) + detail,
                              actionLabel: nil, actionURL: nil)
         case 404:
             return ErrorCopy(text: tr("找不到这个模型 (404)，请检查模型名和 Base URL",
@@ -554,6 +552,34 @@ enum LLMCatalog {
         default:
             return ErrorCopy(text: tr("接口返回 ", "API returned ") + "\(status)" + detail,
                              actionLabel: nil, actionURL: nil)
+        }
+    }
+
+    /// 403 说的根本不是同一件事，所以**必须按服务商分流**：
+    ///   • OpenAI —— 国家/地区封锁（用户在 UAE，这条命中率不低）；
+    ///   • Qwen（DashScope）—— 几乎总是"模型没在百炼控制台开通 / 账户欠费 / 子工作空间没权限"，
+    ///     跟地区无关。说成地区封锁会把用户推去做一件没用的事（措辞与云端识别那条路一致）；
+    ///   • DeepSeek / 自定义端点 —— Key 的权限或网关的策略；
+    ///   • 本机模型 —— Ollama / LM Studio 拒绝了来源，跟"国家/地区"更是一点关系都没有。
+    /// 另外：建议换去的那一档永远不能是他当前正在用的那一档（以前写死"改用 DeepSeek"，
+    /// DeepSeek 用户收到的就是一句"改用 DeepSeek"）。
+    private static func forbiddenText(for provider: LLMProvider) -> String {
+        switch provider {
+        case .openai:
+            return tr("你所在的国家/地区不支持这个服务 (403)。可以改用 DeepSeek 或 Qwen，或在设置里填一个自定义端点",
+                      "This service is not supported in your country or region (403). Switch to DeepSeek or Qwen, or point MicType at a custom endpoint in Settings")
+        case .qwen:
+            return tr("这个模型还没在阿里云百炼开通，或账户欠费、子工作空间无权 (403)。请到百炼控制台 → 模型广场把它开通一次",
+                      "This model is not enabled for your account, or the account is in arrears, or the sub-workspace lacks access (403). Enable it once in the Alibaba Model Studio console (Model Gallery)")
+        case .deepseek:
+            return tr("服务商拒绝了这次请求 (403)：这把 Key 可能没有该模型的权限，或你所在的地区不被支持。可以改用 OpenAI，或在设置里填一个自定义端点",
+                      "The provider refused this request (403): this key may lack access to the model, or your region is not supported. Switch to OpenAI, or point MicType at a custom endpoint in Settings")
+        case .custom:
+            return tr("这个端点拒绝了请求 (403)：Key 可能没有该模型的权限，或网关按地区/来源做了限制。请到该端点自己的控制台核对",
+                      "This endpoint refused the request (403): the key may lack access to the model, or the gateway restricts your region or origin. Check it in that endpoint's own console")
+        case .local:
+            return tr("本机模型服务拒绝了这次请求 (403)。Ollama / LM Studio 默认只接受本机来源，请确认它正在运行、并允许来自 MicType 的请求",
+                      "The local model server refused this request (403). Ollama and LM Studio only accept local origins by default - make sure it is running and allows requests from MicType")
         }
     }
 

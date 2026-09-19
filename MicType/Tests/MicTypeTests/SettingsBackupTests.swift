@@ -111,6 +111,25 @@ final class SettingsBackupTests: XCTestCase {
         XCTAssertTrue(SettingsBackup.Key.all.contains(SettingsBackup.Key.keepHistory))
     }
 
+    /// llmProvider 现在是五档：只把档位搬过去、地址与型号留在原机器上的话，
+    /// 对面落到一个"端点空着、型号空着"的档上——custom 档静默没了润色，
+    /// local 档每次听写都报"还没填模型名"。每一档要的字段都得在导出表 + 已知键表里。
+    func testExportCarriesEveryProviderEndpointAndModelNames() {
+        let settings = SettingsBackup.makeDocument()["settings"] as? [String: Any]
+        for key in [SettingsBackup.Key.customBaseURL,
+                    SettingsBackup.Key.qwenPolishModel, SettingsBackup.Key.qwenCommandModel,
+                    SettingsBackup.Key.customPolishModel, SettingsBackup.Key.customCommandModel,
+                    SettingsBackup.Key.localRuntime,
+                    SettingsBackup.Key.localPolishModel, SettingsBackup.Key.localCommandModel] {
+            XCTAssertNotNil(settings?[key] as? String, "导出表里少了 \(key)")
+            XCTAssertTrue(SettingsBackup.Key.all.contains(key),
+                          "\(key) 不在已知键表里，导入端会忽略它")
+        }
+        // 本机运行时是枚举：导出的值必须是导入端认得的 rawValue，否则来回一趟就掉设置
+        let runtime = (settings?[SettingsBackup.Key.localRuntime] as? String) ?? ""
+        XCTAssertNotNil(LLMCatalog.LocalRuntime(rawValue: runtime))
+    }
+
     // MARK: 接口地址白名单（导入的 base URL 决定 API Key 发给谁）
 
     func testAcceptsHttpsEndpoints() {

@@ -169,6 +169,28 @@ final class LLMCatalogTests: XCTestCase {
         XCTAssertTrue(model.text.contains("gpt-9"))
     }
 
+    /// 403 必须按服务商分流：建议换去的那一档不能是他正在用的那一档，
+    /// 而 DashScope 的 403 根本不是地区封锁（是模型没在百炼控制台开通）
+    func testForbiddenCopyIsProviderSpecific() {
+        L10n.shared.language = .en
+        let deepseek = LLMCatalog.describeHTTPError(status: 403, provider: .deepseek,
+                                                    code: nil, message: nil)
+        XCTAssertTrue(deepseek.text.contains("403"))
+        XCTAssertFalse(deepseek.text.contains("DeepSeek"),
+                       "别建议 DeepSeek 用户改用 DeepSeek: \(deepseek.text)")
+
+        let qwen = LLMCatalog.describeHTTPError(status: 403, provider: .qwen, code: nil, message: nil)
+        XCTAssertTrue(qwen.text.contains("Model Studio"))
+        XCTAssertFalse(qwen.text.lowercased().contains("country"))
+
+        let local = LLMCatalog.describeHTTPError(status: 403, provider: .local, code: nil, message: nil)
+        XCTAssertTrue(local.text.contains("Ollama"))
+        XCTAssertFalse(local.text.lowercased().contains("region"))
+
+        let custom = LLMCatalog.describeHTTPError(status: 403, provider: .custom, code: nil, message: nil)
+        XCTAssertTrue(custom.text.contains("403"))
+    }
+
     /// 429 的两种含义必须分开说：一个该等几秒，一个该去充钱
     func testRateLimitAndQuotaAreDifferentCopy() {
         L10n.shared.language = .en

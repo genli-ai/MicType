@@ -18,6 +18,21 @@ final class AISetupTests: XCTestCase {
         super.tearDown()
     }
 
+    /// 粘贴即验证必须把候选 Key 发到**用户刚选中**的那一档去，所以地址得按档取。
+    /// 以前整条链路只认"当前生效那档"：引导第 5 屏选了 DeepSeek、生效档还是 OpenAI 时，
+    /// 粘进去的 DeepSeek Key 会被发到 api.openai.com，401 之后 Key 存不进钥匙串，
+    /// 那一档就永远采纳不了——粘一次泄一次，还是个死循环。
+    func testBaseURLIsResolvedPerProviderNotFromTheActiveOne() {
+        let s = Settings.shared
+        XCTAssertEqual(s.baseURL(for: .openai), s.openaiBaseURL)
+        XCTAssertEqual(s.baseURL(for: .deepseek), s.deepseekBaseURL)
+        XCTAssertEqual(s.baseURL(for: .qwen), s.qwenBaseURL)
+        XCTAssertEqual(s.baseURL(for: .custom), s.customBaseURL)
+        XCTAssertEqual(s.baseURL(for: .local), s.localRuntime.baseURL)
+        // "当前档"只是"按档取"的一个特例，不再是唯一的取法
+        XCTAssertEqual(s.currentBaseURL, s.baseURL(for: s.llmProvider))
+    }
+
     /// 英文界面里不许出现汉字、CJK 标点或全角标点（见 docs 的 C2）
     private func containsCJKOrFullWidth(_ text: String) -> Bool {
         text.unicodeScalars.contains { scalar in

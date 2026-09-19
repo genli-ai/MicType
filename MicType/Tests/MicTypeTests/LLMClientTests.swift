@@ -281,7 +281,7 @@ final class LLMClientTests: XCTestCase {
         XCTAssertEqual(openai["service_tier"] as? String, "fast")
     }
 
-    /// 开着搜索开关的指令调用：工具、tool_choice、include 一个都不能少
+    /// 开着搜索开关的指令调用：工具与 tool_choice 一个都不能少
     func testCommandWebSearchToolShape() {
         let body = LLMClient.responsesBody(model: "gpt-5.6-terra", system: "S", user: "U",
                                            purpose: .command, temperature: nil, maxOutputTokens: 4096,
@@ -294,7 +294,10 @@ final class LLMClientTests: XCTestCase {
         XCTAssertEqual(tools?.first?["search_context_size"] as? String, "low")
         XCTAssertEqual((tools?.first?["user_location"] as? [String: String])?["country"], "AE")
         XCTAssertEqual(body["tool_choice"] as? String, "auto")
-        XCTAssertEqual((body["include"] as? [String])?.first, "web_search_call.action.sources")
+        // include: web_search_call.action.sources **故意不发**：那是"搜索工具打开过的页面"，
+        // 与 annotations 的"模型引用的来源"不是一回事，解析器也只认后者。
+        // 发了等于每次回包都大一截却没人读（要改成显示"搜索过的页面"再单独加字段）。
+        XCTAssertNil(body["include"])
     }
 
     /// 关着搜索时请求体里连 tools 这个键都没有（B8 的验收标准）
@@ -344,6 +347,62 @@ final class LLMClientTests: XCTestCase {
                                           searchStyle: .unsupported)
         XCTAssertNil(deepseek["enable_search"])
         XCTAssertNil(deepseek["plugins"])
+    }
+
+    // MARK: - chat/completions 的输出上限与截断
+
+    /// 这条路也必须发输出上限：不发就跑服务商自己的默认额度，而 v4.0 的长口述（最长 600 s）
+    /// 润色出来的文本轻松越过那条线——这边没有 Responses 的 status=incomplete 可以兜底
+    func testChatBodyCarriesMaxTokens() {
+        let body = LLMClient.chatBody(model: "deepseek-flash", messages: [], temperature: nil,
+                                      purpose: .polish, provider: .deepseek, maxOutputTokens: 8192)
+        XCTAssertEqual(body["max_tokens"] as? Int, 8192)
+        let bare = LLMClient.chatBody(model: "deepseek-flash", messages: [], temperature: nil,
+                                      purpose: .polish, provider: .deepseek)
+        XCTAssertNil(bare["max_tokens"])
+    }
+
+    /// finish_reason == "length" 与 Responses 的 status == "incomplete" 是同一件事：
+    /// 半截文本绝不能当成功交付（以前这条路只看 content，截断的润色被直接插进用户文档）
+    func testChatTruncationIsDetected() {
+        let json: [String: Any] = [
+            "choices": [["finish_reason": "length",
+                         "message": ["role": "assistant", "content": "只写到一半的邮件"]]],
+        ]
+        let payload = LLMClient.parseChatPayload(json)
+        XCTAssertTrue(payload.truncated)
+        XCTAssertEqual(payload.text, "只写到一半的邮件")
+        XCTAssertFalse(payload.unparsable)
+    }
+
+    /// 正常收尾的回包照常交付，并把档位与来源一起带出来
+    func testChatPayloadCarriesTextTierAndCitations() {
+        let json: [String: Any] = [
+            "service_tier": "default",
+            "choices": [["finish_reason": "stop",
+                         "message": ["content": "  答案  ",
+                                     "annotations": [["type": "url_citation",
+                                                      "url": "https://src.example/1",
+                                                      "title": "来源一"]]]]],
+        ]
+        let payload = LLMClient.parseChatPayload(json)
+        XCTAssertEqual(payload.text, "答案")
+        XCTAssertFalse(payload.truncated)
+        XCTAssertEqual(payload.serviceTier, "default")
+        XCTAssertEqual(payload.citations.first?.url, "https://src.example/1")
+    }
+
+    /// 「回了个空串」和「压根解析不出来」是两种毛病，话术不同，所以解析层就要分开
+    func testChatEmptyContentAndUnparsableAreDifferent() {
+        let empty = LLMClient.parseChatPayload([
+            "choices": [["finish_reason": "stop", "message": ["content": "   "]]],
+        ])
+        XCTAssertNil(empty.text)
+        XCTAssertFalse(empty.unparsable)
+
+        let broken = LLMClient.parseChatPayload(["choices": [["finish_reason": "stop"]]])
+        XCTAssertNil(broken.text)
+        XCTAssertTrue(broken.unparsable)
     }
 
     // MARK: - 来源解析

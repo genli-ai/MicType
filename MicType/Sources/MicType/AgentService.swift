@@ -109,23 +109,29 @@ enum LLMClient {
     /// - networkRetries: 瞬时网络故障（含超时）之后原样重发几次。默认 1。
     ///   长输入的润色会传 0：那一趟的超时预算本身就有一分钟量级，超时说明"整篇没在预算内生成完"，
     ///   再原样发一遍只是把用户的等待翻倍（见 PolishService.networkRetries）。
+    /// - provider: 这一趟发给**哪一档**服务商。默认就是当前生效那档（真实润色/指令都走这条），
+    ///   只有「粘贴即验证」会显式传另一档：用户刚在选择器上点中的那一档还没生效，
+    ///   而接口分叉、Base URL、凭据、报错话术全都得跟着它走——读全局当前档的话，
+    ///   引导页粘一把 DeepSeek 的 Key 会被发到 api.openai.com 去（见 KeyVerifier.Probe）。
     static func complete(system: String, user: String, purpose: Purpose, temperature: Double?,
                          timeout: TimeInterval, model: String, maxOutputTokens: Int,
+                         provider: LLMProvider = Settings.shared.llmProvider,
                          apiKeyOverride: String? = nil,
                          networkRetries: Int = 1,
                          completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle {
         let handle = LLMRequestHandle()
-        if Settings.shared.llmProvider == .openai,
-           usesResponsesAPI(baseURL: Settings.shared.currentBaseURL) {
+        if provider == .openai,
+           usesResponsesAPI(baseURL: Settings.shared.baseURL(for: provider)) {
             respond(system: system, user: user, purpose: purpose, temperature: temperature,
                     timeout: timeout, model: model, maxOutputTokens: maxOutputTokens,
-                    handle: handle, apiKeyOverride: apiKeyOverride,
+                    provider: provider, handle: handle, apiKeyOverride: apiKeyOverride,
                     networkRetries: networkRetries, completion: completion)
         } else {
             chat(messages: [["role": "system", "content": system],
                             ["role": "user", "content": user]],
                  temperature: temperature, timeout: timeout, model: model,
-                 purpose: purpose, handle: handle, apiKeyOverride: apiKeyOverride,
+                 maxOutputTokens: maxOutputTokens,
+                 purpose: purpose, provider: provider, handle: handle, apiKeyOverride: apiKeyOverride,
                  networkRetries: networkRetries, completion: completion)
         }
         return handle
@@ -133,9 +139,12 @@ enum LLMClient {
 
     /// 这次调用该用哪种联网写法。**润色永远是 .unsupported**：润色的活是"改写我刚说的话"，
     /// 联网既帮不上忙，又会让每句话都按次花钱——铁律级的分界，不看用户开没开那个开关。
-    static func searchStyle(for purpose: Purpose) -> LLMCatalog.WebSearchStyle {
+    static func searchStyle(for purpose: Purpose,
+                            provider: LLMProvider = Settings.shared.llmProvider)
+        -> LLMCatalog.WebSearchStyle {
         guard purpose == .command, Settings.shared.webSearchEnabled else { return .unsupported }
-        return Settings.shared.webSearchStyle
+        return LLMCatalog.searchStyle(provider: provider,
+                                      baseURL: Settings.shared.baseURL(for: provider))
     }
 
     /// 这个 Base URL 能不能走 Responses。
@@ -153,6 +162,7 @@ enum LLMClient {
     @discardableResult
     static func respond(system: String, user: String, purpose: Purpose, temperature: Double?,
                         timeout: TimeInterval, model: String, maxOutputTokens: Int,
+                        provider: LLMProvider = Settings.shared.llmProvider,
                         handle: LLMRequestHandle = LLMRequestHandle(),
                         apiKeyOverride: String? = nil,
                         networkRetries: Int = 1,
@@ -160,9 +170,9 @@ enum LLMClient {
         let body = responsesBody(model: model, system: system, user: user, purpose: purpose,
                                  temperature: temperature, maxOutputTokens: maxOutputTokens,
                                  fastTier: Settings.shared.fastTier,
-                                 searchStyle: searchStyle(for: purpose))
+                                 searchStyle: searchStyle(for: purpose, provider: provider))
         dispatch(path: "/responses", body: body, endpoint: .responses, timeout: timeout,
-                 handle: handle, apiKeyOverride: apiKeyOverride,
+                 provider: provider, handle: handle, apiKeyOverride: apiKeyOverride,
                  networkRetries: networkRetries, completion: completion)
         return handle
     }
@@ -170,23 +180,28 @@ enum LLMClient {
     /// POST `{base}/chat/completions`——DeepSeek 与任意 OpenAI 兼容端点（自建网关、本机模型）走这条。
     /// model：润色传 currentPolishModel（快），指令传 currentCommandModel（强）。
     /// temperature：润色传 0.5（保真任务要偏低温）；指令传模型默认。推理系型号一律不发（见 chatBody）。
+    /// maxOutputTokens：与 Responses 那条路同一个额度，一定要传（见 chatBody 的 max_tokens）。
     /// handle：由 complete() 传入自己的句柄，直接调用时用默认新建的那个。
     @discardableResult
     static func chat(messages: [[String: String]],
                      temperature: Double?,
                      timeout: TimeInterval,
                      model: String,
+                     maxOutputTokens: Int? = nil,
                      purpose: Purpose? = nil,
+                     provider: LLMProvider = Settings.shared.llmProvider,
                      handle: LLMRequestHandle = LLMRequestHandle(),
                      apiKeyOverride: String? = nil,
                      networkRetries: Int = 1,
                      completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle {
         let body = chatBody(model: model, messages: messages, temperature: temperature,
-                            purpose: purpose, provider: Settings.shared.llmProvider,
+                            purpose: purpose, provider: provider,
+                            maxOutputTokens: maxOutputTokens,
                             fastTier: Settings.shared.fastTier,
-                            searchStyle: purpose.map { searchStyle(for: $0) } ?? .unsupported)
+                            searchStyle: purpose.map { searchStyle(for: $0, provider: provider) }
+                                ?? .unsupported)
         dispatch(path: "/chat/completions", body: body, endpoint: .chat, timeout: timeout,
-                 handle: handle, apiKeyOverride: apiKeyOverride,
+                 provider: provider, handle: handle, apiKeyOverride: apiKeyOverride,
                  networkRetries: networkRetries, completion: completion)
         return handle
     }
@@ -203,7 +218,7 @@ enum LLMClient {
         if let key = KeychainHelper.loadAPIKey(account: provider.keychainAccount), !key.isEmpty {
             return key
         }
-        if !provider.requiresAPIKey || LLMCatalog.isLocalHost(Settings.shared.currentBaseURL) {
+        if !provider.requiresAPIKey || LLMCatalog.isLocalHost(Settings.shared.baseURL(for: provider)) {
             return ""
         }
         return nil
@@ -217,11 +232,14 @@ enum LLMClient {
     /// 走的是与真实润色完全同一条代码路径——否则「测试通过」证明不了真用的时候也通。
     /// - candidateKey: 「粘贴即验证」传进来的候选 Key（还没进钥匙串）。为 nil 时用已存的那把。
     ///   ✓ / ✗ 这类图标交给调用方拼：Key 验证那一处要把失败原因原样摆出来，不该先被一个记号裹住。
-    static func testModel(_ model: String, candidateKey: String? = nil,
+    /// - provider: 验哪一档。默认当前生效那档（设置页「高级」的「测试」按钮）；
+    ///   「粘贴即验证」传用户刚选中的那一档——否则候选 Key 会被发到上一档的端点去。
+    static func testModel(_ model: String, provider: LLMProvider = Settings.shared.llmProvider,
+                          candidateKey: String? = nil,
                           completion: @escaping (Bool, String) -> Void) {
         let candidate = candidateKey?.trimmingCharacters(in: .whitespacesAndNewlines)
         if candidate == nil || candidate!.isEmpty {
-            guard isConfigured else {
+            guard credential(for: provider) != nil else {
                 completion(false, tr("还没有填 API Key", "No API key yet"))
                 return
             }
@@ -238,6 +256,7 @@ enum LLMClient {
                  user: probe,
                  purpose: .polish, temperature: nil, timeout: 30, model: model,
                  maxOutputTokens: LLMCatalog.polishMinOutputTokens,
+                 provider: provider,
                  apiKeyOverride: candidate) { result, failure in
             let secs = String(format: "%.1f", Date().timeIntervalSince(start))
             if let r = result {
@@ -363,21 +382,34 @@ enum LLMClient {
                 "user_location": userLocation,
             ]]
             body["tool_choice"] = "auto"
-            // 没有这一行，回答里就只有 annotations 没有 action.sources —— 来源列表少一半
-            body["include"] = ["web_search_call.action.sources"]
+            // **故意不发 `include: ["web_search_call.action.sources"]`**：那个字段回的是搜索工具
+            // 检索/打开过的页面，和 `annotations[].url_citation`（模型真正引用的来源）不是一回事。
+            // 解析器只认 annotations，把 action.sources 并进去会让「联网搜索 · N 个来源」
+            // 连没被引用的页面一起算上，还写进 history.json——那就改掉了 citations 的含义。
+            // 所以宁可不发：多要一份没人读的负载，只是让每次回包更大。
         }
         return body
     }
 
     /// chat/completions 请求体（DeepSeek / Qwen / 自定义端点 / 本机模型）
+    /// - maxOutputTokens: `max_tokens`。**必须发**：不发就跑服务商自己的默认输出上限，
+    ///   而 v4.0 的长口述（单次最长 600 s）润色出来的文本轻松越过那条线——这条路上没有
+    ///   Responses 的 `status == "incomplete"` 可倚仗，截断的半截文本会被当成功插进用户文档。
+    ///   键名一律 `max_tokens`：OpenAI 兼容端点认的都是它；真碰上不认的，
+    ///   dispatch 的「400 点名某参数就摘掉重发」会兜住，不至于整次调用白掉。
+    ///   nil = 不发（只有直接调 chatBody 的单测会这样）。
     static func chatBody(model: String, messages: [[String: String]], temperature: Double?,
                          purpose: Purpose?, provider: LLMProvider,
+                         maxOutputTokens: Int? = nil,
                          fastTier: Bool = false,
                          searchStyle: LLMCatalog.WebSearchStyle = .unsupported) -> [String: Any] {
         var body: [String: Any] = [
             "model": model,
             "messages": messages,
         ]
+        if let maxOutputTokens = maxOutputTokens {
+            body["max_tokens"] = maxOutputTokens
+        }
         if let temperature = temperature, !LLMCatalog.rejectsCustomTemperature(model) {
             body["temperature"] = temperature
         }
@@ -446,6 +478,44 @@ enum LLMClient {
             out.append(Citation(title: (source["title"] as? String) ?? "", url: url))
         }
         return out
+    }
+
+    /// chat/completions 回包里要拿的东西（纯函数，与 Responses 那条路对称）。
+    /// 为什么也要一层：这条路原本**只**看 `message.content`，不看 `finish_reason`——
+    /// 服务商撞上默认输出上限时照样回一段半截文本，于是同一份被 OpenAI 拒掉的截断结果
+    /// 在 DeepSeek / Qwen / 自建网关 / 本机模型上被当成功，直接插进用户的文档里。
+    struct ChatPayload: Equatable {
+        let text: String?
+        /// `finish_reason == "length"`：撞上输出上限。半截文本不能当成功交付
+        let truncated: Bool
+        /// 连 `message.content` 都取不到（返回形状不对），和"回了个空串"要分开说
+        let unparsable: Bool
+        let serviceTier: String?
+        let citations: [Citation]
+    }
+
+    static func parseChatPayload(_ json: [String: Any]) -> ChatPayload {
+        let choice = (json["choices"] as? [[String: Any]])?.first
+        let message = choice?["message"] as? [String: Any]
+        // 兼容端点大多不报缓存；service_tier 与 annotations 有的会报（OpenRouter 回来源，
+        // Qwen 的兼容模式不回——那一档的设置文案已经当面说明了）
+        let citations = parseURLCitations((message?["annotations"] as? [[String: Any]]) ?? [])
+        let tier = json["service_tier"] as? String
+        guard let content = message?["content"] as? String else {
+            return ChatPayload(text: nil, truncated: false, unparsable: true,
+                               serviceTier: tier, citations: citations)
+        }
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ChatPayload(text: trimmed.isEmpty ? nil : trimmed,
+                           truncated: (choice?["finish_reason"] as? String) == "length",
+                           unparsable: false, serviceTier: tier, citations: citations)
+    }
+
+    /// 撞上输出上限时对用户说的那一句。两条路说的是同一件事（Responses 的 `status == "incomplete"`
+    /// 与 chat 的 `finish_reason == "length"`），所以逐字共用一句。
+    static var truncatedOutputCopy: String {
+        tr("模型输出被长度上限截断了，请缩短这段口述再试",
+           "The model output hit the length limit — try a shorter dictation")
     }
 
     /// 官方明确警告不要假设 `output[0].content[0].text`：推理条目、web_search 调用都会排在 message 前面。
@@ -529,13 +599,20 @@ enum LLMClient {
     // MARK: - 发送
 
     private static func dispatch(path: String, body: [String: Any], endpoint: Endpoint,
-                                 timeout: TimeInterval, handle: LLMRequestHandle,
+                                 timeout: TimeInterval,
+                                 provider: LLMProvider = Settings.shared.llmProvider,
+                                 handle: LLMRequestHandle,
                                  apiKeyOverride: String? = nil,
                                  networkRetries: Int = 1,
                                  completion: @escaping (String?, String?) -> Void) {
+        // 这一趟开始了 → 先把用量沉淀点清空。它是"取走即清空"的一格，只有 send 的回调会填；
+        // 下面这几条早退（取消 / 没凭据 / 模型名空 / 地址不完整）一个字都不写它，
+        // 不清的话**上一趟**（多半是设置页的「测试」或粘贴验证）的 tier/cached
+        // 会被下一轮的诊断行原样收走，变成一行张冠李戴的数字。
+        DispatchQueue.main.async { LLMUsageSink.shared.record(LLMUsage()) }
         guard !handle.isCancelled else { return }
         // 候选 Key（验证中）优先；它只存在于这一趟请求里，别处读不到，也没写进钥匙串
-        guard let apiKey = apiKeyOverride ?? credential() else {
+        guard let apiKey = apiKeyOverride ?? credential(for: provider) else {
             DispatchQueue.main.async { completion(nil, tr("未配置 API Key", "No API key configured")) }
             return
         }
@@ -549,7 +626,8 @@ enum LLMClient {
             }
             return
         }
-        var base = Settings.shared.currentBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        var base = Settings.shared.baseURL(for: provider)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         if base.hasSuffix("/") { base = String(base.dropLast()) }
         // 地址不完整（Qwen 区域端点缺 WorkspaceId / 自定义端点还没填）：宁可报错也不替用户
         // 换一个能连上的地址——那等于把 Key 和听写文本发到他没选的地方去。
@@ -565,7 +643,7 @@ enum LLMClient {
             return
         }
         send(url: url, body: body, apiKey: apiKey, timeout: timeout, endpoint: endpoint,
-             networkRetriesLeft: max(0, networkRetries), stripAttemptsLeft: 2,
+             provider: provider, networkRetriesLeft: max(0, networkRetries), stripAttemptsLeft: 2,
              handle: handle, completion: completion)
     }
 
@@ -574,7 +652,8 @@ enum LLMClient {
     /// （text.verbosity 的字段路径只有 cookbook 有据；推理模型拒 temperature），
     /// 而每次只摘一个参数——摘完一个还报另一个也不该让整次润色白掉。
     private static func send(url: URL, body: [String: Any], apiKey: String, timeout: TimeInterval,
-                             endpoint: Endpoint, networkRetriesLeft: Int, stripAttemptsLeft: Int,
+                             endpoint: Endpoint, provider: LLMProvider,
+                             networkRetriesLeft: Int, stripAttemptsLeft: Int,
                              handle: LLMRequestHandle,
                              completion: @escaping (String?, String?) -> Void) {
         guard !handle.isCancelled else { return }
@@ -606,7 +685,7 @@ enum LLMClient {
                 if retryableCodes.contains(nsError.code), networkRetriesLeft > 0 {
                     DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
                         send(url: url, body: body, apiKey: apiKey, timeout: timeout, endpoint: endpoint,
-                             networkRetriesLeft: networkRetriesLeft - 1,
+                             provider: provider, networkRetriesLeft: networkRetriesLeft - 1,
                              stripAttemptsLeft: stripAttemptsLeft, handle: handle, completion: completion)
                     }
                     return
@@ -626,12 +705,12 @@ enum LLMClient {
                    let stripped = stripping(parameter: param, from: body) {
                     Log.warn("LLM 400 rejected parameter \(param) — retrying without it")
                     send(url: url, body: stripped, apiKey: apiKey, timeout: timeout, endpoint: endpoint,
-                         networkRetriesLeft: networkRetriesLeft,
+                         provider: provider, networkRetriesLeft: networkRetriesLeft,
                          stripAttemptsLeft: stripAttemptsLeft - 1, handle: handle, completion: completion)
                     return
                 }
                 failure = LLMCatalog.describeHTTPError(status: http.statusCode,
-                                                      provider: Settings.shared.llmProvider,
+                                                      provider: provider,
                                                       code: code.isEmpty ? nil : code,
                                                       message: message).fullText
             } else if let json = json {
@@ -644,28 +723,24 @@ enum LLMClient {
                     if let text = payload.text, !payload.truncated {
                         result = text
                     } else if payload.truncated {
-                        failure = tr("模型输出被长度上限截断了，请缩短这段口述再试",
-                                     "The model output hit the length limit — try a shorter dictation")
+                        failure = truncatedOutputCopy
                     } else {
                         failure = tr("模型返回了空内容", "Model returned empty content")
                     }
                 case .chat:
-                    let message = (json["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any]
-                    // 兼容端点大多不报缓存；service_tier 与 annotations 有的会报（OpenRouter 回来源，
-                    // Qwen 的兼容模式不回——那一档的设置文案已经当面说明了）
+                    let payload = parseChatPayload(json)
                     usage = LLMUsage(cachedTokens: nil,
-                                     serviceTier: json["service_tier"] as? String,
-                                     citations: parseURLCitations(
-                                        (message?["annotations"] as? [[String: Any]]) ?? []))
-                    if let content = message?["content"] as? String {
-                        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if trimmed.isEmpty {
-                            failure = tr("模型返回了空内容", "Model returned empty content")
-                        } else {
-                            result = trimmed
-                        }
-                    } else {
+                                     serviceTier: payload.serviceTier,
+                                     citations: payload.citations)
+                    if let text = payload.text, !payload.truncated {
+                        result = text
+                    } else if payload.truncated {
+                        // 与 Responses 那条路同一条纪律：半截输出不是结果，绝不当成功交付
+                        failure = truncatedOutputCopy
+                    } else if payload.unparsable {
                         failure = tr("返回格式无法解析", "Could not parse the response")
+                    } else {
+                        failure = tr("模型返回了空内容", "Model returned empty content")
                     }
                 }
             } else {

@@ -108,7 +108,16 @@ public static class LlmClient
                 }
 
                 var parsed = JsonSerializer.Deserialize<ChatResponse>(raw, JsonOptions);
-                var content = parsed?.Choices?.FirstOrDefault()?.Message?.Content?.Trim();
+                var choice = parsed?.Choices?.FirstOrDefault();
+                var content = choice?.Message?.Content?.Trim();
+                // finish_reason == "length" = 撞上服务商的输出上限。只看 content 的话，
+                // 半截文本会被当成功**无提示地插进用户的文档**——宁可报错退回识别原文。
+                //（与 macOS 端同源：那边 Responses 的 status == "incomplete" 走的也是这一句）
+                if (string.Equals(choice?.FinishReason, "length", StringComparison.OrdinalIgnoreCase))
+                {
+                    return (null, L10n.Tr("模型输出被长度上限截断了，请缩短这段口述再试",
+                        "The model output hit the length limit — try a shorter dictation"));
+                }
                 return string.IsNullOrWhiteSpace(content)
                     ? (null, L10n.Tr("模型返回了空内容", "Model returned empty content"))
                     : (content, null);
@@ -183,7 +192,7 @@ public static class LlmClient
     private sealed record ChatRequest(string Model, List<WireMessage> Messages, double? Temperature);
     private sealed record WireMessage(string Role, string Content);
     private sealed record ChatResponse(List<Choice>? Choices);
-    private sealed record Choice(WireMessage? Message);
+    private sealed record Choice(WireMessage? Message, string? FinishReason);
     private sealed record ApiErrorResponse(ApiError? Error);
     private sealed record ApiError(string? Message);
 }
