@@ -123,4 +123,87 @@ public sealed class TextPostProcessorTests
     {
         Assert.Null(TextPostProcessor.PolishDriftCheck("嗯嗯嗯就是说那个好的", "好的。"));
     }
+
+    // 阿拉伯语安全：与 Mac 端 TextPostProcessorTests.swift 的同名用例一一对应
+
+    /// 阿语句读 ، ؟ ؛ 一律保持原样：换成 ASCII 就是改写用户说的话
+    [Fact]
+    public void ArabicPunctuationIsNeverConvertedToAscii()
+    {
+        const string text = "مرحبا، كيف حالك؟ نلتقي غدا؛ إن شاء الله.";
+        Assert.Equal(text, TextPostProcessor.FixMixedPunctuation(text));
+    }
+
+    /// 阿英混说：全角标点后面跟的是阿语时不转半角
+    [Fact]
+    public void FullWidthPunctuationBeforeArabicIsLeftAlone()
+    {
+        Assert.Equal("اجتماع الـ board，غدا", TextPostProcessor.FixMixedPunctuation("اجتماع الـ board，غدا"));
+        Assert.Equal("اجتماع الـ board， غدا", TextPostProcessor.FixMixedPunctuation("اجتماع الـ board， غدا"));
+    }
+
+    /// 绝不往阿语里插空格（Windows 这边尤其要防：\p{L} 本来是含阿语字母的）
+    [Fact]
+    public void NoSpaceIsInsertedInsideArabic()
+    {
+        Assert.Equal("مرحبا,العالم", TextPostProcessor.FixMixedPunctuation("مرحبا,العالم"));
+    }
+
+    /// 阿语靠前后缀粘连成词：「الذكاء」在「بالذكاء」内部绝不能被词表替换命中
+    [Fact]
+    public void VocabReplacementRespectsArabicWordBoundary()
+    {
+        Assert.Equal("بالذكاء الاصطناعي", TextPostProcessor.ApplyVocabReplacements(
+            "بالذكاء الاصطناعي", new (string Wrong, string Right)[] { ("الذكاء", "AI") }));
+    }
+
+    /// 独立成词时照常替换；阿语句读是边界，不是词的一部分
+    [Fact]
+    public void VocabReplacementStillMatchesStandaloneArabicWord()
+    {
+        Assert.Equal("AI الاصطناعي مهم", TextPostProcessor.ApplyVocabReplacements(
+            "الذكاء الاصطناعي مهم", new (string Wrong, string Right)[] { ("الذكاء", "AI") }));
+        Assert.Equal("نعم، AI؟", TextPostProcessor.ApplyVocabReplacements(
+            "نعم، الذكاء؟", new (string Wrong, string Right)[] { ("الذكاء", "AI") }));
+    }
+
+    /// 口水词过滤把阿语句读当边界，删完的重复读点要合并
+    [Fact]
+    public void FillerRemovalTreatsArabicPunctuationAsBoundary()
+    {
+        Assert.Equal("مرحبا، العالم",
+            TextPostProcessor.CleanTranscript("مرحبا، يعني، العالم", new[] { "يعني" }));
+    }
+
+    /// 当前策略是「保持模型原样」——实测之前不归一
+    [Fact]
+    public void ArabicIndicDigitsAreKeptAsIs()
+    {
+        Assert.Equal(TextPostProcessor.ArabicDigitsPolicy.Keep, TextPostProcessor.ArabicIndicDigitsPolicy);
+        Assert.Equal("الموعد ٢٠٢٦", TextPostProcessor.ApplyArabicIndicDigitsPolicy("الموعد ٢٠٢٦"));
+        Assert.Equal("الموعد ٢٠٢٦", TextPostProcessor.CleanTranscript("الموعد ٢٠٢٦", Array.Empty<string>()));
+    }
+
+    /// 翻策略的那一天要用的转换已经就位：改常量即生效
+    [Fact]
+    public void ArabicIndicDigitsNormalizerIsReadyForTheFlip()
+    {
+        Assert.Equal("2026 و 5", TextPostProcessor.NormalizeArabicIndicDigits("٢٠٢٦ و ۵"));
+        Assert.Equal("no digits", TextPostProcessor.NormalizeArabicIndicDigits("no digits"));
+    }
+
+    /// 润色把 ٢٠٢٦ 写成 2026 是同一个数，不是"数字被改"
+    [Fact]
+    public void DriftCheckTreatsArabicIndicDigitsAsTheSameNumber()
+    {
+        Assert.Null(TextPostProcessor.PolishDriftCheck("الموعد ٢٠٢٦", "الموعد 2026."));
+        Assert.NotNull(TextPostProcessor.PolishDriftCheck("الموعد ٢٠٢٦", "الموعد 2027."));
+    }
+
+    /// 两种热词前缀都要被复读检测认出来（Mac 端按会话语言二选一）
+    [Fact]
+    public void VocabEchoDetectsEnglishPrefix()
+    {
+        Assert.True(TextPostProcessor.IsVocabEcho("Common terms: Rappel", new[] { "Rappel" }));
+    }
 }

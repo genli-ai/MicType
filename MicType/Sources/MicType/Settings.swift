@@ -190,6 +190,7 @@ enum SettingsKeys {
     static let overlayPosition = "overlayPosition"         // 悬浮窗在屏幕上的落点
     static let keepHistory = "keepHistory"                 // 是否把听写结果记进历史（默认开）
     static let qwenModelRepo = "qwenModelRepo"
+    static let recognitionLanguage = "recognitionLanguage"  // 识别语言（"" = 自动检测）
     static let llmProvider = "llmProvider"
     static let appLanguage = "appLanguage"
     static let deepseekBaseURL = "deepseekBaseURL"
@@ -226,6 +227,7 @@ final class Settings {
             SettingsKeys.overlayPosition: OverlayPosition.bottomCenter.rawValue,
             SettingsKeys.keepHistory: true,
             SettingsKeys.qwenModelRepo: QwenModels.defaultRepo,
+            SettingsKeys.recognitionLanguage: RecognitionLanguages.autoCode,
             SettingsKeys.llmProvider: LLMProvider.openai.rawValue,
             SettingsKeys.deepseekBaseURL: LLMProvider.deepseek.defaultBaseURL,
             SettingsKeys.deepseekModel: LLMProvider.deepseek.defaultModel,
@@ -507,6 +509,19 @@ final class Settings {
     var qwenModelRepo: String {
         get { d.string(forKey: SettingsKeys.qwenModelRepo) ?? QwenModels.defaultRepo }
         set { d.set(newValue, forKey: SettingsKeys.qwenModelRepo) }
+    }
+
+    /// 识别语言（存的是 BCP-47 代码，"" = 自动检测，默认值）。
+    /// 只有用户显式选过才不是 Auto——MicType 永远不按场景/历史替他切语言。
+    var recognitionLanguage: String {
+        get { d.string(forKey: SettingsKeys.recognitionLanguage) ?? RecognitionLanguages.autoCode }
+        set { d.set(newValue, forKey: SettingsKeys.recognitionLanguage) }
+    }
+
+    /// 送给识别模型的语言参数：英文全名，或 nil（自动检测）。
+    /// 脏值也回 nil，见 RecognitionLanguages.modelLanguage。
+    var recognitionModelLanguage: String? {
+        RecognitionLanguages.modelLanguage(for: recognitionLanguage)
     }
 
 }

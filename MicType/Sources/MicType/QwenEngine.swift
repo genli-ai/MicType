@@ -18,6 +18,16 @@ enum QwenModels {
                         sizeNote: tr("约 1.1 GB", "~1.1 GB")),
     ] }
     static let defaultRepo = "mlx-community/Qwen3-ASR-0.6B-6bit"
+    /// 更大的那一档。阿语上的差距远大于中英：Fleurs-ar 词错率 25.5%（0.6B）→ 17.0%（1.7B），
+    /// Common Voice ar 46.0% → 38.0%（技术报告）。所以选阿语时要主动推荐它，而不是默默用小模型。
+    static let largeRepo = "mlx-community/Qwen3-ASR-1.7B-4bit"
+
+    /// 「该不该推荐换大模型」的判定：只在**用户显式选了阿语**且当前还是小模型时为真。
+    /// 纯函数、可单测；只推荐不自动换——换模型要下载 1.1 GB，这种事永远由用户点。
+    static func recommendsLargeModel(languageCode: String, currentRepo: String) -> Bool {
+        languageCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ar"
+            && currentRepo != largeRepo
+    }
 
     /// 模型仓库在本地的存放目录
     static func localDirectory(for repo: String) -> URL {
@@ -105,12 +115,10 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
         }
     }
 
-    /// 词汇表直接作为热词上下文喂给模型（decoder 层的第一道纠正）
-    private static func hotwordContext(terms: [String]) -> String? {
-        guard !terms.isEmpty else { return nil }
-        var joined = terms.joined(separator: "、")
-        if joined.count > 800 { joined = String(joined.prefix(800)) }
-        return "常用词汇：" + joined
+    /// 词汇表直接作为热词上下文喂给模型（decoder 层的第一道纠正）。
+    /// 前缀与分隔符跟着识别语言走（"常用词汇：" / "Common terms: "），实现见 RecognitionLanguages。
+    private static func hotwordContext(terms: [String], languageCode: String) -> String? {
+        RecognitionLanguages.hotwordContext(terms: terms, languageCode: languageCode)
     }
 
     /// 伪流式预览：对"到此为止"的一段音频跑一遍识别，结果**只用于悬浮窗灰字**，永不插入。
@@ -127,7 +135,9 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
                            completion: @escaping (String?, Int) -> Void) -> Task<Void, Never>? {
         guard isModelReady, let load = loadTask else { return nil }
         let vocabTerms = Settings.shared.vocabularyTerms
-        let context = Self.hotwordContext(terms: vocabTerms)
+        let languageCode = Settings.shared.recognitionLanguage
+        let context = Self.hotwordContext(terms: vocabTerms, languageCode: languageCode)
+        let language = Settings.shared.recognitionModelLanguage
         return Task {
             guard let stt = try? await load.value else {
                 // 加载失败的善后（清缓存、报错）留给正式 transcribe，预览这边安静退场
@@ -137,7 +147,7 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
             if Task.isCancelled { return }
             let started = DispatchTime.now()
             do {
-                let result = try await stt.transcribe(audio: samples, language: nil,
+                let result = try await stt.transcribe(audio: samples, language: language,
                                                       context: context, temperature: 0.0)
                 let elapsed = Log.ms(since: started)
                 if Task.isCancelled { return }
@@ -179,7 +189,10 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
         }
 
         let vocabTerms = Settings.shared.vocabularyTerms
-        let context = Self.hotwordContext(terms: vocabTerms)
+        let languageCode = Settings.shared.recognitionLanguage
+        let context = Self.hotwordContext(terms: vocabTerms, languageCode: languageCode)
+        // 英文全名或 nil，见 RecognitionLanguages.modelLanguage（语言代码会被原样拼进 prompt）
+        let language = Settings.shared.recognitionModelLanguage
 
         let load = ensureLoadTask()
         Task {
@@ -202,10 +215,11 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {
             }
             // 第二步：识别。失败不影响已加载的模型
             do {
-                // language 传 nil：Qwen3-ASR 自动检测语言能力很强，且避免语言代码格式不匹配
+                // language 为 nil 时走模型自动检测（默认）；用户显式选过就传英文全名——
+                // mlx-swift-asr 把它原样拼进 prompt，传 "ar" 会变成字面的「language ar」
                 let result = try await stt.transcribe(
                     audio: samples,
-                    language: nil,
+                    language: language,
                     context: context,
                     temperature: 0.0
                 )

@@ -152,4 +152,72 @@ final class TextPostProcessorTests: XCTestCase {
         XCTAssertFalse(reason!.contains("4822"))
         XCTAssertTrue(reason!.contains("digits changed"))
     }
+
+    // MARK: 阿拉伯语安全（brief §3.4/§3.5）
+
+    /// 阿语句读 ، ؟ ؛ 一律保持原样：换成 ASCII 就是改写用户说的话
+    func testArabicPunctuationIsNeverConvertedToAscii() {
+        let text = "مرحبا، كيف حالك؟ نلتقي غدا؛ إن شاء الله."
+        XCTAssertEqual(TextPostProcessor.fixMixedPunctuation(text), text)
+    }
+
+    /// 阿英混说：全角标点后面跟的是阿语时不转半角——那是一句阿语，标点不归西文一侧管
+    func testFullWidthPunctuationBeforeArabicIsLeftAlone() {
+        XCTAssertEqual(TextPostProcessor.fixMixedPunctuation("اجتماع الـ board，غدا"),
+                       "اجتماع الـ board，غدا")
+        XCTAssertEqual(TextPostProcessor.fixMixedPunctuation("اجتماع الـ board， غدا"),
+                       "اجتماع الـ board， غدا")
+    }
+
+    /// 中英那条老规则不能被阿语守卫误伤（回归）
+    func testMixedPunctuationStillFixesLatinFollowedByChinese() {
+        XCTAssertEqual(TextPostProcessor.fixMixedPunctuation("Open API，然后测试。"), "Open API, 然后测试。")
+    }
+
+    /// 绝不往阿语里插空格：补空格的"后随文字"类里没有阿语
+    func testNoSpaceIsInsertedInsideArabic() {
+        XCTAssertEqual(TextPostProcessor.fixMixedPunctuation("مرحبا,العالم"), "مرحبا,العالم")
+    }
+
+    /// 阿语靠前后缀粘连成词：「الذكاء」在「بالذكاء」内部绝不能被词表替换命中
+    func testVocabReplacementRespectsArabicWordBoundary() {
+        XCTAssertEqual(TextPostProcessor.applyVocabReplacements(
+            "بالذكاء الاصطناعي", replacements: [("الذكاء", "AI")]), "بالذكاء الاصطناعي")
+    }
+
+    /// 独立成词时照常替换（词边界不能严到把真该替换的也挡掉）
+    func testVocabReplacementStillMatchesStandaloneArabicWord() {
+        XCTAssertEqual(TextPostProcessor.applyVocabReplacements(
+            "الذكاء الاصطناعي مهم", replacements: [("الذكاء", "AI")]), "AI الاصطناعي مهم")
+        // 阿语句读是边界，不是词的一部分
+        XCTAssertEqual(TextPostProcessor.applyVocabReplacements(
+            "نعم، الذكاء؟", replacements: [("الذكاء", "AI")]), "نعم، AI؟")
+    }
+
+    /// 口水词过滤把阿语句读当边界，删完的重复读点要合并
+    func testFillerRemovalTreatsArabicPunctuationAsBoundary() {
+        XCTAssertEqual(TextPostProcessor.cleanTranscript("مرحبا، يعني، العالم", fillerWords: ["يعني"]),
+                       "مرحبا، العالم")
+    }
+
+    // MARK: 阿拉伯-印度数字策略
+
+    /// 当前策略是「保持模型原样」——实测（brief §3.6 的数字语料）之前不归一
+    func testArabicIndicDigitsAreKeptAsIs() {
+        XCTAssertEqual(TextPostProcessor.arabicIndicDigitsPolicy, .keep)
+        XCTAssertEqual(TextPostProcessor.applyArabicIndicDigitsPolicy("الموعد ٢٠٢٦"), "الموعد ٢٠٢٦")
+        XCTAssertEqual(TextPostProcessor.cleanTranscript("الموعد ٢٠٢٦", fillerWords: []), "الموعد ٢٠٢٦")
+    }
+
+    /// 翻策略的那一天要用的转换已经就位：改常量即生效，不必再改调用点
+    func testArabicIndicDigitsNormalizerIsReadyForTheFlip() {
+        XCTAssertEqual(TextPostProcessor.normalizeArabicIndicDigits("٢٠٢٦ و ۵"), "2026 و 5")
+        XCTAssertEqual(TextPostProcessor.normalizeArabicIndicDigits("no digits"), "no digits")
+    }
+
+    /// 润色把 ٢٠٢٦ 写成 2026 是同一个数，不是"数字被改"——否则阿语永远用不上润色
+    func testDriftCheckTreatsArabicIndicDigitsAsTheSameNumber() {
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(raw: "الموعد ٢٠٢٦", polished: "الموعد 2026."))
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "الموعد ٢٠٢٦", polished: "الموعد 2027."))
+    }
 }

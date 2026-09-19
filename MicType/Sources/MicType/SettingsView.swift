@@ -433,6 +433,7 @@ private struct RecognitionTab: View {
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKeys.inputDeviceUID) private var inputDeviceUID = ""
     @AppStorage(SettingsKeys.qwenModelRepo) private var qwenRepo = QwenModels.defaultRepo
+    @AppStorage(SettingsKeys.recognitionLanguage) private var recognitionLanguage = RecognitionLanguages.autoCode
     @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
     @AppStorage(SettingsKeys.fillerWords) private var fillerWords = ""
     @ObservedObject private var downloader = QwenModelDownloader.shared
@@ -457,6 +458,18 @@ private struct RecognitionTab: View {
         guard let uid = InputDevices.defaultUID,
               let device = inputDevices.first(where: { $0.uid == uid }) else { return base }
         return base + "（\(device.name)）"
+    }
+
+    /// 选了阿语却还在小模型上：出一条推荐行（只推荐，不自动换——1.1 GB 的下载由用户点）
+    private var showsArabicModelHint: Bool {
+        QwenModels.recommendsLargeModel(languageCode: recognitionLanguage, currentRepo: qwenRepo)
+    }
+
+    /// 1.7B 是否已经下载过（决定推荐行的按钮是「切换并下载」还是「切换到」）
+    private var largeModelExists: Bool {
+        _ = refreshTick
+        let dir = QwenModels.localDirectory(for: QwenModels.largeRepo)
+        return FileManager.default.fileExists(atPath: dir.appendingPathComponent("model.safetensors").path)
     }
 
     /// 存着的麦克风此刻不在（没插上 / 换了台机器）。**不自动改设置**：插回来还要照旧用，
@@ -504,6 +517,44 @@ private struct RecognitionTab: View {
             }
 
             Section {
+                Picker(tr("识别语言：", "Recognition language:"), selection: $recognitionLanguage) {
+                    Text(tr("自动检测（默认）", "Detect automatically (default)"))
+                        .tag(RecognitionLanguages.autoCode)
+                    ForEach(RecognitionLanguages.pickerOrdered) { lang in
+                        Text(lang.displayName).tag(lang.code)
+                    }
+                }
+                Text(tr("自动检测对中英文很准，几乎不用动。说小语种（或中英夹杂被判错）时指定语言更稳；指定只影响识别，不改任何别的行为。",
+                        "Automatic detection is reliable for Chinese and English, so most people never touch this. Pick a language when you speak something else, or when mixed speech gets detected wrong. It only affects recognition."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                if showsArabicModelHint {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Image(systemName: "lightbulb")
+                                .foregroundColor(.orange)
+                            Text(tr("阿拉伯语建议换 1.7B 模型", "Arabic works noticeably better on the 1.7B model"))
+                                .fontWeight(.medium)
+                        }
+                        Text(tr("阿语上 1.7B 比 0.6B 准得多（Fleurs 词错率 25.5% → 17.0%，Common Voice 46.0% → 38.0%）。\n能用的是现代标准阿语和朗读级内容；海湾、埃及等方言**不承诺**能用——那是模型的已知短板，不是设置问题。",
+                                "On Arabic the 1.7B model is far more accurate than the 0.6B one (Fleurs WER 25.5% to 17.0%, Common Voice 46.0% to 38.0%).\nModern Standard Arabic and read-aloud speech are usable. Gulf, Egyptian and other dialects are NOT promised - that is a known weakness of the model, not a setting you can fix."))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Button(largeModelExists ? tr("切换到 1.7B 模型", "Switch to the 1.7B model")
+                                                : tr("切换并下载 1.7B 模型（约 1.1 GB）",
+                                                     "Switch and download the 1.7B model (~1.1 GB)")) {
+                            updateMessage = ""
+                            QwenEngine.shared.unloadModel()
+                            qwenRepo = QwenModels.largeRepo
+                            if !largeModelExists {
+                                downloader.download(repo: QwenModels.largeRepo, force: false)
+                            }
+                            refreshTick += 1
+                        }
+                        .disabled(downloader.isDownloading)
+                    }
+                }
                 Picker(tr("识别模型：", "Speech model:"), selection: $qwenRepo) {
                     ForEach(QwenModels.all, id: \.repo) { m in
                         Text("\(m.title) · \(m.sizeNote)").tag(m.repo)
