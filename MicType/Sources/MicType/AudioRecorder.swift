@@ -1,4 +1,6 @@
+import AudioToolbox
 import AVFoundation
+import CoreAudio
 
 /// 一次录音会话的采样缓冲。tap 闭包直接捕获它，不经过 AudioRecorder 的属性——
 /// 音频线程于是只碰这一个对象和它自己的锁；stop() 换掉会话之后，那一次还没返回的
@@ -57,6 +59,9 @@ final class AudioRecorder {
     /// 录音音量回调（0~1），用于悬浮窗波形动画。注意：在音频线程回调。
     /// 装 tap 那一刻取一次快照交给音频线程，录音开始后再改不会生效。
     var onLevel: ((Float) -> Void)?
+    /// 每个音频块的**线性峰值幅度**（0~1）。只有麦克风自检要它（换算 dBFS 给用户看），
+    /// 平时是 nil —— 音频线程里连那一趟求峰值的循环都不跑。同样在装 tap 那一刻取快照。
+    var onPeak: ((Float) -> Void)?
     /// 录音期间音频链路不可恢复地断了（换设备后重装 tap 失败）。主线程回调。
     /// 上层应当拿已经录到的采样收尾，而不是干等一个再也不会来数据的录音。
     var onError: ((MTError) -> Void)?
@@ -103,6 +108,9 @@ final class AudioRecorder {
     /// 线上表现为偶发崩溃）。
     private func installTap(on engine: AVAudioEngine, into sink: RecordingBuffer) throws {
         let input = engine.inputNode
+        // 选麦克风必须**赶在读格式和装 tap 之前**：inputNode 的格式是跟着当前设备走的，
+        // 先读格式再换设备，转换器就是按旧设备的采样率建的，录出来会变调
+        applyPreferredInputDevice(to: input)
         let inFormat = input.outputFormat(forBus: 0)
 
         guard inFormat.sampleRate > 0, inFormat.channelCount > 0 else {
@@ -118,10 +126,12 @@ final class AudioRecorder {
             throw MTError(tr("无法创建音频转换器", "Could not create audio converter"))
         }
         let levelCallback = onLevel
+        let peakCallback = onPeak
 
         input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { pcm, _ in
             AudioRecorder.process(buffer: pcm, into: sink, converter: converter,
-                                  outFormat: outFormat, onLevel: levelCallback)
+                                  outFormat: outFormat, onLevel: levelCallback,
+                                  onPeak: peakCallback)
         }
         tapInstalled = true
         installedFormat = inFormat
@@ -134,6 +144,34 @@ final class AudioRecorder {
             throw MTError(tr("无法启动录音：", "Could not start recording: ") + error.localizedDescription)
         }
         Log.info("Audio tap installed rate=\(Int(inFormat.sampleRate)) ch=\(inFormat.channelCount)")
+    }
+
+    /// 按设置里的 UID 指定输入设备。空 UID（默认）＝什么都不碰，行为与 3.2 完全一致。
+    /// 三种失败（拿不到 audio unit / 设备不在 / 设置属性失败）**一律只记日志然后继续**：
+    /// 用户保存过的麦克风今天没插上，也得让他能对着内建麦克风把话说完，
+    /// 而不是收到一句"录音失败"。设置本身不动，下次插回来照旧生效。
+    private func applyPreferredInputDevice(to input: AVAudioInputNode) {
+        let uid = Settings.shared.inputDeviceUID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !uid.isEmpty else { return }
+        guard let unit = input.audioUnit else {
+            Log.warn("Preferred input device skipped: input node has no audio unit (uid=\(uid))")
+            return
+        }
+        guard var deviceID = InputDevices.deviceID(forUID: uid) else {
+            Log.warn("Preferred input device not connected (uid=\(uid)) — using system default")
+            return
+        }
+        let status = AudioUnitSetProperty(unit,
+                                          kAudioOutputUnitProperty_CurrentDevice,
+                                          kAudioUnitScope_Global,
+                                          0,
+                                          &deviceID,
+                                          UInt32(MemoryLayout<AudioDeviceID>.size))
+        if status == noErr {
+            Log.info("Input device selected uid=\(uid) id=\(deviceID)")
+        } else {
+            Log.warn("Input device select failed uid=\(uid) status=\(status) — using system default")
+        }
     }
 
     private func removeTap(from engine: AVAudioEngine) {
@@ -185,7 +223,7 @@ final class AudioRecorder {
     /// 音频线程入口：静态方法，不捕获 self，所有依赖由调用点以局部常量传入
     private static func process(buffer: AVAudioPCMBuffer, into sink: RecordingBuffer,
                                 converter: AVAudioConverter, outFormat: AVAudioFormat,
-                                onLevel: ((Float) -> Void)?) {
+                                onLevel: ((Float) -> Void)?, onPeak: ((Float) -> Void)?) {
         let ratio = outFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
         guard let out = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else { return }
@@ -216,6 +254,13 @@ final class AudioRecorder {
         for v in ptr { sum += v * v }
         let rms = (sum / Float(n)).squareRoot()
         onLevel?(min(1.0, rms * 14))
+
+        // 峰值只在自检时算（onPeak 为 nil 时一个样本都不多扫）
+        if let onPeak = onPeak {
+            var peak: Float = 0
+            for v in ptr { peak = max(peak, abs(v)) }
+            onPeak(peak)
+        }
     }
 
     /// 停止并返回 16kHz 采样

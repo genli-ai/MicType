@@ -753,9 +753,16 @@ final class DictationController {
         pressSession = false
         let duration = Double(samples.count) / 16000.0
 
-        // 太短当作误触
-        guard duration >= 0.4 else {
-            Log.info("Recording stop discarded duration=\(String(format: "%.2f", duration))s (<0.4s)")
+        // 电平判据一趟算完，交给 SilenceGate 这条纯函数决定这段音频的去向（判据与理由见 SilenceGate）
+        let level = SilenceGate.stats(samples)
+        let decision = SilenceGate.decide(peak: level.peak, rms: level.rms, duration: duration)
+        let levelLog = "duration=\(String(format: "%.2f", duration))s"
+            + " peak=\(String(format: "%.4f", level.peak)) rms=\(String(format: "%.4f", level.rms))"
+
+        switch decision {
+        case .tooShort:
+            // 太短当作误触
+            Log.info("Recording stop discarded \(levelLog) (<0.4s)")
             phase = .idle
             // 是设备变更把录音打断的就说清楚，别让用户以为是自己按错了
             if let fault = takeSessionNote() {
@@ -765,12 +772,9 @@ final class DictationController {
                 overlay.hide()
             }
             return
-        }
-
-        // 几乎无声（误触或没说话）：不送识别——空音频会诱发模型把热词上下文"复读"成识别结果
-        let peak = samples.reduce(0) { max($0, abs($1)) }
-        guard peak >= 0.012 else {
-            Log.info("Recording stop silence-gated duration=\(String(format: "%.2f", duration))s peak=\(String(format: "%.4f", peak))")
+        case .silent:
+            // 几乎无声（误触或没说话）：不送识别——空音频会诱发模型把热词上下文"复读"成识别结果
+            Log.info("Recording stop silence-gated \(levelLog)")
             phase = .idle
             // 有故障附注（设备被拔/切走、到最长时长自动收尾）＝真出了事，必须出声——
             // 眼睛不在屏幕底部的人只有这一声能提醒他这一轮被丢了。
@@ -783,9 +787,14 @@ final class DictationController {
                 overlay.flashError(tr("没有听到内容", "Nothing heard"))
             }
             return
+        case .faint, .normal:
+            break
         }
+        // 声音很小的那一档：照常识别，只是万一识别出来是空的，给的提示要能指路（挪近点 / 换麦克风），
+        // 而不是笼统的"没有听到内容"——前者用户知道下一步做什么，后者只会让他再试一次同样的动作
+        let faintAudio = (decision == .faint)
 
-        Log.info("Recording stop duration=\(String(format: "%.2f", duration))s peak=\(String(format: "%.4f", peak))")
+        Log.info("Recording stop \(levelLog) gate=\(decision.rawValue)")
         phase = .processing
         overlay.showProcessing(tr("识别中…", "Transcribing…"))
         let isColdStart = !QwenEngine.shared.isModelReady
@@ -809,7 +818,11 @@ final class DictationController {
                     self.phase = .idle
                     // 这里和静音闸门不同：音频过了电平闸门、识别也真跑过一遍，却什么都没出来
                     // ——这不是误触，是实打实的一次失败，和其它失败出口一样要出声。
-                    self.overlay.flashError(tr("没有听到内容", "Nothing heard"))
+                    self.overlay.flashError(
+                        faintAudio
+                            ? tr("声音太小，请靠近麦克风再试",
+                                 "Too quiet — move closer to the microphone and try again")
+                            : tr("没有听到内容", "Nothing heard"))
                     Sounds.playError()
                     return
                 }

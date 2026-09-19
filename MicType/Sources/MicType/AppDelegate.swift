@@ -15,6 +15,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         (NSApp.delegate as? AppDelegate)?.dictation.overlay
     }
 
+    /// 设置窗口里的「测试麦克风」要用：主流程正在录音 / 出结果时不能再开第二路录音，
+    /// 否则两路抢同一只麦克风，用户看到的是自己正说着的话被一个自检打断
+    static var isDictationBusy: Bool {
+        guard let dictation = (NSApp.delegate as? AppDelegate)?.dictation else { return false }
+        return dictation.isRecording || dictation.isProcessing
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         Log.startup()

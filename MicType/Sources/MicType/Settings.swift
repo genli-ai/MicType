@@ -185,6 +185,7 @@ enum SettingsKeys {
     static let playSounds = "playSounds"
     static let restoreClipboard = "restoreClipboard"
     static let autoStopSilenceSeconds = "autoStopSilenceSeconds"  // 静音自动停秒数（0 = 关）
+    static let inputDeviceUID = "inputDeviceUID"            // 指定麦克风的 CoreAudio UID（"" = 系统默认）
     static let livePreview = "livePreview"                 // 录音中悬浮窗灰字预览（伪流式）
     static let overlayPosition = "overlayPosition"         // 悬浮窗在屏幕上的落点
     static let keepHistory = "keepHistory"                 // 是否把听写结果记进历史（默认开）
@@ -220,6 +221,7 @@ final class Settings {
             SettingsKeys.playSounds: true,
             SettingsKeys.restoreClipboard: true,
             SettingsKeys.autoStopSilenceSeconds: 0.0,
+            SettingsKeys.inputDeviceUID: "",
             SettingsKeys.livePreview: true,
             SettingsKeys.overlayPosition: OverlayPosition.bottomCenter.rawValue,
             SettingsKeys.keepHistory: true,
@@ -396,6 +398,15 @@ final class Settings {
     var autoStopSilenceSeconds: Double {
         get { d.object(forKey: SettingsKeys.autoStopSilenceSeconds) as? Double ?? 0 }
         set { d.set(max(0, newValue), forKey: SettingsKeys.autoStopSilenceSeconds) }
+    }
+
+    /// 指定用哪只麦克风录音（CoreAudio 设备 UID）。"" = 跟随系统默认（默认值，升级的用户什么都不用动）。
+    /// 存 UID 不存 AudioDeviceID：后者拔插一次就变。指定的设备开录时不在（没插 / 换了台机器），
+    /// AudioRecorder 会退回系统默认并记一条 WARN——**绝不因为一只麦克风不在就让这次录音失败**，
+    /// 也绝不替用户把这条设置改掉（下次插回来照旧生效）。
+    var inputDeviceUID: String {
+        get { d.string(forKey: SettingsKeys.inputDeviceUID) ?? "" }
+        set { d.set(newValue, forKey: SettingsKeys.inputDeviceUID) }
     }
 
     /// 录音中在悬浮窗显示灰色的实时草稿（伪流式预览）。默认开。

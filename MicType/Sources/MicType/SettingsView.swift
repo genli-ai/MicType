@@ -264,14 +264,132 @@ private struct PermissionBadge: View {
     }
 }
 
+// MARK: - 麦克风自检
+
+/// 麦克风自检（路线图 P12）：借 AudioRecorder 跑一段 3 秒录音，只读电平——
+/// 采样收上来立刻丢掉，不送识别、不落盘、不进历史。
+/// 为什么值得做：选错麦克风这件事，用户通常是在真的要说话的时候才发现的（说完一段，什么都没出来）。
+/// 给一条电平条 + 峰值读数，选完当场就能确认"这只真的在收声"。
+private final class MicTestSession: ObservableObject {
+
+    @Published private(set) var isRunning = false
+    /// 0~1，画电平条（AudioRecorder 送来的归一化 RMS）
+    @Published private(set) var level: Float = 0
+    /// 本次自检收到的最大峰值（线性幅度 0~1）
+    @Published private(set) var peak: Float = 0
+    @Published private(set) var message = ""
+
+    private static let seconds: Double = 3
+
+    private let recorder = AudioRecorder()
+    /// 自检代数：连点两次「测试」时，旧的那一次定时收尾不能把新的一次关掉
+    private var run = 0
+
+    /// 峰值读数。dBFS 是音频里通用的刻度（0 = 满刻度，越负越小），比 0~1 更好对照
+    var peakLabel: String {
+        guard peak > 0 else { return "— dBFS" }
+        return String(format: "%.0f dBFS", 20 * log10(peak))
+    }
+
+    func start() {
+        guard !isRunning else { return }
+        // 主流程正在录音/出结果时不抢麦克风：用户正说着的话比一次自检重要得多
+        guard !AppDelegate.isDictationBusy else {
+            message = tr("正在录音或处理中，稍后再测",
+                         "Busy recording — try again in a moment")
+            return
+        }
+        message = tr("请用平常的音量说一句话…", "Say something at your normal volume…")
+        Permissions.ensureMicrophone { [weak self] granted in
+            guard let self = self else { return }
+            guard granted else {
+                self.message = tr("没有麦克风权限：系统设置 › 隐私与安全性 › 麦克风 里勾上 MicType",
+                                  "Microphone permission denied — enable MicType in System Settings › Privacy & Security › Microphone")
+                return
+            }
+            self.begin()
+        }
+    }
+
+    /// 结论文字是一次性生成的快照，切语言不会自己刷新 → 切换时清掉（3.1.1 的老坑）
+    func clearMessage() { message = "" }
+
+    /// 关窗 / 切走标签页时收手，别让一路录音在看不见的地方继续开着
+    func cancel() {
+        guard isRunning else { return }
+        finish(note: "")
+    }
+
+    private func begin() {
+        // 回调必须在 start() 之前设好：AudioRecorder 装 tap 那一刻就把它们快照给音频线程了
+        recorder.onLevel = { [weak self] value in
+            DispatchQueue.main.async { self?.level = value }
+        }
+        recorder.onPeak = { [weak self] value in
+            DispatchQueue.main.async {
+                guard let self = self, self.isRunning else { return }
+                self.peak = max(self.peak, value)
+            }
+        }
+        recorder.onError = { [weak self] error in
+            self?.finish(note: error.message)
+        }
+        peak = 0
+        level = 0
+        do {
+            try recorder.start()
+        } catch {
+            message = (error as? MTError)?.message ?? error.localizedDescription
+            Log.warn("Mic test start failed: \(message)")
+            return
+        }
+        isRunning = true
+        run += 1
+        let token = run
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.seconds) { [weak self] in
+            guard let self = self, self.run == token else { return }
+            self.finish(note: nil)
+        }
+    }
+
+    /// note: nil = 正常到点收尾（给结论）；非 nil = 被打断（原样显示，空串表示什么都不说）
+    private func finish(note: String?) {
+        guard isRunning else { return }
+        _ = recorder.stop()
+        isRunning = false
+        level = 0
+        run += 1     // 让还没到点的那个定时收尾作废
+        if let note = note {
+            message = note
+            return
+        }
+        Log.info("Mic test done peak=\(String(format: "%.4f", peak)) uid=\(Settings.shared.inputDeviceUID)")
+        // 结论直接对齐识别链路的静音闸门（SilenceGate），别让自检说"没问题"而真录音被判静音
+        if peak < SilenceGate.silentPeak {
+            message = tr("几乎没有收到声音：换一只麦克风，或检查系统设置里的输入音量",
+                         "Almost nothing came through — try another microphone, or check the input volume in System Settings")
+        } else if peak < SilenceGate.faintPeak {
+            message = tr("收到了，但很小：靠近麦克风会明显更准",
+                         "Picked you up, but very quietly — moving closer will noticeably help accuracy")
+        } else {
+            message = tr("麦克风工作正常", "Microphone works")
+        }
+    }
+}
+
 // MARK: - 识别（Qwen3-ASR）
 
 private struct RecognitionTab: View {
     @ObservedObject private var l10n = L10n.shared
+    @AppStorage(SettingsKeys.inputDeviceUID) private var inputDeviceUID = ""
     @AppStorage(SettingsKeys.qwenModelRepo) private var qwenRepo = QwenModels.defaultRepo
     @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
     @AppStorage(SettingsKeys.fillerWords) private var fillerWords = ""
     @ObservedObject private var downloader = QwenModelDownloader.shared
+    @StateObject private var micTest = MicTestSession()
+    @State private var inputDevices: [InputDevice] = []
+    /// 插拔 AirPods / 接上声卡时下拉框要立刻跟上（否则得关掉设置窗口再打开才看得见）
+    @State private var deviceObserver: InputDevices.DeviceChangeObserver?
     @State private var refreshTick = 0
     @State private var updateMessage = ""
     @State private var checkingUpdate = false
@@ -282,8 +400,58 @@ private struct RecognitionTab: View {
         return FileManager.default.fileExists(atPath: dir.appendingPathComponent("model.safetensors").path)
     }
 
+    /// 「系统默认」当前实际指向谁——写在选项里，用户不用去系统设置里对照
+    private var systemDefaultLabel: String {
+        let base = tr("系统默认", "System default")
+        guard let uid = InputDevices.defaultUID,
+              let device = inputDevices.first(where: { $0.uid == uid }) else { return base }
+        return base + "（\(device.name)）"
+    }
+
+    /// 存着的麦克风此刻不在（没插上 / 换了台机器）。**不自动改设置**：插回来还要照旧用，
+    /// 只是在列表里如实标出来，并让 Picker 有一个能选中的选项（否则 SwiftUI 显示空白）
+    private var savedDeviceMissing: Bool {
+        !inputDeviceUID.isEmpty && !inputDevices.contains { $0.uid == inputDeviceUID }
+    }
+
     var body: some View {
         Form {
+            Section {
+                Picker(tr("麦克风：", "Microphone:"), selection: $inputDeviceUID) {
+                    Text(systemDefaultLabel).tag("")
+                    ForEach(inputDevices) { device in
+                        Text(device.name).tag(device.uid)
+                    }
+                    if savedDeviceMissing {
+                        Text(tr("已选的麦克风（当前未连接）", "Selected microphone (not connected)"))
+                            .tag(inputDeviceUID)
+                    }
+                }
+                HStack(spacing: 10) {
+                    Button(micTest.isRunning ? tr("测试中…", "Testing…")
+                                             : tr("测试麦克风", "Test microphone")) {
+                        micTest.start()
+                    }
+                    .disabled(micTest.isRunning)
+                    ProgressView(value: Double(min(max(micTest.level, 0), 1)))
+                        .progressViewStyle(.linear)
+                        .frame(width: 150)
+                    Text(micTest.peakLabel)
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundColor(.secondary)
+                }
+                if !micTest.message.isEmpty {
+                    Text(micTest.message)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Text(tr("测试会录 3 秒，只看音量：录到的声音当场丢弃，不识别、不保存。\n选定的麦克风在开始录音时没插上，会自动退回系统默认（这次录音照常进行），设置本身不改动。",
+                        "The test records for 3 seconds and only meters the level — the audio is discarded, never transcribed or saved.\nIf the selected microphone is not connected when recording starts, MicType falls back to the system default for that session and leaves your choice untouched."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             Section {
                 Picker(tr("识别模型：", "Speech model:"), selection: $qwenRepo) {
                     ForEach(QwenModels.all, id: \.repo) { m in
@@ -367,6 +535,17 @@ private struct RecognitionTab: View {
         }
         .formStyle(.grouped)
         .padding(.top, 4)
+        .onAppear {
+            let devices = $inputDevices
+            devices.wrappedValue = InputDevices.list()
+            deviceObserver = InputDevices.DeviceChangeObserver {
+                devices.wrappedValue = InputDevices.list()
+            }
+        }
+        .onDisappear {
+            deviceObserver = nil      // 释放即注销 CoreAudio 监听
+            micTest.cancel()
+        }
         .onReceive(downloader.$isDownloading) { _ in
             refreshTick += 1
         }
@@ -378,6 +557,7 @@ private struct RecognitionTab: View {
         // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言
         .onChange(of: l10n.language) { _, _ in
             updateMessage = ""
+            micTest.clearMessage()
             if !downloader.isDownloading { downloader.statusText = "" }
         }
     }

@@ -278,6 +278,70 @@ enum TextPostProcessor {
     }
 }
 
+// MARK: - 静音闸门
+
+/// 松手之后「这段音频要不要送去识别」的判据（路线图 bug 9）。
+///
+/// 老实现是一条线：峰值 < 0.012 就整段丢掉，报「没有听到内容」。问题在于它同时承担了两件事——
+/// 「真的没开口」和「声音太小」——而后者是**用户完全可以救回来的情况**（挪近一点、换只麦克风），
+/// 却被当成误触悄悄丢了，用户只知道"又没识别到"，不知道该做什么。
+///
+/// 所以拆成三档：
+///   • .silent（峰值 < 0.006）＝ 基本等于数字静音，误触或压根没开口 → 不送识别。
+///     这道闸门还有第二个作用：空音频最容易诱发模型把热词上下文"复读"成识别结果（3.2.2），
+///     所以它必须留着，只是线压低到"真静音"那一档。
+///   • .faint（0.006 ≤ 峰值 < 0.02 且 RMS 极小）＝ 远处说话 / 麦克风没选对 → **照样送识别**
+///     （这一档常常是能识别出来的，凭什么不给用户试），只有识别真的出来空的时候才提示"声音太小"。
+///   • .normal ＝ 正常走。
+/// 光看峰值不够：一声咳嗽也能顶出 0.05 的峰值而整段没人声，RMS 才反映"整段有多少能量"，
+/// 两个一起看才分得清"小声说了一整段"和"安静里蹦了一下"。
+///
+/// 纯函数、可单测，不碰任何设置与 UI。阈值是常量而不是设置项：这是识别链路的内部判据，
+/// 不是用户该调的旋钮（要调的是"麦克风选哪只"）。
+enum SilenceGate {
+
+    enum Decision: String, Equatable {
+        /// 太短，当误触丢弃（静默）
+        case tooShort
+        /// 几乎数字静音，不送识别
+        case silent
+        /// 声音很小但不是静音：照样送识别，识别为空时给"声音太小"的针对性提示
+        case faint
+        case normal
+    }
+
+    /// 低于这个时长一律当误触（手滑碰到热键），静默丢弃
+    static let minDurationSeconds: Double = 0.4
+    /// "真静音"线：低于它就不送识别
+    static let silentPeak: Float = 0.006
+    /// "声音太小"线：峰值在 [silentPeak, faintPeak) 且 RMS 也极小 → .faint
+    static let faintPeak: Float = 0.02
+    static let faintRMS: Float = 0.004
+
+    static func decide(peak: Float, rms: Float, duration: Double) -> Decision {
+        if duration < minDurationSeconds { return .tooShort }
+        // 写成 !(peak >= x) 而不是 peak < x：NaN（转换器出岔子时可能出现）两种比较都为假，
+        // 前者会把它判成 .silent（安全侧），后者会把一段坏数据送进识别
+        if !(peak >= silentPeak) { return .silent }
+        if peak < faintPeak, rms < faintRMS { return .faint }
+        return .normal
+    }
+
+    /// 峰值 + RMS 一趟算完（5 分钟录音 ≈ 480 万个采样，扫两遍没必要）。
+    /// 空数组返回 (0, 0) → decide 判 .silent，和"什么都没录到"一致。
+    static func stats(_ samples: [Float]) -> (peak: Float, rms: Float) {
+        guard !samples.isEmpty else { return (0, 0) }
+        var peak: Float = 0
+        var sum: Double = 0     // 用 Double 累加：几百万个平方项用 Float 累加会把小值吃掉
+        for v in samples {
+            let a = abs(v)
+            if a > peak { peak = a }
+            sum += Double(v) * Double(v)
+        }
+        return (peak, Float((sum / Double(samples.count)).squareRoot()))
+    }
+}
+
 // MARK: - 提示音
 
 /// 四个提示音。自带短音（Resources/Sounds/*.wav，由 scripts/generate_sounds.py 生成），
