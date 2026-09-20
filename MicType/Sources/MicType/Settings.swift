@@ -186,17 +186,6 @@ enum LLMProvider: String, CaseIterable {
         }
     }
 
-    /// 徽章那种放不下长名字的地方用短名
-    var shortName: String {
-        switch self {
-        case .openai: return "GPT"
-        case .deepseek: return "DeepSeek"
-        case .qwen: return tr("阿里云", "Alibaba")
-        case .custom: return tr("其他", "Other")
-        case .local: return tr("本机", "Local")
-        }
-    }
-
     /// 每个服务商一条独立的钥匙串条目：换服务商试用时互不覆盖（老用户的两条保持原名不动）
     var keychainAccount: String {
         switch self {

@@ -290,10 +290,6 @@ struct KeyEntryView: View {
     /// 用哪条链路验这把 Key。默认走 LLM（AI 页）；识别页传 `.cloudASR(...)`，
     /// 直接打识别端点、发 1 秒合成音（理由见 KeyVerifier.Probe）
     var probe: KeyVerifier.Probe = .llm
-    /// 输入框下面那一行**价格**（LLMCatalog.billingNote，全 App 唯一出处）要不要显示。
-    /// Plan C 的文案预算：Key 怎么存、新账号要先充值这些细则全部收进段头那颗 ⓘ
-    /// （SettingsCopy.keyInfo），控件旁边只留代价——代价不是解释，永远不进 ⓘ。
-    var showsCostLine: Bool = true
     /// 验证结束时通知外面（true = 通过）。菜单栏的「配置 AI…」之类要据此刷新。
     var onStatusChange: ((KeyVerifier.Status) -> Void)? = nil
 
@@ -333,9 +329,10 @@ struct KeyEntryView: View {
                         .lineLimit(3)
                         .textSelection(.enabled)
                 }
-                if showsCostLine {
-                    Caption(LLMCatalog.billingNote)
-                }
+                // 输入框下面永远留这一行**价格**（LLMCatalog.billingNote，全 App 唯一出处）：
+                // Key 怎么存、新账号要先充值这些细则收进段头那颗 ⓘ（SettingsCopy.keyInfo），
+                // 控件旁边只留代价——代价不是解释，永远不进 ⓘ
+                Caption(LLMCatalog.billingNote)
             } else {
                 // 本机模型：没有 Key 不是"还没配好"，是这一档的正常状态
                 Caption(SettingsCopy.localModelNeedsNoKey)

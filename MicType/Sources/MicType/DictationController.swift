@@ -1810,6 +1810,31 @@ final class DictationController {
         return sinkRegistered ? .clipboard : .inserter
     }
 
+    /// 这段字最后**落在哪儿**。路由是"打算走哪条"，这一层是"问过输入框之后真正走成了哪条"。
+    /// 两者不是一回事：挑中了 .sink，而那一刻框接不住（窗口刚被关掉、刚翻到别的页），
+    /// 字必须退到剪贴板——**绝不能掉在地上**，也绝不能改去 ⌘V（这条路的前提就是开录时
+    /// 人在 MicType 自己的窗口里，一下 ⌘V 只会打进我们自己的控件）。
+    ///
+    /// 为什么也抽成纯函数：这半步过去只活在 deliver() 里（private、TextInserter 是静态的、
+    /// 都注入不进来），把它写成"接不住就 return"——字静默消失——572 个测试一个都不会红。
+    enum DeliveryOutcome: String {
+        /// 直接落进了「试一下」那个框
+        case sink
+        /// 只留在剪贴板上，等用户自己按 ⌘V
+        case clipboard
+        /// 常规：剪贴板 + 模拟 ⌘V 打到光标处
+        case inserter
+    }
+
+    /// - sinkAccepted: 这一刻真的问过 TranscriptSink，它说接住了（route != .sink 时恒为 false）
+    static func deliveryOutcome(route: DeliveryRoute, sinkAccepted: Bool) -> DeliveryOutcome {
+        switch route {
+        case .sink: return sinkAccepted ? .sink : .clipboard
+        case .clipboard: return .clipboard
+        case .inserter: return .inserter
+        }
+    }
+
     private func deliver(raw: String, final text: String, note: String, warning: Bool = false,
                          coldStart: Bool = false, revertible: Bool = false,
                          citations: [Citation] = []) {
@@ -1850,7 +1875,16 @@ final class DictationController {
         let tInsert = DispatchTime.now()
         let metric = pendingMetric
         pendingMetric = nil
-        if route == .sink, TranscriptSink.accept(finalText) {
+        // accept 有副作用（接住了就写进框里），所以只有挑中 .sink 才问得出口
+        let accepted = route == .sink && TranscriptSink.accept(finalText)
+        if route == .sink, !accepted {
+            // 注册着却没接住（窗口刚被关掉、或刚翻到别的页）：退到剪贴板那条路。
+            // 不退回粘贴是因为这一路的前提就是"开录时人在 MicType 自己的窗口里"，
+            // 一下 ⌘V 只会打进我们自己的控件
+            Log.warn("Deliver sink declined the text - leaving it on the clipboard")
+        }
+        switch Self.deliveryOutcome(route: route, sinkAccepted: accepted) {
+        case .sink:
             let insertMs = Log.ms(since: tInsert)
             Log.info("Deliver done target=\(logTarget) path=sink outcome=accepted insert=\(insertMs)ms")
             // 指标照记：这一轮的耗时是既成事实，和走哪条路无关
@@ -1865,14 +1899,7 @@ final class DictationController {
             }
             Sounds.playSuccess()
             return
-        }
-        if route == .sink {
-            // 注册着却没接住（窗口刚被关掉、或刚翻到别的页）：退到剪贴板那条路。
-            // 不退回粘贴是因为这一路的前提就是"开录时人在 MicType 自己的窗口里"，
-            // 一下 ⌘V 只会打进我们自己的控件
-            Log.warn("Deliver sink declined the text - leaving it on the clipboard")
-        }
-        if route == .sink || route == .clipboard {
+        case .clipboard:
             let insertMs = Log.ms(since: tInsert)
             TextInserter.copyForManualPaste(finalText)
             Log.info("Deliver done target=\(logTarget) path=clipboard outcome=copied"
@@ -1883,6 +1910,8 @@ final class DictationController {
                                   "MicType's own window is frontmost - text copied to clipboard, press ⌘V to paste"))
             Sounds.playError()
             return
+        case .inserter:
+            break
         }
         TextInserter.insert(finalText, targetBundleID: target,
                             allowClipboardRestore: true,

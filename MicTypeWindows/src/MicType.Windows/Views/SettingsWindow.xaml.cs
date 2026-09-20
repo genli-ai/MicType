@@ -68,11 +68,14 @@ public partial class SettingsWindow : Window
         VocabularyHelp.Text = L10n.Tr(
             "普通词条提升识别命中率；「杰文=捷文」格式则把左边强制替换为右边——适合同音人名等热词救不了的情况。\n一个正写可挂多个错写：「杰文|捷纹|结文=捷文」。西文词条大小写不敏感、按整词匹配。",
             "Plain entries bias recognition; \"wrong=right\" force-replaces the left side with the right — for exact homophones that hotwords can't fix.\nOne correct form can take several wrong spellings: \"Jevin|Jevan|Javin=Jaywen\". Latin entries match whole words, case-insensitively.");
-        FillerLabel.Text = L10n.Tr("口水词过滤（逗号或换行分隔，默认空 = 不过滤）",
-            "Filler words to drop (comma or newline separated; empty = off)");
+        // 内置表（嗯 / 呃 / um / uh 这类）无条件生效，这个框只是在它之外再加几条——
+        // 说成"空 = 不过滤"是假话：空着照样会删「嗯」，用户会以为是识别把话吃了。
+        // 与 TextPostProcessor.CleanTranscript 的口径、以及 Mac 端 Settings.customFillerWords 同源
+        FillerLabel.Text = L10n.Tr("口水词过滤（内置表始终生效，这里填额外的；逗号或换行分隔）",
+            "Filler words (a built-in list always applies; add extra ones here, comma or newline separated)");
         FillerHelp.Text = L10n.Tr(
-            "在本机删掉，不联网、不花润色额度——「仅识别」档也生效。\n分寸是保守的：西文词按整词删（填 um 不会动 umbrella）；中文词只在前后都是标点或空白时删（填「那个」不会动「那个人」）。",
-            "Removed on-device — no network, no polish tokens; works even in transcribe-only mode.\nDeliberately conservative: Latin entries are dropped as whole words only (\"um\" never touches \"umbrella\"); other entries are dropped only when standing alone between punctuation or spaces.");
+            "「嗯 / 呃 / um / uh」这类常见口水词内置，空着也照样删；这个框只在它之外多加几条。\n都在本机删掉，不联网、不花润色额度——「仅识别」档也生效。\n分寸是保守的：西文词按整词删（填 um 不会动 umbrella）；中文词只在前后都是标点或空白时删（填「那个」不会动「那个人」）。",
+            "Common fillers (\"um\", \"uh\", \"erm\" and the like) are built in and dropped even when this box is empty; entries here are added on top.\nAll of it happens on-device — no network, no polish tokens; works even in transcribe-only mode.\nDeliberately conservative: Latin entries are dropped as whole words only (\"um\" never touches \"umbrella\"); other entries are dropped only when standing alone between punctuation or spaces.");
         PolishModeLabel.Text = L10n.Tr("润色档位", "Polish mode");
         SetComboContent(PolishLevelBox, "Off", L10n.Tr("仅识别", "Transcribe only"));
         SetComboContent(PolishLevelBox, "Smart", L10n.Tr("AI 润色", "AI polish"));

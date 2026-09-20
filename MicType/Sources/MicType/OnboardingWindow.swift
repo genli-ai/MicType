@@ -353,8 +353,15 @@ enum OnboardingCopy {
     }
 }
 
-final class OnboardingWindowController: NSObject, NSWindowDelegate {
+/// 窗口是复用的（isReleasedWhenClosed = false），关窗并不会销毁里面那几页，所以
+/// "这扇窗这会儿开着没有"是**只有这一层知道**的事实。权限页和「试一下」那一页各挂着
+/// 一个 1 秒轮询，靠它停下来——否则窗口开过一次之后，这两个 Timer 一路跑到退出为止，
+/// 而且权限页那个还会在一扇关着的窗里把页码推到第三屏。
+final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableObject {
     static let shared = OnboardingWindowController()
+
+    /// 这扇窗开着没有。两页的轮询订阅它来开关
+    @Published private(set) var isOpen = false
 
     private var window: NSWindow?
     private var langObserver: AnyCancellable?
@@ -439,6 +446,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         registerTranscriptSink()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        isOpen = true
     }
 
     /// 引导窗开着、并且正停在「试一下」那一页吗——直接落字的唯一判据
@@ -512,8 +520,11 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     /// 下次启动会把他接回没走完的那一屏。4.0.1 这里顺手把 onboardingCompleted 写真，
     /// 于是"关掉引导"成了一条悄悄绕过权限和模型的路，而他自己并不知道绕过了什么。
     func windowWillClose(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === window else { return }
         // 窗口没了就别再截留文字：摘干净，之后的听写照常粘到光标处
         TranscriptSink.unregister()
+        // 里面那几页不会跟着消失，得由这里告诉它们停手
+        isOpen = false
         Log.info("Onboarding closed at page=\(model.page.rawValue) "
                  + "completed=\(Settings.shared.onboardingCompleted)")
     }
@@ -800,8 +811,12 @@ private struct PermissionsPage: View {
     @ObservedObject private var downloader = QwenModelDownloader.shared
     @AppStorage(SettingsKeys.qwenModelRepo) private var repo = QwenModels.defaultRepo
     @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
-    /// 1 秒一次的轮询：用户在系统设置里打开开关后，这里自己变绿，不需要重启、也不必再点一次
-    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    /// 1 秒一次的轮询：用户在系统设置里打开开关后，这里自己变绿，不需要重启、也不必再点一次。
+    /// **只在窗口开着时轮**：窗口是复用的，关掉之后这一页并不会消失——4.1.0 之前这里是个
+    /// autoconnect 的 Timer，于是关窗之后它照轮不误，还能在一扇关着的窗里把页码推到第三屏。
+    @State private var poll: AnyCancellable?
+    /// 这扇窗开着没有（关窗时要停轮询，再开时接着轮）
+    @ObservedObject private var windowState = OnboardingWindowController.shared
 
     private var modelExists: Bool { QwenModels.isFullyDownloaded(repo: repo) }
 
@@ -892,13 +907,30 @@ private struct PermissionsPage: View {
             // 进页时权限就已经齐了（老用户被模型缺失带过来、或者他点「上一步」回来看一眼）：
             // 这一页没什么可等的，别再把他自动推走——自动前进只属于"他刚刚授权成功"那一刻
             if model.micOK, model.axOK { model.autoAdvanced = true }
+            startPolling()
         }
-        .onReceive(timer) { _ in
-            model.micOK = Permissions.microphoneGranted
-            model.axOK = Permissions.isAccessibilityTrusted
-            model.refreshEngineReady()
-            advanceIfPermissionsJustLanded()
+        .onDisappear { stopPolling() }
+        // 关窗时这一页并不会被销毁（窗口复用），所以停轮询这件事只能由窗口来说
+        .onChange(of: windowState.isOpen) { _, open in
+            if open { startPolling() } else { stopPolling() }
         }
+    }
+
+    private func startPolling() {
+        guard poll == nil else { return }
+        poll = Timer.publish(every: 1, on: .main, in: .common)
+            .autoconnect()
+            .sink { _ in
+                model.micOK = Permissions.microphoneGranted
+                model.axOK = Permissions.isAccessibilityTrusted
+                model.refreshEngineReady()
+                advanceIfPermissionsJustLanded()
+            }
+    }
+
+    private func stopPolling() {
+        poll?.cancel()
+        poll = nil
     }
 
     /// 模型在这一屏后台开始下：用户接下来要点的是系统设置里的两个开关，那几十秒正好用来下载。
@@ -1224,9 +1256,12 @@ private struct TryItPage: View {
     @FocusState private var editorFocused: Bool
     /// 「已收到 ✓」那一下的开关（2.5 秒后自己熄）
     @State private var flashReceived = false
-    /// 本机模型加载好了没有。QwenEngine 不是 ObservableObject，所以靠这个 1 秒的轮询刷新
+    /// 本机模型加载好了没有。QwenEngine 不是 ObservableObject，所以靠这个 1 秒的轮询刷新。
+    /// 同权限页：只在窗口开着时轮，关掉之后这一页还在视图树里，autoconnect 会一路轮到退出
     @State private var modelReady = false
-    private let readinessTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    @State private var readinessPoll: AnyCancellable?
+    /// 这扇窗开着没有（关窗时要停轮询，再开时接着轮）
+    @ObservedObject private var windowState = OnboardingWindowController.shared
 
     /// 这一屏让他"轻点试一次"，那就得先说清这一次能不能成。
     /// 4.0.1 只在"正在下"时提醒，于是在第二屏取消过下载、或者在第三屏把识别从云端
@@ -1259,6 +1294,24 @@ private struct TryItPage: View {
         let ax = Permissions.isAccessibilityTrusted
         if mic != model.micOK { model.micOK = mic }
         if ax != model.axOK { model.axOK = ax }
+    }
+
+    private func startReadinessPolling() {
+        guard readinessPoll == nil else { return }
+        readinessPoll = Timer.publish(every: 1, on: .main, in: .common)
+            .autoconnect()
+            .sink { _ in
+                let ready = QwenEngine.shared.isModelReady
+                if ready != modelReady { modelReady = ready }
+                refreshPermissions()
+                // 模型正是在这一页下完的：「完成」那颗按钮读的就是它
+                model.refreshEngineReady()
+            }
+    }
+
+    private func stopReadinessPolling() {
+        readinessPoll?.cancel()
+        readinessPoll = nil
     }
 
     var body: some View {
@@ -1381,13 +1434,12 @@ private struct TryItPage: View {
             // 稍等一拍再抢焦点：窗口刚翻页时 TextEditor 还没进响应链，立刻 focus 会落空。
             // 焦点只影响用户自己打字——识别结果不靠它，走的是直接落字（TranscriptSink）
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { editorFocused = true }
+            startReadinessPolling()
         }
-        .onReceive(readinessTimer) { _ in
-            let ready = QwenEngine.shared.isModelReady
-            if ready != modelReady { modelReady = ready }
-            refreshPermissions()
-            // 模型正是在这一页下完的：「完成」那颗按钮读的就是它
-            model.refreshEngineReady()
+        .onDisappear { stopReadinessPolling() }
+        // 关窗时这一页并不会被销毁（窗口复用），所以停轮询这件事只能由窗口来说
+        .onChange(of: windowState.isOpen) { _, open in
+            if open { startReadinessPolling() } else { stopReadinessPolling() }
         }
         // 字落进来了：闪 2.5 秒的「已收到 ✓」
         .onChange(of: model.tryItReceivedAt) { _, received in

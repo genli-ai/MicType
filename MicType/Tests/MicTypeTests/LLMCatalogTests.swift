@@ -549,7 +549,6 @@ final class LLMCatalogTests: XCTestCase {
                      LLMCatalog.serviceTierName("flex")]
         texts += LLMCatalog.QwenRegion.allCases.map(\.displayName)
         texts += LLMProvider.allCases.map(\.displayName)
-        texts += LLMProvider.allCases.map(\.shortName)
         for problem: LLMCatalog.BaseURLProblem in [.empty, .malformed, .insecure, .noVersionSegment] {
             texts.append(problem.message)
         }
