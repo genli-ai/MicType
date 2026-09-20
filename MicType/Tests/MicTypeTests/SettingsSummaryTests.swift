@@ -33,8 +33,7 @@ final class SettingsSummaryTests: XCTestCase {
 
     func testInputSummaryLeadsWithTheHotkeyFullName() {
         L10n.shared.language = .zh
-        let line = SettingsSummary.inputSummary(hotkey: .rightOption,
-                                                overlayPosition: .bottomCenter,
+        let line = SettingsSummary.inputSummary(overlayPosition: .bottomCenter,
                                                 sounds: true,
                                                 launchAtLogin: false)
         // 键名一律全名（R⌥ 这种缩写没人看得懂），而且排在最前面
@@ -47,8 +46,7 @@ final class SettingsSummaryTests: XCTestCase {
 
     func testInputSummaryMentionsLaunchAtLoginOnlyWhenOn() {
         L10n.shared.language = .zh
-        let on = SettingsSummary.inputSummary(hotkey: .rightControl,
-                                              overlayPosition: .nearCursor,
+        let on = SettingsSummary.inputSummary(overlayPosition: .nearCursor,
                                               sounds: false,
                                               launchAtLogin: true)
         XCTAssertTrue(on.contains("开机自启"), on)
@@ -59,12 +57,11 @@ final class SettingsSummaryTests: XCTestCase {
     func testInputSummaryIsCleanInEnglish() {
         L10n.shared.language = .en
         for position in OverlayPosition.allCases {
-            let line = SettingsSummary.inputSummary(hotkey: .rightCommand,
-                                                    overlayPosition: position,
+            let line = SettingsSummary.inputSummary(overlayPosition: position,
                                                     sounds: true,
                                                     launchAtLogin: true)
             XCTAssertFalse(containsCJKOrFullWidth(line), line)
-            XCTAssertTrue(line.contains("Right Command"), line)
+            XCTAssertTrue(line.contains("Right Option"), line)
         }
     }
 

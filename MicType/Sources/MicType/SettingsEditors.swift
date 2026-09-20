@@ -22,7 +22,6 @@ enum InputSectionOrder: Int, CaseIterable {
 
 struct InputEditor: View {
     @ObservedObject private var l10n = L10n.shared
-    @AppStorage(SettingsKeys.hotkey) private var hotkey = HotkeyChoice.rightOption.rawValue
     @AppStorage(SettingsKeys.playSounds) private var playSounds = true
     @AppStorage(SettingsKeys.restoreClipboard) private var restoreClipboard = true
     @AppStorage(SettingsKeys.autoStopSilenceSeconds) private var autoStopSilence = 0.0
@@ -34,8 +33,6 @@ struct InputEditor: View {
     @State private var launchAtLoginRefused = false
     // 导入导出的结果文字是一次性快照，切语言时要清掉（见 CLAUDE.md「i18n 快照字符串」）
     @State private var backupStatus = ""
-
-    private var selectedHotkey: HotkeyChoice { HotkeyChoice(rawValue: hotkey) ?? .rightOption }
 
     /// 秒数 0 = 关；打开时给一个保守的默认 2 秒（够停顿想词，又不至于等太久）
     private var autoStopEnabled: Binding<Bool> {
@@ -71,39 +68,20 @@ struct InputEditor: View {
 
     private var hotkeySection: some View {
         Section {
-            // 只摆右侧三颗（用户 2026-09-19 拍板）：Fn 要先去系统设置里让系统放手，
-            // 左侧几颗天天参与 ⌘C / ⌥← ——两类都得先上一课，摆出来等于把坑一起摆出来。
-            // 名字一律写全（「右 Option (⌥)」），不再用 R⌥ 这种只有作者认得的缩写。
-            Picker(tr("听写快捷键：", "Dictation hotkey:"), selection: $hotkey) {
-                ForEach(HotkeyChoice.offered, id: \.rawValue) { choice in
-                    Text(choice.displayName).tag(choice.rawValue)
-                }
-                // 老设置里存着的那一颗（左侧键 / Fn）照常工作，就得照常列出来：
-                // 选择器里没有一项对得上时，控件是空白的，看着像设置被我们弄丢了
-                if !HotkeyChoice.offered.contains(selectedHotkey) {
-                    Text(selectedHotkey.displayName).tag(selectedHotkey.rawValue)
-                }
+            // 一行事实，不是一个控件（用户 2026-09-20 拍板：只留右 Option 这一个选择）。
+            // 4.1.0 之前这里是三选一的选择器，另外两颗键除了让后面每一句操作说明
+            // 都可能对不上他按的那一颗之外，没给过任何人任何好处。
+            // 名字一律写全（「右 Option (⌥)」），不用 R⌥ 这种只有作者认得的缩写。
+            //
+            // 「重新打开引导」也从这一段搬走了：它不是一条输入设置，而是"再看一遍那份说明"
+            // ——归概览底下那排小字（关于 · 隐私 · 检查更新 · 重看引导）。
+            HStack {
+                Text(tr("快捷键：", "Hotkey:"))
+                Spacer()
+                Text(HotkeyChoice.rightOption.displayName)
+                    .foregroundColor(.secondary)
             }
             Caption(SettingsCopy.hotkeyGestures)
-            // Fn / 🌐 不在可选那三档里了，但老设置和导入的设置文件仍然能把它存进来——
-            // 存着它的人**必须**先去系统设置里让系统放手，否则每次轻点都被系统抢去切输入法
-            if selectedHotkey == .fn {
-                BoundaryRow(text: SettingsCopy.fnNeedsSystemSetting) {
-                    Button(tr("打开键盘设置", "Open Keyboard Settings")) {
-                        Permissions.openKeyboardSettings()
-                    }
-                }
-            }
-            if selectedHotkey.isLeftSideModifier {
-                Caption(SettingsCopy.leftSideModifier, warning: true)
-            }
-            HStack {
-                Text(tr("上手引导：", "Welcome guide:"))
-                Spacer()
-                Button(tr("重新打开引导", "Show Welcome Guide")) {
-                    OnboardingWindowController.shared.show()
-                }
-            }
         } header: {
             SectionHeader(title: tr("快捷键", "Hotkey"), info: SettingsCopy.hotkeyInfo)
         }

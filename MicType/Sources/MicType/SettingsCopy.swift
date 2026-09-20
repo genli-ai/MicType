@@ -30,14 +30,9 @@ enum SettingsCopy {
 
     // MARK: - 输入
 
-    /// 快捷键选择器下面唯一那一行。Esc 取消这件事收进 ⓘ——它是用到的时候才要知道的
+    /// 快捷键那一行下面唯一那一行。Esc 取消这件事收进 ⓘ——它是用到的时候才要知道的
     static var hotkeyGestures: String {
         tr("轻点听写，按住说指令", "Tap to dictate, hold to command")
-    }
-
-    /// 老设置里存着的左侧修饰键（选择器上已经不摆了）。警告色，但仍然只有一行
-    static var leftSideModifier: String {
-        tr("左侧键天天参与组合键，误触多", "Left-side modifiers mistrigger more often")
     }
 
     /// 静音自动停止关着时才说：开着的时候步进器已经把行为说全了
@@ -86,13 +81,13 @@ enum SettingsCopy {
     }
 
     static var backupInfo: String {
-        tr("导出一个 JSON：词汇表、关于我、自定义规则、型号、识别引擎与语言、热键与界面语言。导入是合并，别人给的文件可能把识别改成云端（会提示一次）。API Key 从不导出、也从不导入。",
-           "Exports one JSON file: vocabulary, about-me, custom rules, model names, recognition engine and language, hotkey and interface language. Import merges, and a file from someone else can switch recognition to a cloud engine (the summary says so). API keys are never exported or imported.")
+        tr("导出一个 JSON：词汇表、关于我、自定义规则、型号、识别引擎与语言、界面语言。导入是合并，别人给的文件可能把识别改成云端（会提示一次）。API Key 从不导出、也从不导入。",
+           "Exports one JSON file: vocabulary, about-me, custom rules, model names, recognition engine and language, and the interface language. Import merges, and a file from someone else can switch recognition to a cloud engine (the summary says so). API keys are never exported or imported.")
     }
 
     /// 「输入」页在屏幕上摆着的说明（录音上限那一行由 DictationController 现算，一并计入预算）
     static var inputCaptions: [String] {
-        [hotkeyGestures, leftSideModifier, autoStopOff, draftNeedsLocalModel, draftOverlayOnly,
+        [hotkeyGestures, autoStopOff, draftNeedsLocalModel, draftOverlayOnly,
          DictationController.recordingLimitShort]
     }
 
@@ -341,12 +336,6 @@ enum SettingsCopy {
 
     // MARK: - 边界状态（一行结论 + 一颗按钮，永远不写成一段话）
 
-    /// Fn / 🌐 不在可选那三档里了，但老设置和导入的设置文件仍然能把它存进来
-    static var fnNeedsSystemSetting: String {
-        tr("Fn / 🌐 要先在系统设置里改成「不执行任何操作」。",
-           "Set the 🌐 key to \"Do Nothing\" in System Settings first.")
-    }
-
     /// 选了「只用本地」但钥匙串里那把 Key 还在：按住说指令照样计费
     static func storedKeyWhileLocalOnly(provider: String) -> String {
         tr("钥匙串里还存着 \(provider) 的 Key，按住说指令仍会计费。",
@@ -425,7 +414,7 @@ enum SettingsCopy {
     }
 
     static var boundaryLines: [String] {
-        [fnNeedsSystemSetting, storedKeyWhileLocalOnly(provider: "OpenAI"), polishOffInMenuBar,
+        [storedKeyWhileLocalOnly(provider: "OpenAI"), polishOffInMenuBar,
          legacyOpenAICloudRecognition, strandedAlibabaRecognition, launchAtLoginFailed,
          endpointOverridden,
          endpointConfiguredByImport(provider: "Ollama"), hostMalformed, hostNotDetectedYet,

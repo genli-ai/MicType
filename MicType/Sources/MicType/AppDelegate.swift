@@ -125,8 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 而不是每次都从第一屏重来一遍。点过「先跳过」的人 onboardingCompleted 已经是真，
     /// 从此不再被拦——缺的那几项改由设置概览上的徽章提醒。
     private func routeFirstLaunch() {
-        // 「他早就在用了」的判据和引导那颗「完成」按钮**同一把尺子**（FirstRunEssentials），
-        // 只差 hotkeyConfirmed 那一位——老用户当然没确认过，下面紧接着就替他写上。
+        // 「他早就在用了」的判据和引导那颗「完成」按钮**同一把尺子**（FirstRunEssentials）。
         // 4.1.0 之前这里漏掉了麦克风：辅助功能勾了、麦克风还没给的人（在权限页给了一半就
         // 关掉窗口、模型在后台继续下）被判成"已经配好"，引导从此再也不出现，
         // 而他的第一次轻点撞上的是系统授权框 +「请再按一次」，不是那一页。
@@ -136,8 +135,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !Settings.shared.onboardingCompleted {
             if alreadyUsable {
                 Settings.shared.onboardingCompleted = true
-                // 他早就在用某一颗键了，"确认快捷键"这一步对他没有意义
-                Settings.shared.hotkeyConfirmed = true
                 Log.info("Onboarding skipped: already configured")
             } else {
                 // 引导自己有权限页，这里不要抢先弹系统授权框（用户还没看清这是什么应用）

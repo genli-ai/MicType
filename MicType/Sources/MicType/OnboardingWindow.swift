@@ -80,18 +80,9 @@ final class OnboardingModel: ObservableObject {
     /// 三件必办的事此刻办到哪一步。权限和模型读的都是这里存着的那几位（界面上看到什么，
     /// 判据就是什么）。判断本身全在 FirstRunEssentials 里。
     func essentials() -> FirstRunEssentials {
-        FirstRunEssentials(hotkeyConfirmed: Settings.shared.hotkeyConfirmed,
-                           microphone: micOK,
+        FirstRunEssentials(microphone: micOK,
                            accessibility: axOK,
                            modelReady: engineReady)
-    }
-
-    /// 第一屏点「继续」= 他确认了用这颗键。默认值（右 Option）也必须点这一下：
-    /// 这一屏教的就是"按哪颗键"，没看过它的人后面每一句「轻点 右 Option」都无从照做。
-    static func confirmHotkey() {
-        guard !Settings.shared.hotkeyConfirmed else { return }
-        Settings.shared.hotkeyConfirmed = true
-        Log.info("Onboarding hotkey confirmed=\(Settings.shared.hotkey.rawValue)")
     }
 
     /// 重算 aiStatus。凭据的判断一律走 LLMClient.credential（本机模型没有 Key 才是正常状态）；
@@ -127,12 +118,6 @@ final class OnboardingModel: ObservableObject {
 /// ——英文侧不许出现中文字符或全角标点，而且有 Key / 没 Key 两种收尾不能串台。
 enum OnboardingCopy {
 
-    /// 第一屏那颗热键选择器下面**唯一**那一行。选择器本身已经把三颗键的名字写全了，
-    /// 这一行只回答他此刻真正会问的那个问题：现在不想选行不行。
-    static var hotkeyChoice: String {
-        tr("默认右 Option，随时能改", "Right Option by default; change it any time")
-    }
-
     /// 唯一的出口（用户 2026-09-20 拍板）。做成一条链接而不是按钮：它不是「继续」的同级选项，
     /// 而是"我知道会怎样，先这样"——按钮会让人以为这是两条一样正当的路。
     static var skipForNow: String { tr("先跳过", "Skip for now") }
@@ -148,14 +133,9 @@ enum OnboardingCopy {
     static var retryDownload: String { tr("重试下载", "Retry download") }
 
     /// 最后一屏「完成」点不动时，下面那一行说的是**为什么**。
-    /// 4.1.0 之前「完成」只看模型下没下好，而 finish() 还多要求一件事（确认过快捷键）——
-    /// 被直接送到第二屏的新用户从没见过第一屏，那一位永远是假：按钮亮着，点下去什么都不发生，
-    /// 界面上一个字都不解释。灰着可以，灰着还不说为什么不行。
-    static var confirmHotkeyFirst: String {
-        tr("先回第一屏确认快捷键", "Confirm your hotkey on the first screen")
-    }
-
-    /// 同上，卡在权限上的那一种（点过「先跳过」的人才可能带着这个缺口走到最后一屏）
+    /// 灰着可以，灰着还不说为什么不行——按钮亮着、点下去只在日志里留一行，
+    /// 界面上一个字都不解释，是 4.1.0 踩过的坑。
+    /// 卡在权限上的那一种（点过「先跳过」的人才可能带着这个缺口走到最后一屏）
     static var permissionsStillMissing: String {
         tr("还差两项系统权限", "Two system permissions are still missing")
     }
@@ -163,7 +143,6 @@ enum OnboardingCopy {
     /// 「完成」为什么点不动。nil = 点得动，或者卡的是模型——模型那一件在这一页
     /// 早有自己的一行（带「下载模型」按钮），不必再说第二遍。
     static func finishBlockedReason(_ essentials: FirstRunEssentials) -> String? {
-        if !essentials.hotkeyConfirmed { return confirmHotkeyFirst }
         if !essentials.permissionsGranted { return permissionsStillMissing }
         return nil
     }
@@ -275,8 +254,8 @@ enum OnboardingCopy {
     }
 
     static var reopenGuide: String {
-        tr("随时可以在 设置 → 输入 里重新打开这份引导。",
-           "You can reopen this guide any time from Settings → Input.")
+        tr("随时可以在 设置 底部的「重看引导」打开这份引导。",
+           "You can reopen this guide any time from \"Review the guide\" at the bottom of Settings.")
     }
 
     /// 权限页开头那两句。第二句**只在模型真的在下**的时候才说：
@@ -293,7 +272,7 @@ enum OnboardingCopy {
     /// 挂在控件下面、走设置页那条 16 字线的几行（SettingsCopy.allCaptions 把它们并进同一张表
     /// 逐条量：第一次打开 MicType 的人最没耐心读字，凭什么反而不受那条线约束）。
     static var captions: [String] {
-        [hotkeyChoice, dictationUnavailable, confirmHotkeyFirst, permissionsStillMissing]
+        [dictationUnavailable, permissionsStillMissing]
     }
 
     /// 引导里那些**整句的说明**。它们说的是"这一步要做什么、现在是什么状态"，装不进 16 字，
@@ -373,8 +352,8 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
     ///   • **窗口已经开着就什么都不重置**，只把它带到前台。这类定点跳转多半正是用户
     ///     在引导里照着提示轻点了一下（模型还没下完），把他从「试一下」弹回第二屏、
     ///     顺手清掉他刚试出来的那几句字和「先跳过」那一位，是在惩罚他照做；
-    ///   • **落点不许跳过还没办完的那一屏**：被直接送到第二屏的新用户没见过第一屏，
-    ///     hotkeyConfirmed 永远是假，于是最后那颗「完成」亮着却点不动（4.1.0 踩过）。
+    ///   • **落点不许跳过还没办完的那一屏**：跳过去的那一屏正是他此刻卡住的地方，
+    ///     最后那颗「完成」读的是同一把尺子（FirstRunEssentials），跳了也点不动。
     func show(startAt requested: OnboardingPage = .welcome) {
         if let window = window, window.isVisible {
             model.micOK = Permissions.microphoneGranted
@@ -624,8 +603,6 @@ struct OnboardingView: View {
                 if model.page == .tryIt {
                     OnboardingWindowController.shared.finish()
                 } else {
-                    // 第一屏的「继续」就是"这颗键我认了"（默认值也算，见 confirmHotkey）
-                    if model.page == .welcome { OnboardingModel.confirmHotkey() }
                     step(1)
                 }
             }
@@ -697,19 +674,13 @@ struct OnboardingView: View {
 
 private struct WelcomePage: View {
     @ObservedObject private var l10n = L10n.shared
-    /// 直接绑设置本身：选完这一屏的每一句话（以及菜单栏第一行）当场换成新键名。
-    /// 第一屏就把这个决定做掉，是因为后面每一句操作说明都要念出这颗键的名字——
-    /// 4.0.1 把它留在设置页里，于是第一次上手的人先按着右 Option 学了一遍，
-    /// 想换键时还得自己去设置里找，而引导里的每一句话都还写着旧名字。
-    @AppStorage(SettingsKeys.hotkey) private var hotkey = HotkeyChoice.rightOption.rawValue
 
-    private var choice: HotkeyChoice { HotkeyChoice(rawValue: hotkey) ?? .rightOption }
-    private var key: String { choice.plainName }
+    /// 这一屏（以及后面每一句操作说明）念出来的那颗键。只有一颗，不用问设置
+    private var key: String { HotkeyChoice.rightOption.displayName }
 
     var body: some View {
-        // ScrollView 是保险绳（与后面三屏同一个理由）：这一屏多了一个选择器，
-        // 英文界面下两张手势卡各要三行，窗口高度是写死的 470——挤爆时宁可能滚，
-        // 也不要把底部那句隐私文案裁掉。
+        // ScrollView 是保险绳（与后面三屏同一个理由）：英文界面下两张手势卡各要三行，
+        // 窗口高度是写死的 470——挤爆时宁可能滚，也不要把底部那句隐私文案裁掉。
         ScrollView {
             VStack(spacing: 16) {
                 Image(systemName: "mic.circle.fill")
@@ -721,28 +692,9 @@ private struct WelcomePage: View {
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
 
-                VStack(spacing: 5) {
-                    // 只摆右侧三颗（与设置页同一张表 HotkeyChoice.offered）：Fn 要先去系统设置里
-                    // 让系统放手，左侧几颗天天参与 ⌘C / ⌥← ——两类都得先上一课。
-                    // 老设置里存着的那一颗照常列出来，否则控件是空白的，看着像设置被弄丢了。
-                    Picker("", selection: $hotkey) {
-                        ForEach(HotkeyChoice.offered, id: \.rawValue) { option in
-                            Text(option.displayName).tag(option.rawValue)
-                        }
-                        if !HotkeyChoice.offered.contains(choice) {
-                            Text(choice.displayName).tag(choice.rawValue)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    Text(OnboardingCopy.hotkeyChoice)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .onChange(of: hotkey) { _, next in
-                    Log.info("Onboarding hotkey picked=\(next)")
-                }
-
+                // 4.1.0 之前这里摆着一个三选一的热键选择器。拿掉它（用户 2026-09-20 拍板）：
+                // 这是他打开 MicType 的第一分钟，还一次都没听写过，凭什么在这时候挑键？
+                // 两张手势卡直接把键名写出来就够了——这一屏要教的本来就是"按哪儿"，不是"选哪颗"。
                 HStack(alignment: .top, spacing: 14) {
                     GestureCard(symbol: "hand.tap",
                                 gesture: tr("轻点 \(key)", "Tap \(key)"),
@@ -1279,11 +1231,8 @@ private struct TryItPage: View {
             && !localModelMissing && !downloader.isDownloading && !modelReady
     }
 
-    /// 第一屏选的那颗键。绑设置本身而不是读一次快照：用户从这一屏点「上一步」回去换一颗键，
-    /// 回来时这一页的每一句话都要跟着改名字
-    @AppStorage(SettingsKeys.hotkey) private var hotkey = HotkeyChoice.rightOption.rawValue
-
-    private var key: String { (HotkeyChoice(rawValue: hotkey) ?? .rightOption).plainName }
+    /// 这一页每一句话里念出来的那颗键（只有一颗，见 Settings.hotkey）
+    private var key: String { HotkeyChoice.rightOption.plainName }
 
     /// 权限那两位在这一页也要续着刷。它们原本只由权限页里那个 1 秒的 Timer 更新，
     /// 而那个 Timer 随着页面一起被拆掉了：点过「先跳过」走到这一页、然后才补上权限的人

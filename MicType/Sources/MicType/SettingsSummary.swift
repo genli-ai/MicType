@@ -39,13 +39,15 @@ enum SettingsSummary {
 
     /// 「右 Option (⌥) · 悬浮窗在屏幕底部 · 提示音开」
     ///
+    /// 键名仍然排在最前面，哪怕它只有一个值（见 Settings.hotkey）：这张卡回答的第一个问题
+    /// 就是"按哪个键"，把它省掉，用户要按的那颗键在设置窗口首页上就一个字都没有了。
+    ///
     /// 没有徽章：这张卡里的每一项都是用户自己选的，没有"坏掉"的状态。
     /// 权限缺失不在这里说——那是整页顶上那条横幅的事（缺了就没法用，不只是输入不对劲）。
-    static func inputSummary(hotkey: HotkeyChoice,
-                             overlayPosition: OverlayPosition,
+    static func inputSummary(overlayPosition: OverlayPosition,
                              sounds: Bool,
                              launchAtLogin: Bool) -> String {
-        var parts = [hotkey.displayName,
+        var parts = [HotkeyChoice.rightOption.displayName,
                      overlayPhrase(overlayPosition),
                      sounds ? tr("提示音开", "Sounds on") : tr("提示音关", "Sounds off")]
         // 开机自启只在开着时占位置：关着是出厂默认，说出来等于用一格讲一件没发生的事

@@ -14,7 +14,6 @@ struct SettingsOverview: View {
     @ObservedObject private var l10n = L10n.shared
 
     // 输入
-    @AppStorage(SettingsKeys.hotkey) private var hotkey = HotkeyChoice.rightOption.rawValue
     @AppStorage(SettingsKeys.overlayPosition) private var overlayPosition = OverlayPosition.bottomCenter.rawValue
     @AppStorage(SettingsKeys.playSounds) private var playSounds = true
     // 本地识别
@@ -53,7 +52,6 @@ struct SettingsOverview: View {
     /// 这扇窗开着没有：关窗时要停掉上面那个轮询，再开时要接着轮
     @ObservedObject private var windowState = SettingsWindowController.shared
 
-    private var selectedHotkey: HotkeyChoice { HotkeyChoice(rawValue: hotkey) ?? .rightOption }
     private var selectedOverlay: OverlayPosition { OverlayPosition(rawValue: overlayPosition) ?? .bottomCenter }
     private var selectedProvider: LLMProvider { LLMProvider(rawValue: provider) ?? .openai }
     private var engineChoice: RecognitionEngineChoice { RecognitionEngineChoice.parse(recognitionEngine) }
@@ -66,8 +64,7 @@ struct SettingsOverview: View {
 
                 OverviewCard(title: tr("输入", "Input"),
                              card: SettingsSummary.Card(
-                                sentence: SettingsSummary.inputSummary(hotkey: selectedHotkey,
-                                                                       overlayPosition: selectedOverlay,
+                                sentence: SettingsSummary.inputSummary(overlayPosition: selectedOverlay,
                                                                        sounds: playSounds,
                                                                        launchAtLogin: launchAtLogin),
                                 badge: nil)) {
@@ -219,8 +216,12 @@ struct SettingsOverview: View {
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.12)))
     }
 
-    // MARK: 脚注：三个链接，一颗按钮都没有
+    // MARK: 脚注：四个链接，一颗按钮都没有
 
+    /// 「重看引导」住在这里（用户 2026-09-20 拍板），不在「输入」页里：
+    /// 那份引导讲的是整个产品怎么用，不是一条输入设置——4.1.0 之前它藏在
+    /// 设置 → 输入 → 快捷键 那一段的最下面，谁会去那儿找一份说明？
+    /// 从第一屏打开（show() 的默认落点），跟从前那颗按钮一样。
     private var footer: some View {
         HStack(spacing: 16) {
             Button(tr("关于 MicType", "About MicType")) {
@@ -231,6 +232,9 @@ struct SettingsOverview: View {
             }
             Button(tr("检查更新", "Check for Updates")) {
                 SettingsNavigator.shared.go(to: .about, intent: .checkUpdate)
+            }
+            Button(tr("重看引导", "Review the guide")) {
+                OnboardingWindowController.shared.show()
             }
             Spacer()
         }

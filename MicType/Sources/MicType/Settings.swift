@@ -12,13 +12,10 @@ enum HotkeyChoice: String, CaseIterable {
     case leftControl
     case fn
 
-    /// 设置里**摆出来**的三个选项（用户 2026-09-19 拍板）。右侧三颗修饰键日常几乎不单独用，
-    /// 误触最少；Fn / 🌐 要先去系统设置里把系统的那一层关掉，左侧几颗天天参与 ⌘C、⌥← 这类组合键
-    /// ——两类都需要先给用户上一课，摆在选择器里等于把坑一起摆出来。
-    ///
-    /// `allCases` 仍然是全集：老设置里存着的左侧键 / Fn 照常工作、照常显示全名，
-    /// 只是不再推荐给新用户（选择器会把"他正在用的那一颗"额外列出来，见设置页）。
-    static let offered: [HotkeyChoice] = [.rightOption, .rightCommand, .rightControl]
+    // 界面上只有一颗键可选了（用户 2026-09-20 拍板，见 Settings.hotkey）：4.1.0 之前这里
+    // 还有一张 `offered` 表，摆着右侧三颗让人挑。枚举本身**不许砍**——HotkeyManager 那套
+    // 按下/松开沿的判据是按 HotkeyChoice 写的，砍到只剩一个 case 等于把那层逻辑焊死，
+    // 以后想加第二颗键得重写；而且老设置里存着别的值，读进来时仍要有对应的 case 认得它。
 
     /// 修饰键的物理键码（左右两侧是不同的键码，所以"只用右侧"是真的只认右侧那颗）
     var keyCode: UInt16 {
@@ -106,13 +103,6 @@ enum HotkeyChoice: String, CaseIterable {
         }
     }
 
-    /// 左侧修饰键天天参与 ⌘C / ⌥← 这类组合键，单独轻点的机会少、也更容易误触，选中时给一句提醒
-    var isLeftSideModifier: Bool {
-        switch self {
-        case .leftOption, .leftCommand, .leftControl: return true
-        default: return false
-        }
-    }
 }
 
 // MARK: - 润色档位
@@ -362,7 +352,6 @@ enum SettingsKeys {
     static let fastTier = "fastTier"                        // service_tier:"fast"（贵一倍换低延迟，默认关）
     static let webSearchEnabled = "webSearchEnabled"        // 指令模式联网搜索（按次计费，默认关）
     static let onboardingCompleted = "onboardingCompleted"  // 首启动引导是否走过（老用户按"已配置好"自动置真）
-    static let hotkeyConfirmed = "hotkeyConfirmed"          // 用户在引导第一屏确认过用哪颗键（直接「继续」也算）
     static let onboardingSkippedEssentials = "onboardingSkippedEssentials"  // 他点过「先跳过」：引导不再每次启动拦他，但概览上的徽章照常挂着
     /// 4.0.1 的默认型号迁移真的改掉了哪几处（"旧型号>新型号" 编码，见 LLMCatalog.encodeModelChanges）。
     /// 只存型号名、不存句子：文案按当时的语言现拼（见 CLAUDE.md「i18n 快照字符串」）。
@@ -431,7 +420,6 @@ final class Settings {
             SettingsKeys.fastTier: false,
             SettingsKeys.webSearchEnabled: false,
             SettingsKeys.onboardingCompleted: false,
-            SettingsKeys.hotkeyConfirmed: false,
             SettingsKeys.onboardingSkippedEssentials: false,
         ])
 
@@ -576,22 +564,30 @@ final class Settings {
             d.set(true, forKey: "migratedCloudASRModelTo3")
         }
 
-        // 一次性迁移（4.1.0）：hotkeyConfirmed 是这一版新增的"三件必办的事"之一，
-        // 老设置里当然没有。引导早就走过的人不该被要求再确认一次快捷键——否则他从
-        // 设置里重新打开引导（或被模型缺失带回去）时，最后一屏的「完成」会卡在一件
-        // 他几百次听写之前就做过的事上，而界面上没有任何东西说得清卡在哪儿。
-        if !d.bool(forKey: "migratedHotkeyConfirmed") {
-            if d.bool(forKey: SettingsKeys.onboardingCompleted) {
-                d.set(true, forKey: SettingsKeys.hotkeyConfirmed)
+        // 一次性迁移（4.1.0）：快捷键只剩右 Option 一颗（用户 2026-09-20 拍板）。
+        // 界面上从此没有任何地方改得动它，所以老设置里存着的左 Command / Fn 会变成
+        // 一颗**改不掉的坏键**：他按右 Option 没反应，而设置页上白纸黑字写着「右 Option (⌥)」。
+        // 存着的值直接改过来，从这一刻起界面说的和真正在监听的是同一颗键。
+        if !d.bool(forKey: "migratedHotkeyToRightOption") {
+            let stored = d.string(forKey: SettingsKeys.hotkey) ?? ""
+            if stored != HotkeyChoice.rightOption.rawValue {
+                Log.info("Hotkey migrated to=rightOption from=\(stored.isEmpty ? "unset" : stored)")
+                d.set(HotkeyChoice.rightOption.rawValue, forKey: SettingsKeys.hotkey)
             }
-            d.set(true, forKey: "migratedHotkeyConfirmed")
+            d.set(true, forKey: "migratedHotkeyToRightOption")
         }
     }
 
-    var hotkey: HotkeyChoice {
-        get { HotkeyChoice(rawValue: d.string(forKey: SettingsKeys.hotkey) ?? "") ?? .rightOption }
-        set { d.set(newValue.rawValue, forKey: SettingsKeys.hotkey) }
-    }
+    /// 听写快捷键。**永远是右 Option**（用户 2026-09-20 拍板：只留这一个选择）。
+    ///
+    /// 为什么写死而不是留个选择器：这颗键是产品的第一句话——引导、菜单栏、悬浮窗、
+    /// 出错提示里每一句操作说明都要念出它的名字。摆出三颗让人挑，等于在他还没用过一次
+    /// 听写、没有任何依据的时刻先要他做一个决定，而选错的代价（左侧键误触、Fn 被系统抢走）
+    /// 要到很久以后才显形。右 Option 日常几乎不单独用，是那三颗里唯一不需要先上一课的。
+    ///
+    /// 它仍然是 HotkeyChoice 而不是常量：HotkeyManager 整层按枚举工作，这里只是没有
+    /// 第二个值进得来（存着别的值的老设置由上面那条迁移改掉）。
+    var hotkey: HotkeyChoice { .rightOption }
 
     var polishEnabled: Bool {
         get { d.bool(forKey: SettingsKeys.polishEnabled) }
@@ -951,13 +947,6 @@ final class Settings {
     var onboardingCompleted: Bool {
         get { d.bool(forKey: SettingsKeys.onboardingCompleted) }
         set { d.set(newValue, forKey: SettingsKeys.onboardingCompleted) }
-    }
-
-    /// 引导第一屏确认过快捷键。默认值（右 Option）也要他点一下「继续」才算数——
-    /// 这一屏教的就是"按哪颗键"，没看过它的人后面每一句「轻点 XX」都无从照做。
-    var hotkeyConfirmed: Bool {
-        get { d.bool(forKey: SettingsKeys.hotkeyConfirmed) }
-        set { d.set(newValue, forKey: SettingsKeys.hotkeyConfirmed) }
     }
 
     /// 用户带着没办完的事走出了引导（点过「先跳过」）。

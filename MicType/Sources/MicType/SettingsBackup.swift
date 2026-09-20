@@ -30,7 +30,9 @@ import UniformTypeIdentifiers
 //   hotkey                  ← hotkey                 / Hotkey
 //                             字符串，取 macOS 的 rawValue：rightOption, rightCommand, rightControl,
 //                             rightShift, leftOption, leftCommand, leftControl, fn。
-//                             读取端大小写不敏感；认不出的值保持本机当前设置不变（Windows 没有 fn）。
+//                             **macOS 4.1.0 起既不导出也不导入这一项**：Mac 上只剩右 Option 一颗键
+//                             （见 Settings.hotkey），导入一个改不掉的键名只会让界面和实际监听对不上。
+//                             键名仍留在已知键表里，好让从前导出的文件不被报成"忽略了 1 项"。
 //   polishLevel             ← polishLevel            / PolishLevel          "off" | "smart"
 //   vocabulary              ← customVocabulary       / CustomVocabulary     整段原文（逗号/换行分隔）
 //   fillerWords             ← fillerWords            / FillerWords          整段原文（逗号/换行分隔）
@@ -143,7 +145,7 @@ enum SettingsBackup {
     static func makeDocument(date: Date = Date()) -> [String: Any] {
         let s = Settings.shared
         let settings: [String: Any] = [
-            Key.hotkey: s.hotkey.rawValue,
+            // Key.hotkey 不在这里：Mac 上快捷键只有一个值，导出它等于承诺对面能改
             Key.polishLevel: s.polishLevel.rawValue,
             Key.vocabulary: s.customVocabulary,
             Key.fillerWords: s.customFillerWords,
@@ -408,7 +410,8 @@ enum SettingsBackup {
             if notable { summary.notableChanges.append("\(key) = \(match.rawValue)") }
         }
 
-        enumValue(Key.hotkey) { (v: HotkeyChoice) in Settings.shared.hotkey = v }
+        // Key.hotkey 故意不导入：Mac 上快捷键永远是右 Option（见 Settings.hotkey）。
+        // 它在 Key.all 里，所以老文件里的这一项不会被报成"不认识的键"，只是不起作用。
         enumValue(Key.polishLevel) { (v: PolishLevel) in Settings.shared.polishLevel = v }
         // 服务商换了 = 从此刻起 Key 和听写文本发给另一家。和识别引擎同一条纪律：当面念出来，
         // 只报一句"导入成功"等于把最该被看见的一条藏起来了。

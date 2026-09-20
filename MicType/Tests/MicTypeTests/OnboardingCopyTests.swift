@@ -173,18 +173,19 @@ final class OnboardingCopyTests: XCTestCase {
         }
     }
 
-    /// 第一屏那颗选择器下面**只有一行**，而且要说清"默认是哪颗、以后能不能改"
-    func testHotkeyChoiceCaptionNamesTheDefaultAndSaysItIsChangeable() {
+    /// 最后一屏那句"以后还能再看一遍"必须指向**现在**那条链所在的地方：
+    /// 4.1.0 把它从「设置 → 输入」搬到了设置概览底下那排小字。
+    /// 指路的句子指向一个不存在的入口，比不指路更糟
+    func testReopenGuidePointsAtTheSettingsFooterLink() {
         L10n.shared.language = .zh
-        let zh = OnboardingCopy.hotkeyChoice
-        XCTAssertTrue(zh.contains(HotkeyChoice.rightOption.plainName), zh)
-        XCTAssertTrue(zh.contains("改"), zh)
-        XCTAssertFalse(zh.contains("\n"), zh)
+        let zh = OnboardingCopy.reopenGuide
+        XCTAssertTrue(zh.contains("重看引导"), zh)
+        XCTAssertFalse(zh.contains("输入"), zh)
 
         L10n.shared.language = .en
-        let en = OnboardingCopy.hotkeyChoice
-        XCTAssertTrue(en.contains(HotkeyChoice.rightOption.plainName), en)
-        XCTAssertTrue(en.lowercased().contains("change"), en)
+        let en = OnboardingCopy.reopenGuide
+        XCTAssertTrue(en.contains("Review the guide"), en)
+        XCTAssertFalse(en.contains("Settings → Input"), en)
     }
 
     /// 下载掉下来之后那颗按钮写的是「重试」，不是「下载」：
@@ -211,10 +212,9 @@ final class OnboardingCopyTests: XCTestCase {
     /// 引导里现在有文字的每一处（按钮、链接、那几行说明）
     private var everyLine: [String] {
         [OnboardingCopy.usageHeadline, OnboardingCopy.usageExplanation,
-         OnboardingCopy.aiSkipReassurance, OnboardingCopy.hotkeyChoice,
+         OnboardingCopy.aiSkipReassurance, OnboardingCopy.reopenGuide,
          OnboardingCopy.skipForNow, OnboardingCopy.dictationUnavailable,
-         OnboardingCopy.retryDownload,
-         OnboardingCopy.confirmHotkeyFirst, OnboardingCopy.permissionsStillMissing,
+         OnboardingCopy.retryDownload, OnboardingCopy.permissionsStillMissing,
          OnboardingCopy.permissionsIntro(modelDownloading: true),
          OnboardingCopy.permissionsIntro(modelDownloading: false),
          OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥"),
@@ -245,41 +245,28 @@ final class OnboardingCopyTests: XCTestCase {
     /// 三件事齐了就不该再有这一行（按钮这时是亮的）
     func testNoBlockedReasonWhenEverythingIsDone() {
         XCTAssertNil(OnboardingCopy.finishBlockedReason(
-            FirstRunEssentials(hotkeyConfirmed: true, microphone: true,
-                               accessibility: true, modelReady: true)))
-    }
-
-    /// 卡在快捷键上：这一行要把他指回第一屏——那一屏是他被直接送到第二屏时从没见过的。
-    /// 没有这一行，「完成」点下去只在日志里留一行，界面上一个字都不解释（4.1.0 踩过）
-    func testBlockedByTheHotkeyPointsBackAtTheFirstScreen() {
-        let reason = OnboardingCopy.finishBlockedReason(
-            FirstRunEssentials(hotkeyConfirmed: false, microphone: true,
-                               accessibility: true, modelReady: true))
-        XCTAssertEqual(reason, OnboardingCopy.confirmHotkeyFirst)
+            FirstRunEssentials(microphone: true, accessibility: true, modelReady: true)))
     }
 
     /// 权限缺一项就说权限。模型那一件**不在这里说**：那一页早有自己的一行 + 一颗「下载模型」，
     /// 说第二遍只会让人以为是两件不同的事
     func testBlockedByPermissionsAndNeverByTheModel() {
         XCTAssertEqual(OnboardingCopy.finishBlockedReason(
-            FirstRunEssentials(hotkeyConfirmed: true, microphone: false,
-                               accessibility: true, modelReady: true)),
+            FirstRunEssentials(microphone: false, accessibility: true, modelReady: true)),
                        OnboardingCopy.permissionsStillMissing)
         XCTAssertEqual(OnboardingCopy.finishBlockedReason(
-            FirstRunEssentials(hotkeyConfirmed: true, microphone: true,
-                               accessibility: false, modelReady: true)),
+            FirstRunEssentials(microphone: true, accessibility: false, modelReady: true)),
                        OnboardingCopy.permissionsStillMissing)
         XCTAssertNil(OnboardingCopy.finishBlockedReason(
-            FirstRunEssentials(hotkeyConfirmed: true, microphone: true,
-                               accessibility: true, modelReady: false)))
+            FirstRunEssentials(microphone: true, accessibility: true, modelReady: false)))
     }
 
-    /// 顺序 = 引导的顺序：先说最靠前那一件没办完的事（和 firstIncompletePage 同一条链）
+    /// 什么都没办的时候说的是权限——那是这条链上最靠前的一件
+    /// （和 firstIncompletePage 同一条链；快捷键 4.1.0 起不在链上了）
     func testBlockedReasonFollowsTheGuideOrder() {
         XCTAssertEqual(OnboardingCopy.finishBlockedReason(
-            FirstRunEssentials(hotkeyConfirmed: false, microphone: false,
-                               accessibility: false, modelReady: false)),
-                       OnboardingCopy.confirmHotkeyFirst)
+            FirstRunEssentials(microphone: false, accessibility: false, modelReady: false)),
+                       OnboardingCopy.permissionsStillMissing)
     }
 
     // MARK: - 权限页开头那两句

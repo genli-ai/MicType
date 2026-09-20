@@ -46,17 +46,23 @@ final class HotkeyChoiceTests: XCTestCase {
         XCTAssertEqual(HotkeyChoice.leftOption.flagMask, HotkeyChoice.rightOption.flagMask)
     }
 
-    // MARK: - 摆出来的那几档 / 名字
+    // MARK: - 只有一颗键 / 名字
 
-    /// 设置里只摆右侧三颗（用户 2026-09-19 拍板）：Fn 要先去系统设置里让系统放手，
-    /// 左侧几颗天天参与 ⌘C / ⌥← ——两类都得先上一课，摆出来等于把坑一起摆出来
-    func testOnlyRightSideModifiersAreOffered() {
-        XCTAssertEqual(HotkeyChoice.offered, [.rightOption, .rightCommand, .rightControl])
-        for choice in HotkeyChoice.offered {
-            XCTAssertFalse(choice.isLeftSideModifier, choice.rawValue)
-            XCTAssertNotEqual(choice, .fn)
+    /// 界面上只剩右 Option 一个选择（用户 2026-09-20 拍板）：不管 UserDefaults 里存着什么，
+    /// 读出来的都是它。设置页、引导、菜单栏念的都是这一条，念错就是让用户按一颗不工作的键。
+    func testHotkeyIsAlwaysRightOption() {
+        let stored = UserDefaults.standard.string(forKey: SettingsKeys.hotkey)
+        defer { UserDefaults.standard.set(stored, forKey: SettingsKeys.hotkey) }
+
+        for raw in ["leftCommand", "fn", "rightControl", "garbage", ""] {
+            UserDefaults.standard.set(raw, forKey: SettingsKeys.hotkey)
+            XCTAssertEqual(Settings.shared.hotkey, .rightOption, raw)
         }
-        // 老设置里存着的值仍然是合法的，只是不再推荐——枚举本身不许被砍
+    }
+
+    /// 枚举本身**不许被砍到只剩一个 case**：HotkeyManager 整层按 HotkeyChoice 的位定义工作，
+    /// 而老设置 / 老备份文件里存着别的值，读进来时仍要有 case 认得它
+    func testEnumKeepsEveryCaseEvenThoughOnlyOneIsUsed() {
         XCTAssertEqual(HotkeyChoice.allCases.count, 8)
         XCTAssertEqual(HotkeyChoice(rawValue: "leftCommand"), .leftCommand)
         XCTAssertEqual(HotkeyChoice(rawValue: "fn"), .fn)
