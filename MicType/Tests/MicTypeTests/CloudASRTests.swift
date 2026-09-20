@@ -328,6 +328,13 @@ final class CloudASRTests: XCTestCase {
         XCTAssertNil(parameters?["language_hints"])
     }
 
+    /// qwen3-asr-flash 打的是**原生 DashScope 端点**
+    /// （/api/v1/services/aigc/multimodal-generation/generation），它的 content 项是
+    /// `{"audio": …}` / `{"text": …}`，**没有 `type` 这个字段**。
+    /// 4.1.0 在这里发的是 OpenAI 兼容模式那一套 `{"type":"input_audio","input_audio":{"data":…}}`，
+    /// 于是主机、鉴权、模型全对之后仍然吃一个
+    /// `400 InvalidParameter: Input should be a valid string: input`
+    /// （用户 2026-09-20 的日志）。这个测试就是不让那个形状回来。
     func testQwen3RequestBodyShape() {
         let body = AlibabaASRClient.requestBody(model: .qwen3Flash,
                                                 audioDataURI: "data:audio/wav;base64,AAAA",
@@ -342,11 +349,39 @@ final class CloudASRTests: XCTestCase {
         let systemContent = messages?[0]["content"] as? [[String: Any]]
         XCTAssertEqual(systemContent?.first?["text"] as? String, "常用词汇：MicType")
         XCTAssertNil(systemContent?.first?["type"], "qwen3 的 system content 只有 text 字段")
+
+        XCTAssertEqual(messages?[1]["role"] as? String, "user")
+        let audioContent = messages?[1]["content"] as? [[String: Any]]
+        XCTAssertEqual(audioContent?.count, 1)
+        XCTAssertEqual(audioContent?.first?["audio"] as? String, "data:audio/wav;base64,AAAA",
+                       "原生端点的音频项就是一个 audio 字段，值是 data URI")
+        XCTAssertNil(audioContent?.first?["type"], "原生端点的 content 项没有 type")
+        XCTAssertNil(audioContent?.first?["input_audio"],
+                     "input_audio 是 OpenAI 兼容模式的形状，发到原生端点必 400 InvalidParameter")
+
         let options = (body["parameters"] as? [String: Any])?["asr_options"] as? [String: Any]
         XCTAssertEqual(options?["language"] as? String, "zh")
         XCTAssertEqual(options?["enable_itn"] as? Bool, false)
         // qwen3 没有 parameters.vocabulary
         XCTAssertNil((body["parameters"] as? [String: Any])?["vocabulary"])
+    }
+
+    /// 整个请求体必须能被 JSONSerialization 吃下去（makeRequest 就是这么发的）
+    func testQwen3RequestBodySerializesToTheDocumentedJSON() {
+        let body = AlibabaASRClient.requestBody(model: .qwen3Flash,
+                                                audioDataURI: "data:audio/wav;base64,AAAA",
+                                                vocabulary: [],
+                                                languageHints: [],
+                                                context: nil,
+                                                enableITN: false)
+        guard let data = try? JSONSerialization.data(withJSONObject: body),
+              let text = String(data: data, encoding: .utf8) else {
+            return XCTFail("请求体应该能序列化")
+        }
+        XCTAssertTrue(text.contains("\"audio\""))
+        XCTAssertFalse(text.contains("input_audio"))
+        let messages = (body["input"] as? [String: Any])?["messages"] as? [[String: Any]]
+        XCTAssertEqual(messages?.count, 1, "没有上下文就只发音频那一条")
     }
 
     func testQwen3ITNOnlyForChineseAndEnglish() {

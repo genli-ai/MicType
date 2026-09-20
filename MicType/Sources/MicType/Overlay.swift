@@ -761,8 +761,10 @@ final class OverlayController {
         flash(.error(label), duration: duration, actionLabel: actionLabel)
     }
 
-    func flashNotice(_ label: String) {
-        flash(.notice(label), duration: 1.0)
+    /// duration 可调：多数提示 1 秒足够（「好了」这类背景音），
+    /// 但「已更新到 x.y.z」是要被读到的一句，给它久一点（见 UpdateChecker.installedNoticeDuration）。
+    func flashNotice(_ label: String, duration: Double = 1.0) {
+        flash(.notice(label), duration: duration)
     }
 
     private func flash(_ mode: OverlayState.Mode, duration: Double, actionLabel: String? = nil) {

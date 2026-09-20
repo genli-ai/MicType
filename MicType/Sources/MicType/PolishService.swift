@@ -41,14 +41,17 @@ enum PolishService {
     // MARK: - 超时预算
 
     /// 短输入的超时。润色是"顺手加工"，一两句话等超过这个数就该退回识别原文，别让用户干等。
-    static let baseTimeout: TimeInterval = 15
+    ///
+    /// 4.1.1 从 15 降到 12，并且把重试一起砍了（见 networkRetries）：用户 2026-09-20 的
+    /// 测试日志里，接入地址还没试对的那两次润色各等了 **33 秒**才报超时——15 s 超时 + 0.5 s
+    /// 退避 + 15 s 重试，正好是这个数。一句话的润色等三十多秒，人只会以为 App 卡死了；
+    /// 而那一趟重试从来救不回什么：地址不对重发一遍还是不对，网络慢重发一遍还是慢。
+    static let baseTimeout: TimeInterval = 12
     /// 封顶。再长就不是"顺手加工"了：悬浮窗上那句「润色中…」带着秒数，但等一分半还没结果的话，
     /// 先把识别原文给他更有用。
     static let maxTimeout: TimeInterval = 90
     /// 每多这么多字就多给 1 秒（gpt-5.6-luna 在 UAE 这条链路上的实测量级）
     static let timeoutCharsPerSecond: Double = 60
-    /// 超过这个字数就不做网络重试（见 networkRetries）
-    static let noRetryCharacters = 600
 
     /// 这一篇该给多少秒。**必须跟着输入长度走**：v4.0 把单次录音提到 600 s、
     /// maxOutputTokens 也按输入放大到最多 32768，而润色走的是**非流式**请求——生成期间一个
@@ -59,12 +62,16 @@ enum PolishService {
         min(maxTimeout, baseTimeout + Double(max(0, inputCharacters)) / timeoutCharsPerSecond)
     }
 
-    /// 这一篇要不要在网络故障后重发一遍。短输入照旧重试一次（15 s 的预算，重试很便宜）；
-    /// 长输入一律 0 —— 那时的超时意味着"整篇没在一分钟量级的预算内生成完"，原样重发只会让
-    /// 用户的等待翻倍，最后拿到的仍然是那句「润色失败（超时），已输出识别原文」。纯函数，可单测。
-    static func networkRetries(inputCharacters: Int) -> Int {
-        inputCharacters > noRetryCharacters ? 0 : 1
-    }
+    /// 这一篇要不要在网络故障后重发一遍。**一律 0：润色只发一次。**
+    ///
+    /// 4.1.1 把短输入那一次重试也砍掉了。原来的算盘是"12 s 的预算，重试很便宜"，
+    /// 但用户感觉到的从来不是预算，而是**总时长**：一句话的润色在失败路径上要等
+    /// 12 + 0.5 + 12 ≈ 25 秒，而这 25 秒里第二趟能救回来的情况几乎不存在——
+    /// 超时说明链路本来就慢（重发同样慢），401/地址不对说明配置有问题（重发同样错，
+    /// 该做的是把接入地址试出来，见 LLMClient 的 AlibabaHostRecovery）。
+    /// 失败就立刻把识别原文交出去，带上那句既有的提醒；下一句话照常再试一次云端。
+    /// 纯函数，可单测。
+    static func networkRetries(inputCharacters: Int) -> Int { 0 }
 
     // MARK: - 提示词
 

@@ -106,9 +106,10 @@ enum LLMClient {
     /// - apiKeyOverride: 只有「粘贴即验证」那一趟会传——拿**还没进钥匙串**的候选 Key 发一次真请求。
     ///   验证必须走与真实润色完全相同的这条路（否则「测试通过」证明不了真用的时候也通），
     ///   而验证不过的 Key 一个字节都不该落进钥匙串（3.3 之前的「保存 Key」能存一把废 Key 还显示绿对勾）。
-    /// - networkRetries: 瞬时网络故障（含超时）之后原样重发几次。默认 1。
-    ///   长输入的润色会传 0：那一趟的超时预算本身就有一分钟量级，超时说明"整篇没在预算内生成完"，
-    ///   再原样发一遍只是把用户的等待翻倍（见 PolishService.networkRetries）。
+    /// - networkRetries: 瞬时网络故障（含超时）之后原样重发几次。默认 1（只剩验证 / 测试那几条路在用）。
+    ///   **润色与指令一律传 0**：一次失败重发一遍救不回什么，却把用户的等待翻倍——
+    ///   用户 2026-09-20 的日志里，一句话的润色因此等了 33 秒
+    ///   （见 PolishService.networkRetries 与 AgentService.commandNetworkRetries）。
     /// - provider: 这一趟发给**哪一档**服务商。默认就是当前生效那档（真实润色/指令都走这条），
     ///   只有「粘贴即验证」会显式传另一档：用户刚在选择器上点中的那一档还没生效，
     ///   而接口分叉、Base URL、凭据、报错话术全都得跟着它走——读全局当前档的话，
@@ -172,7 +173,7 @@ enum LLMClient {
                                  fastTier: Settings.shared.fastTier,
                                  searchStyle: searchStyle(for: purpose, provider: provider))
         dispatch(path: "/responses", body: body, endpoint: .responses, timeout: timeout,
-                 provider: provider, handle: handle, apiKeyOverride: apiKeyOverride,
+                 purpose: purpose, provider: provider, handle: handle, apiKeyOverride: apiKeyOverride,
                  networkRetries: networkRetries, completion: completion)
         return handle
     }
@@ -201,7 +202,7 @@ enum LLMClient {
                             searchStyle: purpose.map { searchStyle(for: $0, provider: provider) }
                                 ?? .unsupported)
         dispatch(path: "/chat/completions", body: body, endpoint: .chat, timeout: timeout,
-                 provider: provider, handle: handle, apiKeyOverride: apiKeyOverride,
+                 purpose: purpose, provider: provider, handle: handle, apiKeyOverride: apiKeyOverride,
                  networkRetries: networkRetries, completion: completion)
         return handle
     }
@@ -607,10 +608,12 @@ enum LLMClient {
 
     private static func dispatch(path: String, body: [String: Any], endpoint: Endpoint,
                                  timeout: TimeInterval,
+                                 purpose: Purpose?,
                                  provider: LLMProvider = Settings.shared.llmProvider,
                                  handle: LLMRequestHandle,
                                  apiKeyOverride: String? = nil,
                                  networkRetries: Int = 1,
+                                 hostResolveAttemptsLeft: Int = 1,
                                  completion: @escaping (String?, String?) -> Void) {
         // 这一趟开始了 → 先把用量沉淀点清空。它是"取走即清空"的一格，只有 send 的回调会填；
         // 下面这几条早退（取消 / 没凭据 / 模型名空 / 地址不完整）一个字都不写它，
@@ -658,18 +661,47 @@ enum LLMClient {
             DispatchQueue.main.async { completion(nil, tr("Base URL 格式不对", "Invalid base URL")) }
             return
         }
-        send(url: url, body: body, apiKey: apiKey, timeout: timeout, endpoint: endpoint,
-             provider: provider, networkRetriesLeft: max(0, networkRetries), stripAttemptsLeft: 2,
+        send(path: path, url: url, body: body, apiKey: apiKey, timeout: timeout, endpoint: endpoint,
+             purpose: purpose, provider: provider,
+             networkRetriesLeft: max(0, networkRetries), stripAttemptsLeft: 2,
+             hostResolveAttemptsLeft: max(0, hostResolveAttemptsLeft),
              handle: handle, completion: completion)
+    }
+
+    /// 接入地址已经定下来了吗（用户粘过，或上一次真的试通过）。
+    /// 只有"还没定"的那台主机吃 401 / DNS 不通才值得再去试一圈——见 AlibabaHostRecovery。
+    static var alibabaHostSettled: Bool {
+        let s = Settings.shared
+        return AlibabaEndpoint.normalizeHost(s.qwenAPIHost) != nil
+            || AlibabaEndpoint.normalizeHost(s.qwenResolvedHost) != nil
+    }
+
+    /// 这一趟失败之后要不要先把接入地址试出来。抽出来是为了让 send 里那一段保持一句话长度。
+    private static func recoveryAction(provider: LLMProvider, purpose: Purpose?,
+                                       status: Int, urlErrorCode: Int?,
+                                       attemptsLeft: Int) -> AlibabaHostRecovery.Action {
+        AlibabaHostRecovery.action(isAlibaba: provider == .qwen,
+                                   hostSettled: alibabaHostSettled,
+                                   // 润色等不起那 30 秒：它的全部价值是"顺手"
+                                   canWaitForResolve: purpose != .polish,
+                                   status: status,
+                                   urlErrorCode: urlErrorCode,
+                                   attemptsLeft: attemptsLeft)
     }
 
     /// networkRetriesLeft：瞬时网络故障的重试次数。
     /// stripAttemptsLeft：「400 点名某参数 → 去掉它重发」的次数。留 2 是因为有两条独立的兜底
     /// （text.verbosity 的字段路径只有 cookbook 有据；推理模型拒 temperature），
     /// 而每次只摘一个参数——摘完一个还报另一个也不该让整次润色白掉。
-    private static func send(url: URL, body: [String: Any], apiKey: String, timeout: TimeInterval,
-                             endpoint: Endpoint, provider: LLMProvider,
+    /// hostResolveAttemptsLeft：阿里云那一档「先把接入地址试出来再重发」的次数（见 AlibabaHostRecovery）。
+    /// didRetry：这一趟是不是某次重发——决定超时那句话后面要不要缀上「（已重试）」。
+    /// 4.1.1 之前它是无条件缀上去的，而润色/指令现在都只发一次，那三个字就成了假话。
+    private static func send(path: String, url: URL, body: [String: Any], apiKey: String,
+                             timeout: TimeInterval,
+                             endpoint: Endpoint, purpose: Purpose?, provider: LLMProvider,
                              networkRetriesLeft: Int, stripAttemptsLeft: Int,
+                             hostResolveAttemptsLeft: Int,
+                             didRetry: Bool = false,
                              handle: LLMRequestHandle,
                              completion: @escaping (String?, String?) -> Void) {
         guard !handle.isCancelled else { return }
@@ -695,20 +727,67 @@ enum LLMClient {
                 json = object as? [String: Any]
             }
 
+            /// 这一趟的结论交出去（唯一的出口，主线程）
+            func finish(_ text: String?, _ failure: String?, usage: LLMUsage = LLMUsage()) {
+                DispatchQueue.main.async {
+                    guard !handle.isCancelled else { return }
+                    // 用量（缓存命中 / 实际档位 / 联网来源）在主线程落进沉淀点，
+                    // 紧接着由 completion 里的计量代码取走
+                    LLMUsageSink.shared.record(usage)
+                    completion(text, failure)
+                }
+            }
+
+            /// 接入地址还没试对 → 先试出来（见 AlibabaHostRecovery）。
+            /// 返回 true 表示这一趟已经交给恢复流程了，调用处不要再往下走。
+            ///
+            /// **无论走哪条分支，completion 都恰好被调用一次**：探测失败、或者试出来还是同一台
+            /// 主机（重发只会撞同一堵墙）时，原样交出 failureText。漏掉这一路的话，
+            /// 悬浮窗会永远停在「润色中…」上，用户只剩 Esc 一条出路。
+            func recovered(status: Int, urlErrorCode: Int?, failureText: @escaping () -> String) -> Bool {
+                let action = recoveryAction(provider: provider, purpose: purpose, status: status,
+                                            urlErrorCode: urlErrorCode,
+                                            attemptsLeft: hostResolveAttemptsLeft)
+                guard action != .none else { return false }
+                let waits = action == .resolveAndRetry
+                AlibabaHostRecovery.resolveNow(apiKey: apiKey) { changed in
+                    guard waits, !handle.isCancelled else { return }
+                    guard changed else {
+                        // 主机没变：原样再发一遍只会撞上同一堵墙，当面把原因说了
+                        finish(nil, failureText())
+                        return
+                    }
+                    // 走 dispatch 而不是 send——新主机要重新推一遍 Base URL 与那几道闸
+                    dispatch(path: path, body: body, endpoint: endpoint, timeout: timeout,
+                             purpose: purpose, provider: provider, handle: handle,
+                             apiKeyOverride: apiKey, networkRetries: 0,
+                             hostResolveAttemptsLeft: 0, completion: completion)
+                }
+                // 后台探测这一档：这一趟照常失败，别让用户等（润色的全部价值是顺手）
+                return waits
+            }
+
             if let error = error {
                 let nsError = error as NSError
                 if nsError.code == NSURLErrorCancelled { return }
                 if retryableCodes.contains(nsError.code), networkRetriesLeft > 0 {
                     DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
-                        send(url: url, body: body, apiKey: apiKey, timeout: timeout, endpoint: endpoint,
+                        send(path: path, url: url, body: body, apiKey: apiKey, timeout: timeout,
+                             endpoint: endpoint, purpose: purpose,
                              provider: provider, networkRetriesLeft: networkRetriesLeft - 1,
-                             stripAttemptsLeft: stripAttemptsLeft, handle: handle, completion: completion)
+                             stripAttemptsLeft: stripAttemptsLeft,
+                             hostResolveAttemptsLeft: hostResolveAttemptsLeft, didRetry: true,
+                             handle: handle, completion: completion)
                     }
                     return
                 }
-                failure = nsError.code == NSURLErrorTimedOut
-                    ? LLMCatalog.timeoutCopy().fullText
-                    : error.localizedDescription + tr("（已重试）", " (retried)")
+                let networkFailure: () -> String = {
+                    nsError.code == NSURLErrorTimedOut
+                        ? LLMCatalog.timeoutCopy().fullText
+                        : error.localizedDescription + (didRetry ? tr("（已重试）", " (retried)") : "")
+                }
+                if recovered(status: 0, urlErrorCode: nsError.code, failureText: networkFailure) { return }
+                failure = networkFailure()
             } else if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                 let err = json?["error"] as? [String: Any]
                 let message = err?["message"] as? String
@@ -720,15 +799,22 @@ enum LLMClient {
                    let param = unsupportedParameterName(in: message ?? ""),
                    let stripped = stripping(parameter: param, from: body) {
                     Log.warn("LLM 400 rejected parameter \(param) — retrying without it")
-                    send(url: url, body: stripped, apiKey: apiKey, timeout: timeout, endpoint: endpoint,
+                    send(path: path, url: url, body: stripped, apiKey: apiKey, timeout: timeout,
+                         endpoint: endpoint, purpose: purpose,
                          provider: provider, networkRetriesLeft: networkRetriesLeft,
-                         stripAttemptsLeft: stripAttemptsLeft - 1, handle: handle, completion: completion)
+                         stripAttemptsLeft: stripAttemptsLeft - 1,
+                         hostResolveAttemptsLeft: hostResolveAttemptsLeft, didRetry: didRetry,
+                         handle: handle, completion: completion)
                     return
                 }
-                failure = LLMCatalog.describeHTTPError(status: http.statusCode,
-                                                      provider: provider,
-                                                      code: code.isEmpty ? nil : code,
-                                                      message: message).fullText
+                let httpFailure: () -> String = {
+                    LLMCatalog.describeHTTPError(status: http.statusCode,
+                                                 provider: provider,
+                                                 code: code.isEmpty ? nil : code,
+                                                 message: message).fullText
+                }
+                if recovered(status: http.statusCode, urlErrorCode: nil, failureText: httpFailure) { return }
+                failure = httpFailure()
             } else if let json = json {
                 switch endpoint {
                 case .responses:
@@ -762,13 +848,7 @@ enum LLMClient {
             } else {
                 failure = tr("返回格式无法解析", "Could not parse the response")
             }
-            DispatchQueue.main.async {
-                guard !handle.isCancelled else { return }
-                // 用量（缓存命中 / 实际档位 / 联网来源）在主线程落进沉淀点，
-                // 紧接着由 completion 里的计量代码取走
-                LLMUsageSink.shared.record(usage)
-                completion(result, failure)
-            }
+            finish(result, failure, usage: usage)
         }
         guard handle.adopt(task) else { return }
         task.resume()
@@ -785,6 +865,14 @@ enum SelectionAction: String {
 }
 
 enum AgentService {
+
+    /// 语音指令的超时。按住说话是低频、值钱的一次调用，用户本来就在等结果，
+    /// 所以给得比润色宽（润色 12 s，见 PolishService.baseTimeout）——但**只发一次**：
+    /// 30 s ×（1 次重试）最坏能把人晾 60 秒，而那一趟重试救不回什么（地址不对重发还是不对，
+    /// 链路慢重发还是慢）。25 s 一次，失败就当面说原因，比默默再等半分钟有用。
+    static let commandTimeout: TimeInterval = 25
+    /// 指令一律不做网络重试，理由同上
+    static let commandNetworkRetries = 0
 
     /// 专有词汇表提示：口述指令里的人名、术语按词汇表纠正
     private static func vocabHint() -> String? {
@@ -854,13 +942,14 @@ enum AgentService {
             user += "\n\n（背景事实：选中文本来自聊天软件的消息记录，是对方发来的话，无法被原地修改。除非指令明确要求加工这段文字本身，意图应为 REPLY 或 NEW。）"
         }
         if let email = emailFormatRequirement(for: instruction) { user += email }
-        // 30s：40s×(1 次重试) 的最坏 80s 等待对"随时能退出"来说太长；配合 Esc 取消一起收敛
+        // 一次 25 s，不重试（见 commandTimeout）；配合 Esc 取消一起收敛
         return LLMClient.complete(system: system, user: user, purpose: .command,
                                   temperature: Settings.shared.commandTemperature,
-                                  timeout: 30, model: Settings.shared.currentCommandModel,
+                                  timeout: commandTimeout, model: Settings.shared.currentCommandModel,
                                   maxOutputTokens: LLMCatalog.maxOutputTokens(
                                       inputCharacters: selection.count + instruction.count,
-                                      minimum: LLMCatalog.commandMinOutputTokens)) { result, failure in
+                                      minimum: LLMCatalog.commandMinOutputTokens),
+                                  networkRetries: commandNetworkRetries) { result, failure in
             guard let result = result else {
                 completion(nil, nil, failure)
                 return
@@ -923,10 +1012,11 @@ enum AgentService {
         if let email = emailFormatRequirement(for: instruction) { userContent += email }
         return LLMClient.complete(system: system, user: userContent, purpose: .command,
                                   temperature: Settings.shared.commandTemperature,
-                                  timeout: 30, model: Settings.shared.currentCommandModel,
+                                  timeout: commandTimeout, model: Settings.shared.currentCommandModel,
                                   maxOutputTokens: LLMCatalog.maxOutputTokens(
                                       inputCharacters: userContent.count,
                                       minimum: LLMCatalog.commandMinOutputTokens),
+                                  networkRetries: commandNetworkRetries,
                                   completion: completion)
     }
 
@@ -953,10 +1043,11 @@ enum AgentService {
         if let email = emailFormatRequirement(for: instruction) { user += email }
         return LLMClient.complete(system: system, user: user, purpose: .command,
                                   temperature: Settings.shared.commandTemperature,
-                                  timeout: 25, model: Settings.shared.currentCommandModel,
+                                  timeout: commandTimeout, model: Settings.shared.currentCommandModel,
                                   maxOutputTokens: LLMCatalog.maxOutputTokens(
                                       inputCharacters: context.count + instruction.count,
                                       minimum: LLMCatalog.commandMinOutputTokens),
+                                  networkRetries: commandNetworkRetries,
                                   completion: completion)
     }
 }

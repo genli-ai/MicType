@@ -179,6 +179,127 @@ enum AlibabaEndpoint {
     }
 }
 
+// MARK: - 请求失败之后：要不要先把接入地址试出来
+
+/// 润色 / 指令打在一台**从来没验证过**的阿里云主机上、吃了 401 或者连 DNS 都不通时该做什么。
+///
+/// 为什么非有这一层不可（用户 2026-09-20 的测试日志）：Key 属于新加坡工作空间，
+/// 而出厂种下的那台是北京站。用户按「验证」之前，润色已经往北京站发过两趟，各等了 33 秒
+/// 才报超时——App 手上明明有一套能在 30 秒内把正确主机试出来的机制（AlibabaHostResolver），
+/// 却只在设置页点「验证」时才跑。真实使用路径上撞了墙也不去试，等于把排查工作全推给用户。
+///
+/// 为什么分成「后台试」和「试完重发」两档：润色的全部价值是**顺手**。
+/// 让它等一趟 30 秒的探测再重发一遍，比原来那 33 秒还糟——所以润色这一档
+/// 当场把识别原文交出去（带既有的那句提醒），探测在后台跑完、把主机记下来，
+/// 下一句话就对了。指令是按住说出来的、低频、用户本来就在等结果，那一档才值得等。
+enum AlibabaHostRecovery {
+
+    enum Action: Equatable {
+        /// 跟接入地址没关系（或已经试过了），照常报错
+        case none
+        /// 探测照跑，但这一趟当场失败——润色不能再加等待
+        case resolveInBackground
+        /// 等探测出结果，再原样重发一次
+        case resolveAndRetry
+    }
+
+    /// 值得触发探测的网络层错误码：主机名解析不了 / 连不上。
+    /// **超时不在内**——超时说明这台主机是存在的，只是链路慢，换一台解决不了，
+    /// 白白再花 30 秒探测只会让等待更长。
+    static let triggeringURLCodes: Set<Int> = [
+        NSURLErrorCannotFindHost,
+        NSURLErrorDNSLookupFailed,
+        NSURLErrorCannotConnectToHost,
+    ]
+
+    /// 纯函数，单测钉住每一档。
+    /// - isAlibaba: 这一趟发给的是阿里云那一档（别家没有"主机要自己试"这回事）
+    /// - hostSettled: 接入地址已经定下来了——用户自己粘过，或上一次真的试通过。
+    ///   定下来的主机吃 401 是另一回事（Key 过期 / 被删），再试一圈也只会得到同样的 401。
+    /// - canWaitForResolve: 这一趟等得起那 30 秒吗（润色等不起，见上面）
+    /// - status: HTTP 状态码；0 = 还没上网
+    /// - urlErrorCode: 网络层错误码（NSURLError*），没有就传 nil
+    static func action(isAlibaba: Bool,
+                       hostSettled: Bool,
+                       canWaitForResolve: Bool,
+                       status: Int,
+                       urlErrorCode: Int?,
+                       attemptsLeft: Int) -> Action {
+        guard isAlibaba, attemptsLeft > 0, !hostSettled else { return .none }
+        let triggered = status == 401
+            || (status == 0 && (urlErrorCode.map { triggeringURLCodes.contains($0) } ?? false))
+        guard triggered else { return .none }
+        return canWaitForResolve ? .resolveAndRetry : .resolveInBackground
+    }
+
+    // MARK: 单飞闸
+
+    private static let lock = NSLock()
+    private static var inFlight = false
+    private static var failedAt: Date?
+
+    /// 刚失败过就先别再试。Key 本身是废的时候，逐台试必然一台台全 401——
+    /// 那趟最长 30 秒，而每一次指令都去走一遍等于给每句话都加半分钟。
+    /// 冷却期里照常把真正的错误（401 那句"这把 Key 不属于试过的这些接入地址"）报给用户。
+    static let failureCooldown: TimeInterval = 60
+
+    /// 领一趟探测。返回 false = 已经有一趟在飞了、或者刚失败过，别再发第二趟。
+    /// 为什么要这道闸：长按说一段话会连着触发润色与指令，两趟同时撞墙就会同时各起一趟
+    /// 逐台试的探测——同一把 Key 在 UAE 这条链路上被无谓地多发十几个请求。
+    static func beginResolve(now: Date = Date()) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !inFlight else { return false }
+        if let failedAt = failedAt, now.timeIntervalSince(failedAt) < failureCooldown { return false }
+        inFlight = true
+        return true
+    }
+
+    static func endResolve(failed: Bool = false, now: Date = Date()) {
+        lock.lock()
+        inFlight = false
+        // 成功就把冷却清掉：地址已经对了，下次本来也不会再走到这里
+        failedAt = failed ? now : nil
+        lock.unlock()
+    }
+
+    /// 单测用：把闸复位，别让一个用例的冷却影响下一个
+    static func resetForTesting() {
+        lock.lock()
+        inFlight = false
+        failedAt = nil
+        lock.unlock()
+    }
+
+    /// 试一趟接入地址，试通就记下来（往后润色、指令、云端识别全跟着对）。
+    /// completion 在主线程；true = 主机变了，值得重发一次。
+    /// 已经有一趟在飞时直接回 false——这一趟不等它，当场失败就好。
+    static func resolveNow(apiKey: String, completion: @escaping (Bool) -> Void) {
+        guard beginResolve() else {
+            Log.info("Qwen host recovery skipped: another probe is running or one just failed")
+            DispatchQueue.main.async { completion(false) }
+            return
+        }
+        Log.warn("Qwen host recovery started: the request failed on a host that was never verified")
+        AlibabaHostResolver.resolve(apiKey: apiKey,
+                                    candidates: CloudASRSettings.currentHostCandidates(apiKey: apiKey)) { result in
+            switch result {
+            case .success(let host):
+                endResolve()
+                let changed = AlibabaEndpoint.normalizeHost(host) != AlibabaEndpoint.normalizeHost(
+                    Settings.shared.qwenResolvedHost)
+                CloudASRSettings.rememberResolution(host: host, model: nil)
+                completion(changed)
+            case .failure(let failure):
+                endResolve(failed: true)
+                // 记的是给用户看的那句文案（只含状态码与服务商错误码），不含 Key
+                Log.warn("Qwen host recovery failed: " + String(failure.message.prefix(160)))
+                completion(false)
+            }
+        }
+    }
+}
+
 // MARK: - 试出接入地址
 
 /// 拿候选主机一台台试，问的是最便宜的那个问题：`GET {host}/compatible-mode/v1/models`。

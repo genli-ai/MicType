@@ -103,16 +103,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 所以脚本留了张条子，这里启动时念一次（成功静默），顺手清掉临时目录里的安装残留。
     private func reportPreviousUpdateResult() {
         UpdateChecker.cleanupStaleStages()
-        guard let message = UpdateChecker.consumePreviousInstallResult() else { return }
-        // 排在引导 / 权限那些窗口之后弹，别抢首启动的流程
-        DispatchQueue.main.async {
-            let alert = NSAlert()
-            alert.alertStyle = .warning
-            alert.messageText = tr("上次升级没有完成", "The last update didn't finish")
-            alert.informativeText = message
-            alert.addButton(withTitle: tr("好", "OK"))
-            NSApp.activate(ignoringOtherApps: true)
-            alert.runModal()
+        switch UpdateChecker.consumePreviousInstallResult() {
+        case .none:
+            return
+        case .failed(let message):
+            // 排在引导 / 权限那些窗口之后弹，别抢首启动的流程
+            DispatchQueue.main.async {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = tr("上次升级没有完成", "The last update didn't finish")
+                alert.informativeText = message
+                alert.addButton(withTitle: tr("好", "OK"))
+                NSApp.activate(ignoringOtherApps: true)
+                alert.runModal()
+            }
+        case .installed:
+            // 成功那一档 4.1.1 之前是完全静默的：App 自己换掉版本、重开，屏幕上一个字都没有，
+            // 用户只能自己去「关于」页对版本号（2026-09-20 的反馈原话）。
+            // 用悬浮窗而不是弹框：升级成功不值得打断任何事，闪一下让人知道就够。
+            let notice = UpdateChecker.installedNoticeCopy()
+            DispatchQueue.main.asyncAfter(deadline: .now() + UpdateChecker.installedNoticeDelay) {
+                // 这几秒里人可能已经开口说话了——那时候这句提示会把「正在听…」顶掉
+                guard !AppDelegate.isDictationBusy else {
+                    Log.info("Update notice skipped: dictation in progress")
+                    return
+                }
+                Log.info("Update notice shown \(UpdateChecker.currentVersion)")
+                AppDelegate.sharedOverlay?.flashNotice(notice,
+                                                       duration: UpdateChecker.installedNoticeDuration)
+            }
         }
     }
 

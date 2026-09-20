@@ -466,24 +466,49 @@ extension UpdateChecker {
         Paths.appSupportDir.appendingPathComponent("last-update-result")
     }
 
-    /// 启动时读一次并删掉：成功（OK:）静默，失败返回给调用方当面说清楚。
+    /// 上一次自更新的下场。
+    ///
+    /// 4.1.1 之前成功那一档是 `nil`——自更新**悄无声息**地换完版本、重开，屏幕上一个字都没有。
+    /// 用户 2026-09-20 的反馈正是这一条：「自动更新完成后也没有一个提示告诉提示完成」。
+    /// 所以成功也要带着版本号回来，由 AppDelegate 闪一句「已更新到 x.y.z」。
+    enum PreviousInstall: Equatable {
+        /// 装好了。版本号取自条子（脚本写的那一行），只用来对照，界面上那句仍以本 bundle 为准
+        case installed(version: String)
+        /// 没装成：一句给用户看的话（含下一步）
+        case failed(message: String)
+    }
+
+    /// 启动时读一次并删掉。
     /// 为什么需要它：installAndRelaunch 启动脚本后立刻 terminate，失败回调从那一刻起
     /// 永远不可能再触发；脚本的三条 abort 路径里有两条还会把**旧版**重新打开，
     /// 用户看到 MicType 消失又回来，完全有理由以为升级成功了。
-    static func consumePreviousInstallResult() -> String? {
+    static func consumePreviousInstallResult() -> PreviousInstall? {
         let file = installResultFile
         guard let raw = try? String(contentsOf: file, encoding: .utf8) else { return nil }
         try? FileManager.default.removeItem(at: file)
         let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !line.isEmpty else { return nil }
         if line.hasPrefix("OK:") {
-            Log.info("Previous self-update installed \(line.dropFirst(3))")
-            return nil
+            let version = String(line.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+            Log.info("Previous self-update installed \(version)")
+            return .installed(version: version)
         }
         let code = line.hasPrefix("FAIL:") ? String(line.dropFirst(5)) : line
         Log.warn("Previous self-update failed: \(code)")
-        return describeInstallFailure(code)
+        return .failed(message: describeInstallFailure(code))
     }
+
+    /// 自更新装好之后那一句提示。**版本号取本 bundle**——条子是上一个进程写的，
+    /// 真正跑起来的是哪一份只有现在这个进程知道（回滚过的话两者会对不上）。
+    static func installedNoticeCopy(version: String = currentVersion) -> String {
+        tr("已更新到 ", "Updated to ") + version
+    }
+
+    /// 提示晚一点再闪：启动这一刻引导 / 权限 / 模型预加载都在抢主线程，
+    /// 一闪而过的悬浮窗会被它们盖掉，等于没提示。
+    static let installedNoticeDelay: TimeInterval = 3
+    /// 停留时长：比一般的「好了」长一点——这一句是要被读到的，不是背景音
+    static let installedNoticeDuration: TimeInterval = 2.5
 
     private static func describeInstallFailure(_ code: String) -> String {
         let reason: String

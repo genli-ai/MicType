@@ -407,13 +407,15 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
                             enableITN: Bool) -> [String: Any] {
         let hints = CloudASRLanguage.sanitize(hints: languageHints)
         let contextText = context?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let audioTurn: [String: Any] = [
-            "role": "user",
-            "content": [["type": "input_audio", "input_audio": ["data": audioDataURI]]],
-        ]
 
         switch model {
         case .qwenAudio30Flash:
+            // 3.0 走的是「非实时识别」那条异步链路，消息体沿用 OpenAI 兼容的
+            // `{"type":"input_audio", …}` 形状（这一档多数账号不可用，留着只为老设置读得出来）。
+            let audioTurn: [String: Any] = [
+                "role": "user",
+                "content": [["type": "input_audio", "input_audio": ["data": audioDataURI]]],
+            ]
             var messages = [[String: Any]]()
             // 上下文走 input_text + 一个空 assistant turn（文档的 few-shot 形式）。
             // 没有上下文就整对省掉：空 text turn 有被判 InvalidParameter 的风险。
@@ -433,6 +435,17 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
                     "parameters": parameters]
 
         case .qwen3Flash:
+            // **原生 DashScope 端点的形状，不是 OpenAI 兼容那一套**：
+            // /api/v1/services/aigc/multimodal-generation/generation 的 content 项是
+            // `{"audio": "data:audio/wav;base64,…"}` 与 `{"text": "…"}`，没有 `type` 这个字段。
+            // 4.1.0 在这里发的是兼容模式的 `{"type":"input_audio","input_audio":{"data":…}}`，
+            // 于是主机、鉴权、模型全都对了之后仍然吃一个
+            // `400 InvalidParameter: Input should be a valid string: input` ——
+            // 服务端在 content 里找不到它认识的任何字段。这是 4.1.1 要修的那个 bug。
+            let audioTurn: [String: Any] = [
+                "role": "user",
+                "content": [["audio": audioDataURI]],
+            ]
             var messages = [[String: Any]]()
             if let contextText = contextText, !contextText.isEmpty {
                 messages.append(["role": "system", "content": [["text": contextText]]])
