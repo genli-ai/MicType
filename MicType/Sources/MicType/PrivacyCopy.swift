@@ -73,7 +73,7 @@ enum PrivacyCopy {
     /// （LLMCatalog.billingNote，KeyEntryView 渲染它）。
     static var youPayProvider: String { LLMCatalog.billingNote }
 
-    /// 联网搜索是显式付费开关，默认关。
+    /// 联网搜索是显式付费开关，4.1.1 起默认**开**（支持的服务商）。
     /// **单价不在这里写**：它只有一个出处 LLMCatalog.webSearchPriceNote（设置页开关旁用的是
     /// 同一句）。以前这里自己写了一遍「约每 1000 次 10 美元」，改一次价就会有两句话打架。
     static var webSearchBilled: String {

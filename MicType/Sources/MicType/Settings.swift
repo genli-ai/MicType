@@ -391,6 +391,9 @@ enum SettingsKeys {
     static let qwenWorkspaceID = "qwenWorkspaceID"          // 老设置：WorkspaceId（主机名第一段）
     static let qwenAPIHost = "qwenAPIHost"                  // 用户自己粘的接入地址（可选，粘了就只用它）
     static let qwenResolvedHost = "qwenResolvedHost"        // 试通并记住的那台主机（本机缓存，不进设置导出）
+    /// 上面那台主机是**真的联网试通过**的，而不是 4.0.1 迁移按老区域种下的（见 AlibabaEndpoint.hostLooksVerified）。
+    /// 只有 CloudASRSettings.rememberResolution 写得出真；恢复探测要不要跑就看它。
+    static let qwenHostVerified = "qwenHostVerified"
     static let qwenModel = "qwenModel"
     static let qwenCommandModel = "qwenCommandModel"
     static let customBaseURL = "customBaseURL"              // 自定义端点地址（唯一可见的 URL 输入框）
@@ -400,7 +403,7 @@ enum SettingsKeys {
     static let localModel = "localModel"
     static let localCommandModel = "localCommandModel"
     static let fastTier = "fastTier"                        // service_tier:"fast"（贵一倍换低延迟，默认关）
-    static let webSearchEnabled = "webSearchEnabled"        // 指令模式联网搜索（按次计费，默认关）
+    static let webSearchEnabled = "webSearchEnabled"        // 指令模式联网搜索（按次计费，4.1.1 起默认开）
     static let onboardingCompleted = "onboardingCompleted"  // 首启动引导是否走过（老用户按"已配置好"自动置真）
     static let onboardingSkippedEssentials = "onboardingSkippedEssentials"  // 他点过「先跳过」：引导不再每次启动拦他，但概览上的徽章照常挂着
     /// 4.0.1 的默认型号迁移真的改掉了哪几处（"旧型号>新型号" 编码，见 LLMCatalog.encodeModelChanges）。
@@ -458,6 +461,7 @@ final class Settings {
             SettingsKeys.qwenWorkspaceID: "",
             SettingsKeys.qwenAPIHost: "",
             SettingsKeys.qwenResolvedHost: "",
+            SettingsKeys.qwenHostVerified: false,
             SettingsKeys.qwenModel: LLMCatalog.defaultModel(for: .qwen),
             SettingsKeys.qwenCommandModel: LLMCatalog.defaultModel(for: .qwen),
             SettingsKeys.customBaseURL: "",
@@ -601,6 +605,25 @@ final class Settings {
                 Log.info("Qwen legacy host seeded host=\(AlibabaEndpoint.redacted(seed))")
             }
             d.set(true, forKey: "migratedQwenLegacyHost")
+        }
+
+        // 一次性迁移（4.1.1）：把"真的试通过"从"只是种下的"里分出来。
+        //
+        // 4.1.1 之前只要 qwenResolvedHost 有值就算"地址定下来了"，于是上面那条种子迁移
+        // 反而把恢复探测关死了：Key 属于新加坡工作空间、种下的是北京站的人，每句话 401，
+        // 而 App 一次都不去试——只有去设置页点「验证」才好（正是 4.1.1 要消掉的那一幕）。
+        // 这里把老设置分个类：能推出种子、而且存着的就是那台 = 没验证过；其余算验证过
+        //（rememberResolution 从这一版起自己写真，不必再猜）。
+        if !d.bool(forKey: "migratedQwenHostVerified") {
+            let region = LLMCatalog.QwenRegion(rawValue: d.string(forKey: SettingsKeys.qwenRegion) ?? "")
+                ?? .international
+            let verified = AlibabaEndpoint.hostLooksVerified(
+                resolvedHost: d.string(forKey: SettingsKeys.qwenResolvedHost) ?? "",
+                region: region,
+                workspaceID: d.string(forKey: SettingsKeys.qwenWorkspaceID) ?? "")
+            d.set(verified, forKey: SettingsKeys.qwenHostVerified)
+            Log.info("Qwen host verified flag migrated to=\(verified)")
+            d.set(true, forKey: "migratedQwenHostVerified")
         }
 
         // 一次性迁移（4.0.1）：云端识别模型 qwen-audio-3.0-asr-flash → qwen3-asr-flash。
@@ -903,6 +926,13 @@ final class Settings {
                     forKey: SettingsKeys.qwenResolvedHost) }
     }
 
+    /// 上面那台主机是不是**真的试通过**（而不是迁移种下的猜测）。
+    /// 只有 rememberResolution 写真；判"要不要再去试一圈"的是 LLMClient.alibabaHostSettled。
+    var qwenHostVerified: Bool {
+        get { d.bool(forKey: SettingsKeys.qwenHostVerified) }
+        set { d.set(newValue, forKey: SettingsKeys.qwenHostVerified) }
+    }
+
     /// Qwen 的 Base URL 永远是推出来的，没有 URL 输入框。
     /// 优先用试通/粘贴的那台主机——**润色与云端识别同一台主机**，一处试通两边都对；
     /// 都还没有就退回老设置那条（区域 + WorkspaceId），老用户升级上来第一次仍然能用。
@@ -967,7 +997,7 @@ final class Settings {
         set { d.set(newValue, forKey: SettingsKeys.localCommandModel) }
     }
 
-    // MARK: 花钱的两个开关（默认关）
+    // MARK: 花钱的两个开关（优先处理默认关；联网搜索 4.1.1 起默认开）
 
     /// `service_tier:"fast"`：延迟更低更稳，token 单价约 2 倍。只有 OpenAI 认这个字段。
     /// 默认关——多花的钱必须是用户自己点下去的。
@@ -977,7 +1007,10 @@ final class Settings {
     }
 
     /// 指令模式（按住）允许模型联网搜索。**只作用于指令**：润色是"改写我说的话"，
-    /// 联网既没用又要花钱，那条路一个搜索参数都不发。默认关，$ 单价写在开关旁。
+    /// 联网既没用又要花钱，那条路一个搜索参数都不发。
+    /// **4.1.1 起默认开**（用户 2026-09-20 拍板，迁移见 AISetup.webSearchAfterDefaultChange）：
+    /// 指令里"查一下…""最新的…"是常态，默认关的结果是模型一本正经地编。$ 单价写在开关旁；
+    /// 不支持的服务商连开关都不摆（SettingsEditors.webSearchSection）。
     var webSearchEnabled: Bool {
         get { d.bool(forKey: SettingsKeys.webSearchEnabled) }
         set { d.set(newValue, forKey: SettingsKeys.webSearchEnabled) }

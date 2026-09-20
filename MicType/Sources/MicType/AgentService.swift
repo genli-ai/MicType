@@ -566,9 +566,13 @@ enum LLMClient {
     /// 形态很多：「Unknown parameter: 'text.verbosity'.」「Unsupported parameter: 'temperature' is not
     /// supported with this model.」「Unrecognized request argument supplied: prompt_cache_key」
     /// 「Unsupported value: 'reasoning.effort' does not support 'none'…」——统一抽出点路径式的参数名。
+    /// DashScope 还会把两个词粘在一起（`InternalError.Algo.InvalidParameter: enable_search …`），
+    /// 所以中间那道分隔是 `[\s.]*` 而不是 `\s+`：4.1.1 把联网搜索改成默认开之后，
+    /// 阿里云那一档的 enable_search / search_options 正是最可能被端点拒掉的字段，
+    /// 认不出参数名就没有"摘掉重发"，整条指令白掉。
     /// 取不到返回 nil（不值得为一条看不懂的报错再发一趟）。
     static func unsupportedParameterName(in message: String) -> String? {
-        let pattern = "(?i)(?:unknown|unsupported|unrecognized|invalid)\\s+"
+        let pattern = "(?i)(?:unknown|unsupported|unrecognized|invalid)[\\s.]*"
             + "(?:parameter|value|argument|request argument supplied|request argument)"
             + "[^A-Za-z0-9_]*['\"]?([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z0-9_]+)*)['\"]?"
         if let regex = try? NSRegularExpression(pattern: pattern),
@@ -668,12 +672,16 @@ enum LLMClient {
              handle: handle, completion: completion)
     }
 
-    /// 接入地址已经定下来了吗（用户粘过，或上一次真的试通过）。
+    /// 接入地址已经定下来了吗（用户粘过，或上一次**真的试通过**）。
     /// 只有"还没定"的那台主机吃 401 / DNS 不通才值得再去试一圈——见 AlibabaHostRecovery。
+    ///
+    /// 光看 qwenResolvedHost 有没有值是不够的（4.1.1 的第一版就是这么写的）：那个键
+    /// 也可能是 4.0.1 迁移按老区域**种**下的，从没联过网。种子吃 401 恰恰是最该去试一圈的
+    /// 那一幕（北京站的种子 + 新加坡工作空间的 Key），所以这里认的是"验证过"那一位。
     static var alibabaHostSettled: Bool {
         let s = Settings.shared
-        return AlibabaEndpoint.normalizeHost(s.qwenAPIHost) != nil
-            || AlibabaEndpoint.normalizeHost(s.qwenResolvedHost) != nil
+        if AlibabaEndpoint.normalizeHost(s.qwenAPIHost) != nil { return true }
+        return s.qwenHostVerified && AlibabaEndpoint.normalizeHost(s.qwenResolvedHost) != nil
     }
 
     /// 这一趟失败之后要不要先把接入地址试出来。抽出来是为了让 send 里那一段保持一句话长度。
@@ -744,13 +752,20 @@ enum LLMClient {
             /// **无论走哪条分支，completion 都恰好被调用一次**：探测失败、或者试出来还是同一台
             /// 主机（重发只会撞同一堵墙）时，原样交出 failureText。漏掉这一路的话，
             /// 悬浮窗会永远停在「润色中…」上，用户只剩 Esc 一条出路。
-            func recovered(status: Int, urlErrorCode: Int?, failureText: @escaping () -> String) -> Bool {
-                let action = recoveryAction(provider: provider, purpose: purpose, status: status,
-                                            urlErrorCode: urlErrorCode,
-                                            attemptsLeft: hostResolveAttemptsLeft)
+            func recovered(_ action: AlibabaHostRecovery.Action,
+                           failureText: @escaping () -> String) -> Bool {
                 guard action != .none else { return false }
                 let waits = action == .resolveAndRetry
+                // 等探测的那一档（指令）要在悬浮窗上说清楚在等什么：探测最长 30 秒，
+                // 而屏幕上只有一个越走越大的「执行指令中… 40s」，看着就是卡住了。
+                if waits {
+                    DispatchQueue.main.async {
+                        AppDelegate.sharedOverlay?.pushProcessingStage(
+                            tr("正在探测接入地址…", "Finding the endpoint…"))
+                    }
+                }
                 AlibabaHostRecovery.resolveNow(apiKey: apiKey) { changed in
+                    if waits { AppDelegate.sharedOverlay?.popProcessingStage() }
                     guard waits, !handle.isCancelled else { return }
                     guard changed else {
                         // 主机没变：原样再发一遍只会撞上同一堵墙，当面把原因说了
@@ -783,10 +798,13 @@ enum LLMClient {
                 }
                 let networkFailure: () -> String = {
                     nsError.code == NSURLErrorTimedOut
-                        ? LLMCatalog.timeoutCopy().fullText
+                        ? LLMCatalog.timeoutCopy(retried: didRetry).fullText
                         : error.localizedDescription + (didRetry ? tr("（已重试）", " (retried)") : "")
                 }
-                if recovered(status: 0, urlErrorCode: nsError.code, failureText: networkFailure) { return }
+                let hostAction = recoveryAction(provider: provider, purpose: purpose, status: 0,
+                                                urlErrorCode: nsError.code,
+                                                attemptsLeft: hostResolveAttemptsLeft)
+                if recovered(hostAction, failureText: networkFailure) { return }
                 failure = networkFailure()
             } else if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                 let err = json?["error"] as? [String: Any]
@@ -807,13 +825,23 @@ enum LLMClient {
                          handle: handle, completion: completion)
                     return
                 }
+                let hostAction = recoveryAction(provider: provider, purpose: purpose,
+                                                status: http.statusCode, urlErrorCode: nil,
+                                                attemptsLeft: hostResolveAttemptsLeft)
                 let httpFailure: () -> String = {
-                    LLMCatalog.describeHTTPError(status: http.statusCode,
-                                                 provider: provider,
-                                                 code: code.isEmpty ? nil : code,
-                                                 message: message).fullText
+                    // 接入地址还没试对时的 401：代码这一刻已经判定"多半是地址的事"，
+                    // 再说一句"API Key 无效"就是指错了方向——用户去重贴 Key，而下一句话
+                    // 恰好因为后台探测成功而好了，他会以为是重贴救了他（见 LLMCatalog）。
+                    if http.statusCode == 401, hostAction != .none {
+                        return LLMCatalog.qwenUnverifiedHost401(
+                            probing: hostAction == .resolveInBackground).fullText
+                    }
+                    return LLMCatalog.describeHTTPError(status: http.statusCode,
+                                                        provider: provider,
+                                                        code: code.isEmpty ? nil : code,
+                                                        message: message).fullText
                 }
-                if recovered(status: http.statusCode, urlErrorCode: nil, failureText: httpFailure) { return }
+                if recovered(hostAction, failureText: httpFailure) { return }
                 failure = httpFailure()
             } else if let json = json {
                 switch endpoint {

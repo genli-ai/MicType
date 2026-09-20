@@ -595,10 +595,18 @@ struct CloudEditor: View {
     private var inUseProvider: LLMProvider { LLMProvider(rawValue: provider) ?? .openai }
     private var currentPolishLevel: PolishLevel { PolishLevel(rawValue: polishLevel) ?? .smart }
     private var engineChoice: RecognitionEngineChoice { RecognitionEngineChoice.parse(recognitionEngine) }
-    /// 当前这一档的钥匙串里有没有一把 Key。判的是"按住说指令会不会真的发出去"
+    /// 选择器上**看着**的这一档钥匙串里有没有 Key。只用来判"这一档是不是还没配"
+    ///（选择器下面那行「这一档未配置」）。
     private var hasStoredKey: Bool {
         _ = keychainTick
         return KeychainHelper.loadAPIKey(account: selected.keychainAccount) != nil
+    }
+
+    /// **生效那一档**的钥匙串里有没有 Key。"只用本地却还存着一把 Key"说的是真会被发出去的那把，
+    /// 所以按生效档算——预览别家时按 selected 算会漏报，也会指着预览档那把 Key 让人删。
+    private var hasStoredKeyInUse: Bool {
+        _ = keychainTick
+        return KeychainHelper.loadAPIKey(account: inUseProvider.keychainAccount) != nil
     }
     private var usageMode: AIUsageMode {
         AISetup.mode(polishLevel: currentPolishLevel, engine: engineChoice)
@@ -718,11 +726,11 @@ struct CloudEditor: View {
         // （删 Key 是破坏性动作，只能由用户自己点）。可指令路径不看档位：按住说指令照样
         // 会把选区和这句话发给服务商、照样计费——不说的话他既看不到那把 Key，也不知道它还在花钱。
         if usageMode == .localOnly,
-           AISetup.showsStoredKeyNotice(mode: usageMode, hasCredential: hasStoredKey) {
-            BoundaryRow(text: SettingsCopy.storedKeyWhileLocalOnly(provider: selected.segmentName)) {
+           AISetup.showsStoredKeyNotice(mode: usageMode, hasCredential: hasStoredKeyInUse) {
+            BoundaryRow(text: SettingsCopy.storedKeyWhileLocalOnly(provider: inUseProvider.segmentName)) {
                 Button(tr("删掉这把 Key", "Remove that key")) {
-                    KeychainHelper.deleteAPIKey(account: selected.keychainAccount)
-                    Log.info("API key removed provider=\(selected.rawValue) reason=local only")
+                    KeychainHelper.deleteAPIKey(account: inUseProvider.keychainAccount)
+                    Log.info("API key removed provider=\(inUseProvider.rawValue) reason=local only")
                     // 删完这一页要立刻不再显示上面那句：@AppStorage 管不着钥匙串，自己推一下
                     keychainTick &+= 1
                 }
@@ -755,7 +763,11 @@ struct CloudEditor: View {
         }
         // 云端识别停在阿里云、服务商却不是阿里云：下面那个开关只在阿里云档渲染，于是音频
         // 一直在上传、界面上却没有关掉它的控件。同样处理：当面说 + 一颗按钮，绝不替他改。
-        if AISetup.showsStrandedAlibabaCloudNotice(engine: engineChoice, provider: selected) {
+        // 判据用**生效那档**（inUseProvider），不是选择器上预览的那一档：这条横幅说的是
+        // "音频这会儿还在往阿里云传、而服务商不是阿里云"，讲的全是生效链路。按 selected 判的话，
+        // 阿里云用户只是点一下 OpenAI 看看，横幅就会当面说反话，还递给他一颗关掉云端识别的按钮。
+        // SettingsSummary 与 AppDelegate 的同一条判据本来就按生效档算，只有这里走散过。
+        if AISetup.showsStrandedAlibabaCloudNotice(engine: engineChoice, provider: inUseProvider) {
             BoundaryRow(text: SettingsCopy.strandedAlibabaRecognition) {
                 Button(tr("改回本机识别", "Back to on-device")) {
                     recognitionEngine = RecognitionEngineChoice.local.rawValue
@@ -851,11 +863,15 @@ struct CloudEditor: View {
         Log.info("AI provider adopted=\(next.rawValue)")
     }
 
-    /// 选择器里摆哪几档：三家云服务商，外加**他正在用的那一档**（否则选择器上没有一项
-    /// 对得上，看着像被我们悄悄改掉了）
+    /// 选择器里摆哪几档：三家云服务商，外加**正在看的那一档和正在用的那一档**
+    /// （否则选择器上没有一项对得上，看着像被我们悄悄改掉了）。
+    ///
+    /// 两档都要摆，是因为 4.1.1 起它们可以不同：正在用「本机模型」的人点一下 OpenAI 预览，
+    /// 只补 selected 的话本机模型那一段当场从选择器上消失，「正在使用 ✓」跟着消失，
+    /// 屏幕上再没有任何地方写着他在用哪一家，也没有一段可以点回去。
     private var offeredProviders: [LLMProvider] {
         var list: [LLMProvider] = [.openai, .deepseek, .qwen]
-        if !list.contains(selected) { list.append(selected) }
+        for p in [selected, inUseProvider] where !list.contains(p) { list.append(p) }
         return list
     }
 
@@ -1002,7 +1018,10 @@ struct CloudEditor: View {
     private func runModelTest(_ model: String) {
         testing = true
         testResult = ""
-        LLMClient.testModel(model) { ok, message in
+        // **provider 要传选择器上那一档**：4.1.1 起选择器只是预览（selected 可以不等于生效那档），
+        // 而型号名取自 selected。不传的话型号发到的是**生效那档**的端点与 Key，
+        // 两档拼在一起报回一句"model not found"，用户会以为是型号名坏了。
+        LLMClient.testModel(model, provider: selected) { ok, message in
             testing = false
             testResult = model + tr("：", ": ") + (ok ? "✓ " : "✗ ") + message
         }

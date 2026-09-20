@@ -129,8 +129,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     return
                 }
                 Log.info("Update notice shown \(UpdateChecker.currentVersion)")
-                AppDelegate.sharedOverlay?.flashNotice(notice,
-                                                       duration: UpdateChecker.installedNoticeDuration)
+                // flashInfo 而不是 flashNotice：.notice 那一档画的是一枚 ✗（「已取消」用它），
+                // 摆在"已更新到 4.1.1"旁边正好把话说反，用户反而要去「关于」页确认一次——
+                // 而这句提示的全部用意就是免掉那一趟
+                AppDelegate.sharedOverlay?.flashInfo(notice,
+                                                     duration: UpdateChecker.installedNoticeDuration)
             }
         }
     }

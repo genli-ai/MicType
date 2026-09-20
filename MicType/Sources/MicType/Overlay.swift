@@ -11,6 +11,9 @@ final class OverlayState: ObservableObject {
         case error(String)
         /// 中性提示（取消等用户主动动作）：既不是成功也不是错误，别用绿勾/黄三角误导
         case notice(String)
+        /// 告知（「已更新到 x.y.z」这类）：同样不是成功也不是错误，但它报的是**办成了的事**，
+        /// 所以不能跟 .notice 共用那枚 ✗——一句"已更新到 4.1.1"旁边画个叉，读出来正好相反
+        case info(String)
     }
 
     // 占位初值，显示前必然会被 showRecording/showProcessing 覆盖
@@ -48,7 +51,7 @@ final class OverlayState: ObservableObject {
     var isCancellable: Bool {
         switch mode {
         case .recording, .processing: return true
-        case .success, .error, .notice: return false
+        case .success, .error, .notice, .info: return false
         }
     }
 
@@ -252,6 +255,12 @@ struct OverlayView: View {
                 Text(label)
                     .font(.callout.weight(.medium))
                     .foregroundColor(.white.opacity(0.9))
+            case .info(let label):
+                Image(systemName: "info.circle.fill")
+                    .foregroundColor(.white.opacity(0.75))
+                Text(label)
+                    .font(.callout.weight(.medium))
+                    .foregroundColor(.white.opacity(0.9))
             case .success(let label):
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundColor(.green)
@@ -347,6 +356,8 @@ final class OverlayController {
     /// 不是"这一段等了多久"），阶段标签换成「润色中…」时不重新计时
     private var processingStartedAt: Date?
     private var processingLabel = ""
+    /// pushProcessingStage 暂时顶掉的那句话（结束时放回去）
+    private var stagedLabel: String?
     private var processingTimer: Timer?
 
     /// 入场 0.16s / 退场 0.12s：够看出"它来了/它走了"，又不至于挡在用户前面
@@ -527,6 +538,22 @@ final class OverlayController {
         }
     }
 
+    /// 处理中途插一句「现在在等什么」，结束时用 popProcessingStage 把原来那句放回去。
+    /// 为什么需要：接入地址探测最长 30 秒，而屏幕上只有一个越走越大的「执行指令中… 40s」，
+    /// 看着就是卡住了（Esc 仍然随时能退）。两个方法都只在主线程调用。
+    func pushProcessingStage(_ label: String) {
+        guard processingStartedAt != nil, stagedLabel == nil else { return }
+        stagedLabel = processingLabel
+        updateProcessing(label: label)
+    }
+
+    /// 把 pushProcessingStage 顶掉的那句话放回去。没顶过就什么都不做。
+    func popProcessingStage() {
+        guard let previous = stagedLabel else { return }
+        stagedLabel = nil
+        updateProcessing(label: previous)
+    }
+
     /// 处理中被拒绝的手势（轻点/按住）：闪一句提示后回到「处理中」显示，
     /// 绝不用这条提示把进度显示擦掉
     func flashOverProcessing(_ label: String, duration: Double = 1.6) {
@@ -585,6 +612,8 @@ final class OverlayController {
         processingTimer = nil
         processingStartedAt = nil
         processingLabel = ""
+        // 这一轮已经结束了，上一段被顶掉的话没有地方可放回去
+        stagedLabel = nil
     }
 
     // MARK: 点「⎋ 取消」
@@ -761,10 +790,16 @@ final class OverlayController {
         flash(.error(label), duration: duration, actionLabel: actionLabel)
     }
 
-    /// duration 可调：多数提示 1 秒足够（「好了」这类背景音），
-    /// 但「已更新到 x.y.z」是要被读到的一句，给它久一点（见 UpdateChecker.installedNoticeDuration）。
+    /// 用户主动动作的回执（「已取消」）：那枚 ✗ 说的就是"这件事没做"。
     func flashNotice(_ label: String, duration: Double = 1.0) {
         flash(.notice(label), duration: duration)
+    }
+
+    /// 办成了、但不值得道喜的一句（「已更新到 x.y.z」）。
+    /// duration 可调：多数提示 1 秒足够（「好了」这类背景音），这一句是要被读到的，
+    /// 给它久一点（见 UpdateChecker.installedNoticeDuration）。
+    func flashInfo(_ label: String, duration: Double = 1.0) {
+        flash(.info(label), duration: duration)
     }
 
     private func flash(_ mode: OverlayState.Mode, duration: Double, actionLabel: String? = nil) {

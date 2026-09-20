@@ -199,6 +199,36 @@ final class SettingsCopyBudgetTests: XCTestCase {
                        SettingsCopy.priorityInfo)
     }
 
+    /// 「模型」那颗 ⓘ 只许指屏幕上**真有**的控件：三家官方档的「高级」里只剩「测试模型」，
+    /// 「刷新模型列表」只长在没有内置清单的那两档上（SettingsEditors.modelMaintenance）。
+    /// 指一个不存在的按钮，用户会以为界面少了东西。
+    func testModelInfoOnlyPointsAtControlsThatExist() {
+        for provider in LLMProvider.allCases where !LLMCatalog.modelMenu(for: provider).isEmpty {
+            L10n.shared.language = .zh
+            XCTAssertFalse(SettingsCopy.cloudModelInfo(provider: provider).contains("刷新"),
+                           provider.rawValue)
+            L10n.shared.language = .en
+            XCTAssertFalse(SettingsCopy.cloudModelInfo(provider: provider)
+                            .lowercased().contains("refresh"), provider.rawValue)
+        }
+        // 那两档反过来：它们的「高级」里真有那颗按钮，ⓘ 该说
+        for provider in [LLMProvider.custom, .local] {
+            L10n.shared.language = .zh
+            XCTAssertTrue(SettingsCopy.cloudModelInfo(provider: provider).contains("刷新"),
+                          provider.rawValue)
+        }
+    }
+
+    /// 选择器下面那行「预览中」必须点名**正在生效**的那一家：预览的这一刻
+    /// 「正在使用 ✓」恰好不在屏幕上，而"现在真正在用哪一家"正是这一版要解决的问题
+    func testPreviewHintNamesTheProviderStillInUse() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            XCTAssertTrue(SettingsCopy.providerNotSetUp(current: "DeepSeek").contains("DeepSeek"),
+                          SettingsCopy.providerNotSetUp(current: "DeepSeek"))
+        }
+    }
+
     /// 联网搜索那颗 ⓘ 只说这个开关管到哪儿；**单价不许搬进来**——价格是代价不是解释，
     /// 它的唯一出处是 LLMCatalog，摆在开关旁边
     func testWebSearchInfoDoesNotRestateThePrice() {

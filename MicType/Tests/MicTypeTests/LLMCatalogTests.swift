@@ -286,6 +286,32 @@ final class LLMCatalogTests: XCTestCase {
         XCTAssertTrue(broke.fullText.contains("Add credit"))
     }
 
+    /// 4.1.1 起润色与指令都只发一次（networkRetries = 0），超时那句就不许再写"已重试一次"——
+    /// 它是 UAE 这条链路上最常见的一句，写错等于每天对用户说一次假话，日志里也一样。
+    /// 仍然会重试的只剩验证 / 测试那几条路，那一档才缀得上。
+    func testTimeoutCopyOnlyClaimsARetryWhenOneHappened() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            let once = LLMCatalog.timeoutCopy().fullText.lowercased()
+            XCTAssertFalse(once.contains("重试") || once.contains("retried"), once)
+            let retried = LLMCatalog.timeoutCopy(retried: true).fullText.lowercased()
+            XCTAssertTrue(retried.contains("重试") || retried.contains("retried"), retried)
+        }
+    }
+
+    /// 接入地址还没试对时的 401：这一刻代码自己刚判定"多半是地址的事"并且已经去试了，
+    /// 再说一句"API Key 无效"就是指错方向——用户去重贴 Key，而下一句恰好因为探测成功而好了。
+    func testUnverifiedHost401TalksAboutTheEndpointNotTheKey() {
+        L10n.shared.language = .zh
+        let probing = LLMCatalog.qwenUnverifiedHost401(probing: true).fullText
+        XCTAssertTrue(probing.contains("接入地址"), probing)
+        XCTAssertFalse(probing.contains("Key 无效"), probing)
+        // 试完一圈仍然不对：换成"这把 Key 不属于试过的这些接入地址"，指路去粘控制台那条地址
+        let exhausted = LLMCatalog.qwenUnverifiedHost401(probing: false).fullText
+        XCTAssertTrue(exhausted.contains("接入地址"), exhausted)
+        XCTAssertNotEqual(exhausted, probing)
+    }
+
     func testCapacityAndUnknownStatusCopy() {
         L10n.shared.language = .en
         XCTAssertTrue(LLMCatalog.describeHTTPError(status: 503, provider: .deepseek,
@@ -297,7 +323,8 @@ final class LLMCatalogTests: XCTestCase {
     /// 英文界面下这几条话术里不能混进中文或全角标点（英文用户看到「：」就是 bug）
     func testEnglishCopyHasNoCJKOrFullWidthPunctuation() {
         L10n.shared.language = .en
-        var texts = [LLMCatalog.timeoutCopy().fullText]
+        var texts = [LLMCatalog.timeoutCopy().fullText, LLMCatalog.timeoutCopy(retried: true).fullText,
+                     LLMCatalog.qwenUnverifiedHost401(probing: true).fullText]
         for status in [401, 403, 404, 429, 503, 500] {
             texts.append(LLMCatalog.describeHTTPError(status: status, provider: .openai,
                                                       code: "insufficient_quota",

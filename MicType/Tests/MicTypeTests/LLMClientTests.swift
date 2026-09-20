@@ -171,6 +171,17 @@ final class LLMClientTests: XCTestCase {
             in: "Invalid parameter: \"thinking\" is not allowed here"), "thinking")
     }
 
+    /// DashScope 把两个词粘在一起（`InvalidParameter`），中间一个空格都没有。
+    /// 4.1.1 把联网搜索改成默认开之后，enable_search / search_options 正是阿里云那一档
+    /// 最可能被端点拒掉的字段——认不出参数名就没有"摘掉重发"，整条指令白掉。
+    func testDashScopeCamelCaseInvalidParameterIsRecognised() {
+        XCTAssertEqual(LLMClient.unsupportedParameterName(
+            in: "<400> InternalError.Algo.InvalidParameter: enable_search is not supported"),
+                       "enable_search")
+        XCTAssertEqual(LLMClient.unsupportedParameterName(
+            in: "InvalidParameter: search_options.search_strategy"), "search_options.search_strategy")
+    }
+
     /// 推理模型拒温度的措辞五花八门，认关键词兜底（3.2.5 起就靠这条）
     func testTemperatureIsRecognisedWithoutAParameterPrefix() {
         XCTAssertEqual(LLMClient.unsupportedParameterName(

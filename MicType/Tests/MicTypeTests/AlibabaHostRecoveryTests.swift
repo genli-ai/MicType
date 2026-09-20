@@ -44,6 +44,31 @@ final class AlibabaHostRecoveryTests: XCTestCase {
                               urlErrorCode: NSURLErrorDNSLookupFailed), .resolveInBackground)
     }
 
+    /// 4.0.1 迁移**种**下的那台主机（从没联过网）吃 401：这正是 2026-09-20 那份日志的起点——
+    /// 出厂种下的是北京站、Key 属于新加坡工作空间。种子不算"试通过"，所以照常去试一圈。
+    func testASeededHostIsNotSettledAndStillProbes() {
+        let seeded = "ws-1234.cn-beijing.maas.aliyuncs.com"
+        let settled = AlibabaEndpoint.hostLooksVerified(resolvedHost: seeded,
+                                                        region: .beijing, workspaceID: "ws-1234")
+        XCTAssertFalse(settled, "区域 + WorkspaceId 推得出这台，说明它是种下的，不是试出来的")
+        XCTAssertEqual(action(hostSettled: settled, status: 401), .resolveAndRetry)
+        XCTAssertEqual(action(hostSettled: settled, canWaitForResolve: false, status: 401),
+                       .resolveInBackground)
+    }
+
+    /// 真的试通过的那台（推不出的主机名 / 压根没有老区域设置）：认它，别再试
+    func testAProbedHostCountsAsVerified() {
+        XCTAssertTrue(AlibabaEndpoint.hostLooksVerified(
+            resolvedHost: "ws-1234.ap-southeast-1.maas.aliyuncs.com",
+            region: .beijing, workspaceID: "ws-1234"), "和种子不是同一台，只能是试出来的")
+        XCTAssertTrue(AlibabaEndpoint.hostLooksVerified(
+            resolvedHost: "dashscope-intl.aliyuncs.com", region: .international, workspaceID: ""),
+                      "国际站从来不种（legacyHostSeed 同一条判据），有值就是试出来的")
+        XCTAssertFalse(AlibabaEndpoint.hostLooksVerified(resolvedHost: "", region: .beijing,
+                                                         workspaceID: "ws-1234"),
+                       "压根没有地址，谈不上验证过")
+    }
+
     // MARK: 不该触发的
 
     /// 地址已经定下来了（用户粘过 / 上次试通过）：这时的 401 是 Key 的事，
@@ -100,6 +125,27 @@ final class AlibabaHostRecoveryTests: XCTestCase {
         XCTAssertFalse(AlibabaHostRecovery.beginResolve(), "已经有一趟在飞了")
         AlibabaHostRecovery.endResolve()
         XCTAssertTrue(AlibabaHostRecovery.beginResolve(), "上一趟结束后又能领了")
+        AlibabaHostRecovery.endResolve()
+    }
+
+    /// 长按说一段话 = 润色、指令前后脚各一趟。后到的那一趟要**搭上正在飞的**那次探测，
+    /// 而不是当场收一个 false（那会被当成"主机没变"，报回一句"API Key 无效"）。
+    func testASecondRequestJoinsTheProbeAlreadyInFlight() {
+        var joined: Bool?
+        XCTAssertEqual(AlibabaHostRecovery.claim({ _ in }), .start)
+        XCTAssertEqual(AlibabaHostRecovery.claim({ joined = $0 }), .joined)
+        XCTAssertNil(joined, "探测还没落地，搭车的那一趟先等着")
+        AlibabaHostRecovery.endResolve()
+    }
+
+    /// 刚失败过那一分钟里不是"搭车"而是"别试"：那趟最长 30 秒，
+    /// 每句话都走一遍等于给每句话加半分钟
+    func testAJustFailedProbeRefusesInsteadOfQueueing() {
+        let t0 = Date()
+        XCTAssertEqual(AlibabaHostRecovery.claim({ _ in }, now: t0), .start)
+        AlibabaHostRecovery.endResolve(failed: true, now: t0)
+        XCTAssertEqual(AlibabaHostRecovery.claim({ _ in }, now: t0.addingTimeInterval(1)), .refused)
+        XCTAssertEqual(AlibabaHostRecovery.claim({ _ in }, now: t0.addingTimeInterval(61)), .start)
         AlibabaHostRecovery.endResolve()
     }
 

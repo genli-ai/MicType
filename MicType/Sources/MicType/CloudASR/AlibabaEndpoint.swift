@@ -97,6 +97,23 @@ enum AlibabaEndpoint {
         return normalizeHost(legacy)
     }
 
+    /// 存着的这台主机算不算**真的试通过**。4.1.1 的一次性迁移用（见 Settings.applyMigrations）。
+    ///
+    /// 为什么非分不可：`qwenResolvedHost` 有两个来源——真探测（rememberResolution）与
+    /// 4.0.1 那次迁移种下的（legacyHostSeed，从来没联过网）。把种子也当成"已验证"，
+    /// 正好复现这一版要消掉的那一幕：Key 属于新加坡工作空间、种下的是北京站，于是每句话
+    /// 都 401，而恢复流程因为"地址已经定下来了"一次都不跑，只有去设置页点「验证」才好。
+    /// 判据与 legacyHostSeed 同源：只有"用户明确选过区域"的那几档才可能是种子。
+    static func hostLooksVerified(resolvedHost: String,
+                                  region: LLMCatalog.QwenRegion,
+                                  workspaceID: String) -> Bool {
+        guard let host = normalizeHost(resolvedHost) else { return false }
+        guard region != .international,
+              let seed = normalizeHost(LLMCatalog.qwenBaseURL(region: region, workspaceID: workspaceID))
+        else { return true }
+        return host != seed
+    }
+
     /// 从 Key 里认出 WorkspaceId：工作空间的 Key 长成 `sk-ws-xxxx.<密文>`，
     /// 前半段就是主机名的第一段。**只用来多加一个候选地址**，认错了无非多试一台，
     /// 认对了就省掉用户去控制台抄 WorkspaceId 这一步。
@@ -237,22 +254,54 @@ enum AlibabaHostRecovery {
     private static let lock = NSLock()
     private static var inFlight = false
     private static var failedAt: Date?
+    /// 正在飞的那一趟还没落地时又撞墙的那些调用（长按说一段话 = 润色、指令前后脚各一趟）。
+    /// 4.1.1 最初这一档当场收一个 false，于是指令报的是"API Key 无效"——而那一趟探测
+    /// 通常几秒后就把主机试对了。让它们等同一个结果，比各自去撞同一堵墙诚实。
+    private static var waiting: [(Bool) -> Void] = []
 
     /// 刚失败过就先别再试。Key 本身是废的时候，逐台试必然一台台全 401——
     /// 那趟最长 30 秒，而每一次指令都去走一遍等于给每句话都加半分钟。
     /// 冷却期里照常把真正的错误（401 那句"这把 Key 不属于试过的这些接入地址"）报给用户。
     static let failureCooldown: TimeInterval = 60
 
-    /// 领一趟探测。返回 false = 已经有一趟在飞了、或者刚失败过，别再发第二趟。
-    /// 为什么要这道闸：长按说一段话会连着触发润色与指令，两趟同时撞墙就会同时各起一趟
-    /// 逐台试的探测——同一把 Key 在 UAE 这条链路上被无谓地多发十几个请求。
-    static func beginResolve(now: Date = Date()) -> Bool {
+    /// 这一趟该怎么办。为什么要这道闸：长按说一段话会连着触发润色与指令，两趟同时撞墙
+    /// 就会同时各起一趟逐台试的探测——同一把 Key 在 UAE 这条链路上被无谓地多发十几个请求。
+    enum Claim: Equatable {
+        /// 这一趟自己去试
+        case start
+        /// 已经有一趟在飞了：搭它的车，结果出来一起收
+        case joined
+        /// 刚失败过（冷却期内）：别试，当面报原来那个错
+        case refused
+    }
+
+    /// 领一趟探测，或者搭上正在飞的那一趟。waiter 只有 .joined 那一档会被记下来。
+    static func claim(_ waiter: @escaping (Bool) -> Void, now: Date = Date()) -> Claim {
         lock.lock()
         defer { lock.unlock() }
-        guard !inFlight else { return false }
-        if let failedAt = failedAt, now.timeIntervalSince(failedAt) < failureCooldown { return false }
+        if inFlight {
+            waiting.append(waiter)
+            return .joined
+        }
+        if let failedAt = failedAt, now.timeIntervalSince(failedAt) < failureCooldown { return .refused }
         inFlight = true
-        return true
+        return .start
+    }
+
+    /// 领一趟探测。返回 false = 已经有一趟在飞了、或者刚失败过，别再发第二趟。
+    static func beginResolve(now: Date = Date()) -> Bool {
+        claim({ _ in }, now: now) == .start
+    }
+
+    /// 把结论发给搭车的那几趟（主线程，与 resolveNow 的 completion 同一条队）
+    private static func notifyWaiting(_ changed: Bool) {
+        lock.lock()
+        let pending = waiting
+        waiting = []
+        lock.unlock()
+        guard !pending.isEmpty else { return }
+        Log.info("Qwen host recovery fanned out to \(pending.count) waiting request(s) changed=\(changed)")
+        DispatchQueue.main.async { pending.forEach { $0(changed) } }
     }
 
     static func endResolve(failed: Bool = false, now: Date = Date()) {
@@ -268,33 +317,58 @@ enum AlibabaHostRecovery {
         lock.lock()
         inFlight = false
         failedAt = nil
+        waiting = []
         lock.unlock()
     }
 
     /// 试一趟接入地址，试通就记下来（往后润色、指令、云端识别全跟着对）。
     /// completion 在主线程；true = 主机变了，值得重发一次。
-    /// 已经有一趟在飞时直接回 false——这一趟不等它，当场失败就好。
+    /// 已经有一趟在飞时**搭它的车**（见 Claim.joined），刚失败过才当场回 false。
     static func resolveNow(apiKey: String, completion: @escaping (Bool) -> Void) {
-        guard beginResolve() else {
-            Log.info("Qwen host recovery skipped: another probe is running or one just failed")
+        switch claim(completion) {
+        case .joined:
+            Log.info("Qwen host recovery joined the probe already in flight")
+            return
+        case .refused:
+            Log.info("Qwen host recovery skipped: a probe just failed (cooling down)")
             DispatchQueue.main.async { completion(false) }
             return
+        case .start:
+            break
         }
         Log.warn("Qwen host recovery started: the request failed on a host that was never verified")
+        // 开跑那一刻的地址与 Key：落地时拿它们对一次账（下面 stale 那一段）
+        let hostBefore = Settings.shared.qwenResolvedHost
+        let keyBefore = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         AlibabaHostResolver.resolve(apiKey: apiKey,
                                     candidates: CloudASRSettings.currentHostCandidates(apiKey: apiKey)) { result in
             switch result {
             case .success(let host):
                 endResolve()
-                let changed = AlibabaEndpoint.normalizeHost(host) != AlibabaEndpoint.normalizeHost(
-                    Settings.shared.qwenResolvedHost)
+                // 这几十秒里用户可能已经在设置页粘了另一把 Key、或自己点了「探测接入地址」
+                //（那两条路不经过这道闸）。拿上一把 Key 的答案盖掉他刚验证好的地址，
+                // 下一句话就又是 401——与 KeyEntryView 那本账同一条纪律：过期的答案宁可丢掉。
+                let keyNow = KeychainHelper.loadAPIKey(account: LLMProvider.qwen.keychainAccount)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let stale = Settings.shared.qwenResolvedHost != hostBefore
+                    || (keyNow != nil && keyNow != keyBefore)
+                guard !stale else {
+                    Log.info("Qwen host recovery result dropped: key or endpoint changed while probing")
+                    completion(false)
+                    notifyWaiting(false)
+                    return
+                }
+                let changed = AlibabaEndpoint.normalizeHost(host)
+                    != AlibabaEndpoint.normalizeHost(hostBefore)
                 CloudASRSettings.rememberResolution(host: host, model: nil)
                 completion(changed)
+                notifyWaiting(changed)
             case .failure(let failure):
                 endResolve(failed: true)
                 // 记的是给用户看的那句文案（只含状态码与服务商错误码），不含 Key
                 Log.warn("Qwen host recovery failed: " + String(failure.message.prefix(160)))
                 completion(false)
+                notifyWaiting(false)
             }
         }
     }

@@ -143,6 +143,10 @@ enum CloudASRSettings {
         let s = Settings.shared
         if let normalized = AlibabaEndpoint.normalizeHost(host) {
             s.qwenResolvedHost = normalized
+            // 只有这里写得出"已验证"：这条路的每一个调用方都是**真的联过网**
+            //（粘 Key 那一趟、「探测接入地址」、失败后的恢复探测）。迁移种下的那台不算，
+            // 否则它吃 401 时恢复流程一次都不会跑（见 AlibabaEndpoint.hostLooksVerified）。
+            s.qwenHostVerified = true
             Log.info("Qwen host resolved host=\(AlibabaEndpoint.redacted(normalized))")
         }
         if let model = model, model != s.cloudAlibabaModel {

@@ -150,7 +150,10 @@ enum SettingsBackup {
             Key.polishLevel: s.polishLevel.rawValue,
             Key.vocabulary: s.customVocabulary,
             Key.fillerWords: s.customFillerWords,
-            Key.aboutMe: s.aboutMe,
+            // Key.aboutMe **不导出**（4.1.1 起只进不出）：这一版把「关于我」并进了自定义规则，
+            // 迁移之后 Mac 这边它恒为空串。照写出去等于每份文件都带一条 `"aboutMe": ""`，
+            // 而 Windows 端还有独立的「关于我」框——将来它做导入时，一条空串就把对方写的那段话抹了。
+            // 内容本身不会丢：已经并进 customPolishRules 一起导出。
             Key.customPolishRules: s.customPolishRules,
             Key.llmProvider: s.llmProvider.rawValue,
             Key.openaiBaseURL: s.openaiBaseURL,
@@ -466,8 +469,9 @@ enum SettingsBackup {
         nonEmptyString(Key.qwenApiHost, notable: true,
                        isValid: { AlibabaEndpoint.normalizeHost($0) != nil }) {
             Settings.shared.qwenAPIHost = $0
-            // 地址被文件改了，上一次试通的那台就不再算数
+            // 地址被文件改了，上一次试通的那台就不再算数（"验证过"那一位一起清）
             Settings.shared.qwenResolvedHost = ""
+            Settings.shared.qwenHostVerified = false
         }
         // 老设置，界面上已经没有了（4.0.1 拿掉了区域选择器）。仍然接受它：它是候选
         // 主机表的排序线索，老文件导进来不该整段丢掉。

@@ -137,9 +137,27 @@ final class AISetupTests: XCTestCase {
         XCTAssertTrue(LLMCatalog.unifyModelWrites(current: [
             qwen.polish: "qwen3.8-max", qwen.command: "qwen3.8-max",
         ]).isEmpty)
-        // 没存过润色型号（用的是注册默认值）：这一档没什么可统一的，别顺手写一个空值进去
+        // 官方三档没存过润色型号 = 用的是注册默认值（一个非空型号），不是"空着"：
+        // 拿指令型号去顶掉那个默认值才是替用户做主
         XCTAssertTrue(LLMCatalog.unifyModelWrites(current: [
             qwen.polish: nil, qwen.command: "qwen3.8-flash",
+        ]).isEmpty)
+    }
+
+    /// 自定义端点 / 本机模型出厂就是空串：4.0.x 只在「高级」里填过**指令**型号的人，
+    /// 迁移后会剩下一条看不见的设置——界面写着"型号名未填"、润色回落识别原文，
+    /// 按住说指令却真的在跑另一个型号。反过来把润色型号补成它。
+    func testUnifyModelWritesFillsAnEmptyPolishModelFromTheCommandOne() {
+        for provider in [LLMProvider.local, .custom] {
+            let keys = LLMCatalog.modelKeys(for: provider)
+            XCTAssertEqual(LLMCatalog.unifyModelWrites(current: [
+                keys.polish: "", keys.command: "llama3.1:8b",
+            ]), [keys.polish: "llama3.1:8b"], provider.rawValue)
+        }
+        // 两个都空着：没有任何可搬的东西，一个字节都不写
+        let local = LLMCatalog.modelKeys(for: .local)
+        XCTAssertTrue(LLMCatalog.unifyModelWrites(current: [
+            local.polish: "", local.command: "",
         ]).isEmpty)
     }
 

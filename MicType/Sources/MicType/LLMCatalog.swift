@@ -122,9 +122,22 @@ enum LLMCatalog {
         var writes: [String: String] = [:]
         for provider in LLMProvider.allCases {
             let keys = modelKeys(for: provider)
-            guard let polish = storedValue(current, keys.polish) else { continue }
+            let polish = storedValue(current, keys.polish)
             let command = storedValue(current, keys.command)
             guard command != polish else { continue }
+            guard let polish = polish else {
+                // 润色型号空着、指令型号却有值：**只有没有内置默认值的那两档**
+                //（自定义端点 / 本机模型，出厂就是空串）会真的空着，4.0.x 里只在「高级」
+                // 填过指令型号的人正是这个样子。丢着不管的话，界面上写着"型号名未填"、
+                // 润色回落识别原文，按住说指令却真的在跑另一个型号——这条迁移要消灭的
+                // 正是这种看不见的设置，所以反过来把润色型号补成它。
+                // 官方三档的 nil 是另一回事：那是"用注册默认值"（一个非空型号），
+                // 拿指令型号去顶掉它才是替用户做主。
+                if let command = command, defaultModel(for: provider).isEmpty {
+                    writes[keys.polish] = command
+                }
+                continue
+            }
             writes[keys.command] = polish
         }
         return writes
@@ -401,7 +414,7 @@ enum LLMCatalog {
         case qwenEnableSearch
         /// OpenRouter：`plugins:[{id:"web"}]`
         case openrouterPlugin
-        /// 这个端点没有内建搜索 → 开关置灰，绝不假装能用
+        /// 这个端点没有内建搜索 → **整段只留一行说明，连开关都不摆**（4.1.1），绝不假装能用
         case unsupported
     }
 
@@ -760,11 +773,35 @@ enum LLMCatalog {
         }
     }
 
-    /// 超时话术（已经重试过一趟才会走到这里）
-    static func timeoutCopy() -> ErrorCopy {
-        ErrorCopy(text: tr("请求超时（已重试一次，网络到 API 太慢）",
-                           "Request timed out (retried once — the network to the API is too slow)"),
-                  actionLabel: nil, actionURL: nil)
+    /// 超时话术。
+    /// - retried: 这一趟之前真的重发过一次。4.1.1 起润色与指令都**只发一次**
+    ///   （PolishService / AgentService 的 networkRetries = 0），而超时又是 UAE 这条链路上
+    ///   最常见的那一句——无条件写着"已重试一次"就是每天在对用户说假话，日志里也一样。
+    ///   仍会重试的只剩验证 / 测试那几条路。
+    static func timeoutCopy(retried: Bool = false) -> ErrorCopy {
+        let text = retried
+            ? tr("请求超时（已重试一次，网络到 API 太慢）",
+                 "Request timed out (retried once — the network to the API is too slow)")
+            : tr("请求超时（网络到 API 太慢）", "Request timed out — the network to the API is too slow")
+        return ErrorCopy(text: text, actionLabel: nil, actionURL: nil)
+    }
+
+    /// 阿里云那一档打在**还没试对**的接入地址上收到的 401。
+    ///
+    /// 为什么不能用通用那句（"API Key 无效或已失效"）：走到这里时代码自己刚判定
+    /// "问题多半出在接入地址"并已经去试了（AlibabaHostRecovery）。用户照通用那句去重贴 Key，
+    /// 而下一句话恰好因为后台探测成功而好了——他会以为是重贴救了他，真正的原因一次都没露面。
+    /// - probing: 探测正在后台跑（润色那一档，它等不起那 30 秒）
+    static func qwenUnverifiedHost401(probing: Bool) -> ErrorCopy {
+        guard probing else {
+            // 试完一圈仍然不对：这句话（"这把 Key 不属于试过的这些接入地址…"）与云端识别
+            // 那条路同一个出处，别在这里另写一份
+            return ErrorCopy(text: AlibabaASRClient.failure(status: 401, code: nil, message: nil).message,
+                             actionLabel: nil, actionURL: nil)
+        }
+        return ErrorCopy(text: tr("接入地址还没试对 (401)，正在自动探测，下一句就会对",
+                                  "Still finding the right endpoint for this key (401) — MicType is probing now, the next sentence should work"),
+                         actionLabel: nil, actionURL: nil)
     }
 
     /// 「去充值」指向哪个控制台。nil = 我们没有一条可以打包票的充值地址

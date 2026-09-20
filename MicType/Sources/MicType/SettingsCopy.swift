@@ -217,9 +217,14 @@ enum SettingsCopy {
         tr("正在使用 ✓", "In use ✓")
     }
 
-    /// 选择器上看着的这一档还没配 Key：它现在只是**预览**，生效的仍然是上一档
-    static var providerNotSetUp: String {
-        tr("这一档未配置", "Not set up")
+    /// 选择器上看着的这一档还没配 Key：它现在只是**预览**，生效的仍然是上一档。
+    ///
+    /// 为什么要把生效那家的名字念出来：预览的这一刻，「正在使用 ✓」恰好不在屏幕上
+    ///（它只长在生效那一段旁边），而"现在真正在用哪一家"正是这一版要解决的问题——
+    /// 最需要这句话的时刻反而没有，就等于没解决。引导页同一状态本来就这么写
+    ///（OnboardingCopy.providerNotAdoptedYet）。
+    static func providerNotSetUp(current: String) -> String {
+        tr("预览中，仍用 " + current, "Previewing — still using " + current)
     }
 
     /// 云端识别开关下面那一行。**代价写在开关旁边**，具体单价在 ⓘ 里（同一个事实只写一处）
@@ -295,24 +300,27 @@ enum SettingsCopy {
     /// 4.1.0 之前它挂在「高级」那颗 ⓘ 上，而下拉就在上面一段，要点开另一段才读得到。
     /// 每一档都要过 120 字那条线。
     static func cloudModelInfo(provider: LLMProvider) -> String {
-        let shared = tr("润色每句话都要跑一次，指令偶尔跑一次，两者用同一个型号。换代之后旧型号名可能直接 404，点「高级 → 刷新模型列表」问端点现在有哪些。",
-                        "Polish runs on every sentence and commands run now and then; both use this one model. After a generation change an old model id can simply 404 — use Advanced and Refresh to ask the endpoint what it serves today.")
+        // 「刷新模型列表」那句**只写给没有内置清单的那两档**：三家官方档的「高级」里
+        // 根本没有那颗按钮（4.1.1 起只剩「测试模型」，见 SettingsEditors.modelMaintenance），
+        // 指着一个不存在的控件，用户会以为界面少了东西。
+        let shared = tr("润色每句话都要跑一次，指令偶尔跑一次，两者用同一个型号。换代之后旧型号名可能直接 404。",
+                        "Polish runs on every sentence and commands run now and then; both use this one model. After a generation change an old model id can simply 404.")
         switch provider {
         case .openai:
-            return shared + tr("\nluna 最便宜，terra 平衡，sol 旗舰，astra 最强也最贵。",
-                               "\nluna is the cheapest, terra is balanced, sol is the flagship, astra is the strongest and priciest.")
+            return shared + tr("\n换一个就在上面的下拉里选：luna 最便宜，terra 平衡，sol 旗舰，astra 最强也最贵。",
+                               "\nPick another from the menu above: luna is the cheapest, terra is balanced, sol is the flagship, astra is the strongest and priciest.")
         case .deepseek:
-            return shared + tr("\ndeepseek-flash 快且便宜，润色时不思考；deepseek-v4-pro 更强。",
-                               "\ndeepseek-flash is fast and cheap — thinking mode is turned off for polish; deepseek-v4-pro is stronger.")
+            return shared + tr("\n换一个就在上面的下拉里选：deepseek-flash 快且便宜，润色时不思考；deepseek-v4-pro 更强。",
+                               "\nPick another from the menu above: deepseek-flash is fast and cheap (no thinking for polish); deepseek-v4-pro is stronger.")
         case .qwen:
-            return shared + tr("\nqwen3.8-max 是当前代旗舰，qwen-max 是跟着换代走的稳定别名。",
-                               "\nqwen3.8-max is the current flagship; qwen-max is a stable alias that follows each new generation.")
+            return shared + tr("\n换一个就在上面的下拉里选：qwen3.8-max 是当前代旗舰，qwen-max 是跟着换代走的稳定别名。",
+                               "\nPick another from the menu above: qwen3.8-max is the current flagship; qwen-max is a stable alias that follows each generation.")
         case .custom:
-            return shared + tr("\n这一档没有内置清单：型号名照服务商文档填。",
-                               "\nNo built-in list here: type the model id from your provider's docs.")
+            return shared + tr("\n这一档没有内置清单：型号名照服务商文档填，设置页「高级」里的「刷新」问端点现在有哪些。",
+                               "\nNo built-in list here: type the model id from your provider's docs, or hit Refresh under Advanced in Settings.")
         case .local:
-            return shared + tr("\n填你本机已经拉下来的模型名，例如 Ollama 里的 llama3.1:8b。",
-                               "\nUse the model you have pulled locally, such as llama3.1:8b in Ollama.")
+            return shared + tr("\n填你本机已经拉下来的模型名，例如 Ollama 里的 llama3.1:8b；设置页「高级」里的「刷新」问它现在有哪些。",
+                               "\nUse a model you have pulled locally, such as llama3.1:8b in Ollama, or hit Refresh under Advanced in Settings.")
         }
     }
 
@@ -354,7 +362,7 @@ enum SettingsCopy {
 
     static var cloudCaptions: [String] {
         [usageLocalOnly, usageWithAI, usageWithCloudRecognition,
-         providerNotSetUp, modelNameInAdvanced, modelUsedForBoth, customRulesPlaceholder,
+         providerNotSetUp(current: "OpenAI"), modelNameInAdvanced, modelUsedForBoth, customRulesPlaceholder,
          localModelNeedsNoKey, cloudRecognitionCost, cloudRecognitionOff,
          hostAutoDetected, hostFilledManually, webSearchUnsupported]
     }

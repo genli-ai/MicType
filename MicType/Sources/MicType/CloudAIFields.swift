@@ -42,7 +42,9 @@ struct ProviderPickerField: View {
             }
         }
         if showsNotSetUpHint, selection != inUse {
-            Caption(SettingsCopy.providerNotSetUp)
+            // 这一刻「正在使用 ✓」不在屏幕上（它只长在生效那一段旁边），所以这行字
+            // 必须自己把生效那家的名字念出来
+            Caption(SettingsCopy.providerNotSetUp(current: inUse.segmentName))
         }
     }
 }
@@ -274,6 +276,7 @@ struct CloudRecognitionFields: View {
         CloudASRSettings.rememberWorkspace(fromKey: key)
         // 重新探测 = 忘掉上一次那台（否则它排在第一位，"重新"就成了摆设）
         qwenResolvedHost = ""
+        Settings.shared.qwenHostVerified = false
         hostProbing = true
         hostProbeResult = ""
         invalidateCloudTest()

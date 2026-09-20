@@ -999,9 +999,12 @@ private struct HowYouUsePage: View {
     /// 填 Base URL、填本地型号名都是高级动作，第一次上手的人不该在这里看到一个 URL 输入框
     /// （设置页的「高级」里有）。唯一例外是他此前就在用某个没列出来的档——那一档必须显示出来，
     /// 否则选择器上没有一项对应他当前的配置，看着像被我们悄悄改掉了。
+    /// **正在看的那一档和正在用的那一档都要摆**：两者可以不同（选中一档只是预览，
+    /// 验证通过才采纳），只补 selected 的话，正在用本机模型的人点一下 OpenAI，
+    /// 本机模型那一段就从选择器上消失，再也点不回去。
     private var offered: [LLMProvider] {
         var list: [LLMProvider] = [.openai, .deepseek, .qwen]
-        if !list.contains(selected) { list.append(selected) }
+        for p in [selected, inUseProvider] where !list.contains(p) { list.append(p) }
         return list
     }
 
