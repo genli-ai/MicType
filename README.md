@@ -44,10 +44,10 @@ Tap is always pure dictation (what you say is what gets typed), hold is always a
 - **Adaptive AI polish, with a safety net** — short phrases get light cleanup; long rambling speech is restructured into ready-to-use text. If the polished version drifts from what you said (numbers, negations), MicType inserts the raw transcript and tells you — and for a minute afterwards the menu bar can swap a polished insertion back to the raw transcript.
 - **Custom vocabulary as hotwords** — names, brands, and jargon are fed straight into the speech model and used by AI polish: the #1 lever for proper-noun accuracy. Add `wrong=right` (or `wrong1|wrong2=right`) for homophones that no model gets right.
 - **Searchable history** — the last 200 dictations stay on your Mac (⌘Y): search raw and polished text, re-insert an old result at the cursor, or send a mis-heard word to your vocabulary. Turn it off or clear it any time.
-- **Your key, your mic** — three hotkey choices (Right Option, Right Command, Right Control), named in full wherever MicType asks you to press one, plus microphone selection and a level test.
+- **One key, named in full** — the hotkey is **Right Option (⌥)**. There is no picker to get wrong: every place MicType asks you to press a key names that one. Plus microphone selection and a level test.
 - **Setup is one decision** — *Local only* or *Local + AI*. With AI: one provider (OpenAI · DeepSeek · Alibaba Cloud), one key, one Model dropdown. Paste the key and it is verified on the spot; keys live in the macOS Keychain. No key? MicType still works fully offline as a dictation tool.
 - **Settings you can read in one glance** — Settings opens on three cards (Input · On-device recognition · Cloud AI), each one sentence of what is happening right now plus a **Change** button. A badge appears only when something needs doing; missing permissions are a banner, not a buried setting. Every caption is one line, with the details behind an ⓘ — a budget a unit test enforces.
-- **A first run that finishes the job** — a four-screen guide: welcome (where you pick your hotkey), permissions (the speech model downloads in the background while you grant them), how you'll use it, and a dictation you try on the spot. It is not over until dictation actually works: hotkey confirmed, both permissions granted, speech model ready. AI is optional and never blocks. Settings → About → Check for Updates verifies, installs and relaunches the new version; export/import your settings to move them to another machine (API keys are never included).
+- **A first run that finishes the job** — a four-screen guide: welcome (the two gestures, on Right Option), permissions (the speech model downloads in the background while you grant them), how you'll use it, and a dictation you try on the spot. It is not over until dictation actually works: both permissions granted and the speech model ready. AI is optional and never blocks. You can walk through it again any time from the Settings footer — **About · Privacy · Check for Updates · Review the guide**. Settings → About → Check for Updates verifies, installs and relaunches the new version; export/import your settings to move them to another machine (API keys are never included).
 - **Bilingual UI** — English / 中文, switch instantly in Settings.
 
 ## Quick Start (5 minutes)
@@ -57,7 +57,7 @@ Everything downloads from one page: **[Releases · latest](https://github.com/ge
 | | 🍎 macOS (Apple Silicon, macOS 15+) | 🪟 Windows (Win10 22H2+ / 11, x64 — beta) |
 |---|---|---|
 | **1. Download & run** | `MicType-{version}-arm64.zip` → unzip → drag `MicType.app` to Applications. If blocked: System Settings → Privacy & Security → **Open Anyway** | `MicType-{version}-win-x64.zip` → unzip → run `MicType.exe`. SmartScreen: **More info → Run anyway** |
-| **2. One-time setup** | A four-screen first-run guide does all of it: pick your hotkey (Right Option / Command / Control), allow **Microphone** (with a live level meter) and enable **Accessibility** (System Settings → Privacy & Security) while the speech model downloads in the background, choose *Local only* or *Local + AI* (paste a key, it is verified there and then), and try a dictation on the spot — the text lands in the box on the page. The guide only finishes once dictation actually works; the AI decision can be skipped in one click | Right-click the tray icon → Settings → download the speech model (~250 MB) |
+| **2. One-time setup** | A four-screen first-run guide does all of it: learn the two gestures on **Right Option (⌥)**, allow **Microphone** (with a live level meter) and enable **Accessibility** (System Settings → Privacy & Security) while the speech model downloads in the background, choose *Local only* or *Local + AI* (paste a key, it is verified there and then), and try a dictation on the spot — the text lands in the box on the page. The guide only finishes once dictation actually works; the AI decision can be skipped in one click | Right-click the tray icon → Settings → download the speech model (~250 MB) |
 | **3. Speak** | **Tap Right Option (⌥)** → talk → tap again. Text appears at your cursor | **Tap Right Ctrl** → talk → tap again. Text appears at your cursor |
 
 Speech recognition runs on your device by default — audio leaves your Mac only if you deliberately choose a cloud engine. Optional: add an API key in Settings to unlock AI polish and **hold-to-command** (rewrite selection / draft replies / ask anything). Upgrades: Settings → About → **Check for Updates** — on macOS it verifies the new build, installs it in place and relaunches.
@@ -178,8 +178,8 @@ MicType/
 │   ├── Overlay.swift              # Floating indicator (live draft, elapsed time, cancel)
 │   ├── HistoryStore.swift         # Last 200 transcripts, raw + polished, on disk
 │   ├── HistoryWindow.swift        # History window: search, compare, re-insert, add to vocabulary
-│   ├── OnboardingWindow.swift     # First-run guide (four screens: welcome + hotkey, permissions, how you'll use it, try it)
-│   ├── FirstRunEssentials.swift   # What the first run must finish: hotkey, permissions, speech model
+│   ├── OnboardingWindow.swift     # First-run guide (four screens: welcome + gestures, permissions, how you'll use it, try it)
+│   ├── FirstRunEssentials.swift   # What the first run must finish: permissions, speech model
 │   ├── MicCheck.swift             # Microphone picker and level meter (Settings + onboarding)
 │   ├── UpdateChecker.swift        # Update check + verify, install and relaunch
 │   ├── SettingsBackup.swift       # Settings export / import (shared JSON with Windows)
@@ -255,10 +255,10 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 - **自适应 AI 润色，带安全网**——短句轻清理；长段混乱口述重构成可直接使用的成品文字。润色结果若与原话出入过大（数字、否定词被改动）会自动改输出识别原文并明说；插入后一分钟内还能在菜单栏一键「换回识别原文」
 - **专有词汇表 = 热词**——人名、品牌、术语直接送入识别模型并参与润色纠错，是专有名词准确率的第一杠杆。完全同音的词可以写 `错写=正写`（一个正写挂多个错写：`错1|错2=正写`）
 - **可搜索的历史**——最近 200 条听写留在本机（⌘Y）：按识别原文和润色结果一起搜，重新插入到光标处，或把听错的词一键送进词汇表。随时可关、可清
-- **热键和麦克风都由你定**——三个可选热键（右 Option / 右 Command / 右 Control），凡是让你按键的地方都写全名，还能选麦克风并测试输入电平
+- **快捷键就一颗：右 Option (⌥)**——没有选择器可选错，凡是让你按键的地方写的都是它且写全名；麦克风可选、可测输入电平
 - **配置只有一个决定**——「只用本地」或「本地 + AI」。选了 AI：一家服务商（OpenAI · DeepSeek · 阿里云百炼）、一把 Key、一个「模型」下拉。粘贴 Key 就地验证，Key 存 macOS 钥匙串。不填 Key 也完全可用：纯离线听写
 - **设置一眼看完**——打开设置先看到三张卡：输入 · 本地识别 · 云端 AI，每张一句话说清现在是什么状态，外加一颗「更改」。有事要办才挂徽章；缺权限是顶上一条横幅，不是藏在某一页里的开关。每个控件至多一行说明，细则收在 ⓘ 里——这条预算由单测盯着
-- **引导不走到能听写不算完**——首次启动四屏：欢迎（在这里选你的快捷键）→ 权限（授权的同时识别模型已在后台下载）→ 怎么用 → 就地试一句，文字直接落进那一屏的框里。快捷键确认过、两项权限都给了、识别模型就绪，这三件事办完才算走完；AI 是可选的，永远不拦人。设置 → 关于 → 检查更新 会验签、就地安装并自动重启；设置可导出导入，换机不用重配（API Key 从不进文件）
+- **引导不走到能听写不算完**——首次启动四屏：欢迎（两种手势，就在右 Option 上）→ 权限（授权的同时识别模型已在后台下载）→ 怎么用 → 就地试一句，文字直接落进那一屏的框里。两项权限都给了、识别模型就绪，这两件事办完才算走完；AI 是可选的，永远不拦人。想重走一遍，设置页底部的**关于 · 隐私 · 检查更新 · 重看引导**随时可以。设置 → 关于 → 检查更新 会验签、就地安装并自动重启；设置可导出导入，换机不用重配（API Key 从不进文件）
 - **中英双语界面**——设置里即时切换
 
 ## 快速上手（5 分钟）
@@ -268,7 +268,7 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 | | 🍎 macOS（Apple Silicon，macOS 15+） | 🪟 Windows（Win10 22H2+/11，x64，公测） |
 |---|---|---|
 | **1. 下载运行** | `MicType-{版本}-arm64.zip` → 解压 → 把 `MicType.app` 拖进应用程序。被拦时：系统设置 → 隐私与安全性 → **「仍要打开」** | `MicType-{版本}-win-x64.zip` → 解压 → 运行 `MicType.exe`。SmartScreen 拦截点 **「更多信息 → 仍要运行」** |
-| **2. 一次性设置** | 首次启动的四屏引导会带着走完：先选快捷键（右 Option / Command / Control），允许**麦克风**（当场看电平条）、开启**辅助功能**（系统设置 → 隐私与安全性）——识别模型在这期间后台下载——然后选「只用本地」还是「本地 + AI」（粘贴 Key 当场验证），最后就地试说一句，文字直接落进那一屏的框里。引导要到**真的能听写**才算走完；AI 那个决定一键就能跳过，不影响听写 | 右键托盘图标 → 设置 → 下载识别模型（约 250MB） |
+| **2. 一次性设置** | 首次启动的四屏引导会带着走完：先在**右 Option（⌥）**上学会两种手势，允许**麦克风**（当场看电平条）、开启**辅助功能**（系统设置 → 隐私与安全性）——识别模型在这期间后台下载——然后选「只用本地」还是「本地 + AI」（粘贴 Key 当场验证），最后就地试说一句，文字直接落进那一屏的框里。引导要到**真的能听写**才算走完；AI 那个决定一键就能跳过，不影响听写 | 右键托盘图标 → 设置 → 下载识别模型（约 250MB） |
 | **3. 开口说话** | **轻点右 Option（⌥）**→ 说话 → 再点一下，文字出现在光标处 | **轻点右 Ctrl** → 说话 → 再点一下，文字出现在光标处 |
 
 语音识别默认在本机运行，只有你主动选择云端引擎时录音才会离开这台 Mac。可选：在设置里配 API Key，解锁 AI 润色和**按住说指令**（改写选中文字 / 代拟回复 / 随口提问）。升级：设置 → 关于 → **检查更新**——Mac 端会验签后就地安装并自动重启。
