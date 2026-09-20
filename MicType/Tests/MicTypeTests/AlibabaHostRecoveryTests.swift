@@ -15,10 +15,13 @@ final class AlibabaHostRecoveryTests: XCTestCase {
                         hostSettled: Bool = false,
                         canWaitForResolve: Bool = true,
                         status: Int = 401,
+                        code: String? = nil,
+                        message: String? = nil,
                         urlErrorCode: Int? = nil,
                         attemptsLeft: Int = 1) -> AlibabaHostRecovery.Action {
         AlibabaHostRecovery.action(isAlibaba: isAlibaba, hostSettled: hostSettled,
                                    canWaitForResolve: canWaitForResolve, status: status,
+                                   code: code, message: message,
                                    urlErrorCode: urlErrorCode, attemptsLeft: attemptsLeft)
     }
 
@@ -100,11 +103,53 @@ final class AlibabaHostRecoveryTests: XCTestCase {
     }
 
     /// 其它状态码各有各的话要说（403 没开通、404 没这个模型、429 限流、5xx 服务端），
-    /// 一律与接入地址无关
+    /// 一律与接入地址无关。**不带 access_denied 的 403 也在此列**——那是"模型没开通"。
     func testOtherStatusesAreNotAHostProblem() {
         for status in [200, 400, 403, 404, 429, 500, 503] {
             XCTAssertEqual(action(status: status), .none, "HTTP \(status) 不是接入地址的问题")
         }
+        XCTAssertEqual(action(status: 403, code: "Model.AccessDenied"), .none,
+                       "模型没开通：换一台主机救不了")
+    }
+
+    // MARK: 端点访问被拒（4.1.5）
+
+    /// 2026-09-20 实测：新建的工作空间 Key 在 {ws}.ap-southeast-1 上 /models 回 200、
+    /// chat 与识别都回 403 access_denied，而同一把 Key 在 dashscope-intl 上一切正常。
+    /// 这是**换一台主机就能解决**的 403，所以必须触发重新试一圈。
+    func testEndpointAccessDeniedTriggersAProbe() {
+        XCTAssertEqual(action(status: 403, code: "access_denied"), .resolveAndRetry)
+        XCTAssertEqual(action(status: 403, code: "Endpoint.AccessDenied"), .resolveAndRetry)
+        XCTAssertEqual(action(status: 403, message: "Workspace endpoint access denied."),
+                       .resolveAndRetry)
+        // 润色等不起那 30 秒：后台去试，这一趟照常交出识别原文
+        XCTAssertEqual(action(canWaitForResolve: false, status: 403, code: "access_denied"),
+                       .resolveInBackground)
+    }
+
+    /// **"已经定下来了"也要试**：那个"验证过"是 GET /models 挣来的，而这一版证明
+    /// 它什么都不证明。不绕过这道闸的话，用户被永久钉死在一台什么都干不了的主机上。
+    func testEndpointAccessDeniedIgnoresTheSettledFlag() {
+        XCTAssertEqual(action(hostSettled: true, status: 403, code: "access_denied"),
+                       .resolveAndRetry)
+        // 别家服务商与"试过了"这两道闸仍然拦得住（不然会变成每句话一趟探测）
+        XCTAssertEqual(action(isAlibaba: false, status: 403, code: "access_denied"), .none)
+        XCTAssertEqual(action(status: 403, code: "access_denied", attemptsLeft: 0), .none)
+    }
+
+    /// 认这一档的判据本身（大小写、两种写法、只认 403）
+    func testEndpointAccessDeniedRecognisesBothSpellings() {
+        XCTAssertTrue(AlibabaEndpoint.deniesEndpointAccess(status: 403, code: "access_denied",
+                                                            message: nil))
+        XCTAssertTrue(AlibabaEndpoint.deniesEndpointAccess(status: 403, code: "Endpoint.AccessDenied",
+                                                            message: nil))
+        XCTAssertTrue(AlibabaEndpoint.deniesEndpointAccess(
+            status: 403, code: nil, message: "Workspace Endpoint Access Denied."))
+        XCTAssertFalse(AlibabaEndpoint.deniesEndpointAccess(status: 403, code: "Arrearage",
+                                                             message: "arrears"))
+        XCTAssertFalse(AlibabaEndpoint.deniesEndpointAccess(status: 401, code: "access_denied",
+                                                            message: nil),
+                       "只认 403：401 是另一回事（Key 不属于这台）")
     }
 
     // MARK: 单飞闸

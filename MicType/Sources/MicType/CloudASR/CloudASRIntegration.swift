@@ -170,6 +170,28 @@ enum CloudASRSettings {
         }
     }
 
+    /// 云端识别吃了"端点访问被拒"：**后台换一台主机**。
+    ///
+    /// 为什么识别这条路也要有（4.1.5）：那台主机是 GET /models 验过的，而 2026-09-20 的实测
+    /// 证明 /models 通过的主机照样可能把识别端点也一并拒掉（Endpoint.AccessDenied）。
+    /// 不换的话，每一段录音都要先白传一趟云端、再回落本机模型——用户只会觉得"云端识别很慢"。
+    ///
+    /// **这一趟只在后台跑**：本轮录音由 CloudFallbackDecision 交给本机模型，一个字都不丢；
+    /// 换好的主机下一段录音才用得上。单飞闸与 60 秒冷却都在 resolveNow 里，
+    /// 所以"每台都被拒"的那把 Key 不会变成每句话一趟探测。
+    static func recoverIfEndpointDenied(_ failure: CloudASRFailure) {
+        guard Settings.shared.recognitionEngine == .cloudAlibaba,
+              AlibabaEndpoint.deniesEndpointAccess(status: failure.status,
+                                                   code: failure.code, message: nil) else { return }
+        let key = (KeychainHelper.loadCloudASRKey(for: .alibaba) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        Log.warn("CloudASR endpoint access denied — re-resolving the host in the background")
+        AlibabaHostRecovery.resolveNow(apiKey: key) { changed in
+            Log.info("CloudASR host recovery after access denied changed=\(changed)")
+        }
+    }
+
     /// 把 Key 里认出来的 WorkspaceId 落盘一次（只在验证 / 探测那一刻调用）。
     ///
     /// 为什么非落盘不可：候选主机里工作空间那几台是**从 Key 的形状**认出来的，而润色那条路

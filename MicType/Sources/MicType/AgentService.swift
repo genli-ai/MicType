@@ -739,14 +739,19 @@ enum LLMClient {
     }
 
     /// 这一趟失败之后要不要先把接入地址试出来。抽出来是为了让 send 里那一段保持一句话长度。
+    /// code / message 要一路传进去：403 里认出"端点访问被拒"的那一档会绕过 hostSettled
+    /// （见 AlibabaHostRecovery.action 的注释与 4.1.5 那笔实测）。
     private static func recoveryAction(provider: LLMProvider, purpose: Purpose?,
-                                       status: Int, urlErrorCode: Int?,
+                                       status: Int, code: String? = nil, message: String? = nil,
+                                       urlErrorCode: Int?,
                                        attemptsLeft: Int) -> AlibabaHostRecovery.Action {
         AlibabaHostRecovery.action(isAlibaba: provider == .qwen,
                                    hostSettled: alibabaHostSettled,
                                    // 润色等不起那 30 秒：它的全部价值是"顺手"
                                    canWaitForResolve: purpose != .polish,
                                    status: status,
+                                   code: code,
+                                   message: message,
                                    urlErrorCode: urlErrorCode,
                                    attemptsLeft: attemptsLeft)
     }
@@ -898,7 +903,9 @@ enum LLMClient {
                     }
                 }
                 let hostAction = recoveryAction(provider: provider, purpose: purpose,
-                                                status: http.statusCode, urlErrorCode: nil,
+                                                status: http.statusCode,
+                                                code: code.isEmpty ? nil : code, message: message,
+                                                urlErrorCode: nil,
                                                 attemptsLeft: hostResolveAttemptsLeft)
                 let httpFailure: () -> String = {
                     // 接入地址还没试对时的 401：代码这一刻已经判定"多半是地址的事"，

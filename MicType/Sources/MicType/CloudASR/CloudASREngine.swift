@@ -113,6 +113,14 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
                               completion: completion)
     }
 
+    /// 这一轮识别失败时，把**供应商给的原始失败**（状态码 + 错误码）报给上面一层。
+    ///
+    /// 引擎仍然什么都不决定（那三条纪律不变）：它只是把一件自己知道、而集成层再也看不到的事
+    /// 说出来——TranscriptionOutcome.failure 是 MTError，只剩一句人话，状态码与错误码全丢了。
+    /// 4.1.5 加这个钩子是为了认出「这台主机不让这把 Key 访问端点」那一档 403 并后台换一台
+    ///（见 CloudASRSettings.recoverIfEndpointDenied）。设不设都不影响识别本身。
+    var onProviderFailure: ((CloudASRFailure) -> Void)?
+
     init(config: CloudASRConfig = CloudASRConfig()) {
         self.config = config
     }
@@ -256,6 +264,9 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
                     deliver(cancelledOutcome())
                     return
                 }
+                // 状态码与错误码到此为止（下面那个 outcome 里只剩一句人话），
+                // 所以在这里把原始失败报上去一次——集成层据此决定要不要做点别的
+                self.onProviderFailure?(failure)
                 deliver(TranscriptionOutcome(text: joined,
                                              completedSegments: outer.completedSegments,
                                              totalSegments: max(totalSegments, outer.completedSegments + 1),

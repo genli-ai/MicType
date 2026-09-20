@@ -571,6 +571,12 @@ final class DictationController {
         }
         let engine = cloudEngine ?? CloudASREngine(config: config)
         engine.update(config: config)
+        // 「这台主机不让这把 Key 访问端点」（403）是换一台主机就能解决的失败，而那台主机
+        // 偏偏是"验证过"的——那个验证靠的是 GET /models，4.1.5 的实测证明它什么都不证明。
+        // 后台换掉它，本轮照常回落本机模型，用户一个字都不丢（判据是纯函数，见集成层）
+        engine.onProviderFailure = { failure in
+            CloudASRSettings.recoverIfEndpointDenied(failure)
+        }
         cloudEngine = engine
         sessionEngine = engine
         sessionUsesCloud = true

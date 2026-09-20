@@ -221,6 +221,17 @@ final class CloudASRIntegrationTests: XCTestCase {
         XCTAssertTrue(should(now.addingTimeInterval(-AlibabaFastestHostRefresh.interval)),
                       "整整一周，边界上算过期")
         XCTAssertFalse(should(nil, hasKey: false), "没有 Key 连问都问不出来")
+        // 4.1.4 那一版的戳不算数：它只问了 /models，可能选中一台 chat 全 403 的主机。
+        // 不作废的话，升上来的人最长要等七天才被重挑一次，而这七天里每句话都失败。
+        XCTAssertTrue(AlibabaFastestHostRefresh.shouldRun(
+            lastProbe: now.addingTimeInterval(-60), stampedVersion: 1, now: now,
+            hasKey: true, pastedHost: ""), "老逻辑留下的戳，升级之后立刻重挑一次")
+        XCTAssertFalse(AlibabaFastestHostRefresh.shouldRun(
+            lastProbe: now.addingTimeInterval(-60),
+            stampedVersion: AlibabaFastestHostRefresh.logicVersion, now: now,
+            hasKey: true, pastedHost: ""), "这一版刚问过：别重复问")
+        XCTAssertEqual(AlibabaFastestHostRefresh.logicVersion, 2,
+                       "改探测逻辑就要 +1，老戳才会作废")
         XCTAssertFalse(should(nil, pastedHost: "https://ws-abc.cn-beijing.maas.aliyuncs.com/api/v1"),
                        "设置文件给了答案：不该被我们按'更快'换掉")
         XCTAssertTrue(should(nil, pastedHost: "  我的主机  "),
@@ -280,11 +291,12 @@ final class CloudASRIntegrationTests: XCTestCase {
             attempt("singapore.example.com", 200, 240),
             attempt("tokyo.example.com", 401, 300, "InvalidApiKey"),
         ])
-        guard case .chosen(let winner, let accepted) = decision else {
+        guard case .ranked(let ranked) = decision else {
             return XCTFail("有人认了这把 Key：\(decision)")
         }
-        XCTAssertEqual(winner.host, "singapore.example.com")
-        XCTAssertEqual(accepted, 2, "北京也认这把 Key——正是它先答应过一次才有这一版")
+        XCTAssertEqual(ranked.map(\.host), ["singapore.example.com", "beijing.example.com"],
+                       "认这把 Key 的两台都要在名单上，最快的在前——第一名可能确认不过去")
+        XCTAssertEqual(ranked.count, 2, "北京也认这把 Key——正是它先答应过一次才有这一版")
     }
 
     /// 403 也算"认了"：鉴权过了，只是模型没开通——换一台主机解决不了这件事
@@ -294,8 +306,8 @@ final class CloudASRIntegrationTests: XCTestCase {
             attempt("a.example.com", 401, 50, "InvalidApiKey"),
             attempt("b.example.com", 403, 900, "Arrearage"),
         ])
-        guard case .chosen(let winner, _) = decision else { return XCTFail("403 = 就是这一台") }
-        XCTAssertEqual(winner.host, "b.example.com")
+        guard case .ranked(let ranked) = decision else { return XCTFail("403 = 就是这一台") }
+        XCTAssertEqual(ranked.map(\.host), ["b.example.com"])
     }
 
     /// 快得分不出高下（150 ms 以内）：按候选表的顺序选，也就是新加坡胜出。
@@ -306,16 +318,19 @@ final class CloudASRIntegrationTests: XCTestCase {
             attempt("beijing.example.com", 200, 300),
             attempt("singapore.example.com", 200, 380),
         ])
-        guard case .chosen(let winner, _) = nearTie else { return XCTFail("\(nearTie)") }
-        XCTAssertEqual(winner.host, "singapore.example.com", "差 80 ms 算平手 → 表里靠前的赢")
+        guard case .ranked(let nearTieRanked) = nearTie else { return XCTFail("\(nearTie)") }
+        XCTAssertEqual(nearTieRanked.first?.host, "singapore.example.com",
+                       "差 80 ms 算平手 → 表里靠前的赢")
+        XCTAssertEqual(nearTieRanked.last?.host, "beijing.example.com", "输的那台也要留在名单上")
 
         // 差得够多就认数字，顺序让位
         let clear = AlibabaHostResolver.decide(candidates: hosts, attempts: [
             attempt("beijing.example.com", 200, 300),
             attempt("singapore.example.com", 200, 900),
         ])
-        guard case .chosen(let fast, _) = clear else { return XCTFail("\(clear)") }
-        XCTAssertEqual(fast.host, "beijing.example.com", "差 600 ms 不是平手")
+        guard case .ranked(let clearRanked) = clear else { return XCTFail("\(clear)") }
+        XCTAssertEqual(clearRanked.map(\.host), ["beijing.example.com", "singapore.example.com"],
+                       "差 600 ms 不是平手")
     }
 
     /// 一台都不认：报**最有用**的那一条。
@@ -353,6 +368,179 @@ final class CloudASRIntegrationTests: XCTestCase {
         guard case .rejected(let reported) = decision else { return XCTFail("\(decision)") }
         XCTAssertEqual(reported.status, 0)
         XCTAssertEqual(reported.host, "a.example.com")
+    }
+
+    // MARK: - 第二轮：这台主机肯不肯真的干活（4.1.5）
+
+    private func confirmation(_ host: String, _ status: Int,
+                              _ code: String? = nil) -> AlibabaHostResolver.Confirmation {
+        AlibabaHostResolver.Confirmation(host: host, status: status, code: code, milliseconds: 10)
+    }
+
+    /// 200 = 干活了；401/403/连不上 = 这台不行；其余（400/404/429/5xx）说明请求**被受理了**
+    func testConfirmClassification() {
+        XCTAssertEqual(AlibabaHostResolver.classify(status: 200), .confirmed)
+        XCTAssertEqual(AlibabaHostResolver.classify(status: 204), .confirmed)
+        for status in [401, 403, 0] {
+            XCTAssertEqual(AlibabaHostResolver.classify(status: status), .unusable, "\(status)")
+        }
+        for status in [400, 404, 429, 500, 503] {
+            XCTAssertEqual(AlibabaHostResolver.classify(status: status), .reachable, "\(status)")
+        }
+    }
+
+    /// 这一版的全部理由（2026-09-20 实测）：工作空间主机 /models 回 200、chat 回 403，
+    /// 而它排在第一。确认阶段必须越过它，落到真的能干活的那一台上。
+    func testConfirmSkipsTheHostThatDeniesAccess() {
+        let ranked = [attempt("ws.ap-southeast-1.example.com", 200, 480),
+                      attempt("dashscope-intl.example.com", 200, 300)]
+        // 一台都还没问：先问排第一的
+        XCTAssertEqual(AlibabaHostResolver.nextConfirmStep(ranked: ranked, confirmations: []),
+                       .confirm("ws.ap-southeast-1.example.com"))
+        // 它 403 了：问下一台
+        let afterDenied = [confirmation("ws.ap-southeast-1.example.com", 403, "access_denied")]
+        XCTAssertEqual(AlibabaHostResolver.nextConfirmStep(ranked: ranked,
+                                                           confirmations: afterDenied),
+                       .confirm("dashscope-intl.example.com"))
+        // 第二台 200：定了，而且是真确认过的
+        let afterOK = afterDenied + [confirmation("dashscope-intl.example.com", 200)]
+        XCTAssertEqual(AlibabaHostResolver.nextConfirmStep(ranked: ranked, confirmations: afterOK),
+                       .settle(host: "dashscope-intl.example.com", fallback: false))
+    }
+
+    /// 第一台就 200：**后面一台都不问**（每问一台都要花几个 token）
+    func testConfirmStopsAtTheFirstWorkingHost() {
+        let ranked = [attempt("a.example.com", 200, 100), attempt("b.example.com", 200, 120)]
+        XCTAssertEqual(AlibabaHostResolver.nextConfirmStep(
+            ranked: ranked, confirmations: [confirmation("a.example.com", 200)]),
+                       .settle(host: "a.example.com", fallback: false))
+    }
+
+    /// "受理了但这次没成"（模型名不对 / 限流 / 5xx）= 端点访问是通的：记成备胎，
+    /// 但先把剩下的问完找 200；实在没有 200 才用它，而且要标成 fallback。
+    func testConfirmKeepsLookingForA200BeforeSettlingForAFallback() {
+        let ranked = [attempt("a.example.com", 200, 100),
+                      attempt("b.example.com", 200, 120),
+                      attempt("c.example.com", 200, 140)]
+        let afterA = [confirmation("a.example.com", 404, "model_not_found")]
+        XCTAssertEqual(AlibabaHostResolver.nextConfirmStep(ranked: ranked, confirmations: afterA),
+                       .confirm("b.example.com"), "备胎归备胎，200 还是要找")
+        let afterB = afterA + [confirmation("b.example.com", 200)]
+        XCTAssertEqual(AlibabaHostResolver.nextConfirmStep(ranked: ranked, confirmations: afterB),
+                       .settle(host: "b.example.com", fallback: false), "真 200 永远赢备胎")
+
+        // 全程没有 200：用排名最靠前的那个备胎
+        let noneOK = [confirmation("a.example.com", 429, "Throttling"),
+                      confirmation("b.example.com", 403, "access_denied"),
+                      confirmation("c.example.com", 500, nil)]
+        XCTAssertEqual(AlibabaHostResolver.nextConfirmStep(ranked: ranked, confirmations: noneOK),
+                       .settle(host: "a.example.com", fallback: true),
+                       "429 说明端点访问是通的，而它排名最靠前")
+    }
+
+    /// 一台都不行：报排名最靠前那一台的原因
+    func testConfirmGivesUpReportingTheBestRankedHost() {
+        let ranked = [attempt("a.example.com", 200, 100), attempt("b.example.com", 200, 120)]
+        let denied = [confirmation("b.example.com", 403, "access_denied"),
+                      confirmation("a.example.com", 403, "Endpoint.AccessDenied")]
+        guard case .giveUp(let reported) = AlibabaHostResolver.nextConfirmStep(
+            ranked: ranked, confirmations: denied) else {
+            return XCTFail("一台都不行")
+        }
+        XCTAssertEqual(reported?.host, "a.example.com", "报排名靠前的那一台，不是最后回来的那一台")
+    }
+
+    /// 全是"端点访问被拒"时换一句专门的话：Key 是好的（否则 /models 就过不去），
+    /// 问题在工作空间——让他去核对 Key、去开通模型全是白跑
+    func testAllDeniedGetsItsOwnCopy() {
+        L10n.shared.language = .zh
+        let denied = [confirmation("a.example.com", 403, "access_denied"),
+                      confirmation("b.example.com", 403, "Endpoint.AccessDenied")]
+        let failure = AlibabaHostResolver.confirmFailure(denied, reported: denied.first)
+        XCTAssertEqual(failure.status, 403)
+        XCTAssertTrue(failure.message.contains("拒绝了接口访问"), failure.message)
+        XCTAssertFalse(failure.message.contains("模型广场"), "这一档跟开通模型毫无关系")
+
+        // 只要有一台是别的原因，就回到通用话术（那一台才是真问题）
+        let mixed = [confirmation("a.example.com", 403, "access_denied"),
+                     confirmation("b.example.com", 429, "Throttling.RateQuota")]
+        let general = AlibabaHostResolver.confirmFailure(mixed, reported: mixed.last)
+        XCTAssertFalse(general.message.contains("拒绝了接口访问"), general.message)
+    }
+
+    /// 确认那一趟发的是什么：最小请求，不开思考；型号名空着才用出厂默认
+    func testConfirmBodyIsMinimal() {
+        let body = AlibabaHostResolver.confirmBody(model: "  qwen3.8-flash  ")
+        XCTAssertEqual(body["model"] as? String, "qwen3.8-flash")
+        XCTAssertEqual(body["max_tokens"] as? Int, 1)
+        XCTAssertEqual(body["enable_thinking"] as? Bool, false)
+        let messages = body["messages"] as? [[String: String]]
+        XCTAssertEqual(messages?.count, 1)
+        XCTAssertEqual(messages?.first?["role"], "user")
+        XCTAssertEqual(AlibabaHostResolver.confirmBody(model: "   ")["model"] as? String,
+                       LLMCatalog.qwenDefaultModel, "空着退到出厂默认，不发一个空型号名")
+    }
+
+    /// 确认打的是**润色真正走的那条路**——确认通过就等于润色能用
+    func testConfirmHitsTheChatEndpoint() {
+        XCTAssertEqual(AlibabaEndpoint.chatCompletionsURL(host: "dashscope-intl.aliyuncs.com")?
+                        .absoluteString,
+                       "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions")
+        XCTAssertNil(AlibabaEndpoint.chatCompletionsURL(host: "我的主机"))
+    }
+
+    /// 排名第一的那台 chat 403，整趟仍然要落在能干活的那一台上（假发送器，不碰网络）
+    func testResolverConfirmsBeforeReturningAHost() {
+        var chatCalls: [String] = []
+        let done = expectation(description: "resolved")
+        AlibabaHostResolver.resolve(
+            apiKey: "sk-ws-abc.zzz",
+            candidates: ["ws.ap-southeast-1.example.com", "dashscope-intl.example.com"],
+            confirmModel: "qwen3.8-flash",
+            send: { request, completion in
+                let host = request.url?.host ?? "?"
+                if request.url?.path.hasSuffix("/models") == true {
+                    // 两台的 /models 都回 200，工作空间那台还"更快"（它排第一）
+                    completion(200, nil, nil)
+                    return
+                }
+                chatCalls.append(host)
+                if host == "ws.ap-southeast-1.example.com" {
+                    completion(403, "access_denied", "Workspace endpoint access denied.")
+                } else {
+                    completion(200, nil, nil)
+                }
+            }) { result in
+            guard case .success(let host) = result else { return XCTFail("第二台能干活：\(result)") }
+            XCTAssertEqual(host, "dashscope-intl.example.com")
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 3)
+        XCTAssertEqual(chatCalls, ["ws.ap-southeast-1.example.com", "dashscope-intl.example.com"],
+                       "按排名逐台确认，拿到 200 就停")
+    }
+
+    /// 每一台 /models 都 200、每一台 chat 都 403：报那句专门的话，别让用户去翻 Key
+    func testResolverReportsWorkspaceDenialWhenEveryHostRefuses() {
+        L10n.shared.language = .zh
+        let done = expectation(description: "failed")
+        AlibabaHostResolver.resolve(
+            apiKey: "sk-ws-abc.zzz",
+            candidates: ["a.example.com", "b.example.com"],
+            confirmModel: "qwen3.8-flash",
+            send: { request, completion in
+                if request.url?.path.hasSuffix("/models") == true {
+                    completion(200, nil, nil)
+                } else {
+                    completion(403, "access_denied", "Workspace endpoint access denied.")
+                }
+            }) { result in
+            guard case .failure(let failure) = result else { return XCTFail("一台都干不了活") }
+            XCTAssertEqual(failure.status, 403)
+            XCTAssertTrue(failure.message.contains("拒绝了接口访问"), failure.message)
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 3)
     }
 
     /// 每一台都要试到（不碰网络：假发送器），而且不是试到第一台答应就停

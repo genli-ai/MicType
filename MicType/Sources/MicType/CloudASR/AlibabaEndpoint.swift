@@ -216,6 +216,28 @@ enum AlibabaEndpoint {
         return status == 401 || status == 0
     }
 
+    /// 这一次失败是不是**"这台主机不让这把 Key 访问端点"**（纯函数，单测钉死）。
+    ///
+    /// 2026-09-20 第一把真 Key 的实测（UAE）：新建的新加坡工作空间 Key 在
+    /// `{ws}.ap-southeast-1…` 上，`GET /compatible-mode/v1/models` 回 200，而
+    /// chat 与识别两个端点都回 **403**：
+    ///   • OpenAI 兼容模式：`{"error":{"type":"access_denied","code":"access_denied",`
+    ///     `"message":"Workspace endpoint access denied."}}`
+    ///   • DashScope 原生：`{"code":"Endpoint.AccessDenied","message":"Workspace endpoint access denied."}`
+    /// 同一把 Key 在 dashscope-intl 上一切正常。
+    ///
+    /// 为什么必须单独认出来：这是**换一台主机就能解决**的 403，而 403 的通用话术
+    /// （"去模型广场开通这个模型"）在这一档下是纯粹的误导；而且它出现在一台
+    /// "已经验证过"的主机上——那个验证是 GET /models 挣来的，我们现在知道它什么都不证明。
+    /// 所以这一条要绕过 hostSettled 那道闸，直接触发重新试一圈（见 AlibabaHostRecovery.action）。
+    static func deniesEndpointAccess(status: Int, code: String?, message: String?) -> Bool {
+        guard status == 403 else { return false }
+        let hay = ((code ?? "") + " " + (message ?? "")).lowercased()
+        return hay.contains("access_denied")
+            || hay.contains("endpoint.accessdenied")
+            || hay.contains("endpoint access denied")
+    }
+
     // MARK: - 纯函数 · 拼地址
 
     /// 云端识别端点
@@ -234,6 +256,13 @@ enum AlibabaEndpoint {
     static func modelsURL(host: String) -> URL? {
         guard let h = normalizeHost(host) else { return nil }
         return URL(string: "https://" + h + compatiblePath + "/models")
+    }
+
+    /// 对话端点：**确认**这台主机肯不肯真的干活用它（见 AlibabaHostResolver 的第二轮）。
+    /// 与润色/指令真正发请求的是同一条路径，所以"确认通过"就是"润色能用"。
+    static func chatCompletionsURL(host: String) -> URL? {
+        guard let h = normalizeHost(host) else { return nil }
+        return URL(string: "https://" + h + compatiblePath + "/chat/completions")
     }
 
     /// 写进日志 / 诊断信息前先把 WorkspaceId 抹掉：主机名第一段就是工作空间编号，
@@ -281,18 +310,31 @@ enum AlibabaHostRecovery {
 
     /// 纯函数，单测钉住每一档。
     /// - isAlibaba: 这一趟发给的是阿里云那一档（别家没有"主机要自己试"这回事）
-    /// - hostSettled: 接入地址已经定下来了——用户自己粘过，或上一次真的试通过。
+    /// - hostSettled: 接入地址已经定下来了——上一次真的试通过。
     ///   定下来的主机吃 401 是另一回事（Key 过期 / 被删），再试一圈也只会得到同样的 401。
     /// - canWaitForResolve: 这一趟等得起那 30 秒吗（润色等不起，见上面）
     /// - status: HTTP 状态码；0 = 还没上网
+    /// - code / message: 服务商给的错误码与原话（认"端点访问被拒"那一档要用，见下面）
     /// - urlErrorCode: 网络层错误码（NSURLError*），没有就传 nil
     static func action(isAlibaba: Bool,
                        hostSettled: Bool,
                        canWaitForResolve: Bool,
                        status: Int,
+                       code: String? = nil,
+                       message: String? = nil,
                        urlErrorCode: Int?,
                        attemptsLeft: Int) -> Action {
-        guard isAlibaba, attemptsLeft > 0, !hostSettled else { return .none }
+        guard isAlibaba, attemptsLeft > 0 else { return .none }
+        // **端点访问被拒（403 access_denied）要绕过 hostSettled 那道闸**（4.1.5）。
+        // 那个"已经定下来了"是 GET /models 挣来的，而 2026-09-20 的实测证明它什么都不证明：
+        // 同一台主机 /models 回 200、chat 与识别回 403。不绕过的话，用户会被永久钉死在
+        // 一台什么都干不了的主机上，而 App 手上明明有一套能换一台的机制。
+        // 连发的代价由既有的单飞闸 + 60 秒冷却兜住（见 claim / failureCooldown）：
+        // 真的每台都被拒时，最多一分钟试一圈，不会每句话都试。
+        if AlibabaEndpoint.deniesEndpointAccess(status: status, code: code, message: message) {
+            return canWaitForResolve ? .resolveAndRetry : .resolveInBackground
+        }
+        guard !hostSettled else { return .none }
         let triggered = status == 401
             || (status == 0 && (urlErrorCode.map { triggeringURLCodes.contains($0) } ?? false))
         guard triggered else { return .none }
@@ -445,19 +487,34 @@ enum AlibabaFastestHostRefresh {
     /// （日常听写一句话都不探测），所以一次选错/选旧就再也没人纠正。时间戳让它每周复查一次。
     static let lastProbeKey = "qwenFastestHostProbedAt"
 
+    /// 上一次那趟探测是**哪一版逻辑**跑出来的（UserDefaults）。
+    ///
+    /// 为什么光有时间戳不够（4.1.5）：4.1.4 的探测只问了 GET /models，而那一问什么都不证明
+    /// ——它可能选中一台 chat 与识别全 403 的主机。升上来的人手里已经有一个"刚刚问过"的戳，
+    /// 于是最长要等七天才会被重挑一次，而这七天里他每句话都失败。版本号对不上就立刻重跑一次。
+    static let logicVersionKey = "qwenFastestHostProbeVersion"
+
+    /// 当前这一版探测逻辑：1 = 只问 /models（4.1.4）；2 = 加上"确认它肯不肯干活"（4.1.5）。
+    /// **改探测逻辑就 +1**，老戳自然作废。
+    static let logicVersion = 2
+
     /// 多久复查一次。一周：这一趟是免费请求，但它会把 Key 发到表里每一台主机上，
     /// 不该天天做；而"换个国家住下来"这种事以周为单位也足够跟上了。
     static let interval: TimeInterval = 7 * 24 * 3600
 
     /// 这次启动要不要跑（**纯函数**，单测钉死）。
     /// - lastProbe: 上一次问出结果的时间；nil = 从来没有
+    /// - stampedVersion: 那一趟是哪一版逻辑跑的（0 = 没有戳 / 4.1.4 之前）
     /// - hasKey: 钥匙串里有阿里云的 Key（没有 Key 连问都问不出来，跑了也是白跑）
     /// - pastedHost: 存着的接入地址。有就不跑——那是设置文件给的答案，不该被我们按"更快"换掉
     ///   （它死了 / 是串脏值会被 dropsPastedHost 丢掉，那是另一条路）。
-    static func shouldRun(lastProbe: Date?, now: Date = Date(),
+    static func shouldRun(lastProbe: Date?, stampedVersion: Int = logicVersion,
+                          now: Date = Date(),
                           hasKey: Bool, pastedHost: String) -> Bool {
         guard hasKey, AlibabaEndpoint.normalizeHost(pastedHost) == nil else { return false }
         guard let lastProbe = lastProbe else { return true }
+        // 老逻辑留下的戳不算数：那一趟可能选中了一台什么都干不了的主机
+        guard stampedVersion >= logicVersion else { return true }
         return now.timeIntervalSince(lastProbe) >= interval
     }
 
@@ -468,12 +525,19 @@ enum AlibabaFastestHostRefresh {
     /// 的人不该在下次启动再被探一遍——那是同一个问题问两次，而每问一次都要把 Key 发给每一台主机。
     static func stamp(_ defaults: UserDefaults = .standard, now: Date = Date()) {
         defaults.set(now.timeIntervalSince1970, forKey: lastProbeKey)
+        // 时间和版本永远一起写：只写时间会让下一版的"老戳作废"判据失灵
+        defaults.set(logicVersion, forKey: logicVersionKey)
     }
 
     /// 存着的那个戳（nil = 从来没有）
     static func lastProbe(_ defaults: UserDefaults = .standard) -> Date? {
         let seconds = defaults.double(forKey: lastProbeKey)
         return seconds > 0 ? Date(timeIntervalSince1970: seconds) : nil
+    }
+
+    /// 存着的那个戳是哪一版逻辑留下的（0 = 没有戳，或者 4.1.4 那一版只写了时间）
+    static func stampedVersion(_ defaults: UserDefaults = .standard) -> Int {
+        defaults.integer(forKey: logicVersionKey)
     }
 
     /// 开机复查一趟（AppDelegate 在后台队列上调用）。**绝不挡路**：听写、录音、启动都不等它。
@@ -484,6 +548,7 @@ enum AlibabaFastestHostRefresh {
         let key = KeychainHelper.loadAPIKey(account: LLMProvider.qwen.keychainAccount)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard shouldRun(lastProbe: lastProbe(defaults),
+                        stampedVersion: stampedVersion(defaults),
                         hasKey: !key.isEmpty,
                         pastedHost: Settings.shared.qwenAPIHost) else { return }
         // 单飞闸：开机这一刻用户完全可能已经在说话了，那条路上的恢复探测优先
@@ -590,31 +655,43 @@ enum AlibabaHostResolver {
         }
     }
 
-    /// 试完之后的结论
+    /// 免费那一轮（GET /models）之后的结论
     enum Decision: Equatable {
-        /// 就用这一台（accepted = 一共几台认了这把 Key，写进日志）
-        case chosen(Attempt, accepted: Int)
+        /// 认这把 Key 的那几台，**按"该先用谁"排好序**（第一项最快，平手按候选表顺序）。
+        /// 4.1.5 起不再是"选出一台"就完事：200 只证明这台主机认这把 Key，
+        /// 不证明它肯干活（见下面 confirm 那一段），所以要把整张排好的名单交出去逐台确认。
+        case ranked([Attempt])
         /// 一台都没认：报这一条（怎么挑见 failureRank）
         case rejected(Attempt)
     }
 
-    /// **纯函数**：候选表 + 每一台的结论 → 用哪一台（或者报哪一条）。单测钉死。
+    /// **纯函数**：候选表 + 每一台的结论 → 认这把 Key 的那几台（排好序），或者该报哪一条。单测钉死。
     ///
-    /// 选法：认这把 Key 的那几台里最快的；与最快那台差在 tieWindow 以内的算平手，
-    /// 平手按候选表的顺序选（所以新加坡排在北京前面这件事只在平手时起作用）。
+    /// 排法：最快的在前；与前一名差在 tieWindow 以内的算平手，平手按候选表的顺序
+    ///（所以新加坡排在北京前面这件事只在平手时起作用）。整张名单都要，而不只是第一名——
+    /// 第一名可能压根不肯干活（见 confirm 那一段），那时要能顺着名单往下走。
     static func decide(candidates: [String], attempts: [Attempt],
                        tieWindow: Int = tieWindowMilliseconds) -> Decision {
         func order(_ host: String) -> Int {
             candidates.firstIndex(of: host) ?? candidates.count
         }
-        let accepted = attempts.filter { accepts(status: $0.status) }
-        if let fastest = accepted.min(by: {
-            ($0.milliseconds, order($0.host)) < ($1.milliseconds, order($1.host))
-        }) {
-            let winner = accepted
-                .filter { $0.milliseconds <= fastest.milliseconds + max(0, tieWindow) }
-                .min { order($0.host) < order($1.host) } ?? fastest
-            return .chosen(winner, accepted: accepted.count)
+        var pool = attempts.filter { accepts(status: $0.status) }
+        if !pool.isEmpty {
+            // 逐名选出：每一轮都先看"剩下的里谁最快"，再在与它平手的那几台里按候选表顺序挑。
+            // 直接按 (ms, order) 排序是不对的——那样 300ms 的新加坡会排在 280ms 的北京后面，
+            // 而这两台在网络抖动面前本来就是一回事（tieWindow 的全部意义）。候选最多 7 台，O(n²) 无所谓。
+            var ranked: [Attempt] = []
+            while !pool.isEmpty {
+                guard let fastest = pool.min(by: {
+                    ($0.milliseconds, order($0.host)) < ($1.milliseconds, order($1.host))
+                }) else { break }
+                let winner = pool
+                    .filter { $0.milliseconds <= fastest.milliseconds + max(0, tieWindow) }
+                    .min { order($0.host) < order($1.host) } ?? fastest
+                ranked.append(winner)
+                pool.removeAll { $0.host == winner.host }
+            }
+            return .ranked(ranked)
         }
         let worst = attempts.min {
             (failureRank($0), order($0.host)) < (failureRank($1), order($1.host))
@@ -624,17 +701,161 @@ enum AlibabaHostResolver {
         return .rejected(worst ?? Attempt(host: candidates.first ?? "", status: 0, code: nil))
     }
 
-    /// 并发试一遍，挑最快的那台。completion 在主线程。成功 = 这台主机认这把 Key，而且最快。
+    // MARK: - 第二轮：这台主机肯不肯真的干活
+
+    /// 为什么 GET /models 通过还不够（2026-09-20，第一把真 Key 的实测，UAE）：
+    /// 新建的新加坡工作空间 Key 在 `{ws}.ap-southeast-1…` 上
+    ///   • `GET /compatible-mode/v1/models` → **200**（480 ms）
+    ///   • `POST /compatible-mode/v1/chat/completions` → **403 access_denied**
+    ///     "Workspace endpoint access denied."
+    ///   • `POST /api/v1/…/generation`（识别）→ **403 Endpoint.AccessDenied**
+    /// 而同一把 Key 在 `dashscope-intl` 上三样全是 200。两台的 /models 只差 100–180 ms，
+    /// 正好落在平手窗口里，于是"排在前面"的工作空间主机赢了——赢下来的那台一件事也干不了。
+    /// 4.1.3 及以前的串行版有同一个洞（工作空间主机排在共享主机前面）。
     ///
-    /// - timeout: 单台的超时。这一趟问的是最便宜的那个问题（GET /models），答得出来的主机
+    /// 所以第一名选出来之后要**再问一句真话**：发一次最小的 chat 请求（max_tokens=1，
+    /// 不开思考），只看它肯不肯受理。代价是几个 token，买的是"选定的主机真的能用"。
+    enum ConfirmOutcome: Equatable {
+        /// 200：这台真的干活了
+        case confirmed
+        /// 401 / 403 / 连不上：这台干不了这件事，看下一台
+        case unusable
+        /// 其余状态（400、404 模型不存在、429、5xx）：请求**被受理了**，只是这一次没成。
+        /// 端点访问权是有的，所以它是个合格的备胎——但还是先找有没有能给 200 的。
+        case reachable
+    }
+
+    /// 一次确认的结果（同样只记状态码、错误码与毫秒数）
+    struct Confirmation: Equatable {
+        let host: String
+        let status: Int
+        let code: String?
+        let milliseconds: Int
+
+        init(host: String, status: Int, code: String? = nil, milliseconds: Int = 0) {
+            self.host = host
+            self.status = status
+            self.code = code
+            self.milliseconds = milliseconds
+        }
+    }
+
+    /// 状态码 → 这一台算不算数（纯函数）
+    static func classify(status: Int) -> ConfirmOutcome {
+        if (200...299).contains(status) { return .confirmed }
+        if status == 401 || status == 403 || status == 0 { return .unusable }
+        return .reachable
+    }
+
+    /// 确认阶段的下一步
+    enum ConfirmStep: Equatable {
+        /// 接着问这一台
+        case confirm(String)
+        /// 定了。fallback = 没有任何一台给出 200，用的是"受理了但这次没成"的那台备胎
+        case settle(host: String, fallback: Bool)
+        /// 排好序的那几台没一个能用：报这一条（nil = 压根没得可问）
+        case giveUp(Confirmation?)
+    }
+
+    /// **纯函数**：排好序的候选 + 已经拿到的确认结果 → 下一步做什么。单测钉死。
+    ///
+    /// 规矩（用户 2026-09-20 定）：
+    ///   • 拿到 200 就收工，后面的一台都不问（每问一台都要花几个 token）；
+    ///   • 401 / 403 / 连不上 = 这台不行，问下一台；
+    ///   • 其余状态说明端点访问是通的（模型名不对、限流、服务端出错都属于这一档）——
+    ///     记成备胎，但继续找 200；全程没有 200 时用排名最靠前的那个备胎；
+    ///   • 一个都不剩：报排名最靠前那一台的失败原因（它最可能是"本该用的那一台"）。
+    static func nextConfirmStep(ranked: [Attempt],
+                                confirmations: [Confirmation]) -> ConfirmStep {
+        if let ok = confirmations.first(where: { classify(status: $0.status) == .confirmed }) {
+            return .settle(host: ok.host, fallback: false)
+        }
+        let done = Set(confirmations.map(\.host))
+        if let next = ranked.first(where: { !done.contains($0.host) }) {
+            return .confirm(next.host)
+        }
+        // 问完了：按排名（不是按回来的先后）挑备胎，再挑要报的那一条
+        for attempt in ranked {
+            guard let result = confirmations.first(where: { $0.host == attempt.host }),
+                  classify(status: result.status) == .reachable else { continue }
+            return .settle(host: result.host, fallback: true)
+        }
+        for attempt in ranked {
+            if let result = confirmations.first(where: { $0.host == attempt.host }) {
+                return .giveUp(result)
+            }
+        }
+        return .giveUp(confirmations.first)
+    }
+
+    /// 确认那一轮的失败要报哪一句。
+    ///
+    /// **全都是"端点访问被拒"时换一句专门的话**：这一档里 Key 本身是好的（401 的话
+    /// 连 /models 都过不了），问题出在这把 Key 属于一个没开放端点访问的工作空间——
+    /// 让他去核对 Key、去模型广场开通模型，全是白跑。
+    /// **不指定"去默认业务空间新建"**：2026-09-20 实测一把刚建的 Key 在工作空间主机上 403、
+    /// 同一个账号的老 Key 却通——我们并不知道阿里云按什么放行，只说我们知道的：
+    /// Key 是好的、访问被拒、该去看这把 Key 所属业务空间的权限。
+    static func confirmFailure(_ confirmations: [Confirmation],
+                               reported: Confirmation?) -> CloudASRFailure {
+        let denied = !confirmations.isEmpty && confirmations.allSatisfy {
+            AlibabaEndpoint.deniesEndpointAccess(status: $0.status, code: $0.code, message: nil)
+        }
+        if denied {
+            return CloudASRFailure(workspaceAccessDeniedCopy, code: reported?.code, status: 403)
+        }
+        let fallback = reported ?? Confirmation(host: "", status: 0)
+        return AlibabaASRClient.failure(status: fallback.status, code: fallback.code, message: nil)
+    }
+
+    /// 那一句专门的话（全 App 唯一出处：确认阶段与运行中的 403 都引用它）
+    static var workspaceAccessDeniedCopy: String {
+        tr("这把 Key 有效，但阿里云拒绝了接口访问 (403)。请到百炼控制台检查这把 Key 所属业务空间的权限，或新建一把 Key。",
+           "This key is valid, but Alibaba Cloud denied endpoint access (403). Check the permissions of the key's workspace in the Model Studio console, or create a new key.")
+    }
+
+    /// 确认那一趟的请求体（纯函数，单测钉住每一个字段）。
+    ///
+    /// 最小的一次真请求：`max_tokens: 1` + 不开思考，问的只是"你肯不肯受理"。
+    /// 模型名用**用户自己那一档**（他可能填了一个只有他开通了的型号）——
+    /// 拿一个他没开通的型号去问，会得到 400/404，那属于 reachable（端点是通的），
+    /// 判断仍然正确，只是没那么准。
+    static func confirmBody(model: String) -> [String: Any] {
+        let name = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return [
+            "model": name.isEmpty ? LLMCatalog.qwenDefaultModel : name,
+            "messages": [["role": "user", "content": "hi"]],
+            "max_tokens": 1,
+            // 3.5 线起默认开思考，一次"确认"用不着它，还会把往返拖长（见 LLMClient）
+            "enable_thinking": false,
+        ]
+    }
+
+    /// 确认要用的型号：用户这一档存着什么就用什么，空着才退到出厂默认
+    static func currentConfirmModel() -> String {
+        let stored = Settings.shared.qwenModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return stored.isEmpty ? LLMCatalog.qwenDefaultModel : stored
+    }
+
+    /// 并发试一遍挑出排名，再**逐台确认它肯不肯干活**，返回真正能用的那一台。completion 在主线程。
+    ///
+    /// 两轮的分工：
+    ///   ① `GET /compatible-mode/v1/models` 全表并发——免费、不传音频，问"这把 Key 属不属于这台"；
+    ///   ② 按排名逐台 `POST /compatible-mode/v1/chat/completions`（max_tokens=1）——
+    ///      花几个 token，问"这台肯不肯真的受理"。第一轮 200、第二轮 403 的主机真实存在
+    ///      （见 ConfirmOutcome 那段实测），只做第一轮等于把用户钉死在一台什么都干不了的主机上。
+    ///
+    /// - timeout: 单台的超时（两轮同一个数）。这两趟问的都是最便宜的问题，答得出来的主机
     ///   都是秒回；6 秒还没动静基本就是 DNS 不通或被墙，再等下去只是让状态行一直停在
     ///   「正在验证…」上。
-    /// - budget: 整趟的总预算。并发之后它基本只是保险绳（墙钟时间 ≈ 最慢那一台），
+    /// - budget: **第一轮**的总预算。并发之后它基本只是保险绳（墙钟时间 ≈ 最慢那一台），
     ///   但仍然要有：到点就用**已经回来的**那些结论下判断，报得出原因比无限等下去强。
+    /// - confirmModel: 确认那一趟用哪个型号（默认读用户这一档的设置）
     static func resolve(apiKey: String,
                         candidates: [String],
                         timeout: TimeInterval = 6,
                         budget: TimeInterval = 30,
+                        confirmModel: String? = nil,
                         send: @escaping (URLRequest, @escaping (Int, String?, String?) -> Void) -> Void = defaultSend,
                         completion: @escaping (Result<String, CloudASRFailure>) -> Void) {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -667,6 +888,9 @@ enum AlibabaHostResolver {
         var attempts: [Attempt] = []
         var outstanding = requests.count
         var settled = false
+        // 第二轮要用的型号。在这里取而不是在 confirmStage 里取：那是一次 UserDefaults 读，
+        // 而 confirmStage 会被递归调用（每确认一台一次）
+        let model = confirmModel ?? currentConfirmModel()
 
         /// 收网。只会下一次结论（预算到点与"最后一台回来了"可能同时发生）。
         func settle(outOfTime: Bool) {
@@ -677,16 +901,59 @@ enum AlibabaHostResolver {
             lock.unlock()
             let elapsed = Log.ms(since: started)
             switch decide(candidates: candidates, attempts: collected) {
-            case .chosen(let winner, let accepted):
-                Log.info("Qwen host chosen host=\(AlibabaEndpoint.redacted(winner.host)) "
-                         + "ms=\(winner.milliseconds) of=\(requests.count) accepted=\(accepted)")
-                finish(.success(winner.host))
+            case .ranked(let ranked):
+                confirmStage(ranked: ranked, accepted: ranked.count)
             case .rejected(let attempt):
                 Log.warn("Qwen host resolve \(outOfTime ? "out of time" : "exhausted") "
                          + "tried=\(collected.count) of=\(requests.count) ms=\(elapsed) "
                          + "status=\(attempt.status) code=\(attempt.code ?? "-")")
                 finish(.failure(AlibabaASRClient.failure(status: attempt.status,
                                                          code: attempt.code, message: nil)))
+            }
+        }
+
+        /// 第二轮：按排名逐台问一句真话。**串行**——每问一台都要花几个 token，
+        /// 而绝大多数时候第一台就成了（并发问等于每次都把所有主机的钱都花掉）。
+        func confirmStage(ranked: [Attempt], accepted: Int, confirmations: [Confirmation] = []) {
+            func chose(_ host: String, fallback: Bool) {
+                let ms = confirmations.first { $0.host == host }?.milliseconds ?? 0
+                Log.info("Qwen host chosen host=\(AlibabaEndpoint.redacted(host)) "
+                         + "ms=\(ms) of=\(requests.count) accepted=\(accepted) "
+                         + "confirmed=\(fallback ? "fallback" : "true")")
+                finish(.success(host))
+            }
+            switch nextConfirmStep(ranked: ranked, confirmations: confirmations) {
+            case .settle(let host, let fallback):
+                chose(host, fallback: fallback)
+            case .giveUp(let reported):
+                Log.warn("Qwen host confirm exhausted tried=\(confirmations.count) "
+                         + "of=\(ranked.count) status=\(reported?.status ?? 0) "
+                         + "code=\(reported?.code ?? "-")")
+                finish(.failure(confirmFailure(confirmations, reported: reported)))
+            case .confirm(let host):
+                guard let url = AlibabaEndpoint.chatCompletionsURL(host: host),
+                      let body = try? JSONSerialization.data(withJSONObject: confirmBody(model: model)) else {
+                    // 拼不出这一台的地址：当成"不能用"，接着问下一台
+                    confirmStage(ranked: ranked, accepted: accepted,
+                                 confirmations: confirmations + [Confirmation(host: host, status: 0)])
+                    return
+                }
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.timeoutInterval = timeout
+                request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = body
+                let sentAt = DispatchTime.now()
+                send(request) { status, code, _ in
+                    let ms = Log.ms(since: sentAt)
+                    Log.info("Qwen host confirm host=\(AlibabaEndpoint.redacted(host)) "
+                             + "status=\(status) code=\(code ?? "-") ms=\(ms)")
+                    confirmStage(ranked: ranked, accepted: accepted,
+                                 confirmations: confirmations
+                                    + [Confirmation(host: host, status: status,
+                                                    code: code, milliseconds: ms)])
+                }
             }
         }
 

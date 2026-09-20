@@ -671,6 +671,13 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
             return made("试过的每一个接入地址都不认这把 Key。请确认它是阿里云百炼（Model Studio）的 API Key，而且没有过期或被删除",
                         "Every endpoint MicType tried refused this key. Check that it is an Alibaba Cloud Model Studio (Bailian) API key and that it has not expired or been deleted")
         case 403:
+            // 「这把 Key 的工作空间不开放接口访问」和「这个模型没开通」是两件事，下一步完全不同。
+            // 2026-09-20 实测：新建的工作空间 Key 在识别端点上回 Endpoint.AccessDenied，
+            // 而同一把 Key 在 dashscope-intl 上一切正常——去模型广场开通模型救不了他。
+            if AlibabaEndpoint.deniesEndpointAccess(status: 403, code: raw, message: message) {
+                return CloudASRFailure(AlibabaHostResolver.workspaceAccessDeniedCopy + tail,
+                                       code: raw.isEmpty ? nil : raw, status: 403)
+            }
             if raw.localizedCaseInsensitiveContains("arrear") {
                 return made("阿里云账户欠费，云端识别已停。请充值后再试",
                             "The Alibaba account is in arrears and cloud recognition is blocked. Top it up and try again")

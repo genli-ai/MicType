@@ -784,6 +784,13 @@ enum LLMCatalog {
                                       "Invalid or revoked API key (401) — check that it was pasted in full") + detail,
                              actionLabel: nil, actionURL: nil)
         case 403:
+            // 阿里云那一档里有一种 403 跟"模型没开通"毫无关系：**这把 Key 所属的工作空间
+            // 不开放接口访问**（2026-09-20 实测，见 AlibabaEndpoint.deniesEndpointAccess）。
+            // 照通用那句去模型广场开通模型，开一百次也没用——它换一句话，也换一个下一步。
+            if AlibabaEndpoint.deniesEndpointAccess(status: 403, code: code, message: message) {
+                return ErrorCopy(text: AlibabaHostResolver.workspaceAccessDeniedCopy,
+                                 actionLabel: nil, actionURL: nil)
+            }
             return ErrorCopy(text: forbiddenText(for: provider) + detail,
                              actionLabel: nil, actionURL: nil)
         case 404:
