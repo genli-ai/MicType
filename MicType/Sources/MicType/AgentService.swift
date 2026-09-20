@@ -883,18 +883,16 @@ enum AgentService {
         return "\n用户的专有词汇表：" + joined + "。口述中出现近音/错写时，优先按这些词理解和纠正。"
     }
 
-    /// 用户上下文：「关于我」+ 自定义偏好，注入所有指令 prompt（弥补相对 ChatGPT 缺失的个人记忆）
+    /// 用户上下文：「自定义规则」注入所有指令 prompt（弥补相对 ChatGPT 缺失的个人记忆）。
+    ///
+    /// 4.1.1 起只读这**一个**字段：原先还有一个「关于我」，它的内容已经并进自定义规则
+    /// （AISetup.mergedRules，启动迁移与设置导入各跑一次），界面上也只剩一个框。
+    /// 这里若再读一遍 aboutMe，就成了"界面上看不见、却仍在往外发"的一段文字。
     private static func userContextHint() -> String {
-        var hint = ""
-        let about = Settings.shared.aboutMe.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !about.isEmpty {
-            hint += "\n关于用户（落款、署名、语气等写作时参考）：" + about
-        }
         let custom = Settings.shared.customPolishRules.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !custom.isEmpty {
-            hint += "\n用户附加偏好：" + custom
-        }
-        return hint
+        guard !custom.isEmpty else { return "" }
+        // 这一行的措辞与 Windows 端 AgentService.cs 逐字相同，别顺手改
+        return "\n用户附加偏好：" + custom
     }
 
     /// 邮件格式硬约束：要"动词 + 邮件"组合才注入；用户明确拒绝格式时不注入。

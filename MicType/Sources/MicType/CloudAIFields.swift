@@ -7,27 +7,49 @@ import SwiftUI
 // 也就没人告诉他云端识别是可选的、要花钱的。同一个决定只写一处，两处就不会走散
 // （与 QwenHostField、PrivacyCopy 同一条纪律）。
 
-/// 服务商分段选择器。
+/// 服务商分段选择器 +「正在使用 ✓」。
 ///
-/// 换档之后要做什么**不写在这里**：设置页是"选了就生效"，引导页是"看着的那一档，
-/// 验证通过才采纳"——两种语义都由调用方写进 Binding 的 setter。
+/// 换档之后要做什么**不写在这里**：4.1.1 起两处是同一条语义——看着的那一档，
+/// **验证通过（钥匙串里有 Key）才采纳**（AISetup.adoptsProvider），在那之前选择器只是预览。
+/// 具体怎么写回设置仍由调用方的 Binding setter 决定。
+///
+/// 那枚小标签是这次改动的要害（用户 2026-09-20 的实测反馈）：三档并排、每一档都点得动，
+/// 而屏幕上没有任何地方写着"现在真正在用的是哪一家"——于是人人挨个点一遍，停在哪档算哪档。
 struct ProviderPickerField: View {
     @Binding var selection: LLMProvider
     /// 摆出来的那几档（调用方负责把"他正在用的那一档"也带上，否则选择器会是空白的）
     let offered: [LLMProvider]
+    /// 这一刻**真正生效**的那一档（Settings.llmProvider）
+    let inUse: LLMProvider
+    /// 看着的这一档在钥匙串里有没有 Key。false 且它不是生效那档 = 现在只是预览。
+    /// 引导页传 false（它下面那行 providerNotAdoptedYet 把同一件事说得更全），
+    /// 免得同一个状态并排出现两行。
+    var showsNotSetUpHint: Bool = false
 
     var body: some View {
-        Picker(tr("服务商：", "Provider:"), selection: $selection) {
-            ForEach(offered, id: \.rawValue) { provider in
-                Text(provider.segmentName).tag(provider)
+        HStack(spacing: 8) {
+            Picker(tr("服务商：", "Provider:"), selection: $selection) {
+                ForEach(offered, id: \.rawValue) { provider in
+                    Text(provider.segmentName).tag(provider)
+                }
+            }
+            .pickerStyle(.segmented)
+            if selection == inUse {
+                Text(SettingsCopy.providerInUse)
+                    .font(.caption)
+                    .foregroundColor(.green)
+                    .fixedSize()
             }
         }
-        .pickerStyle(.segmented)
+        if showsNotSetUpHint, selection != inUse {
+            Caption(SettingsCopy.providerNotSetUp)
+        }
     }
 }
 
 /// 「模型」下拉：一个决定同时写回润色与指令两个型号字段。
-/// 要分开设在「高级」里——下拉旁边那句说明（LLMCatalog.modelMenuSummary）就是这么写的。
+/// 4.1.1 起**没有"分开设"这条路了**（用户 2026-09-20 拍板：润色和指令全部同一个），
+/// 所以这两个字段从此只由这一个下拉写，「高级」里那两个输入框已经拿掉。
 struct ModelPickerField: View {
     let provider: LLMProvider
     @Binding var polishModel: String
@@ -38,7 +60,8 @@ struct ModelPickerField: View {
     private var menu: [LLMCatalog.ModelChoice] { LLMCatalog.modelMenu(for: provider) }
 
     /// 下拉 ←→ 两个型号字段。读是"现在落在选单的哪一项上"，写是"把两个字段一起改掉"。
-    /// 两个字段不一样（在「高级」里分开设过）时如实显示「自定义…」，绝不把用户钉回某一项。
+    /// 两个字段不一样（4.1.0 之前分开设过、或导入了这样一份设置）时如实显示「自定义…」，
+    /// 绝不把用户钉回某一项——启动时那条一次性迁移会把它们拉回同一个值。
     private var selection: Binding<String> {
         Binding(get: {
                     guard !customChosen else { return "" }
@@ -93,11 +116,9 @@ struct ModelPickerField: View {
                     TextField(tr("型号名", "Model name"), text: customText)
                         .textFieldStyle(.roundedBorder)
                 }
-                // 下拉下面唯一那一行（润色和指令共用这一个型号、要分开去「高级」）。
-                // 价格与型号名是事实，不是解释，所以留在控件旁边
-                if let summary = LLMCatalog.modelMenuSummary(provider: provider) {
-                    Caption(summary)
-                }
+                // 下拉下面唯一那一行：这一个选择管到哪儿。型号名不在这句话里重复
+                // （下拉自己写着它），型号各是什么来头收进段头那颗 ⓘ
+                Caption(SettingsCopy.modelUsedForBoth)
             }
         }
     }
@@ -352,8 +373,12 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
     enum Style { case settings, onboarding }
 
     let style: Style
-    /// 这一刻看着的那一档（引导页可能还没被采纳为生效服务商）
+    /// 这一刻看着的那一档（可能还没被采纳为生效服务商）
     let selected: LLMProvider
+    /// 这一刻**真正生效**的那一档（Settings.llmProvider）。两处都要传：
+    /// 选择器旁边那枚「正在使用 ✓」靠它，阿里云那个云端识别开关也靠它——
+    /// 只是预览着阿里云就把音频改成上传，会留下一个连开关都找不到的"识别停在旧档"。
+    let inUse: LLMProvider
     /// 这一刻的识别引擎。**「使用方式」那一行说什么由它决定**：AISetup.mode 把"引擎是云端"
     /// 也算成「本地 + AI」，只看档位的话，开着阿里云识别的人会在这一页第一行读到"本机识别"。
     /// 由调用方传进来（两处都有自己的 @AppStorage，开关一翻这一行就跟着重画）。
@@ -373,6 +398,9 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
     let showsModel: Bool
     /// 云端识别那一段带不带「探测接入地址 / 测试识别」（首配的人手上还没有"上一次试通的那台"）
     let showsDiagnostics: Bool
+    /// 选择器下面要不要那行「这一档未配置」。引导页传 false：它自己那行
+    /// providerNotAdoptedYet 把同一件事说得更全，两行并排就是同一个状态说两遍
+    var showsNotSetUpHint: Bool = false
     var onKeyStatus: ((KeyVerifier.Status) -> Void)? = nil
     var onEngineChange: (() -> Void)? = nil
     /// 「使用方式」下面的边界状态（存着的 Key、润色被关掉、识别停在老档……）
@@ -381,6 +409,13 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
     @ViewBuilder var providerNotices: () -> ProviderNotices
 
     private var usingAI: Bool { usageMode.wrappedValue == .withAI }
+
+    /// 阿里云那一段（云端识别开关 + 接入地址）摆不摆。
+    /// **看着的和生效的都得是阿里云**：只是点着预览的那一档，不该有一个能把音频送上云端的开关
+    /// ——按下去就成了「识别停在旧档」那条边界状态（AISetup.showsStrandedAlibabaCloudNotice）。
+    private var showsCloudRecognition: Bool {
+        selected == .qwen && inUse == .qwen && showsModel
+    }
 
     var body: some View {
         switch style {
@@ -405,7 +440,8 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
         // 再摆一排 AI 设置只会让人以为自己还有什么没配完
         if usingAI {
             Section {
-                ProviderPickerField(selection: provider, offered: offered)
+                ProviderPickerField(selection: provider, offered: offered,
+                                    inUse: inUse, showsNotSetUpHint: showsNotSetUpHint)
                 providerNotices()
             } header: {
                 SectionHeader(title: providerTitle, info: SettingsCopy.providerInfo)
@@ -419,10 +455,11 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
                 Section {
                     modelField
                 } header: {
-                    SectionHeader(title: modelTitle)
+                    SectionHeader(title: modelTitle,
+                                  info: SettingsCopy.cloudModelInfo(provider: selected))
                 }
             }
-            if selected == .qwen, showsModel {
+            if showsCloudRecognition {
                 Section {
                     CloudRecognitionFields(showsDiagnostics: showsDiagnostics,
                                            onEngineChange: onEngineChange)
@@ -440,15 +477,16 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
         usagePicker
         usageNotices()
         if usingAI {
-            ProviderPickerField(selection: provider, offered: offered)
+            ProviderPickerField(selection: provider, offered: offered,
+                                inUse: inUse, showsNotSetUpHint: showsNotSetUpHint)
             providerNotices()
             SectionHeader(title: keyTitle, info: SettingsCopy.keyInfo(cloudASRProbe: keyProbe != .llm))
             keyField
             if showsModel {
-                SectionHeader(title: modelTitle)
+                SectionHeader(title: modelTitle, info: SettingsCopy.cloudModelInfo(provider: selected))
                 modelField
             }
-            if selected == .qwen, showsModel {
+            if showsCloudRecognition {
                 SectionHeader(title: cloudRecognitionTitle, info: SettingsCopy.cloudRecognitionInfo)
                 CloudRecognitionFields(showsDiagnostics: showsDiagnostics,
                                        onEngineChange: onEngineChange)

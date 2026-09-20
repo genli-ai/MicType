@@ -526,8 +526,18 @@ struct RecognitionEditor: View {
 
 /// 这一页的形状：**整页只有一个决定**开路。
 /// ① 使用方式：只用本地 / 本地 + AI；② 选了 AI 再选一个服务商、贴一把 Key；
-/// ③ 一个「模型」下拉（默认就是这家最好的那个）；④ 只有阿里云多一个「识别也用云端」开关；
-/// ⑤ 关于我 / 自定义规则；剩下的（分开设型号、联网搜索、优先处理）收在「高级」里。
+/// ③ 一个「模型」下拉（润色和指令都用它）；④ 只有阿里云多一个「识别也用云端」开关；
+/// ⑤ 自定义规则；⑥ 联网搜索（支持的服务商默认开）；⑦ 优先处理（只有 OpenAI 有这一档）；
+/// 「高级」里只剩"测一次当前型号"，外加没有内置清单那两档（其他兼容服务 / 本机模型）
+/// 的型号名输入框与「刷新模型列表」。
+///
+/// 4.1.1 按用户 2026-09-20 的实测反馈又收掉四样（每一样都是"同一件事说了两遍"）：
+///   • **「关于我」**——和「自定义规则」并成一个框（谁也说不清哪句话该写在哪个框里）；
+///   • **分开设润色 / 指令型号**——全部同一个型号，「高级」里那两个输入框连同各自的测试按钮一起没了；
+///   • **「优先处理」在非 OpenAI 档下灰着摆着**——现在整行不渲染（灰着 + 一行"只有 OpenAI 有"，
+///     是用两行讲一件与这位用户无关的事）；
+///   • **换服务商点一下就生效**——现在点一下只是预览，钥匙串里有 Key 才采纳，
+///     旁边那枚「正在使用 ✓」始终写着真正生效的是哪一档。
 ///
 /// 4.0.2 又拿掉了两样东西（用户 2026-09-19 实测后拍板）：
 ///   • **温度滑杆**——推理系型号根本不接受自定义温度，而这是绝大多数人不该碰的旋钮。
@@ -556,8 +566,7 @@ struct CloudEditor: View {
     @AppStorage(SettingsKeys.localModel) private var localModel = ""
     @AppStorage(SettingsKeys.localCommandModel) private var localCommandModel = ""
     @AppStorage(SettingsKeys.fastTier) private var fastTier = false
-    @AppStorage(SettingsKeys.webSearchEnabled) private var webSearch = false
-    @AppStorage(SettingsKeys.aboutMe) private var aboutMe = ""
+    @AppStorage(SettingsKeys.webSearchEnabled) private var webSearch = true
     @AppStorage(SettingsKeys.customPolishRules) private var customRules = ""
     /// 识别引擎：云端识别的开关就在这一页（阿里云那一档下面），「本地识别」页只读它。
     /// 同一个账号、同一把 Key、同一台主机只在这里选一次。
@@ -573,12 +582,17 @@ struct CloudEditor: View {
     @State private var fetchedModels: [String] = []
     @State private var refreshing = false
     @State private var refreshStatus = ""
-    /// 高级区默认折叠：分开设型号、联网搜索、优先处理都是少数人才动的东西，不该占首屏
-    @State private var advancedExpanded = false
     /// 「模型」下拉停在「自定义…」那一项上。只影响这一页怎么显示，不落盘。
     @State private var customModelChosen = false
+    /// 选择器上**正在看**的那一档，不是生效的那一档（4.1.1 起两处同一条语义，见 adoptIfUsable）。
+    /// 4.1.0 之前这一页直接绑 @AppStorage(llmProvider)：点一下就把生效服务商换掉了，
+    /// 而"点着挨个看看"正是用户的真实行为——原来那一档可能正配着一把好 Key。
+    @State private var pendingProvider = Settings.shared.llmProvider
 
-    private var selected: LLMProvider { LLMProvider(rawValue: provider) ?? .openai }
+    /// 选择器上看着的那一档
+    private var selected: LLMProvider { pendingProvider }
+    /// 真正生效的那一档（「正在使用 ✓」、联网搜索与优先处理都按它算）
+    private var inUseProvider: LLMProvider { LLMProvider(rawValue: provider) ?? .openai }
     private var currentPolishLevel: PolishLevel { PolishLevel(rawValue: polishLevel) ?? .smart }
     private var engineChoice: RecognitionEngineChoice { RecognitionEngineChoice.parse(recognitionEngine) }
     /// 当前这一档的钥匙串里有没有一把 Key。判的是"按住说指令会不会真的发出去"
@@ -590,10 +604,10 @@ struct CloudEditor: View {
         AISetup.mode(polishLevel: currentPolishLevel, engine: engineChoice)
     }
 
-    /// 界面上这一刻生效的 Base URL。**从 @AppStorage 的值推**而不是读 Settings.currentBaseURL：
+    /// 某一档这一刻的 Base URL。**从 @AppStorage 的值推**而不是读 Settings.currentBaseURL：
     /// 后者不是 @Published，改了接入地址界面不会重算。
-    private var effectiveBaseURL: String {
-        switch selected {
+    private func effectiveBaseURL(for provider: LLMProvider) -> String {
+        switch provider {
         case .openai: return baseURL
         case .deepseek: return dsBaseURL
         case .qwen:
@@ -606,8 +620,10 @@ struct CloudEditor: View {
         }
     }
 
+    /// 联网搜索按**正在使用**的那一档算，不是选择器上预览的那一档：这个开关立刻就生效，
+    /// 而生效的是生效那档的写法（LLMClient 读 Settings.llmProvider）。
     private var searchStyle: LLMCatalog.WebSearchStyle {
-        LLMCatalog.searchStyle(provider: selected, baseURL: effectiveBaseURL)
+        LLMCatalog.searchStyle(provider: inUseProvider, baseURL: effectiveBaseURL(for: inUseProvider))
     }
 
     /// 润色/指令模型的输入框都绑到这两个 Binding 上——五个服务商共用一套控件
@@ -639,9 +655,11 @@ struct CloudEditor: View {
         Form {
             // 使用方式 → 服务商 → Key → 模型 →（阿里云的）云端识别开关：
             // 与引导第三屏**同一个视图**（CloudSetupCore），顺序、标题、说明、ⓘ 全都只写一处。
-            // 这一页与引导页真正不同的只有一点：这里是"选了就生效"，引导页要验证通过才采纳。
+            // 4.1.1 起连语义也一样了：两处都是"看着的那一档，验证通过才采纳"，
+            // 各自只剩 Binding 的 setter 不同（这里换一档要清掉本页那几条快照）。
             CloudSetupCore(style: .settings,
                            selected: selected,
+                           inUse: inUseProvider,
                            engine: engineChoice,
                            usageMode: usageModeBinding,
                            provider: providerBinding,
@@ -652,26 +670,38 @@ struct CloudEditor: View {
                            keyProbe: keyProbe,
                            keyProbeModel: polishModelBinding.wrappedValue,
                            showsModel: true,
-                           showsDiagnostics: true) {
+                           showsDiagnostics: true,
+                           showsNotSetUpHint: !hasStoredKey,
+                           onKeyStatus: { _ in
+                               // 钥匙串不是 @AppStorage：验证通过之后这一页要自己重算，
+                               // 并且立刻把这一档采纳为生效服务商（那正是"验证通过才换过去"）
+                               keychainTick &+= 1
+                               adoptIfUsable(selected)
+                           }) {
                 usageNotices
             } providerNotices: {
                 providerNotices
             }
             if usageMode == .withAI {
                 Section {
-                    personalFields
+                    customRulesField
                 } header: {
-                    SectionHeader(title: tr("关于我与自定义规则", "About me and rules"), info: SettingsCopy.personalInfo)
+                    SectionHeader(title: tr("自定义规则", "Custom rules"),
+                                  info: SettingsCopy.customRulesInfo)
                 }
+                webSearchSection
+                if AISetup.showsPriorityToggle(inUse: inUseProvider) { prioritySection }
                 Section {
-                    advancedSection
+                    modelMaintenance
                 } header: {
                     SectionHeader(title: tr("高级", "Advanced"),
-                                  info: SettingsCopy.advancedInfo(provider: selected))
+                                  info: SettingsCopy.advancedInfo(hasModelMenu: hasModelMenu))
                 }
             }
         }
         .formStyle(.grouped)
+        // 回到这一页时选择器要停在**正在用**的那一档上（上一次可能只是预览到一半就走了）
+        .onAppear { pendingProvider = inUseProvider }
         // 测试结果与刷新结果都是快照，切换语言后清掉，避免残留旧语言
         .onChange(of: l10n.language) { _, _ in
             testResult = ""
@@ -759,8 +789,9 @@ struct CloudEditor: View {
     private var providerNotices: some View {
         // 官方几档的地址被老版本改过时必须看得见：看不见的自定义地址是查不出来的故障。
         // 正常情况下这里什么都不显示。
-        if (selected == .openai || selected == .deepseek), effectiveBaseURL != selected.defaultBaseURL {
-            BoundaryRow(text: SettingsCopy.endpointOverridden + effectiveBaseURL) {
+        if (selected == .openai || selected == .deepseek),
+           effectiveBaseURL(for: selected) != selected.defaultBaseURL {
+            BoundaryRow(text: SettingsCopy.endpointOverridden + effectiveBaseURL(for: selected)) {
                 Button(tr("恢复官方地址", "Restore the official URL")) {
                     if selected == .openai { baseURL = selected.defaultBaseURL }
                     else { dsBaseURL = selected.defaultBaseURL }
@@ -782,25 +813,42 @@ struct CloudEditor: View {
     }
 
 
-    /// 换服务商要做的事全在这个 setter 里（引导页那一处语义不同：看着的那一档要验证通过才采纳）
+    /// 换服务商：**只换"正在看"的那一档**，真正生效要等 adoptIfUsable 认可
+    /// （4.1.1 起与引导页同一条语义，见 AISetup.adoptsProvider 的注释）。
     private var providerBinding: Binding<LLMProvider> {
         Binding(get: { selected },
                 set: { next in
                     guard next != selected else { return }
-                    // 换走之后音频不能还在往阿里云传——而且界面上已经没有那个开关可以关了。
-                    // 判据是纯函数，引导页换服务商走的是同一条
-                    if let engine = AISetup.engineAfterProviderChange(current: engineChoice, next: next) {
-                        recognitionEngine = engine.rawValue
-                        Log.info("Cloud recognition off: provider=\(next.rawValue)")
-                    }
-                    provider = next.rawValue
+                    pendingProvider = next
                     testResult = ""
                     // 上一个端点报上来的型号清单对新端点毫无意义
                     fetchedModels = []
                     refreshStatus = ""
                     customModelChosen = false
-                    Log.info("AI provider=\(next.rawValue)")
+                    keychainTick &+= 1
+                    Log.info("AI provider previewed=\(next.rawValue)")
+                    // 钥匙串里已经有这一档的 Key（换回上一家、或早就配过）就当场生效，
+                    // 不必再逼他重粘一次
+                    adoptIfUsable(next)
                 })
+    }
+
+    /// 只有"这一档真的能用"才把它写成生效的服务商。判据是纯函数（AISetup.adoptsProvider），
+    /// 与引导第三屏同一条：点着看看的人很多，而原来那一档可能正配着一把好 Key——
+    /// 把生效服务商换成一个没 Key 的，表现是他下次按住说指令直接失败，还找不到原因。
+    private func adoptIfUsable(_ next: LLMProvider) {
+        let hasKey = KeychainHelper.loadAPIKey(account: next.keychainAccount) != nil
+        guard AISetup.adoptsProvider(current: inUseProvider, next: next,
+                                     requiresKey: next.requiresAPIKey, hasKey: hasKey,
+                                     polishModel: polishModelBinding.wrappedValue) else { return }
+        // 换走之后音频不能还在往阿里云传——而且界面上已经没有那个开关可以关了。
+        // 判据是纯函数，引导页换服务商走的是同一条
+        if let engine = AISetup.engineAfterProviderChange(current: engineChoice, next: next) {
+            recognitionEngine = engine.rawValue
+            Log.info("Cloud recognition off: provider=\(next.rawValue)")
+        }
+        provider = next.rawValue
+        Log.info("AI provider adopted=\(next.rawValue)")
     }
 
     /// 选择器里摆哪几档：三家云服务商，外加**他正在用的那一档**（否则选择器上没有一项
@@ -821,62 +869,105 @@ struct CloudEditor: View {
 
 
 
-    // MARK: 段 5 关于我 / 自定义规则
+    // MARK: 段 5 自定义规则（4.1.1 起「关于我」也在这一个框里）
 
+    /// 一个多行框，整页只出现这一次——不再每个服务商下面各摆一遍，也不再分成
+    /// 「关于我」+「自定义规则」两个（谁也说不清哪句话该写在哪个框里，而它们最后
+    /// 都被拼进同一段提示词）。老用户那段「关于我」由启动迁移并进来（AISetup.mergedRules）。
     @ViewBuilder
-    private var personalFields: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(tr("关于我（可选）：", "About me (optional):"))
-            TextEditor(text: $aboutMe)
-                .font(.system(size: 12))
-                .frame(height: 50)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
-        }
-        VStack(alignment: .leading, spacing: 4) {
-            Text(tr("自定义规则（可选）：", "Custom rules (optional):"))
+    private var customRulesField: some View {
+        ZStack(alignment: .topLeading) {
             TextEditor(text: $customRules)
                 .font(.system(size: 12))
-                .frame(height: 70)
+                .frame(height: 76)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
-            Caption(SettingsCopy.personalBoxesShared)
-        }
-    }
-
-
-    // MARK: 段 6 高级（默认折叠）
-
-    @ViewBuilder
-    private var advancedSection: some View {
-        DisclosureGroup(isExpanded: $advancedExpanded) {
-            VStack(alignment: .leading, spacing: 12) {
-                modelFields
-                Divider()
-                costlySwitches
+            // 空框里的灰字：这个框最大的门槛不是不会打字，是不知道该往里写什么。
+            // allowsHitTesting(false) 让点击穿过去落到编辑器上
+            if customRules.isEmpty {
+                Text(SettingsCopy.customRulesPlaceholder)
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 8)
+                    .allowsHitTesting(false)
             }
-            .padding(.top, 6)
-        } label: {
-            Text(tr("分开设型号、联网搜索、优先处理",
-                    "Split models, web search, priority processing"))
+        }
+    }
+
+    // MARK: 段 6 联网搜索（支持的服务商默认开）
+
+    /// 不支持的服务商**连开关都不摆**：一个点了没反应的灰开关加一行"这家没有"，
+    /// 是用两行讲一件与这位用户无关的事。
+    @ViewBuilder
+    private var webSearchSection: some View {
+        Section {
+            if let price = LLMCatalog.webSearchPriceNote(style: searchStyle) {
+                Toggle(tr("语音指令允许联网搜索", "Let voice commands search the web"), isOn: $webSearch)
+                // 代价写在开关旁边：价格是**代价**，不是解释，绝不搬进 ⓘ 里
+                Caption(price)
+            } else {
+                Caption(SettingsCopy.webSearchUnsupported)
+            }
+        } header: {
+            SectionHeader(title: tr("联网搜索", "Web search"), info: SettingsCopy.webSearchInfo)
+        }
+    }
+
+    // MARK: 段 7 优先处理（整段只在 OpenAI 档出现）
+
+    @ViewBuilder
+    private var prioritySection: some View {
+        Section {
+            // 标题里**不写单价**：单价只有 LLMCatalog.fastTierPriceNote 一个出处（就在下面那一行），
+            // 两处各写一个数字的结果是改一次价就有两个数字打架（4.1.0 之前标题里硬写着「2 倍」）
+            Toggle(tr("优先处理", "Priority processing"), isOn: $fastTier)
+            Caption(LLMCatalog.fastTierPriceNote)
+            // 这一行的用途是揭发"勾了优先处理却被服务商降回普通档"。开关关着的时候它无事可揭
+            if fastTier, let tier = lastServiceTier {
+                let ranFast = LLMCatalog.servedPriorityTier(tier)
+                Caption(SettingsCopy.lastServiceTier + LLMCatalog.serviceTierName(tier),
+                        warning: !ranFast)
+            }
+        } header: {
+            SectionHeader(title: tr("优先处理", "Priority processing"), info: SettingsCopy.priorityInfo)
         }
     }
 
 
-    // MARK: 高级 · 分开设型号
+    // MARK: 段 8 高级（整段只剩型号维护）
 
+    /// 这一档有没有内置型号清单。没有（其他 OpenAI 兼容服务 / 本机模型）的那两档，
+    /// 型号名只有用户自己知道——「高级」里那个输入框和「刷新」都是为他们留的。
+    private var hasModelMenu: Bool { !LLMCatalog.modelMenu(for: selected).isEmpty }
+
+    // MARK: 高级 · 型号维护
+    //
+    // 4.1.1 这一段**不再是折叠面板**：里面只剩一行了，而折叠三角上那句标签
+    // 只能把下面那颗按钮的名字再念一遍——一层壳子，两遍同样的话。
+
+    /// 型号名输入框只留给**没有内置清单**的那两档（其他 OpenAI 兼容服务 / 本机模型）：
+    /// 三家官方档的型号由上面那个下拉决定，这里再摆一个输入框就是同一个决定有两个入口。
+    /// 填进去的名字照样一次写回润色与指令两个字段（4.1.1 起它们永远相同）。
     @ViewBuilder
-    private var modelFields: some View {
-        ModelField(label: tr("润色模型", "Polish model"),
-                   text: polishModelBinding, presets: modelChoices,
-                   testing: testing, refreshing: refreshing,
-                   onTest: { runModelTest(tr("润色模型", "Polish model"), polishModelBinding.wrappedValue) },
-                   onRefresh: refreshModelList)
-        ModelField(label: tr("指令模型", "Command model"),
-                   text: commandModelBinding, presets: modelChoices,
-                   testing: testing, refreshing: refreshing,
-                   onTest: { runModelTest(tr("指令模型", "Command model"), commandModelBinding.wrappedValue) },
-                   onRefresh: refreshModelList)
-        // 这里**不再挂一行说明**：「润色求快求省、指令求质量」是"为什么要分开设"，
-        // 段头那颗 ⓘ（advancedInfo）里逐字写着同一句，挂在这儿等于一段话读两遍
+    private var modelMaintenance: some View {
+        if hasModelMenu {
+            // 三家官方档：型号由上面那个下拉决定，这里只留"真发一次试试"。
+            // **不摆「刷新模型列表」**：取回来的型号只喂给下面那个输入框，而这一档压根没有
+            // 那个输入框——点了什么也不会变，比没有这颗按钮更让人困惑
+            HStack(spacing: 8) {
+                Button(testing ? tr("测试中…", "Testing…") : tr("测试模型", "Test the model")) {
+                    runModelTest(polishModelBinding.wrappedValue)
+                }
+                .disabled(testing)
+                Spacer()
+            }
+        } else {
+            ModelField(label: tr("型号名", "Model name"),
+                       text: unifiedModelBinding, presets: modelChoices,
+                       testing: testing, refreshing: refreshing,
+                       onTest: { runModelTest(polishModelBinding.wrappedValue) },
+                       onRefresh: refreshModelList)
+        }
         if !refreshStatus.isEmpty {
             Caption(refreshStatus)
         }
@@ -889,29 +980,13 @@ struct CloudEditor: View {
         }
     }
 
-    // MARK: 高级 · 两个花钱的开关（默认都关）
-
-    @ViewBuilder
-    private var costlySwitches: some View {
-        Toggle(tr("语音指令允许联网搜索", "Let voice commands search the web"), isOn: $webSearch)
-            .disabled(searchStyle == .unsupported)
-        // 代价写在开关旁边：价格是**代价**，不是解释，绝不搬进 ⓘ 里。
-        // 这一档压根没有这个功能时，价格对他不成立——用"这一档没有"顶掉那一行，而不是两行都摆
-        Caption(searchStyle == .unsupported ? SettingsCopy.webSearchUnsupported
-                                            : LLMCatalog.webSearchPriceNote)
-
-        // 标题里**不写单价**：单价只有 LLMCatalog.fastTierPriceNote 一个出处（就在下面那一行），
-        // 两处各写一个数字的结果是改一次价就有两个数字打架（4.1.0 之前标题里硬写着「2 倍」）
-        Toggle(tr("优先处理", "Priority processing"), isOn: $fastTier)
-            .disabled(selected != .openai)
-        Caption(selected == .openai ? LLMCatalog.fastTierPriceNote
-                                    : SettingsCopy.fastTierOpenAIOnly)
-        // 这一行的用途是揭发"勾了优先处理却被服务商降回普通档"。开关关着的时候它无事可揭
-        if fastTier, let tier = lastServiceTier {
-            let ranFast = LLMCatalog.servedPriorityTier(tier)
-            Caption(SettingsCopy.lastServiceTier + LLMCatalog.serviceTierName(tier),
-                    warning: !ranFast)
-        }
+    /// 型号名输入框绑的那个 Binding：**写下去两个字段一起改**（润色和指令永远同一个）
+    private var unifiedModelBinding: Binding<String> {
+        Binding(get: { polishModelBinding.wrappedValue },
+                set: { newValue in
+                    polishModelBinding.wrappedValue = newValue
+                    commandModelBinding.wrappedValue = newValue
+                })
     }
 
     /// 最近一轮拿到过 service_tier 的记录。勾了优先处理却写着 default = 被服务商降级了，
@@ -922,14 +997,14 @@ struct CloudEditor: View {
 
     // MARK: 动作
 
-    /// 单个模型的连通性/速度测试。**不再顺手保存 Key**：Key 只由「服务商」段验证通过后写钥匙串。
-    private func runModelTest(_ name: String, _ model: String) {
+    /// 当前型号的连通性/速度测试。**不再顺手保存 Key**：Key 只由「服务商」段验证通过后写钥匙串。
+    /// 4.1.1 起只有一个型号可测，所以这一行结论不必再点名"润色还是指令"。
+    private func runModelTest(_ model: String) {
         testing = true
         testResult = ""
         LLMClient.testModel(model) { ok, message in
             testing = false
-            testResult = name + tr("（", " (") + model + tr("）", ")") + tr("：", ": ")
-                + (ok ? "✓ " : "✗ ") + message
+            testResult = model + tr("：", ": ") + (ok ? "✓ " : "✗ ") + message
         }
     }
 

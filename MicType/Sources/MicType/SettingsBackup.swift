@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 // MARK: - 设置导入导出（路线图 P21）
 //
-// 为什么做：词汇表、关于我、自定义规则是用户一天天攒出来的，换机 / 重装 / 在 Mac 和 Windows 之间
+// 为什么做：词汇表与自定义规则是用户一天天攒出来的，换机 / 重装 / 在 Mac 和 Windows 之间
 // 来回用的时候，这部分最不该重头再来。所以导出一个人能看懂、两端都能读的 JSON。
 //
 // 为什么**永远不导出 API Key**：Key 存在 macOS 钥匙串里（加密、仅本机可读），一旦写进明文文件，
@@ -36,7 +36,8 @@ import UniformTypeIdentifiers
 //   polishLevel             ← polishLevel            / PolishLevel          "off" | "smart"
 //   vocabulary              ← customVocabulary       / CustomVocabulary     整段原文（逗号/换行分隔）
 //   fillerWords             ← fillerWords            / FillerWords          整段原文（逗号/换行分隔）
-//   aboutMe                 ← aboutMe                / AboutMe
+//   aboutMe                 ← aboutMe                / AboutMe（4.1.1 起 Mac 侧只进不出：
+//                             收下之后并进 customPolishRules，见 normalizePersonalFields）
 //   customPolishRules       ← customPolishRules      / CustomPolishRules
 //   llmProvider             ← llmProvider            / LlmProvider
 //                             "openai" | "deepseek" | "qwen" | "custom" | "local"
@@ -488,6 +489,14 @@ enum SettingsBackup {
         bool(Key.restoreClipboard) { Settings.shared.restoreClipboard = $0 }
         // 这条走的是"要不要记录"这个偏好，历史内容本身照旧不进备份文件
         bool(Key.keepHistory) { Settings.shared.keepHistory = $0 }
+
+        // 2.5) 收下之后立刻把两条合并规则重新套一遍（4.1.1）：
+        //   • 文件里可能还带着老的「关于我」——界面上已经没有那个框了，不并进规则就是静默丢失；
+        //   • 文件里可能带着分开设的润色/指令型号——界面上也已经没有分开设的入口，
+        //     留着就是一条改不动的设置（下拉显示「自定义…」，指令跑的却是另一个型号）。
+        // 与启动时那两条一次性迁移同一份实现，不各写一遍。
+        Settings.shared.normalizePersonalFields()
+        Settings.shared.normalizeModelPair()
 
         // 3) 不认识的键：只计数，绝不写进任何地方（API Key 就算被手工塞进来也止步于此）
         for key in settings.keys where !Key.all.contains(key) {

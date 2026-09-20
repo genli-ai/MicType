@@ -117,19 +117,15 @@ final class SettingsCopyBudgetTests: XCTestCase {
         }
     }
 
-    /// 「模型」下拉下面那一句也是一行说明。型号名是专有名词（点名它是 4.0.1 的修复），
-    /// 不算进那 16 字——**剩下的话必须装得下**，4.0.1 那一版是 44 字的一段解释
-    func testModelMenuSummaryFitsTheCaptionBudgetBesideTheModelID() {
+    /// 价格那几句不进 captions 表（它们是代价不是解释），但**仍然只有一行**：
+    /// 开关旁边一行价钱换了行，下面所有控件都得往下挪一格
+    func testPriceNotesStayOnOneLine() {
         for language in AppLanguage.allCases {
             L10n.shared.language = language
-            let limit = language == .zh ? Self.captionZhLimit : Self.captionEnLimit
-            for provider in LLMProvider.allCases {
-                guard let summary = LLMCatalog.modelMenuSummary(provider: provider) else { continue }
-                let withoutModelID = summary.replacingOccurrences(
-                    of: LLMCatalog.defaultModel(for: provider), with: "")
-                XCTAssertFalse(summary.contains("\n"), summary)
-                XCTAssertLessThanOrEqual(withoutModelID.count, limit,
-                                         "\(provider.rawValue) 的下拉说明超预算：\(summary)")
+            for note in [LLMCatalog.webSearchPriceNote, LLMCatalog.providerBilledSearchNote,
+                         LLMCatalog.fastTierPriceNote, LLMCatalog.billingNote] {
+                XCTAssertFalse(note.isEmpty)
+                XCTAssertFalse(note.contains("\n"), note)
             }
         }
     }
@@ -176,25 +172,42 @@ final class SettingsCopyBudgetTests: XCTestCase {
         XCTAssertTrue(en.contains("still needs a key"), SettingsCopy.usageInfo)
     }
 
-    /// 「关于我」只有指令那条路读（AgentService.userContextHint），润色那条路只带词汇表和
-    /// 自定义规则（PolishService.polishPrompt）。这两句话是**数据流向**，写错就是告诉用户
-    /// 每一次轻点都在把个人信息发出去。
-    func testPersonalBoxesCopyMatchesWhereTheTextActuallyGoes() {
+    /// 「自定义规则」那颗 ⓘ 讲的是**数据流向**，写错就是告诉用户每一次轻点都在把个人信息
+    /// 发出去。4.1.1 起只有一个框（「关于我」已经并进来了），所以这里也不许再提第二个框。
+    func testCustomRulesInfoMatchesWhereTheTextActuallyGoes() {
         L10n.shared.language = .zh
-        XCTAssertTrue(SettingsCopy.personalBoxesShared.contains("关于我"),
-                      SettingsCopy.personalBoxesShared)
-        XCTAssertTrue(SettingsCopy.personalBoxesShared.contains("指令"),
-                      SettingsCopy.personalBoxesShared)
-        // 「两个框都…」是 4.1.0 之前那一版：它把「关于我」也算进了润色那条路
-        XCTAssertFalse(SettingsCopy.personalBoxesShared.contains("两个框"),
-                       SettingsCopy.personalBoxesShared)
-        XCTAssertFalse(SettingsCopy.personalInfo.contains("两个框都"), SettingsCopy.personalInfo)
+        let zh = SettingsCopy.customRulesInfo
+        XCTAssertTrue(zh.contains("润色") && zh.contains("指令"), zh)
+        // 界面上已经没有这个框了，ⓘ 里再点它的名字就是指着一个不存在的控件
+        XCTAssertFalse(zh.contains("关于我"), zh)
+        XCTAssertFalse(zh.contains("两个框"), zh)
 
         L10n.shared.language = .en
-        XCTAssertFalse(SettingsCopy.personalBoxesShared.lowercased().contains("both boxes"),
-                       SettingsCopy.personalBoxesShared)
-        XCTAssertFalse(SettingsCopy.personalInfo.lowercased().contains("both boxes go"),
-                       SettingsCopy.personalInfo)
+        let en = SettingsCopy.customRulesInfo.lowercased()
+        XCTAssertTrue(en.contains("polish") && en.contains("command"), en)
+        XCTAssertFalse(en.contains("about me"), en)
+        XCTAssertFalse(en.contains("both boxes"), en)
+    }
+
+    /// 「优先处理」整段只在 OpenAI 档渲染（AISetup.showsPriorityToggle），所以那颗 ⓘ 里
+    /// **不该再说一遍"只有 OpenAI 有"**——读到它的人用的就是 OpenAI
+    func testPriorityInfoDoesNotRepeatWhoHasThatTier() {
+        L10n.shared.language = .zh
+        XCTAssertFalse(SettingsCopy.priorityInfo.contains("只有 OpenAI"), SettingsCopy.priorityInfo)
+        L10n.shared.language = .en
+        XCTAssertFalse(SettingsCopy.priorityInfo.lowercased().contains("only openai"),
+                       SettingsCopy.priorityInfo)
+    }
+
+    /// 联网搜索那颗 ⓘ 只说这个开关管到哪儿；**单价不许搬进来**——价格是代价不是解释，
+    /// 它的唯一出处是 LLMCatalog，摆在开关旁边
+    func testWebSearchInfoDoesNotRestateThePrice() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            XCTAssertFalse(SettingsCopy.webSearchInfo.contains("0.01"), SettingsCopy.webSearchInfo)
+            XCTAssertFalse(SettingsCopy.webSearchInfo.contains(LLMCatalog.webSearchPriceNote),
+                           SettingsCopy.webSearchInfo)
+        }
     }
 
     // MARK: - 两种语言

@@ -25,13 +25,14 @@ enum PrivacyCopy {
     /// 出门的是哪些文字。
     ///
     /// **不能只说"只有识别出的文字"**：那句话在主功能路径上就不成立。真正跟着请求走的还有
-    /// 词汇表与自定义规则（润色与指令两条路都带，PolishService / AgentService 各自拼进 prompt）、
-    /// 「关于我」（只有指令那条路带），以及指令模式下**从前台应用读到的选区原文**
-    /// ——那常常是别人发来的消息、一封邮件、一段文档，压根不是用户自己口述的内容。
+    /// 词汇表与自定义规则（润色与指令两条路都带，PolishService / AgentService 各自拼进 prompt），
+    /// 以及指令模式下**从前台应用读到的选区原文**——那常常是别人发来的消息、一封邮件、
+    /// 一段文档，压根不是用户自己口述的内容。
     /// 用户按这句话判断"什么东西会离开这台 Mac"，所以它必须把选区点名说出来。
+    /// （4.1.1 起「关于我」已经并进「自定义规则」，不再单列一项。）
     static var onlyTextLeaves: String {
-        tr("开了润色或语音指令，发给服务商的是识别出的文字，外加你选中的那段文字、词汇表、自定义规则和「关于我」。",
-           "With polish or voice commands on, what goes to your provider is the recognized text plus any text you selected, your vocabulary, your rules and your About-me.")
+        tr("开了润色或语音指令，发给服务商的是识别出的文字，外加你选中的那段文字、词汇表和自定义规则。",
+           "With polish or voice commands on, what goes to your provider is the recognized text plus any text you selected, your vocabulary and your custom rules.")
     }
 
     /// 留存那一句。**必须按当前生效的那一档说**，因为 `store: false` 只存在于 Responses 的请求体里

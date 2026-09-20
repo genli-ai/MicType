@@ -81,8 +81,8 @@ enum SettingsCopy {
     }
 
     static var backupInfo: String {
-        tr("导出一个 JSON：词汇表、关于我、自定义规则、型号、识别引擎与语言、界面语言。导入是合并，别人给的文件可能把识别改成云端（会提示一次）。API Key 从不导出、也从不导入。",
-           "Exports one JSON file: vocabulary, about-me, custom rules, model names, recognition engine and language, and the interface language. Import merges, and a file from someone else can switch recognition to a cloud engine (the summary says so). API keys are never exported or imported.")
+        tr("导出一个 JSON：词汇表、自定义规则、型号、识别引擎与语言、界面语言。导入是合并，别人给的文件可能把识别改成云端（会提示一次）。API Key 从不导出、也从不导入。",
+           "Exports one JSON file: vocabulary, custom rules, model names, recognition engine and language, and the interface language. Import merges, and a file from someone else can switch recognition to a cloud engine (the summary says so). API keys are never exported or imported.")
     }
 
     /// 「输入」页在屏幕上摆着的说明（录音上限那一行由 DictationController 现算，一并计入预算）
@@ -195,12 +195,31 @@ enum SettingsCopy {
         tr("型号名在下面的「高级」里填", "Type the model id under Advanced below")
     }
 
-    /// 两个框的**去向不一样**，这一行说的就是这件事。
-    /// PolishService 只读词汇表和自定义规则（PolishService.polishPrompt），
-    /// 「关于我」只有 AgentService.userContextHint 读——也就是只有按住说指令那条路才发出去。
-    /// 写成"两个框润色和指令都读"，等于告诉用户每一次轻点都在把个人信息发出去。
-    static var personalBoxesShared: String {
-        tr("规则两边都用；「关于我」只给指令", "Rules go to both; About-me only to commands")
+    /// 「模型」下拉下面那一行。**只说这一个选择管到哪里**：4.1.1 起润色和指令永远是同一个
+    /// 型号（用户 2026-09-20 拍板），"分开设"那条路连同「高级」里的两个输入框一起没了。
+    /// 型号名不在这句话里重复——下拉自己写着它。
+    static var modelUsedForBoth: String {
+        tr("润色和指令都用它", "Used for polish and commands")
+    }
+
+    /// 「自定义规则」那个框空着时里面的灰字。写两个**能照抄的**例子，而不是"请输入…"：
+    /// 这个框最大的门槛从来不是不会打字，是不知道该往里写什么。
+    static var customRulesPlaceholder: String {
+        tr("例如：署名用 Gen；邮件偏正式", "For example: sign as Gen; formal in email")
+    }
+
+    /// 服务商选择器上「正在使用」的那一档。**不是 Caption**（它是选择器旁边的一枚小标签），
+    /// 所以不进那张 16 字的表，但仍然只写这一处。
+    ///
+    /// 为什么非有不可（用户 2026-09-20 的实测反馈）：三档并排、每一档都点得动，屏幕上却
+    /// 没有任何地方写着"现在真正在用的是哪一家"——于是人人都挨个点一遍，最后停在哪档就是哪档。
+    static var providerInUse: String {
+        tr("正在使用 ✓", "In use ✓")
+    }
+
+    /// 选择器上看着的这一档还没配 Key：它现在只是**预览**，生效的仍然是上一档
+    static var providerNotSetUp: String {
+        tr("这一档未配置", "Not set up")
     }
 
     /// 云端识别开关下面那一行。**代价写在开关旁边**，具体单价在 ⓘ 里（同一个事实只写一处）
@@ -219,7 +238,7 @@ enum SettingsCopy {
 
     /// 阿里云接入地址那个**可选**输入框：空着才是常态
     static var hostAutoDetected: String {
-        tr("留空即可，MicType 自己试", "Leave it empty: MicType detects the endpoint")
+        tr("留空自动探测", "Leave empty to auto-detect")
     }
 
     static var hostFilledManually: String {
@@ -232,13 +251,16 @@ enum SettingsCopy {
     ///     （storedKeyWhileLocalOnly 那条边界说的就是这件事）。写成"那一档没有指令"就是当面说假话。
     ///   • 「本地 + AI」下识别在哪儿，由下面那个「云端识别」开关决定，不是这一档决定的。
     static var usageInfo: String {
-        tr("「只用本地」：识别和输入全在这台 Mac 上，不联网、不花钱；按住说指令仍然要有 Key，这一档不替你删 Key。\n「本地 + AI」：文字交给你选的服务商润色，按住说指令也走这家；识别在本机还是云端，看下面那个「云端识别」开关。",
-           "On-device only: recognition and typing all happen on this Mac — no network, no cost. Hold-to-command still needs a key, and this mode does not remove one.\nOn-device + AI: your text is polished by the provider you pick, and hold-to-command uses the same one; whether recognition runs here or in the cloud is set by the Cloud recognition switch below.")
+        tr("「只用本地」：识别和输入全在这台 Mac 上，不联网、不花钱；按住说指令仍然要有 Key，这一档不替你删 Key。\n「本地 + AI」：文字交给你选的服务商润色，按住说指令也走这家；识别在本机还是云端，看阿里云档下那个开关。",
+           "On-device only: recognition and typing all happen on this Mac — no network, no cost. Hold-to-command still needs a key, and this mode does not remove one.\nOn-device + AI: your text is polished by the provider you pick, and hold-to-command uses the same one; whether recognition runs here or in the cloud is set by the Cloud recognition switch under Alibaba Cloud.")
     }
 
+    /// 服务商那颗 ⓘ。4.1.1 起第一句必须说清**什么时候才算换过去**：选择器点一下只是预览，
+    /// 钥匙串里有这一档的 Key 才真的换（AISetup.adoptsProvider）。选择器旁边那枚
+    /// 「正在使用 ✓」写的就是这一刻生效的是哪一家。
     static var providerInfo: String {
-        tr("三家官方档位的接口地址都是内置的，换一家只要贴那一家的 Key；每档各有一条钥匙串条目，换回来不用重贴。\n「其他 OpenAI 兼容服务」与「本机模型」改由「导入设置…」配置，已经在用的一切照旧。",
-           "The endpoints of the three official providers are built in, so switching means pasting that provider's key. Each has its own Keychain entry, so switching back needs no re-paste.\nOther OpenAI-compatible services and on-device models are configured through Import Settings now; an existing setup keeps working.")
+        tr("换一家只要贴那一家的 Key，验证通过才真的换过去；每档各有一条钥匙串条目，换回来不用重贴。\n「其他 OpenAI 兼容服务」与「本机模型」改由「导入设置…」配置。",
+           "Switching means pasting that provider's key, and the switch takes effect only once that key verifies. Each provider has its own Keychain entry, so switching back needs no re-paste.\nOther OpenAI-compatible services and on-device models are configured through Import Settings now.")
     }
 
     /// Key 那颗 ⓘ。存储与费用两句必须逐字引用 LLMCatalog（全 App 唯一出处）。
@@ -259,18 +281,22 @@ enum SettingsCopy {
            "Every recording is uploaded to Alibaba Cloud for recognition, billed by the second (about $0.13 per hour) directly by the provider. Before the first use, enable the model once in the Alibaba Cloud Model Studio console. Alibaba Cloud states this data is not used to train models, but it does store data generated by API calls, with no published retention period. If the cloud call fails, MicType re-runs recognition on this Mac.")
     }
 
-    /// 两个框各自跟着哪条路走。**最后一句是数据流向，不是修辞**：
-    /// 「关于我」只有 AgentService.userContextHint 读（按住说指令那条路），
-    /// 润色那条路只带词汇表和自定义规则（PolishService.polishPrompt）。
-    static var personalInfo: String {
-        tr("「关于我」例如「署名用 Gen」「邮件偏正式、聊天随意」，只有按住说指令时才发出去。\n「自定义规则」例如「英文术语保留原文」「数字用阿拉伯数字」，润色和指令都带着它。",
-           "About me, for example \"sign as Gen\" or \"formal in email, casual in chat\" — it goes out only when you hold to command.\nCustom rules, for example \"keep English jargon untranslated\" or \"use Arabic numerals\" — polish and commands both carry them.")
+    /// 「自定义规则」那颗 ⓘ。**最后一句是数据流向，不是修辞**：这个框会跟着每一次润色
+    /// （PolishService.polishPrompt）和每一条语音指令（AgentService.userContextHint）发出去。
+    ///
+    /// 4.1.1 起这里只有一个框：原先的「关于我」已经并进来了（AISetup.mergedRules），
+    /// 所以例子要把两类话都带上——"我是谁"和"怎么写"本来就写在同一段话里最自然。
+    static var customRulesInfo: String {
+        tr("写给 AI 的长期偏好：署名用 Gen、邮件偏正式、英文术语保留原文、数字用阿拉伯数字。每次润色和每条语音指令都会带上它，轻点听写不润色时不发。",
+           "Long-standing preferences for the AI: sign as Gen, keep email formal, leave English jargon untranslated, use Arabic numerals. It travels with every polish and every voice command, and goes nowhere when polish is off.")
     }
 
-    /// 「高级」那颗 ⓘ：共用的一段 + 这一家型号的一句。每一档都要过 120 字那条线
-    static func advancedInfo(provider: LLMProvider) -> String {
-        let shared = tr("「模型」下拉一次改两个型号，这里能分开设：润色求快求省，指令求质量。「刷新」问端点有哪些型号。勾了优先处理也可能被服务商降回普通档。",
-                        "The Model drop-down above writes both model fields at once; here you can split them: polish runs on every sentence and wants speed and low cost, while commands are rare and want quality. Refresh asks the endpoint what it serves today. With priority processing on, the provider still decides the actual tier and may fall back to the standard one.")
+    /// 「模型」那颗 ⓘ：这一家的型号各是什么来头。**这句话属于做选择的地方**——
+    /// 4.1.0 之前它挂在「高级」那颗 ⓘ 上，而下拉就在上面一段，要点开另一段才读得到。
+    /// 每一档都要过 120 字那条线。
+    static func cloudModelInfo(provider: LLMProvider) -> String {
+        let shared = tr("润色每句话都要跑一次，指令偶尔跑一次，两者用同一个型号。换代之后旧型号名可能直接 404，点「高级 → 刷新模型列表」问端点现在有哪些。",
+                        "Polish runs on every sentence and commands run now and then; both use this one model. After a generation change an old model id can simply 404 — use Advanced and Refresh to ask the endpoint what it serves today.")
         switch provider {
         case .openai:
             return shared + tr("\nluna 最便宜，terra 平衡，sol 旗舰，astra 最强也最贵。",
@@ -282,22 +308,42 @@ enum SettingsCopy {
             return shared + tr("\nqwen3.8-max 是当前代旗舰，qwen-max 是跟着换代走的稳定别名。",
                                "\nqwen3.8-max is the current flagship; qwen-max is a stable alias that follows each new generation.")
         case .custom:
-            return shared + tr("\n这一档没有内置清单：型号名照服务商文档填，或点「刷新」。",
-                               "\nNo built-in list here: type the model id from your provider's docs, or hit Refresh.")
+            return shared + tr("\n这一档没有内置清单：型号名照服务商文档填。",
+                               "\nNo built-in list here: type the model id from your provider's docs.")
         case .local:
             return shared + tr("\n填你本机已经拉下来的模型名，例如 Ollama 里的 llama3.1:8b。",
                                "\nUse the model you have pulled locally, such as llama3.1:8b in Ollama.")
         }
     }
 
-    /// 联网搜索这一档压根没有：开关是灰的，那行价格也就无事可说
-    static var webSearchUnsupported: String {
-        tr("这家服务商没有联网搜索", "Web search is not available from this provider")
+    /// 「高级」那颗 ⓘ。4.1.1 之后这一段只剩真正少见的事（分开设型号、温度、区域都拿掉了）。
+    /// - hasModelMenu: 这一档有内置型号清单（三家官方档）。没有的那两档多一个型号名输入框
+    ///   和「刷新」，ⓘ 也就多一句——**说的只能是屏幕上真有的控件**。
+    static func advancedInfo(hasModelMenu: Bool) -> String {
+        let base = tr("「测试模型」拿当前型号真发一次最短请求，报往返毫秒数，不动任何设置。",
+                      "Test the model sends one real minimal request on the current model and reports the round trip; it changes no settings.")
+        guard !hasModelMenu else { return base }
+        return base + tr("\n这一档没有内置清单：型号名照服务商文档填，「刷新」问端点它现在有哪些。",
+                         "\nThis provider has no built-in list: type the model id from its docs, or hit Refresh to ask the endpoint what it serves.")
     }
 
-    /// 优先处理只有 OpenAI 有：开关灰着的时候，这一行**代替**价格出现（价格对他不成立）
-    static var fastTierOpenAIOnly: String {
-        tr("只有 OpenAI 有这个档位", "Only OpenAI offers this tier")
+    /// 联网搜索那颗 ⓘ：**只说这个开关管到哪儿**。单价写在开关旁边（价格是代价不是解释，
+    /// 出处只有 LLMCatalog.webSearchPriceNote 一个），不搬进来。
+    static var webSearchInfo: String {
+        tr("只有按住说指令时才可能联网；轻点听写的润色永远不联网，也永远不花这笔钱。搜没搜过会写在悬浮窗和历史里。",
+           "Only hold-to-command can search the web; the polish behind tap-to-dictate never does, and never costs you this. Whether a call searched is shown in the overlay and in your history.")
+    }
+
+    /// 联网搜索这一档压根没有：**连开关都不摆**，只留这一行说明
+    static var webSearchUnsupported: String {
+        tr("此服务商不支持联网搜索", "Web search is not available on this provider")
+    }
+
+    /// 优先处理那颗 ⓘ。这一段只在 OpenAI 档出现（AISetup.showsPriorityToggle），
+    /// 所以不必再说一遍"只有 OpenAI 有"。
+    static var priorityInfo: String {
+        tr("付更高的 token 单价换更低、更稳的延迟。服务商仍可能把这次请求降回普通档，真降了下面会写出来。",
+           "Pays a higher token price for lower, steadier latency. The provider can still serve the request on the standard tier, and the line below says so when it does.")
     }
 
     /// 一次性状态快照（"上一次那趟实际跑在哪一档"），不是控件说明——所以不进 captions，
@@ -308,16 +354,16 @@ enum SettingsCopy {
 
     static var cloudCaptions: [String] {
         [usageLocalOnly, usageWithAI, usageWithCloudRecognition,
-         modelNameInAdvanced, personalBoxesShared,
+         providerNotSetUp, modelNameInAdvanced, modelUsedForBoth, customRulesPlaceholder,
          localModelNeedsNoKey, cloudRecognitionCost, cloudRecognitionOff,
-         hostAutoDetected, hostFilledManually,
-         webSearchUnsupported, fastTierOpenAIOnly]
+         hostAutoDetected, hostFilledManually, webSearchUnsupported]
     }
 
     static var cloudInfos: [String] {
         [usageInfo, providerInfo, keyInfo(cloudASRProbe: false), keyInfo(cloudASRProbe: true),
-         cloudRecognitionInfo, personalInfo]
-            + LLMProvider.allCases.map { advancedInfo(provider: $0) }
+         cloudRecognitionInfo, customRulesInfo, webSearchInfo, priorityInfo,
+         advancedInfo(hasModelMenu: true), advancedInfo(hasModelMenu: false)]
+            + LLMProvider.allCases.map { cloudModelInfo(provider: $0) }
     }
 
     // MARK: - 概览（权限横幅：缺了才出现，一行 + 一颗按钮）

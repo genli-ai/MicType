@@ -943,7 +943,7 @@ private struct PermissionRow: View {
 ///
 /// 为什么整屏可跳过、而且跳过不留任何警告：轻点听写压根不需要 Key，把这一屏做成关卡
 /// 就是骗人。反过来，配 AI 的人也不该被丢进设置页里自己找——所以这一屏只摆首配真正要的
-/// 那几个控件（分开设型号、关于我、自定义规则都留在设置页的「高级」里）。
+/// 那几个控件（自定义规则、联网搜索、优先处理都留在设置页上）。
 ///
 /// **控件与「云端 AI」页逐个共用**（ProviderPickerField / KeyEntryView / ModelPickerField /
 /// CloudRecognitionFields）：4.0.1 这里是各抄一份，于是阿里云的「识别也用云端」开关只长在
@@ -984,6 +984,9 @@ private struct HowYouUsePage: View {
     /// 刷新点：进页、换服务商、Key 验证有了结论（存进去、验失败、清空都会走到那里）。
     @State private var selectedHasStoredKey = KeychainHelper
         .loadAPIKey(account: Settings.shared.llmProvider.keychainAccount) != nil
+    /// 这一刻**真正生效**的那一档。Settings.llmProvider 不是 @Published，采纳之后这一屏不会
+    /// 自己重算，而选择器旁边那枚「正在使用 ✓」正靠它——所以存一份，在同样那几个事件上刷新。
+    @State private var inUseProvider: LLMProvider = Settings.shared.llmProvider
 
     private var selected: LLMProvider { pendingProvider }
     private var currentPolishLevel: PolishLevel { PolishLevel(rawValue: polishLevel) ?? .smart }
@@ -1020,6 +1023,7 @@ private struct HowYouUsePage: View {
                 // 才采纳（adoptIfUsable），所以两处各写自己的 Binding setter。
                 CloudSetupCore(style: .onboarding,
                                selected: selected,
+                               inUse: inUseProvider,
                                engine: engineChoice,
                                usageMode: usageModeBinding,
                                provider: providerBinding,
@@ -1031,6 +1035,7 @@ private struct HowYouUsePage: View {
                                keyProbeModel: polishModel(for: selected),
                                showsModel: showsModel,
                                showsDiagnostics: false,
+                               showsNotSetUpHint: false,
                                onKeyStatus: { status in
                                    keyStatus = status
                                    adoptIfUsable(selected)
@@ -1161,6 +1166,7 @@ private struct HowYouUsePage: View {
     /// 重读一次"钥匙串里有没有正在看的这一档的 Key"。只在事件上调，绝不在 body 里调。
     private func refreshStoredKey() {
         selectedHasStoredKey = KeychainHelper.loadAPIKey(account: selected.keychainAccount) != nil
+        inUseProvider = Settings.shared.llmProvider
     }
 
     /// 这一档存着的润色型号（可能是空的：其他兼容服务 / 本机模型出厂没有型号名）
@@ -1180,13 +1186,14 @@ private struct HowYouUsePage: View {
     /// 把生效服务商换成一个没 Key 的，表现是他下次按住说话直接失败，还找不到原因。
     private func adoptIfUsable(_ provider: LLMProvider) {
         let hasKey = KeychainHelper.loadAPIKey(account: provider.keychainAccount) != nil
-        guard !provider.requiresAPIKey || hasKey else { return }
-        // 本机模型那一档没有 Key 可验，但型号名是空的照样跑不起来（发出去就是 400）：
-        // 同样不能拿它换掉一个正在好好用着的服务商。polishModel 对三家云服务商会落到
-        // 目录里的默认型号，只有其他兼容服务 / 本机模型才可能真的是空的。
-        guard !polishModel(for: provider).isEmpty else { return }
-        guard Settings.shared.llmProvider != provider else { return }
+        // 判据是纯函数（AISetup.adoptsProvider），设置页那一处走的是同一条：
+        // 本机模型那一档没有 Key 可验，但型号名是空的照样跑不起来（发出去就是 400），
+        // 同样不能拿它换掉一个正在好好用着的服务商。
+        guard AISetup.adoptsProvider(current: Settings.shared.llmProvider, next: provider,
+                                     requiresKey: provider.requiresAPIKey, hasKey: hasKey,
+                                     polishModel: polishModel(for: provider)) else { return }
         Settings.shared.llmProvider = provider
+        inUseProvider = provider
         Log.info("Onboarding adopted provider=\(provider.rawValue)")
         // 换走之后音频不能还在往阿里云传，而 AI 页上那个开关这时已经不渲染了。
         // 判据与设置页那处换服务商同源（AISetup.engineAfterProviderChange），两处不各写一份

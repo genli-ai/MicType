@@ -112,17 +112,22 @@ enum LLMCatalog {
         return modelMenu(for: provider).contains { $0.id == p } ? p : nil
     }
 
-    /// 下拉下面那一句。两件事必须写出来：**润色和指令用的是同一个型号**（不说的话，
-    /// 用户会以为自己只挑了其中一个），以及要分开选去哪儿。默认型号名也点出来——
-    /// 藏起来只会让人不敢点。nil = 这个服务商没有内置型号（下拉本身也不显示）。
+    /// 把两个型号字段拉成同一个值（**纯函数**，4.1.1 的一次性迁移与设置导入都走它）。
     ///
-    /// 长度走设置页那条"一行说明"的线：型号名是专有名词，不算进那 16 字，剩下的话必须装得下
-    /// （SettingsCopyBudgetTests 按"去掉型号名之后"量它）。4.0.1 这句话是 44 字的一段解释。
-    static func modelMenuSummary(provider: LLMProvider) -> String? {
-        let fallback = defaultModel(for: provider)
-        guard !fallback.isEmpty else { return nil }
-        return tr("润色和指令共用 \(fallback)，分开设在高级",
-                  "Polish and commands share \(fallback); split them under Advanced.")
+    /// 4.1.1 起「润色模型」和「指令模型」不再是两个决定（用户 2026-09-20 拍板：
+    /// 全部同一个）。界面上分开设的入口已经没有了，可老设置里、别人给的设置文件里，
+    /// 仍然可能存着两个不一样的值——那会变成一条**看不见的设置**：下拉显示「自定义…」，
+    /// 按住说指令跑的却是另一个型号。返回要写回的键值，空字典 = 本来就是一样的。
+    static func unifyModelWrites(current: [String: String?]) -> [String: String] {
+        var writes: [String: String] = [:]
+        for provider in LLMProvider.allCases {
+            let keys = modelKeys(for: provider)
+            guard let polish = storedValue(current, keys.polish) else { continue }
+            let command = storedValue(current, keys.command)
+            guard command != polish else { continue }
+            writes[keys.command] = polish
+        }
+        return writes
     }
 
     /// 某个服务商的「润色型号 / 指令型号」分别存在哪两个 UserDefaults 键上。
@@ -417,8 +422,27 @@ enum LLMCatalog {
 
     /// 联网搜索的单价——**全 App 唯一出处**。设置页开关旁与隐私说明（PrivacyCopy.webSearchBilled）
     /// 都引用它，不许各写各的：两处价钱对不上的时候，用户没法知道哪句算数。
-    static var webSearchPriceNote: String { tr("每次搜索约 $0.01（OpenAI 按 $10 / 1000 次计）外加 token 费用，默认关闭。",
-                                       "About $0.01 per search (OpenAI bills $10 per 1000 calls) plus tokens. Off by default.") }
+    ///
+    /// 4.1.1 起默认**开着**（用户 2026-09-20 拍板：支持联网搜索的服务商一律默认开，
+    /// 不支持的那几档连开关都不摆）。这句话跟着改：写着"默认关闭"而实际开着，
+    /// 比不说更糟——用户按这句话判断自己有没有在花这笔钱。
+    static var webSearchPriceNote: String { tr("每次搜索约 $0.01（OpenAI 按 $10 / 1000 次计）外加 token 费用，默认开启。",
+                                       "About $0.01 per search (OpenAI bills $10 per 1000 calls) plus tokens. On by default.") }
+
+    /// 阿里云那一档的联网搜索价钱。**我们报不出一个准数**：DashScope 的搜索按它自己的
+    /// 价目结算，随套餐和地区变——编一个数字比不给数字糟得多，所以只说"按服务商计费"。
+    static var providerBilledSearchNote: String { tr("联网搜索按服务商自己的价目计费，默认开启。",
+                                            "Web search is billed at your provider's own rates. On by default.") }
+
+    /// 这一档的开关旁边该摆哪句价钱。nil = 这个端点压根没有联网搜索（开关也不摆）。
+    /// 纯函数：价钱与"有没有这个功能"必须同源，否则会出现"这家没有搜索"+"每次 $0.01"并排。
+    static func webSearchPriceNote(style: WebSearchStyle) -> String? {
+        switch style {
+        case .openaiResponsesTool: return webSearchPriceNote
+        case .qwenEnableSearch, .openrouterPlugin: return providerBilledSearchNote
+        case .unsupported: return nil
+        }
+    }
 
     /// 优先处理档同样要把代价写在开关旁：token 单价翻倍。
     /// **单价只写这一处**——4.1.0 之前开关标题里还硬写着一个「2 倍」，改价就会有两个数字打架。

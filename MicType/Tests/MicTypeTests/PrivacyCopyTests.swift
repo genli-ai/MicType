@@ -138,14 +138,16 @@ final class PrivacyCopyTests: XCTestCase {
         XCTAssertTrue(PrivacyCopy.keyInKeychain.contains("Keychain"))
         XCTAssertTrue(PrivacyCopy.youPayProvider.contains("pay the provider directly"))
         // 单价那句由 LLMCatalog 提供（唯一出处），所以只认意思、不认大小写
-        XCTAssertTrue(PrivacyCopy.webSearchBilled.lowercased().contains("off by default"))
+        // 4.1.1 起默认**开**（支持的服务商）：这句话跟着改，写着"默认关闭"而实际开着，
+        // 比不说更糟——用户按它判断自己有没有在花这笔钱
+        XCTAssertTrue(PrivacyCopy.webSearchBilled.lowercased().contains("on by default"))
 
         L10n.shared.language = .zh
         XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("默认本地识别"))
         XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("只有选择云端引擎时音频才会上传"))
         XCTAssertTrue(PrivacyCopy.onlyTextLeaves.contains("选中"))
         XCTAssertTrue(PrivacyCopy.keyInKeychain.contains("钥匙串"))
-        XCTAssertTrue(PrivacyCopy.webSearchBilled.contains("默认关闭"))
+        XCTAssertTrue(PrivacyCopy.webSearchBilled.contains("默认开启"))
     }
 
     /// 「请求带 store:false」这句话只有在**真的会发 store:false 的那条路**上才许出现。

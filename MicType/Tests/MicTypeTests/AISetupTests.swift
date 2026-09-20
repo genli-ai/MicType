@@ -82,11 +82,11 @@ final class AISetupTests: XCTestCase {
         }
     }
 
-    /// 其他兼容服务 / 本机模型没有内置型号：给不出选单就别硬给（界面据此把下拉藏掉）
+    /// 其他兼容服务 / 本机模型没有内置型号：给不出选单就别硬给（界面据此把下拉藏掉，
+    /// 改在「高级」里给一个型号名输入框）
     func testCustomAndLocalHaveNoModelMenu() {
         for provider in [LLMProvider.custom, .local] {
             XCTAssertTrue(LLMCatalog.modelMenu(for: provider).isEmpty, provider.rawValue)
-            XCTAssertNil(LLMCatalog.modelMenuSummary(provider: provider))
             XCTAssertTrue(LLMCatalog.defaultModel(for: provider).isEmpty, provider.rawValue)
         }
     }
@@ -103,20 +103,44 @@ final class AISetupTests: XCTestCase {
                        "qwen3.7-plus")
     }
 
-    /// 说明文字必须点名真实型号（藏起来反而让人不敢点），并说清"润色和指令是同一个模型、
-    /// 要分开选去高级里"——4.0.1 的实测反馈里，这正是用户以为自己只选了其中一个的地方
-    func testMenuSummaryNamesTheDefaultModelAndTheSharedScope() {
+    /// 下拉下面那一行只说**这一个选择管到哪儿**（4.1.1：润色和指令永远同一个型号）。
+    /// 两件事必须拦住：① 不许再指路"分开设在高级"——那条路已经没有了；
+    /// ② 不许在这里重复型号名——下拉自己写着它，重复一遍就是同一个事实写两处。
+    func testModelCaptionSaysItCoversPolishAndCommands() {
         L10n.shared.language = .zh
-        let zh = LLMCatalog.modelMenuSummary(provider: .openai) ?? ""
-        XCTAssertTrue(zh.contains("gpt-5.6-sol"), zh)
+        let zh = SettingsCopy.modelUsedForBoth
         XCTAssertTrue(zh.contains("润色") && zh.contains("指令"), zh)
-        XCTAssertTrue(zh.contains("高级"), zh)
+        XCTAssertFalse(zh.contains("高级"), zh)
+        XCTAssertFalse(zh.contains("gpt"), zh)
         L10n.shared.language = .en
-        let en = LLMCatalog.modelMenuSummary(provider: .deepseek) ?? ""
-        XCTAssertTrue(en.contains("deepseek-v4-pro"), en)
-        XCTAssertTrue(en.lowercased().contains("polish") && en.lowercased().contains("commands"), en)
-        XCTAssertTrue(en.contains("Advanced"), en)
-        XCTAssertFalse(containsCJKOrFullWidth(en), en)
+        let en = SettingsCopy.modelUsedForBoth.lowercased()
+        XCTAssertTrue(en.contains("polish") && en.contains("commands"), en)
+        XCTAssertFalse(en.contains("advanced"), en)
+        XCTAssertFalse(containsCJKOrFullWidth(SettingsCopy.modelUsedForBoth),
+                       SettingsCopy.modelUsedForBoth)
+    }
+
+    /// 4.1.1 的一次性迁移：把「指令型号」拉回「润色型号」。
+    /// 界面上分开设的入口已经没有了，留着两个不一样的值就是一条**改不动的设置**——
+    /// 下拉显示「自定义…」，而按住说指令跑的是另一个型号、按另一个价钱计费。
+    func testUnifyModelWritesPullsTheCommandModelBackToThePolishOne() {
+        let openai = LLMCatalog.modelKeys(for: .openai)
+        let writes = LLMCatalog.unifyModelWrites(current: [
+            openai.polish: "gpt-5.6-luna", openai.command: "gpt-6-astra",
+        ])
+        XCTAssertEqual(writes, [openai.command: "gpt-5.6-luna"])
+    }
+
+    /// 本来就一样、或者压根没存过润色型号：一个字节都不写
+    func testUnifyModelWritesLeavesMatchingOrUnsetPairsAlone() {
+        let qwen = LLMCatalog.modelKeys(for: .qwen)
+        XCTAssertTrue(LLMCatalog.unifyModelWrites(current: [
+            qwen.polish: "qwen3.8-max", qwen.command: "qwen3.8-max",
+        ]).isEmpty)
+        // 没存过润色型号（用的是注册默认值）：这一档没什么可统一的，别顺手写一个空值进去
+        XCTAssertTrue(LLMCatalog.unifyModelWrites(current: [
+            qwen.polish: nil, qwen.command: "qwen3.8-flash",
+        ]).isEmpty)
     }
 
     // MARK: - 设置窗口的路由（概览 + 三个编辑页 + 关于）
@@ -416,6 +440,83 @@ final class AISetupTests: XCTestCase {
         // 本来就没在用阿里云识别：换谁都与识别无关（cloudOpenAI 由那条 legacy 提示管）
         XCTAssertNil(AISetup.engineAfterProviderChange(current: .local, next: .openai))
         XCTAssertNil(AISetup.engineAfterProviderChange(current: .cloudOpenAI, next: .openai))
+    }
+
+    // MARK: - 4.1.1：「关于我」并进「自定义规则」
+
+    /// 合并**会改用户亲手写的文字**，搬丢了他没有第二份——所以每一支都钉住。
+    /// 「关于我」排在前面：它讲"我是谁"，规则讲"怎么写"，读起来本来就是这个顺序。
+    func testAboutMeIsPrependedToTheRulesOnce() {
+        XCTAssertEqual(AISetup.mergedRules(aboutMe: "署名用 Gen", rules: "数字用阿拉伯数字"),
+                       "署名用 Gen\n数字用阿拉伯数字")
+        // 规则是空的：那段「关于我」自己就是新规则
+        XCTAssertEqual(AISetup.mergedRules(aboutMe: " 署名用 Gen ", rules: "   "), "署名用 Gen")
+    }
+
+    /// 已经逐字含着那段话（用户自己抄过去了、或者迁移跑过一次）：不许再并一遍。
+    /// 并两遍的表现是提示词里同一句话出现两次——模型会把它当成被强调的要求。
+    func testAboutMeIsNotMergedTwice() {
+        XCTAssertNil(AISetup.mergedRules(aboutMe: "署名用 Gen",
+                                         rules: "署名用 Gen\n数字用阿拉伯数字"))
+        // 「关于我」本来就是空的：什么都不用做
+        XCTAssertNil(AISetup.mergedRules(aboutMe: "   ", rules: "数字用阿拉伯数字"))
+    }
+
+    // MARK: - 4.1.1：联网搜索默认开
+
+    /// 没存过 = 一直用着出厂默认，跟着新默认走；存过 = 他自己拨过那个开关，一个字都不动
+    /// （拨开再拨回也算——那是一次明确的"我不要"，替他点开就是替他花钱）
+    func testWebSearchDefaultMigrationKeepsAnExplicitChoice() {
+        XCTAssertTrue(AISetup.webSearchAfterDefaultChange(stored: nil))
+        XCTAssertFalse(AISetup.webSearchAfterDefaultChange(stored: false))
+        XCTAssertTrue(AISetup.webSearchAfterDefaultChange(stored: true))
+    }
+
+    /// 支持的服务商默认开、不支持的连开关都不摆：价格与"有没有这个功能"必须同源，
+    /// 否则会出现"这家没有搜索"和"每次 $0.01"并排
+    func testWebSearchPriceNoteExistsExactlyWhereSearchDoes() {
+        for style in [LLMCatalog.WebSearchStyle.openaiResponsesTool, .qwenEnableSearch, .openrouterPlugin] {
+            XCTAssertNotNil(LLMCatalog.webSearchPriceNote(style: style), "\(style)")
+        }
+        XCTAssertNil(LLMCatalog.webSearchPriceNote(style: .unsupported))
+        XCTAssertEqual(LLMCatalog.webSearchPriceNote(style: .openaiResponsesTool),
+                       LLMCatalog.webSearchPriceNote)
+    }
+
+    // MARK: - 4.1.1：验证通过才采纳（设置页与引导页同一条）
+
+    /// 没 Key 的那一档只是**预览**：点一下就把生效服务商换过去，表现是他下次按住说指令
+    /// 直接失败，而完全不知道是刚才那一下点的
+    func testProviderIsAdoptedOnlyOnceItsKeyIsThere() {
+        XCTAssertTrue(AISetup.adoptsProvider(current: .openai, next: .deepseek,
+                                             requiresKey: true, hasKey: true,
+                                             polishModel: "deepseek-v4-pro"))
+        XCTAssertFalse(AISetup.adoptsProvider(current: .openai, next: .deepseek,
+                                              requiresKey: true, hasKey: false,
+                                              polishModel: "deepseek-v4-pro"))
+        // 已经就是这一档：不必再写一遍（也就不会白记一行日志）
+        XCTAssertFalse(AISetup.adoptsProvider(current: .qwen, next: .qwen,
+                                              requiresKey: true, hasKey: true,
+                                              polishModel: "qwen3.8-max"))
+    }
+
+    /// 本机模型那一档没有 Key 可验，但型号名是空的照样跑不起来（发出去就是 400）——
+    /// 同样不能拿它换掉一个正在好好用着的服务商
+    func testLocalProviderStillNeedsAModelNameToBeAdopted() {
+        XCTAssertFalse(AISetup.adoptsProvider(current: .openai, next: .local,
+                                              requiresKey: false, hasKey: false,
+                                              polishModel: "  "))
+        XCTAssertTrue(AISetup.adoptsProvider(current: .openai, next: .local,
+                                             requiresKey: false, hasKey: false,
+                                             polishModel: "llama3.1:8b"))
+    }
+
+    /// 「优先处理」只有 OpenAI 有这个档位：**其余档整行不渲染**，不是灰着摆在那里
+    func testPriorityToggleOnlyExistsUnderOpenAI() {
+        XCTAssertTrue(AISetup.showsPriorityToggle(inUse: .openai))
+        for provider in [LLMProvider.deepseek, .qwen, .custom, .local] {
+            XCTAssertFalse(AISetup.showsPriorityToggle(inUse: provider), provider.rawValue)
+        }
     }
 
     /// 「只用本地」只关润色、只把识别改回本机——**钥匙串里那把 Key 一个字节都不动**，

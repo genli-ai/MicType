@@ -289,6 +289,56 @@ enum AISetup {
     static func showsStoredKeyNotice(mode: AIUsageMode, hasCredential: Bool) -> Bool {
         mode == .localOnly && hasCredential
     }
+
+    // MARK: - 4.1.1：合并「关于我」到「自定义规则」
+
+    /// 把「关于我」并进「自定义规则」。返回合并后的规则；nil = 什么都不用改。
+    ///
+    /// 为什么要合并（用户 2026-09-20 拍板）：两个多行框摆在一起，谁也说不清哪句话该写在哪个框里
+    /// ——而它们最后都被拼进同一段提示词。合并之后界面上只有一个框、只在这一页出现一次。
+    ///
+    /// **只并一次**：规则里已经逐字含着那段「关于我」时不再重复（用户可能已经自己抄过去了）。
+    /// 纯函数，单测钉死：这一步会改用户亲手写的文字，搬丢了他没有第二份。
+    static func mergedRules(aboutMe: String, rules: String) -> String? {
+        let about = aboutMe.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !about.isEmpty else { return nil }
+        let existing = rules.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 已经逐字含着这段话了：不再重复一遍（清空「关于我」那一步由调用方照做）
+        guard !existing.contains(about) else { return nil }
+        guard !existing.isEmpty else { return about }
+        // 「关于我」排在前面：它讲的是"我是谁"，规则讲的是"怎么写"，读起来也是这个顺序
+        return about + "\n" + existing
+    }
+
+    // MARK: - 4.1.1：联网搜索默认开
+
+    /// 联网搜索的默认值从"关"改成"开"（用户 2026-09-20 拍板：支持的服务商一律默认开）。
+    /// **明确选过的人一个字都不动**：UserDefaults 里存着值 = 他自己拨过那个开关
+    /// （拨开再拨回也算——那是一次明确的"我不要"）。没存过 = 一直是出厂默认，跟着新默认走。
+    /// 纯函数：判错的后果是替用户点开一个按次计费的开关。
+    static func webSearchAfterDefaultChange(stored: Bool?) -> Bool { stored ?? true }
+
+    // MARK: - 4.1.1：换服务商"验证通过才采纳"（设置页与引导页同一条）
+
+    /// 看着的这一档能不能被采纳为**正在使用**的服务商。
+    ///
+    /// 为什么设置页也要这道闸（4.1.1 之前只有引导页有）：分段选择器上点一下就把生效服务商
+    /// 换掉，意味着"点着看看"的人会把自己从一把好 Key 上换到一档空配置上——下一次按住说指令
+    /// 直接失败，而他完全不知道是刚才那一下点的。所以：**验证通过（钥匙串里有 Key）才换过去**，
+    /// 在那之前选择器只是预览这一档的 Key 与模型。
+    /// 纯函数，单测钉死；调用方拿它的结论去写 Settings.llmProvider。
+    static func adoptsProvider(current: LLMProvider, next: LLMProvider,
+                               requiresKey: Bool, hasKey: Bool, polishModel: String) -> Bool {
+        guard current != next else { return false }
+        guard !requiresKey || hasKey else { return false }
+        // 本机模型那一档没有 Key 可验，但型号名是空的照样跑不起来（发出去就是 400）
+        return !polishModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// 「优先处理」这一行摆不摆。只有 OpenAI 有这个档位——**没有就整行不渲染**，
+    /// 不是灰着摆在那里（4.1.1 之前是灰的 + 一行"只有 OpenAI 有"，等于用两行讲一件
+    /// 与这位用户无关的事）。判据是**正在使用**的那一档，不是选择器上预览的那一档。
+    static func showsPriorityToggle(inUse: LLMProvider) -> Bool { inUse == .openai }
 }
 
 // MARK: - 设置键
@@ -416,9 +466,12 @@ final class Settings {
             SettingsKeys.localRuntime: LLMCatalog.LocalRuntime.ollama.rawValue,
             SettingsKeys.localModel: "",
             SettingsKeys.localCommandModel: "",
-            // 花钱的开关一律默认关：多付的钱必须是用户自己点下去的
+            // 优先处理默认关：token 单价翻倍这种事必须是用户自己点下去的
             SettingsKeys.fastTier: false,
-            SettingsKeys.webSearchEnabled: false,
+            // 联网搜索默认**开**（用户 2026-09-20 拍板）：它只在按住说指令那条路上生效，
+            // 而指令里"查一下…""最新的…"是常态——默认关的结果是模型一本正经地编，
+            // 用户既看不出它没联网，也不知道有这么个开关。不支持的服务商压根不摆这个开关。
+            SettingsKeys.webSearchEnabled: true,
             SettingsKeys.onboardingCompleted: false,
             SettingsKeys.onboardingSkippedEssentials: false,
         ])
@@ -575,6 +628,63 @@ final class Settings {
                 d.set(HotkeyChoice.rightOption.rawValue, forKey: SettingsKeys.hotkey)
             }
             d.set(true, forKey: "migratedHotkeyToRightOption")
+        }
+
+        // 一次性迁移（4.1.1）：「关于我」并进「自定义规则」（用户 2026-09-20 拍板）。
+        // 界面上从此只有一个框，「关于我」那个键只留给设置文件的兼容——不搬的话，
+        // 老用户亲手写的那段话会在这一版之后彻底失效，而界面上一个字都不会提。
+        // 规则在 AISetup.mergedRules（纯函数，单测钉死）：只并一次，已经含着就不重复。
+        if !d.bool(forKey: "migratedAboutMeIntoRules") {
+            normalizePersonalFields()
+            d.set(true, forKey: "migratedAboutMeIntoRules")
+        }
+
+        // 一次性迁移（4.1.1）：润色与指令**永远同一个型号**（用户 2026-09-20 拍板）。
+        // 界面上分开设的那两个输入框已经没有了，所以 4.1.0 之前分开设过的人，
+        // 会留下一条改不动的设置：下拉显示「自定义…」，而按住说指令跑的是另一个型号。
+        if !d.bool(forKey: "migratedOneModelForBoth") {
+            normalizeModelPair()
+            d.set(true, forKey: "migratedOneModelForBoth")
+        }
+
+        // 一次性迁移（4.1.1）：联网搜索默认开。**明确拨过那个开关的人一个字都不动**
+        // （存着值 = 他自己拨过），没存过的才跟着新默认走。
+        if !d.bool(forKey: "migratedWebSearchDefaultOn") {
+            let stored = storedDomain[SettingsKeys.webSearchEnabled] as? Bool
+            let next = AISetup.webSearchAfterDefaultChange(stored: stored)
+            if stored != next {
+                d.set(next, forKey: SettingsKeys.webSearchEnabled)
+                Log.info("Web search default migrated to=\(next)")
+            }
+            d.set(true, forKey: "migratedWebSearchDefaultOn")
+        }
+    }
+
+    /// 「关于我」→「自定义规则」的合并（迁移与设置导入共用这一份）。
+    /// 导入也要走：别人给的设置文件里仍然带着 aboutMe，收下之后界面上没有任何地方显示它。
+    func normalizePersonalFields() {
+        let about = d.string(forKey: SettingsKeys.aboutMe) ?? ""
+        guard !about.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if let merged = AISetup.mergedRules(aboutMe: about,
+                                            rules: d.string(forKey: SettingsKeys.customPolishRules) ?? "") {
+            d.set(merged, forKey: SettingsKeys.customPolishRules)
+        }
+        d.set("", forKey: SettingsKeys.aboutMe)
+        // 内容本身绝不进日志（那是用户写给 AI 的私人偏好），只记发生过这件事
+        Log.info("About-me merged into custom rules")
+    }
+
+    /// 把每一档的「指令型号」拉回「润色型号」（迁移与设置导入共用这一份）
+    func normalizeModelPair() {
+        var current: [String: String?] = [:]
+        for provider in LLMProvider.allCases {
+            let keys = LLMCatalog.modelKeys(for: provider)
+            current.updateValue(d.string(forKey: keys.polish), forKey: keys.polish)
+            current.updateValue(d.string(forKey: keys.command), forKey: keys.command)
+        }
+        for (key, value) in LLMCatalog.unifyModelWrites(current: current) {
+            d.set(value, forKey: key)
+            Log.info("Command model unified key=\(key) model=\(value)")
         }
     }
 
@@ -898,7 +1008,10 @@ final class Settings {
         set { d.set(newValue, forKey: SettingsKeys.commandTemperature) }
     }
 
-    /// 「关于我」：署名、惯用语气等，注入语音指令 prompt
+    /// 「关于我」。**4.1.1 起界面上没有这个框了**，内容已经并进「自定义规则」
+    /// （AISetup.mergedRules），提示词那一侧也只读合并后的那一个字段。
+    /// 这个键只为设置文件留着：别人给的文件（以及 Windows 端）里仍然可能带着它，
+    /// 收下之后由 normalizePersonalFields 并进规则，绝不静默丢掉用户写过的字。
     var aboutMe: String {
         get { d.string(forKey: SettingsKeys.aboutMe) ?? "" }
         set { d.set(newValue, forKey: SettingsKeys.aboutMe) }
