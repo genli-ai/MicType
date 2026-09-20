@@ -98,6 +98,34 @@ final class LLMClientTests: XCTestCase {
         XCTAssertEqual(body["temperature"] as? Double, 0.5)
     }
 
+    /// 阿里云 3.5 线起默认开思考：4.1.1 的日志里 qwen3.8-max 润色 ~25 个字要 3889ms / 8730ms，
+    /// 更长的直接撞满 12 s 超时 → 润色这一路必须显式关掉（兼容模式的字段名是 enable_thinking）
+    func testQwenPolishDisablesThinking() {
+        let body = LLMClient.chatBody(model: "qwen3.8-max",
+                                      messages: [["role": "user", "content": "hi"]],
+                                      temperature: 0.5, purpose: .polish, provider: .qwen)
+        XCTAssertEqual(body["enable_thinking"] as? Bool, false)
+        // DeepSeek 的那个字段名不通用，别顺手一起发
+        XCTAssertNil(body["thinking"])
+    }
+
+    /// 指令低频、要质量 → 同 DeepSeek 的政策：不碰思考开关，保留服务商默认
+    func testQwenCommandLeavesThinkingAlone() {
+        let body = LLMClient.chatBody(model: "qwen3.8-max",
+                                      messages: [["role": "user", "content": "hi"]],
+                                      temperature: nil, purpose: .command, provider: .qwen)
+        XCTAssertNil(body["enable_thinking"])
+    }
+
+    /// enable_thinking 是 DashScope 专有字段：别的端点收到只会多一个它不认识的键（有的直接 400）
+    func testQwenThinkingSwitchNeverGoesToOtherProviders() {
+        for provider in [LLMProvider.deepseek, .openai, .custom, .local] {
+            let body = LLMClient.chatBody(model: "m", messages: [], temperature: nil,
+                                          purpose: .polish, provider: provider)
+            XCTAssertNil(body["enable_thinking"], "provider=\(provider.rawValue)")
+        }
+    }
+
     // MARK: - Responses 响应解析
 
     /// 官方明确警告不要假设 output[0]：推理条目排在 message 前面是常态
@@ -225,6 +253,45 @@ final class LLMClientTests: XCTestCase {
         XCTAssertNil(LLMClient.stripping(parameter: "model.nested", from: ["model": "m"]))
     }
 
+    /// 4.1.1 的真实回包：一个参数名都没点，通用正则认不出来 → 只能按话题摘。
+    /// 这一条是这次 bug 的复现：认不出就不重发，用户那条语音指令整个白掉。
+    func testQwenExtrasFallbackDropsBothSearchFields() {
+        let body: [String: Any] = ["model": "qwen3.8-max", "enable_search": true,
+                                   "search_options": ["search_strategy": "agent"]]
+        let fallback = LLMClient.qwenExtrasFallback(
+            message: "The current model does not support the \"agent\" search strategy", body: body)
+        XCTAssertNil(fallback?.body["enable_search"])
+        XCTAssertNil(fallback?.body["search_options"])
+        XCTAssertEqual(fallback?.dropped.sorted(), ["enable_search", "search_options"])
+        XCTAssertEqual(fallback?.body["model"] as? String, "qwen3.8-max")
+    }
+
+    /// 思考开关被拒也是同一回事：摘掉它重发，别让整次润色白掉
+    func testQwenExtrasFallbackDropsThinkingSwitch() {
+        let body: [String: Any] = ["model": "qwen3.8-max", "enable_thinking": false]
+        let fallback = LLMClient.qwenExtrasFallback(
+            message: "parameter.enable_thinking is not supported: thinking cannot be disabled",
+            body: body)
+        XCTAssertEqual(fallback?.dropped, ["enable_thinking"])
+        XCTAssertNil(fallback?.body["enable_thinking"])
+        // 报错没提搜索 → 搜索字段一个都不动（这一趟只摘被点到的那件事）
+        let both: [String: Any] = ["enable_search": true, "enable_thinking": false]
+        let onlyThinking = LLMClient.qwenExtrasFallback(message: "thinking is not supported",
+                                                        body: both)
+        XCTAssertEqual(onlyThinking?.body["enable_search"] as? Bool, true)
+    }
+
+    /// 看不懂的 400、或者体里压根没有这些字段 → nil = 不重发（UAE 链路每个往返都贵）
+    func testQwenExtrasFallbackReturnsNilWhenNothingToDrop() {
+        XCTAssertNil(LLMClient.qwenExtrasFallback(
+            message: "The current model does not support the \"agent\" search strategy",
+            body: ["model": "qwen3.8-max"]))
+        XCTAssertNil(LLMClient.qwenExtrasFallback(
+            message: "Range of input length should be [1, 129024]",
+            body: ["model": "qwen3.8-max", "enable_search": true, "enable_thinking": false]))
+        XCTAssertNil(LLMClient.qwenExtrasFallback(message: "", body: ["enable_search": true]))
+    }
+
     // MARK: - 用量沉淀点
 
     /// 取走即清空：上一轮的缓存命中 / 来源绝不能被记到下一轮头上
@@ -344,7 +411,10 @@ final class LLMClientTests: XCTestCase {
                                       purpose: .command, provider: .qwen,
                                       searchStyle: .qwenEnableSearch)
         XCTAssertEqual(qwen["enable_search"] as? Bool, true)
-        XCTAssertEqual((qwen["search_options"] as? [String: String])?["search_strategy"], "agent")
+        // search_options **一个字都不发**：4.1.1 硬写 search_strategy=agent，qwen3.8-max 直接 400
+        //（`The current model does not support the "agent" search strategy`）→ 整条指令白掉。
+        // 默认的 turbo 每条模型线都认，agent 式搜索只在 DashScope 的 Responses API 上有。
+        XCTAssertNil(qwen["search_options"])
         XCTAssertNil(qwen["plugins"])
 
         let router = LLMClient.chatBody(model: "anything", messages: [], temperature: nil,

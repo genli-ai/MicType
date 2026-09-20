@@ -410,7 +410,9 @@ enum LLMCatalog {
     enum WebSearchStyle: Equatable {
         /// OpenAI Responses 的 `tools:[{type:"web_search"}]`——唯一会回传来源链接的一档
         case openaiResponsesTool
-        /// DashScope 兼容模式：body 里 `enable_search` + `search_options`，**不回传来源**
+        /// DashScope 兼容模式：body 里只发 `enable_search`（策略用端点默认的 turbo——
+        /// 3.8 线在 Chat Completions 上不吃 `search_options.search_strategy` 的 agent 值，
+        /// 硬写就是 400），**不回传来源**
         case qwenEnableSearch
         /// OpenRouter：`plugins:[{id:"web"}]`
         case openrouterPlugin

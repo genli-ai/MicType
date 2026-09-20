@@ -426,6 +426,16 @@ enum LLMClient {
         if provider == .deepseek, purpose == .polish {
             body["thinking"] = ["type": "disabled"]
         }
+        // 阿里云同理，字段名不同：qwen3.5 / 3.6 / 3.7 / 3.8 这几条线**默认开思考**
+        //（老的 qwen3-max / qwen-plus / qwen-flash 默认关，所以 4.1.1 之前没人注意到），
+        // 而我们一次都没关过它。用户 2026-09-20 的 4.1.1 日志：qwen3.8-max 润色 ~25 个字
+        // 用掉 3889 ms / 8730 ms，更长的直接撞满 12 s 超时——润色的全部价值是"顺手"，
+        // 等到超时就等于这次润色白做。兼容模式上的开关是根级字段 `enable_thinking`。
+        // 指令沿用 DeepSeek 那条的政策：**不发**这个字段，保留服务商默认的思考能力（低频、要质量）。
+        // purpose == nil 只有直接调 chatBody 的单测会出现（见 chat 的默认参数），跟着润色一起关是对的。
+        if provider == .qwen, purpose != .command {
+            body["enable_thinking"] = false
+        }
         // service_tier 是 OpenAI 的字段；别的服务商收到只会多一个它不认识的键（有的直接 400）
         if fastTier, provider == .openai {
             body["service_tier"] = "fast"
@@ -433,10 +443,16 @@ enum LLMClient {
         // 同一条铁律的第二道闸：润色路径一个搜索参数都不发
         switch purpose == .command ? searchStyle : .unsupported {
         case .qwenEnableSearch:
-            // DashScope 兼容模式：body 里两个字段。agent 策略会自己决定搜几次、搜什么。
+            // DashScope 兼容模式：**只发 enable_search 这一个字段**，策略一律用端点默认的 turbo。
+            // 4.1.1 这里硬写过 `search_options: {"search_strategy": "agent"}`，结果是整条指令直接 400：
+            // `The current model does not support the "agent" search strategy`。
+            // 文档写明 qwen3.8-max / -0902 / -flash / -2.4t-a95b / -27b 在 Chat Completions 上
+            // 都不吃 search_strategy 的 agent 值；agent 式的多步搜索（和来源链接）只在 DashScope 的
+            // Responses API（/compatible-mode/v1/responses + tools:[{"type":"web_search"}]）上有，
+            // 那是路线图项，不是这里能补的。指定任何策略都是在替用户赌他选的型号支持它，
+            // 赌输的代价是整条指令白掉——turbo 是每条模型线都认的那一档，所以什么都不指定。
             // **这一档不回传来源**（OpenAI 兼容端点的限制），所以设置页要当面写清楚。
             body["enable_search"] = true
-            body["search_options"] = ["search_strategy": "agent"]
         case .openrouterPlugin:
             body["plugins"] = [["id": "web"]]
         case .openaiResponsesTool, .unsupported:
@@ -570,7 +586,8 @@ enum LLMClient {
     /// 所以中间那道分隔是 `[\s.]*` 而不是 `\s+`：4.1.1 把联网搜索改成默认开之后，
     /// 阿里云那一档的 enable_search / search_options 正是最可能被端点拒掉的字段，
     /// 认不出参数名就没有"摘掉重发"，整条指令白掉。
-    /// 取不到返回 nil（不值得为一条看不懂的报错再发一趟）。
+    /// 取不到返回 nil（不值得为一条看不懂的报错再发一趟）——阿里云那一档在这之后
+    /// 还有一道按话题摘的兜底（见 qwenExtrasFallback），因为 DashScope 的 400 常常一个参数名都不点。
     static func unsupportedParameterName(in message: String) -> String? {
         let pattern = "(?i)(?:unknown|unsupported|unrecognized|invalid)[\\s.]*"
             + "(?:parameter|value|argument|request argument supplied|request argument)"
@@ -606,6 +623,35 @@ enum LLMClient {
             out[head] = nested
         }
         return out
+    }
+
+    /// 阿里云那一档专用的第二道兜底：上面那条"按参数名摘"没摘到东西时才轮到它。
+    ///
+    /// 为什么非要多一条：DashScope 的 400 经常**一个参数名都不点**。4.1.1 的真实回包是
+    /// `The current model does not support the "agent" search strategy`——
+    /// 正则找不到参数名，于是没有重发，用户那条语音指令整个白掉。这类"这个型号不吃某个
+    /// 附加字段"的报错，按**话题**摘掉相关字段比按名字摘可靠得多：报错里提搜索就把搜索那两个
+    /// 字段一起拿掉，提思考就把思考开关拿掉，剩下的请求体是一个任何型号都认的最小集合。
+    /// 目标很明确：一个端点不认的搜索/思考字段，再也不许让用户整条指令白说。
+    ///
+    /// 两条规则都没摘掉任何字段就返回 nil = **不要重发**（UAE 这条链路每个往返都贵，
+    /// 原样再发一遍只会撞上同一堵墙）。
+    /// - Returns: (摘干净的请求体, 摘掉的字段名)。字段名只进日志，不含任何用户内容。
+    static func qwenExtrasFallback(message: String,
+                                   body: [String: Any]) -> (body: [String: Any], dropped: [String])? {
+        let lower = message.lowercased()
+        var out = body
+        var dropped: [String] = []
+        // 搜索：两个字段是一套，留一个下来照样可能被拒 → 一起摘
+        if lower.contains("search") {
+            for key in ["enable_search", "search_options"] where out.removeValue(forKey: key) != nil {
+                dropped.append(key)
+            }
+        }
+        if lower.contains("thinking"), out.removeValue(forKey: "enable_thinking") != nil {
+            dropped.append("enable_thinking")
+        }
+        return dropped.isEmpty ? nil : (out, dropped)
     }
 
     // MARK: - 发送
@@ -746,6 +792,18 @@ enum LLMClient {
                 }
             }
 
+            /// 摘掉某个参数之后原样重发一次（400 去参兜底的唯一出口）。
+            /// 抽成一个局部函数是因为下面有两条独立的"摘什么"的规则（按参数名 / 阿里云按话题），
+            /// 而"怎么重发"必须逐字一样——尤其是 stripAttemptsLeft - 1 这一格预算。
+            func resend(_ stripped: [String: Any]) {
+                send(path: path, url: url, body: stripped, apiKey: apiKey, timeout: timeout,
+                     endpoint: endpoint, purpose: purpose,
+                     provider: provider, networkRetriesLeft: networkRetriesLeft,
+                     stripAttemptsLeft: stripAttemptsLeft - 1,
+                     hostResolveAttemptsLeft: hostResolveAttemptsLeft, didRetry: didRetry,
+                     handle: handle, completion: completion)
+            }
+
             /// 接入地址还没试对 → 先试出来（见 AlibabaHostRecovery）。
             /// 返回 true 表示这一趟已经交给恢复流程了，调用处不要再往下走。
             ///
@@ -813,17 +871,23 @@ enum LLMClient {
                     .compactMap { $0 }.joined(separator: " ")
                 // 400 点了某个参数的名字：摘掉它原样重发一次。通用兜底——文档写着能用、端点却
                 // 不认的字段（verbosity 的路径只有 cookbook 有据）不该让整次润色/指令失败。
-                if http.statusCode == 400, stripAttemptsLeft > 0,
-                   let param = unsupportedParameterName(in: message ?? ""),
-                   let stripped = stripping(parameter: param, from: body) {
-                    Log.warn("LLM 400 rejected parameter \(param) — retrying without it")
-                    send(path: path, url: url, body: stripped, apiKey: apiKey, timeout: timeout,
-                         endpoint: endpoint, purpose: purpose,
-                         provider: provider, networkRetriesLeft: networkRetriesLeft,
-                         stripAttemptsLeft: stripAttemptsLeft - 1,
-                         hostResolveAttemptsLeft: hostResolveAttemptsLeft, didRetry: didRetry,
-                         handle: handle, completion: completion)
-                    return
+                if http.statusCode == 400, stripAttemptsLeft > 0 {
+                    if let param = unsupportedParameterName(in: message ?? ""),
+                       let stripped = stripping(parameter: param, from: body) {
+                        Log.warn("LLM 400 rejected parameter \(param) — retrying without it")
+                        resend(stripped)
+                        return
+                    }
+                    // 按名字没摘到东西（DashScope 的 400 常常一个参数名都不点，比如
+                    // 「does not support the "agent" search strategy」）→ 阿里云那一档按话题再摘一次。
+                    // 同一份 stripAttemptsLeft 预算，摘不到就不发（见 qwenExtrasFallback）。
+                    if provider == .qwen,
+                       let fallback = qwenExtrasFallback(message: message ?? "", body: body) {
+                        Log.warn("LLM 400 rejected \(fallback.dropped.joined(separator: ", "))"
+                                 + " — retrying without it")
+                        resend(fallback.body)
+                        return
+                    }
                 }
                 let hostAction = recoveryAction(provider: provider, purpose: purpose,
                                                 status: http.statusCode, urlErrorCode: nil,
