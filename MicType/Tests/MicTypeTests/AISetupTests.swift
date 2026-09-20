@@ -54,12 +54,38 @@ final class AISetupTests: XCTestCase {
         }
     }
 
-    /// 铁律（用户 2026-09-19 拍板）：默认永远是这家最好的主流型号，**绝不是便宜的那一档**。
+    /// 铁律（用户 2026-09-20 拍板，推翻 2026-09-19 那条"默认必须是旗舰"）：
+    /// 默认是这家**均衡偏快**的那一档。理由是实测——润色每句话都要跑一次，
+    /// qwen3.8-flash 1.8–3.6 秒可用，qwen3.8-max 4–12 秒还撞得上 12 秒超时（整句话白说）。
     /// 这三个名字写死在这里——改默认值必须先改这条测试，也就必须先过一遍脑子。
-    func testDefaultsAreTheStrongestMainstreamModels() {
-        XCTAssertEqual(LLMCatalog.defaultModel(for: .openai), "gpt-5.6-sol")
-        XCTAssertEqual(LLMCatalog.defaultModel(for: .deepseek), "deepseek-v4-pro")
-        XCTAssertEqual(LLMCatalog.defaultModel(for: .qwen), "qwen3.8-max")
+    func testDefaultsAreTheBalancedFastTier() {
+        XCTAssertEqual(LLMCatalog.defaultModel(for: .openai), "gpt-5.6-luna")
+        XCTAssertEqual(LLMCatalog.defaultModel(for: .deepseek), "deepseek-flash")
+        XCTAssertEqual(LLMCatalog.defaultModel(for: .qwen), "qwen3.8-flash")
+    }
+
+    /// 默认那一项排在下拉的**最前面**，而且标签直说它为什么是默认（「快」）。
+    /// 打开下拉第一眼看到的就该是正在用的那个。
+    func testDefaultModelLeadsTheMenuAndSaysWhy() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            for provider in [LLMProvider.openai, .deepseek, .qwen] {
+                let menu = LLMCatalog.modelMenu(for: provider)
+                XCTAssertEqual(menu.first?.id, LLMCatalog.defaultModel(for: provider),
+                               provider.rawValue)
+                let note = menu.first?.note ?? ""
+                XCTAssertTrue(note.contains("默认") || note.lowercased().contains("default"), note)
+                XCTAssertTrue(note.contains("快") || note.lowercased().contains("fast"), note)
+            }
+        }
+        L10n.shared.language = .zh
+        // 旗舰档仍然一眼认得出来（它只是不再是默认值）
+        let qwenMax = LLMCatalog.modelMenu(for: .qwen).first { $0.id == "qwen3.8-max" }
+        XCTAssertEqual(qwenMax?.note, "旗舰（较慢）", "慢不是修辞：实测 4–12 秒，长句会撞上超时")
+        XCTAssertEqual(LLMCatalog.modelMenu(for: .openai).first { $0.id == "gpt-6-astra" }?.note,
+                       "最强")
+        XCTAssertEqual(LLMCatalog.modelMenu(for: .openai).first { $0.id == "gpt-5.6-sol" }?.note,
+                       "旗舰")
     }
 
     /// 润色与指令共用同一个默认值：4.0.0 的"润色便宜、指令贵"已经收掉了

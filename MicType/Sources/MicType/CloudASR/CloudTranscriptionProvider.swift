@@ -495,8 +495,12 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
             return .failure(failure)
         }
         guard let url = Self.endpoint(host: host) else {
-            return .failure(CloudASRFailure(tr("云端接入地址不合法，请重填「接入地址」或清空它让 MicType 自己试",
-                                               "The API host is not a valid hostname - re-enter it, or clear it and let MicType find the endpoint")))
+            // 几乎到不了这里：候选表本身就会跳过拼不出主机名的值，而存着的脏值在开机与
+            // 设置导入时就被丢掉了（Settings.dropJunkPastedHost）。真走到了也**不指任何控件**
+            // ——4.1.4 起界面上与接入地址有关的东西一个都没有了，让用户"去某处改"只会让他白找。
+            // 只说两件真事：这一次发不出去，而地址会自己重挑。
+            return .failure(CloudASRFailure(tr("这一次没能发往阿里云：接入地址无效，MicType 会自己重新试出一台，请再说一次",
+                                               "This take could not be sent to Alibaba Cloud: the endpoint was invalid. MicType will find a working one by itself - please say it again")))
         }
         let body = Self.requestBody(model: model,
                                     audioDataURI: WAVEncoder.dataURI(wav: wav),
@@ -656,12 +660,16 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
         }
 
         switch effective {
+        // 4.1.4 起这两句**不再指路"去粘接入地址"**：那个输入框已经没有了（地址改由 MicType
+        // 自己并发试一圈、挑最快的，见 AlibabaEndpoint）。指着一个不存在的控件，
+        // 用户只会以为界面少了东西，然后照样查不出原因。现在只说我们真正知道的那件事：
+        // 每一台都试过了，没有一台认这把 Key。
         case 0:
-            return made("连不上阿里云：网络不通，或这个接入地址根本不存在。把百炼控制台里的「接入地址（apiHost）」粘到 设置 → 云端 AI 的「接入地址」里",
-                        "Could not reach Alibaba: no network, or that API host does not exist. Paste the API host from the Model Studio console into the API host field in Settings → Cloud AI")
+            return made("连不上阿里云：网络不通，或者这台 Mac 到阿里云的线路被挡住了。确认能上网之后再试一次",
+                        "Could not reach Alibaba Cloud: no network, or this Mac cannot get through to it. Check your connection and try again")
         case 401:
-            return made("这把 Key 不属于试过的这些接入地址。到百炼控制台复制「接入地址（apiHost）」，粘到 设置 → 云端 AI 的「接入地址」里；或确认 Key 没有过期",
-                        "This key does not belong to any endpoint MicType tried. Copy the API host from the Model Studio console and paste it into the API host field in Settings → Cloud AI, or check that the key is still valid")
+            return made("试过的每一个接入地址都不认这把 Key。请确认它是阿里云百炼（Model Studio）的 API Key，而且没有过期或被删除",
+                        "Every endpoint MicType tried refused this key. Check that it is an Alibaba Cloud Model Studio (Bailian) API key and that it has not expired or been deleted")
         case 403:
             if raw.localizedCaseInsensitiveContains("arrear") {
                 return made("阿里云账户欠费，云端识别已停。请充值后再试",
@@ -670,11 +678,12 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
             return made("这个模型还没在阿里云百炼开通（或免费额度已用完、子工作空间无权）。请到百炼控制台 → 模型广场把该模型开通一次",
                         "This model is not enabled for your account (or the free quota is used up, or the sub-workspace lacks access). Enable it once in the Model Studio console → Model Gallery")
         case 404:
-            // 别写成"qwen3-asr-flash 也已经试过了"：自动换模型只发生在「测试识别」/ 粘 Key
-            // 那一趟上（见 CloudASRProbe.runTryingModels），日常听写这条路不换模型。
-            // 说成已经试过，用户就不会再去按那颗真能救他的按钮。
-            return made("这个接入地址上没有这个识别模型。请到百炼控制台 → 模型广场开通 qwen3-asr-flash，或在 设置 → 云端 AI 里按一次「测试识别」让 MicType 自动换到它",
-                        "This endpoint has no such speech model. Enable qwen3-asr-flash in the Model Studio console → Model Gallery, or hit Test recognition under Settings → Cloud AI so MicType switches to it")
+            // 别写成"qwen3-asr-flash 也已经试过了"：自动换模型只发生在"把云端识别开关拨开"
+            // 与粘 Key 那两趟上（见 CloudASRProbe.runTryingModels），日常听写这条路不换模型。
+            // 说成已经试过，用户就不会再去做那个真能救他的动作。
+            // 4.1.4 起那个动作是"开关关掉再打开"——「测试识别」按钮已经并进它了。
+            return made("这个接入地址上没有这个识别模型。请到百炼控制台 → 模型广场开通 qwen3-asr-flash，或在 设置 → 云端 AI 里把「识别也用云端」关掉再打开，让 MicType 自动换到它",
+                        "This endpoint has no such speech model. Enable qwen3-asr-flash in the Model Studio console → Model Gallery, or switch \"Also recognize speech in the cloud\" off and on again under Settings → Cloud AI so MicType switches to it")
         case 429:
             // 只认 AllocationQuota：Throttling.RateQuota 里也有 "quota" 字样，但那是限流，该重试
             if raw.localizedCaseInsensitiveContains("allocation") {

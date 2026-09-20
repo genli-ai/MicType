@@ -488,8 +488,12 @@ final class CloudASRTests: XCTestCase {
         XCTAssertEqual(unauthorized.status, 401)
         XCTAssertEqual(unauthorized.code, "InvalidApiKey")
         XCTAssertTrue(unauthorized.message.contains("401"))
-        XCTAssertTrue(unauthorized.message.contains("接入地址") || unauthorized.message.contains("API host"),
-                      "401 的下一步是去控制台粘接入地址——4.0.1 起没有「区域」可以改了")
+        // 4.1.4 起**不再指路"去粘接入地址"**（那个输入框已经没有了）：只说我们真正知道的事
+        // ——每一台都试过了，没有一台认这把 Key，请核对它是不是百炼的 Key、有没有过期
+        XCTAssertFalse(unauthorized.message.contains("粘"), unauthorized.message)
+        XCTAssertFalse(unauthorized.message.lowercased().contains("paste"), unauthorized.message)
+        XCTAssertTrue(unauthorized.message.contains("Key") || unauthorized.message.contains("key"),
+                      unauthorized.message)
 
         let denied = AlibabaASRClient.failure(status: 403, code: "Model.AccessDenied", message: nil)
         XCTAssertFalse(denied.retryable)
@@ -499,8 +503,8 @@ final class CloudASRTests: XCTestCase {
         let arrear = AlibabaASRClient.failure(status: 403, code: "Arrearage", message: nil)
         XCTAssertTrue(arrear.message.contains("充值") || arrear.message.contains("Top it up"))
 
-        // 404 是 4.0.0 那个 bug 的现场：文案必须点名 qwen3-asr-flash 已经自动试过，
-        // 否则用户会去改模型名——那条路走不通
+        // 404 是 4.0.0 那个 bug 的现场：文案必须点名 qwen3-asr-flash，并指出那个真能救他的动作
+        // （4.1.4 起是"把云端识别开关关掉再打开"，「测试识别」按钮已经并进它了）
         let notFound = AlibabaASRClient.failure(status: 404, code: "ModelNotFound", message: nil)
         XCTAssertFalse(notFound.retryable)
         XCTAssertTrue(notFound.message.contains("qwen3-asr-flash"))
@@ -509,7 +513,9 @@ final class CloudASRTests: XCTestCase {
         // 还没上网（DNS 不通 / 主机不存在）：不写 "(0)" 这种对用户毫无意义的尾巴
         let offline = AlibabaASRClient.failure(status: 0, code: nil, message: nil)
         XCTAssertFalse(offline.message.contains("(0)"))
-        XCTAssertTrue(offline.message.contains("接入地址") || offline.message.contains("API host"))
+        // 同理：连不上就说连不上，别指着一个不存在的输入框
+        XCTAssertFalse(offline.message.contains("粘"), offline.message)
+        XCTAssertFalse(offline.message.lowercased().contains("paste"), offline.message)
 
         let throttled = AlibabaASRClient.failure(status: 429, code: "Throttling.RateQuota", message: nil)
         XCTAssertTrue(throttled.retryable, "限流值得退避重试一次")

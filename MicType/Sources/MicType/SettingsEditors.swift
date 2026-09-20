@@ -211,7 +211,7 @@ struct InputEditor: View {
 // MARK: - 本地识别（麦克风 / 语言 / 词汇表 / 本机模型）
 
 /// 这一页只管一件事：说出来的话怎么在**这台 Mac 上**变成字。
-/// 识别引擎、云端的 Key / 接入地址 / 「测试识别」全部在「云端 AI」页——
+/// 识别引擎、云端的那把 Key、接入地址全部在「云端 AI」页——
 /// 那几件事都是"要不要用 AI、用哪家"的一部分，分在两页等于让用户在两处各选一次
 /// （4.0.0 正是这样选出了两个对不上的值）。这里只留云端开着时要更正的那几句话。
 struct RecognitionEditor: View {
@@ -528,8 +528,14 @@ struct RecognitionEditor: View {
 /// ① 使用方式：只用本地 / 本地 + AI；② 选了 AI 再选一个服务商、贴一把 Key；
 /// ③ 一个「模型」下拉（润色和指令都用它）；④ 只有阿里云多一个「识别也用云端」开关；
 /// ⑤ 自定义规则；⑥ 联网搜索（支持的服务商默认开）；⑦ 优先处理（只有 OpenAI 有这一档）；
-/// 「高级」里只剩"测一次当前型号"，外加没有内置清单那两档（其他兼容服务 / 本机模型）
-/// 的型号名输入框与「刷新模型列表」。
+/// 「高级」整段只剩没有内置清单那两档（其他兼容服务 / 本机模型）的型号名输入框、
+/// 「刷新模型列表」与「测试模型」——三家官方档连这一段都不渲染。
+///
+/// 4.1.4 又收掉三样（用户 2026-09-20 实测后拍板：「一个测试，不是三个」）：
+///   • **「测试模型」**——三家官方档的型号来自下拉、Key 在上面粘的时候就验过了，
+///     这颗按钮测的是同一件事；
+///   • **「测试识别」**——并进"把云端识别开关拨开"那一下（CloudRecognitionFields.runCheck）；
+///   • **「接入地址（可选）」**——地址改由 App 并发试一圈、挑最快的（见 AlibabaEndpoint）。
 ///
 /// 4.1.1 按用户 2026-09-20 的实测反馈又收掉四样（每一样都是"同一件事说了两遍"）：
 ///   • **「关于我」**——和「自定义规则」并成一个框（谁也说不清哪句话该写在哪个框里）；
@@ -678,7 +684,6 @@ struct CloudEditor: View {
                            keyProbe: keyProbe,
                            keyProbeModel: polishModelBinding.wrappedValue,
                            showsModel: true,
-                           showsDiagnostics: true,
                            showsNotSetUpHint: !hasStoredKey,
                            onKeyStatus: { _ in
                                // 钥匙串不是 @AppStorage：验证通过之后这一页要自己重算，
@@ -699,11 +704,15 @@ struct CloudEditor: View {
                 }
                 webSearchSection
                 if AISetup.showsPriorityToggle(inUse: inUseProvider) { prioritySection }
-                Section {
-                    modelMaintenance
-                } header: {
-                    SectionHeader(title: tr("高级", "Advanced"),
-                                  info: SettingsCopy.advancedInfo(hasModelMenu: hasModelMenu))
+                // 「高级」整段只留给**没有内置型号清单**的那两档（其他 OpenAI 兼容服务 / 本机模型）：
+                // 4.1.4 拿掉「测试模型」之后，三家官方档的这一段里一个控件都不剩，
+                // 而一个空的折叠段只会让人以为界面坏了（用户 2026-09-20：一个测试，不是三个）。
+                if !hasModelMenu {
+                    Section {
+                        modelMaintenance
+                    } header: {
+                        SectionHeader(title: tr("高级", "Advanced"), info: SettingsCopy.advancedInfo)
+                    }
                 }
             }
         }
@@ -960,30 +969,20 @@ struct CloudEditor: View {
     //
     // 4.1.1 这一段**不再是折叠面板**：里面只剩一行了，而折叠三角上那句标签
     // 只能把下面那颗按钮的名字再念一遍——一层壳子，两遍同样的话。
+    // 4.1.4 起整段只为**没有内置清单**的那两档渲染（见上面那个 if）。
 
-    /// 型号名输入框只留给**没有内置清单**的那两档（其他 OpenAI 兼容服务 / 本机模型）：
-    /// 三家官方档的型号由上面那个下拉决定，这里再摆一个输入框就是同一个决定有两个入口。
+    /// 型号名输入框 + 「刷新」+「测试」，只留给**没有内置清单**的那两档
+    /// （其他 OpenAI 兼容服务 / 本机模型）：型号名只有用户自己知道，填错了没有任何提示，
+    /// 所以这一档需要一颗"真发一次试试"。三家官方档的型号由上面那个下拉决定，型号名不会错，
+    /// 而 Key 是不是好的在上面粘 Key 那一步就验过了——再摆一颗「测试模型」就是同一件事测两遍。
     /// 填进去的名字照样一次写回润色与指令两个字段（4.1.1 起它们永远相同）。
     @ViewBuilder
     private var modelMaintenance: some View {
-        if hasModelMenu {
-            // 三家官方档：型号由上面那个下拉决定，这里只留"真发一次试试"。
-            // **不摆「刷新模型列表」**：取回来的型号只喂给下面那个输入框，而这一档压根没有
-            // 那个输入框——点了什么也不会变，比没有这颗按钮更让人困惑
-            HStack(spacing: 8) {
-                Button(testing ? tr("测试中…", "Testing…") : tr("测试模型", "Test the model")) {
-                    runModelTest(polishModelBinding.wrappedValue)
-                }
-                .disabled(testing)
-                Spacer()
-            }
-        } else {
-            ModelField(label: tr("型号名", "Model name"),
-                       text: unifiedModelBinding, presets: modelChoices,
-                       testing: testing, refreshing: refreshing,
-                       onTest: { runModelTest(polishModelBinding.wrappedValue) },
-                       onRefresh: refreshModelList)
-        }
+        ModelField(label: tr("型号名", "Model name"),
+                   text: unifiedModelBinding, presets: modelChoices,
+                   testing: testing, refreshing: refreshing,
+                   onTest: { runModelTest(polishModelBinding.wrappedValue) },
+                   onRefresh: refreshModelList)
         if !refreshStatus.isEmpty {
             Caption(refreshStatus)
         }

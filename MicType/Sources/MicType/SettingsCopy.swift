@@ -241,15 +241,6 @@ enum SettingsCopy {
         tr("本机模型不需要 Key，也不花钱", "On-device models need no key and cost nothing")
     }
 
-    /// 阿里云接入地址那个**可选**输入框：空着才是常态
-    static var hostAutoDetected: String {
-        tr("留空自动探测", "Leave empty to auto-detect")
-    }
-
-    static var hostFilledManually: String {
-        tr("填了地址就只用它，不再探测", "With an endpoint filled in, MicType stops auto-detecting")
-    }
-
     /// 使用方式那颗 ⓘ。两句话都**只许说代码真会做的事**：
     ///   • 「只用本地」写回的是"润色关掉 + 识别回本机"（AISetup.localOnlyWrites），**不删 Key**，
     ///     而指令路径只看 LLMClient.isConfigured、不看档位——所以这一档下按住说指令照样会计费
@@ -300,21 +291,21 @@ enum SettingsCopy {
     /// 4.1.0 之前它挂在「高级」那颗 ⓘ 上，而下拉就在上面一段，要点开另一段才读得到。
     /// 每一档都要过 120 字那条线。
     static func cloudModelInfo(provider: LLMProvider) -> String {
-        // 「刷新模型列表」那句**只写给没有内置清单的那两档**：三家官方档的「高级」里
-        // 根本没有那颗按钮（4.1.1 起只剩「测试模型」，见 SettingsEditors.modelMaintenance），
+        // 「刷新模型列表」那句**只写给没有内置清单的那两档**：4.1.4 起三家官方档
+        // 连「高级」这一段都不渲染（见 SettingsEditors.modelMaintenance），
         // 指着一个不存在的控件，用户会以为界面少了东西。
         let shared = tr("润色每句话都要跑一次，指令偶尔跑一次，两者用同一个型号。换代之后旧型号名可能直接 404。",
                         "Polish runs on every sentence and commands run now and then; both use this one model. After a generation change an old model id can simply 404.")
         switch provider {
         case .openai:
-            return shared + tr("\n换一个就在上面的下拉里选：luna 最便宜，terra 平衡，sol 旗舰，astra 最强也最贵。",
-                               "\nPick another from the menu above: luna is the cheapest, terra is balanced, sol is the flagship, astra is the strongest and priciest.")
+            return shared + tr("\n默认 luna：最快也最便宜。terra 平衡，sol 旗舰，astra 最强也最贵——越强越慢。",
+                               "\nluna is the default: fastest and cheapest. terra is balanced, sol is the flagship, astra is the strongest and priciest - stronger also means slower.")
         case .deepseek:
-            return shared + tr("\n换一个就在上面的下拉里选：deepseek-flash 快且便宜，润色时不思考；deepseek-v4-pro 更强。",
-                               "\nPick another from the menu above: deepseek-flash is fast and cheap (no thinking for polish); deepseek-v4-pro is stronger.")
+            return shared + tr("\n默认 deepseek-flash：快且便宜，润色时不思考。deepseek-v4-pro 更强，但每句话都要多等。",
+                               "\ndeepseek-flash is the default: fast and cheap, with no thinking for polish. deepseek-v4-pro is stronger but adds a wait to every sentence.")
         case .qwen:
-            return shared + tr("\n换一个就在上面的下拉里选：qwen3.8-max 是当前代旗舰，qwen-max 是跟着换代走的稳定别名。",
-                               "\nPick another from the menu above: qwen3.8-max is the current flagship; qwen-max is a stable alias that follows each generation.")
+            return shared + tr("\n默认 qwen3.8-flash：实测润色 2–4 秒。qwen3.8-max 更强但要 4–12 秒，长句会撞上超时。",
+                               "\nqwen3.8-flash is the default: 2-4 seconds for polish in practice. qwen3.8-max is stronger but takes 4-12 seconds, and long sentences can hit the timeout.")
         case .custom:
             return shared + tr("\n这一档没有内置清单：型号名照服务商文档填，设置页「高级」里的「刷新」问端点现在有哪些。",
                                "\nNo built-in list here: type the model id from your provider's docs, or hit Refresh under Advanced in Settings.")
@@ -324,15 +315,12 @@ enum SettingsCopy {
         }
     }
 
-    /// 「高级」那颗 ⓘ。4.1.1 之后这一段只剩真正少见的事（分开设型号、温度、区域都拿掉了）。
-    /// - hasModelMenu: 这一档有内置型号清单（三家官方档）。没有的那两档多一个型号名输入框
-    ///   和「刷新」，ⓘ 也就多一句——**说的只能是屏幕上真有的控件**。
-    static func advancedInfo(hasModelMenu: Bool) -> String {
-        let base = tr("「测试模型」拿当前型号真发一次最短请求，报往返毫秒数，不动任何设置。",
-                      "Test the model sends one real minimal request on the current model and reports the round trip; it changes no settings.")
-        guard !hasModelMenu else { return base }
-        return base + tr("\n这一档没有内置清单：型号名照服务商文档填，「刷新」问端点它现在有哪些。",
-                         "\nThis provider has no built-in list: type the model id from its docs, or hit Refresh to ask the endpoint what it serves.")
+    /// 「高级」那颗 ⓘ。4.1.4 起这一段**只为没有内置型号清单的那两档渲染**
+    /// （其他 OpenAI 兼容服务 / 本机模型），所以这句话只说那两档的事——
+    /// 三家官方档的型号由下拉决定、Key 在粘的时候就验过了，整段都不出现。
+    static var advancedInfo: String {
+        tr("这一档没有内置清单：型号名照服务商文档填，「刷新」问端点它现在有哪些，「测试模型」拿它真发一次最短请求、报往返毫秒数，不动任何设置。",
+           "This provider has no built-in list: type the model id from its docs, hit Refresh to ask the endpoint what it serves, and Test the model sends one real minimal request and reports the round trip; it changes no settings.")
     }
 
     /// 联网搜索那颗 ⓘ：**只说这个开关管到哪儿**。单价写在开关旁边（价格是代价不是解释，
@@ -364,13 +352,12 @@ enum SettingsCopy {
         [usageLocalOnly, usageWithAI, usageWithCloudRecognition,
          providerNotSetUp(current: "OpenAI"), modelNameInAdvanced, modelUsedForBoth, customRulesPlaceholder,
          localModelNeedsNoKey, cloudRecognitionCost, cloudRecognitionOff,
-         hostAutoDetected, hostFilledManually, webSearchUnsupported]
+         webSearchUnsupported]
     }
 
     static var cloudInfos: [String] {
         [usageInfo, providerInfo, keyInfo(cloudASRProbe: false), keyInfo(cloudASRProbe: true),
-         cloudRecognitionInfo, customRulesInfo, webSearchInfo, priorityInfo,
-         advancedInfo(hasModelMenu: true), advancedInfo(hasModelMenu: false)]
+         cloudRecognitionInfo, customRulesInfo, webSearchInfo, priorityInfo, advancedInfo]
             + LLMProvider.allCases.map { cloudModelInfo(provider: $0) }
     }
 
@@ -430,19 +417,6 @@ enum SettingsCopy {
            "The endpoint for \(provider) is configured through Import Settings now; your current setup keeps working.")
     }
 
-    static var hostMalformed: String {
-        tr("这串不像接入地址，清空即交回自动探测。",
-           "That does not look like an endpoint. Clear it to hand the job back to auto-detection.")
-    }
-
-    static var hostNotDetectedYet: String {
-        tr("接入地址还没试出来。", "The endpoint has not been detected yet.")
-    }
-
-    static var hostInUse: String {
-        tr("已试通的接入地址：", "Endpoint in use: ")
-    }
-
     /// 模型未下载 / 已就绪：识别页那一行状态
     static var modelReady: String { tr("模型已就绪", "Model ready") }
     static var modelNotDownloaded: String { tr("模型未下载", "Model not downloaded") }
@@ -471,8 +445,8 @@ enum SettingsCopy {
         [storedKeyWhileLocalOnly(provider: "OpenAI"), polishOffInMenuBar,
          legacyOpenAICloudRecognition, strandedAlibabaRecognition, launchAtLoginFailed,
          endpointOverridden,
-         endpointConfiguredByImport(provider: "Ollama"), hostMalformed, hostNotDetectedYet,
-         hostInUse, modelReady, modelNotDownloaded, modelNoLongerListed,
+         endpointConfiguredByImport(provider: "Ollama"),
+         modelReady, modelNotDownloaded, modelNoLongerListed,
          modelUpgradeAvailable, modelHasNewRevision, modelNeedsAppUpdate(version: "4.1.0")]
     }
 

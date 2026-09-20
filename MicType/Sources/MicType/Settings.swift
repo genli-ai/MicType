@@ -389,7 +389,7 @@ enum SettingsKeys {
     // 它们仍是候选主机表最好的排序线索（见 AlibabaEndpoint.candidates），但不再有 UI。
     static let qwenRegion = "qwenRegion"                    // 老设置：DashScope 接入区域
     static let qwenWorkspaceID = "qwenWorkspaceID"          // 老设置：WorkspaceId（主机名第一段）
-    static let qwenAPIHost = "qwenAPIHost"                  // 用户自己粘的接入地址（可选，粘了就只用它）
+    static let qwenAPIHost = "qwenAPIHost"                  // 存着的接入地址（4.1.4 起只来自导入的设置文件）
     static let qwenResolvedHost = "qwenResolvedHost"        // 试通并记住的那台主机（本机缓存，不进设置导出）
     /// 上面那台主机是**真的联网试通过**的，而不是 4.0.1 迁移按老区域种下的（见 AlibabaEndpoint.hostLooksVerified）。
     /// 只有 CloudASRSettings.rememberResolution 写得出真；恢复探测要不要跑就看它。
@@ -586,6 +586,28 @@ final class Settings {
             d.set(true, forKey: LLMCatalog.bestDefaultMigrationFlagKey)
         }
 
+        // 一次性迁移（4.1.4）：默认型号从"旗舰"改回"快"那一档（用户 2026-09-20 拍板，
+        // 理由与实测数字见 LLMCatalog 默认值那段注释）。
+        //
+        // 只搬**持久域里真的存着老默认值**的那几位（规则在 LLMCatalog.migrationToFastDefaultChanges，
+        // 纯函数，单测钉死）：从来没选过型号的人什么都不用做——注册默认值本身已经换掉了，
+        // 而往持久域里写一个等于新默认值的字符串只会把他的型号永久钉死。
+        // 必须排在上面两步之后：它们刚写进去的值，这一步要按新值判。
+        if !d.bool(forKey: LLMCatalog.fastDefaultMigrationFlagKey) {
+            var stored: [String: String?] = [:]
+            for provider in [LLMProvider.openai, .deepseek, .qwen] {
+                let keys = LLMCatalog.modelKeys(for: provider)
+                stored.updateValue(storedDomain[keys.polish] as? String, forKey: keys.polish)
+                stored.updateValue(storedDomain[keys.command] as? String, forKey: keys.command)
+            }
+            for change in LLMCatalog.migrationToFastDefaultChanges(stored: stored) {
+                d.set(change.to, forKey: change.key)
+                Log.info("Default model migrated provider=\(change.provider.rawValue) "
+                         + "from=\(change.from) to=\(change.to)")
+            }
+            d.set(true, forKey: LLMCatalog.fastDefaultMigrationFlagKey)
+        }
+
         // 一次性迁移（4.0.1）：老设置里的「区域 + WorkspaceId」→ 试通主机缓存。
         //
         // 4.0.1 拿掉了区域选择器，接入地址改成 App 自己试。但候选表只认三个工作空间后缀，
@@ -630,7 +652,7 @@ final class Settings {
         //
         // 3.0 只活在异步端点上，打同步端点必然 404（见 AlibabaASRModel）。4.0.0 把它设成了
         // 默认值，所以老设置里存着它的人不在少数；而 4.0.1 已经把识别模型选择器删掉了，
-        // 他在界面上无从改回来。404 之后那条自动换模型的路只在「测试识别」那一趟上跑，
+        // 他在界面上无从改回来。404 之后那条自动换模型的路只在"把云端识别拨开"那一趟上跑，
         // 日常听写每一次都要白白上传一整段音频再回落本地——所以必须在启动时就改过来。
         if !d.bool(forKey: "migratedCloudASRModelTo3") {
             if d.string(forKey: SettingsKeys.cloudAlibabaModel) == AlibabaASRModel.qwenAudio30Flash.rawValue {
@@ -695,6 +717,20 @@ final class Settings {
         d.set("", forKey: SettingsKeys.aboutMe)
         // 内容本身绝不进日志（那是用户写给 AI 的私人偏好），只记发生过这件事
         Log.info("About-me merged into custom rules")
+    }
+
+    /// 存着的接入地址是串脏值就丢掉（开机与设置导入共用这一份）。
+    ///
+    /// 为什么要主动丢而不是报一句错：4.1.4 起界面上没有这个输入框了，用户既看不见它也改不掉。
+    /// 而一串拼不出主机名的值在候选表里本来就会被静默跳过——留着它唯一的作用，
+    /// 就是让「接入地址不合法」这类话有机会说出口，而那句话指不出任何用户能动的东西。
+    /// 判据是纯函数（AlibabaEndpoint.storedHostIsJunk），丢掉记一行日志。
+    func dropJunkPastedHost() {
+        let stored = qwenAPIHost
+        guard AlibabaEndpoint.storedHostIsJunk(stored) else { return }
+        d.set("", forKey: SettingsKeys.qwenAPIHost)
+        // 原值可能是用户手抄的半截 URL，不适合原样进日志；只记长度与"发生过"
+        Log.warn("Qwen stored host discarded: not a hostname (length=\(stored.count))")
     }
 
     /// 把每一档的「指令型号」拉回「润色型号」（迁移与设置导入共用这一份）
@@ -911,8 +947,10 @@ final class Settings {
                     forKey: SettingsKeys.qwenWorkspaceID) }
     }
 
-    /// 用户从百炼控制台粘进来的接入地址（apiHost 或整条 URL 都认）。**可选**：
-    /// 空着就由 MicType 自己试（见 AlibabaEndpoint）。粘了就只用它，不再乱试别的主机。
+    /// 存着的接入地址（apiHost 或整条 URL 都认）。**4.1.4 起界面上没有这个输入框了**，
+    /// 所以它只可能来自导入的设置文件。有值就只用它，不再试别的主机；
+    /// 而它一旦 401 / 连不上就会被清掉、交回自动探测（CloudASRSettings.resolveHost）——
+    /// 界面上既然没有地方能清空它，就不能让它把人卡死。
     var qwenAPIHost: String {
         get { d.string(forKey: SettingsKeys.qwenAPIHost) ?? "" }
         set { d.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines),

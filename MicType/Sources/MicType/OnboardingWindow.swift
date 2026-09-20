@@ -953,8 +953,10 @@ private struct HowYouUsePage: View {
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKeys.polishLevel) private var polishLevel = PolishLevel.smart.rawValue
     @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
-    /// 阿里云那一档的接入地址由 MicType 自己试出来（4.0.1 拿掉了区域选择器）。
-    /// 这一屏只留一个**可选**输入框，给自动没试对的人——首配的人不该在这里做地理选择题。
+    /// 阿里云那一档的接入地址由 MicType 自己试出来（4.0.1 拿掉了区域选择器，
+    /// 4.1.4 连那个可选输入框也拿掉了）。这里盯着它只有一个用途：导入的设置文件里
+    /// 可能带着一条，而它一旦被丢掉（见 CloudASRSettings.resolveHost），
+    /// 这一档能不能连得上就变了——那一屏的"AI 跑不跑得起来"得跟着重算。
     @AppStorage(SettingsKeys.qwenAPIHost) private var qwenAPIHost = ""
     /// 「模型」下拉写的是这两个键之一。必须是 @AppStorage 而不是裸 UserDefaults：
     /// 这一屏没有任何东西盯着型号键的话，选完 body 不重算，下拉框还停在旧的那一项，
@@ -1009,7 +1011,7 @@ private struct HowYouUsePage: View {
     }
 
     var body: some View {
-        // ScrollView 是保险绳：验证失败那行可能三行，阿里云还多一个接入地址框——
+        // ScrollView 是保险绳：验证失败那行可能三行，阿里云还多一个云端识别开关——
         // 挤爆时宁可能滚，也不要把底部的控件裁掉。
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
@@ -1037,7 +1039,6 @@ private struct HowYouUsePage: View {
                                keyProbe: keyProbe,
                                keyProbeModel: polishModel(for: selected),
                                showsModel: showsModel,
-                               showsDiagnostics: false,
                                showsNotSetUpHint: false,
                                onKeyStatus: { status in
                                    keyStatus = status
@@ -1071,7 +1072,7 @@ private struct HowYouUsePage: View {
             refreshStoredKey()
             model.refreshAIReady()
         }
-        // 接入地址一改，阿里云的地址就变了，能不能连得上也跟着变
+        // 存着的接入地址被丢掉 / 被导入改掉，阿里云那一档的地址就变了，能不能连得上跟着变
         .onChange(of: qwenAPIHost) { _, _ in model.refreshAIReady() }
     }
 

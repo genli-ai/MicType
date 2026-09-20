@@ -176,21 +176,22 @@ final class KeyVerifier: ObservableObject {
 
         switch probe {
         case .llm:
-            // Qwen 这一档的接入地址是试出来的：先用最便宜的那趟（GET /models）把主机定下来，
-            // 再照常走 testModel。定不下来就直接报那一趟的原因——它比"型号不对"准得多。
+            // Qwen 这一档的接入地址是试出来的：先用最便宜的那趟（GET /models）把候选主机
+            // **整表并发试一遍、挑最快的**，再照常走 testModel。定不下来就直接报那一趟的原因
+            // ——它比"型号不对"准得多。
             //
-            // **每换一把 Key 都要重新试一遍**：缓存的那台是"上一把 Key 的答案"，换了账号
-            // （国际站 → 北京工作空间）之后拿它去打只会得到一个 401，而那句话指向的是 Key，
-            // 用户翻不到头上。缓存的主机仍排在候选表第一位，所以没换端点时这一趟只多一个请求。
-            // 粘过接入地址的人例外：他已经把答案给了，不该再拿他的 Key 去试别的主机。
-            guard provider == .qwen,
-                  AlibabaEndpoint.normalizeHost(Settings.shared.qwenAPIHost) == nil else {
+            // **每验一次 Key 都要重新试一圈**（4.1.4 起连"上一次试通的那台"都不再短路它）：
+            // 缓存的那台既可能是上一把 Key 的答案（换了账号就只剩 401，而那句话指向 Key，
+            // 用户翻不到头上），也可能只是"能用但慢得多"的那一台——按「验证」是用户
+            // **明确要求重新确认这套配置**，那就该把这两件事一起确认掉。
+            // 存着的粘贴地址仍然优先（候选表只有它一台），它死了才丢掉重试（见 resolveHost）。
+            guard provider == .qwen else {
                 LLMClient.testModel(model, provider: provider, candidateKey: trimmed) { ok, message in
                     settle(ok, provider.segmentName, model, message)
                 }
                 return
             }
-            AlibabaHostResolver.resolve(
+            CloudASRSettings.resolveHost(
                 apiKey: trimmed,
                 candidates: CloudASRSettings.currentHostCandidates(apiKey: trimmed)) { result in
                 switch result {
@@ -382,33 +383,12 @@ struct KeyEntryView: View {
     }
 }
 
-// MARK: - 阿里云的「接入地址（可选）」
-
-/// 设置页与引导页共用的那个可选输入框（含说明与格式校验）。
-///
-/// 为什么非共用不可：4.0.1 里这是两份手抄本，引导那一份漏了格式校验，说明文字也另写了一版
-/// ——于是在引导里把「接入地址：xxx」连中文标签一起粘进去的人，什么提示都得不到，
-/// 那串被 normalizeHost 静默丢弃（等于没填）。同一个事实只写一处（见 keyStorageNote 的做法）。
-///
-/// 写成 @ViewBuilder 静态函数而不是 View：调用处在 Form / VStack 里，这三样要各占一行，
-/// 包成一个 View 会被挤成一行。
-/// 「已试通的那台 + 重新探测」只在设置页出现：首配的人手上还没有"上一次"。
-enum QwenHostField {
-
-    /// 这串填得像不像一个主机名。空着是常态（交给自动探测），不算错。
-    static func isMalformed(_ raw: String) -> Bool {
-        !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && AlibabaEndpoint.normalizeHost(raw) == nil
-    }
-
-    @ViewBuilder
-    static func field(host: Binding<String>) -> some View {
-        TextField(tr("接入地址（可选）", "API host (optional)"), text: host)
-            .textFieldStyle(.roundedBorder)
-        // 空着是常态（交给自动探测），所以这里只留一行；"去哪儿复制这一串"收进段头那颗 ⓘ
-        Caption(SettingsCopy.hostAutoDetected)
-        if isMalformed(host.wrappedValue) {
-            Caption(SettingsCopy.hostMalformed, warning: true)
-        }
-    }
-}
+// 4.1.4 删掉了这里的「接入地址（可选）」输入框（用户 2026-09-20 拍板）。
+//
+// 它要求用户去百炼控制台认出「接入地址（apiHost）」这个概念、抄对一串主机名，而抄错一个字符
+// 的表现是"鉴权失败"——一个大多数人看不懂、填错了还查不出来的框。它换来的能力（指定主机）
+// 现在由 App 自己做得更好：整表并发试一遍，挑**认这把 Key 且最快**的那台（AlibabaHostResolver）。
+//
+// 存着的值仍然认（导入的设置文件里还带着 qwenAPIHost），但它一旦 401 / 连不上就会被丢掉、
+// 交回自动探测（AlibabaEndpoint.dropsPastedHost）：界面上已经没有地方能清空它了，
+// 留着就是一条改不掉的坏设置。

@@ -63,6 +63,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 云端识别的 Key 统一到润色那把（qwen_api_key）：开发期存过旧账号的搬过来再删
         KeychainHelper.migrateLegacyDashScopeKey()
 
+        // 接入地址每周按**最快**重挑一次（见 AlibabaFastestHostRefresh）。界面上已经没有
+        // 任何"重新探测"的按钮了，所以这件事只能自己做：选定的那台主机日常一句话都不复查，
+        // 而它会随着用户换地方、服务商调链路而变旧。后台跑、不挡任何事，问不出结果就留到下次启动。
+        // 放在后台队列上是因为它要读一次钥匙串——那件事不该坐在启动路径上。
+        DispatchQueue.global(qos: .utility).async {
+            AlibabaFastestHostRefresh.runAtLaunch()
+        }
+
         // 识别停在阿里云、服务商却已经不是阿里云：「云端 AI」页上那个开关这时根本不渲染。
         // **不替他改**（音频出不出这台 Mac 永远由用户自己点），但要留一行日志——
         // 那一页现在会当面说这件事，用户抄来问的时候日志里得找得到。

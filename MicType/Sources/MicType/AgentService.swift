@@ -721,15 +721,20 @@ enum LLMClient {
              handle: handle, completion: completion)
     }
 
-    /// 接入地址已经定下来了吗（用户粘过，或上一次**真的试通过**）。
+    /// 接入地址已经定下来了吗（上一次**真的试通过**）。
     /// 只有"还没定"的那台主机吃 401 / DNS 不通才值得再去试一圈——见 AlibabaHostRecovery。
     ///
     /// 光看 qwenResolvedHost 有没有值是不够的（4.1.1 的第一版就是这么写的）：那个键
     /// 也可能是 4.0.1 迁移按老区域**种**下的，从没联过网。种子吃 401 恰恰是最该去试一圈的
     /// 那一幕（北京站的种子 + 新加坡工作空间的 Key），所以这里认的是"验证过"那一位。
+    ///
+    /// 4.1.4 起**存着的粘贴地址不再算"定下来了"**：界面上那个输入框已经没有了，
+    /// 一条连不上的粘贴地址（只可能来自导入的设置文件）会变成一条改不掉的设置——
+    /// 每句话 401、恢复探测又因为"地址已经定下来"一次都不跑，用户彻底卡住。
+    /// 现在让它照常触发恢复，那条路会先丢掉这台死主机再试一圈（CloudASRSettings.resolveHost）。
+    /// 它要是好好的，压根不会走到这里。
     static var alibabaHostSettled: Bool {
         let s = Settings.shared
-        if AlibabaEndpoint.normalizeHost(s.qwenAPIHost) != nil { return true }
         return s.qwenHostVerified && AlibabaEndpoint.normalizeHost(s.qwenResolvedHost) != nil
     }
 

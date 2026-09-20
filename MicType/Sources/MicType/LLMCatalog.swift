@@ -11,22 +11,30 @@ enum LLMCatalog {
 
     // MARK: - 预设与默认
 
-    /// 各档服务商的**默认型号**。4.0.1 起只有一个默认值：润色和指令用同一个，
-    /// 而且一律是这家最主流的那个好模型（用户 2026-09-19 拍板：默认绝不能是便宜的那一档）。
+    /// 各档服务商的**默认型号**。4.0.1 起只有一个默认值：润色和指令用同一个。
     ///
-    /// 4.0.0 是「润色用最便宜的、指令用贵一档」——省下来的钱是真的，但代价是**默认体验**
-    /// 由最弱的那个模型代表，而绝大多数人从不改默认值。想省钱的人在「模型」下拉里选得到。
-    static let openaiDefaultModel = "gpt-5.6-sol"
-    static let deepseekDefaultModel = "deepseek-v4-pro"
-    static let qwenDefaultModel = "qwen3.8-max"
+    /// **规矩（用户 2026-09-20 拍板，推翻 2026-09-19 那条「默认绝不能是便宜的那一档」）：
+    /// 默认一律是这家「均衡偏快」的那一档，不是旗舰。**
+    ///
+    /// 推翻它的是实测数字（4.1.2/4.1.3 的日志）：润色是**每句话都要跑一次**的东西，
+    /// 它的全部价值是顺手——qwen3.8-flash 润色 1.8–3.6 秒、指令 3.4 秒，用户的评价是"好用"；
+    /// 同一条链路上 qwen3.8-max 要 4–12 秒，还撞得上 12 秒的润色超时（撞上就是这句话白说）。
+    /// 一个更聪明但慢三倍、偶尔整句丢掉的润色，不是更好的默认值，是更差的产品。
+    /// 想要旗舰的人在「模型」下拉里一眼就能选到（那一档标着「旗舰」）。
+    static let openaiDefaultModel = "gpt-5.6-luna"
+    static let deepseekDefaultModel = "deepseek-flash"
+    static let qwenDefaultModel = "qwen3.8-flash"
 
-    /// OpenAI 快选（2026-09 在售主力）。顺序= 下拉里的顺序：强的在前。
-    static let openaiPresets = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+    /// OpenAI 快选（2026-09 在售主力）。
+    /// **这几张表只喂「高级」里那个型号名输入框的快选清单**，而那一段只长在没有内置清单的
+    /// 两档上（自定义端点 / 本机模型）——所以顺序在界面上看不见，下拉的顺序由 modelMenu 定。
+    /// 仍然按"默认的在前"排，免得读到这里的人以为两处的顺序该一样。
+    static let openaiPresets = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"]
     /// DeepSeek 快选。老的 deepseek-v4-flash / deepseek-chat / deepseek-reasoner 已全部下线（见迁移）。
-    static let deepseekPresets = ["deepseek-v4-pro", "deepseek-flash"]
+    static let deepseekPresets = ["deepseek-flash", "deepseek-v4-pro"]
     /// Qwen（DashScope 兼容模式）快选。3.8 是当前代；`qwen-flash` / `qwen-plus` / `qwen-max`
     /// 是阿里维护的稳定别名——换代时它们自己指向新模型，怕过时的用户直接用别名最省心。
-    static let qwenPresets = ["qwen3.8-max", "qwen3.7-plus", "qwen3.8-flash",
+    static let qwenPresets = ["qwen3.8-flash", "qwen3.7-plus", "qwen3.8-max",
                              "qwen-max", "qwen-plus", "qwen-flash"]
 
     static func presets(for provider: LLMProvider) -> [String] {
@@ -70,20 +78,24 @@ enum LLMCatalog {
     ///
     /// 4.0.0 这里是「快 / 最好」两档。用户 2026-09-19 拍板换成型号本身：
     /// 「快」「最好」这种词既没说清花多少钱，也不让想指定型号的人指定。
+    ///
+    /// 顺序：**默认那一项在最前**（4.1.4）。下拉打开的第一眼看到的就该是正在用的那个，
+    /// 而且标签直说它为什么是默认（「快」）——往下走才是更强更慢的那几档。
     static func modelMenu(for provider: LLMProvider) -> [ModelChoice] {
         switch provider {
         case .openai:
-            return [ModelChoice(id: "gpt-6-astra", note: tr("最强", "Strongest")),
-                    ModelChoice(id: openaiDefaultModel, note: tr("旗舰（默认）", "Flagship (default)")),
+            return [ModelChoice(id: openaiDefaultModel, note: tr("快（默认）", "Fast (default)")),
                     ModelChoice(id: "gpt-5.6-terra", note: tr("均衡", "Balanced")),
-                    ModelChoice(id: "gpt-5.6-luna", note: tr("省钱", "Cheapest"))]
+                    ModelChoice(id: "gpt-5.6-sol", note: tr("旗舰", "Flagship")),
+                    ModelChoice(id: "gpt-6-astra", note: tr("最强", "Strongest"))]
         case .deepseek:
-            return [ModelChoice(id: deepseekDefaultModel, note: tr("默认", "Default")),
-                    ModelChoice(id: "deepseek-flash", note: tr("快", "Fast"))]
+            return [ModelChoice(id: deepseekDefaultModel, note: tr("快（默认）", "Fast (default)")),
+                    ModelChoice(id: "deepseek-v4-pro", note: tr("旗舰", "Flagship"))]
         case .qwen:
-            return [ModelChoice(id: qwenDefaultModel, note: tr("默认", "Default")),
+            return [ModelChoice(id: qwenDefaultModel, note: tr("快（默认）", "Fast (default)")),
                     ModelChoice(id: "qwen3.7-plus", note: ""),
-                    ModelChoice(id: "qwen3.8-flash", note: tr("省钱", "Cheapest"))]
+                    // 「较慢」不是修辞：实测润色 4–12 秒，撞得上 12 秒的润色超时（见默认值那段注释）
+                    ModelChoice(id: "qwen3.8-max", note: tr("旗舰（较慢）", "Flagship (slower)"))]
         case .custom, .local:
             return []
         }
@@ -608,8 +620,12 @@ enum LLMCatalog {
     static let bestDefaultMigrationFlagKey = "migratedToBestDefault"
 
     /// 4.0.0 由 **MicType 自己**写进去的那几对组合（润色便宜一档、指令贵一档）。
-    /// 这几对不是用户挑的，是出厂默认或上一次迁移的产物——所以可以整体抬到新默认；
+    /// 这几对不是用户挑的，是出厂默认或上一次迁移的产物——所以可以整体搬到当前默认值；
     /// 只要有一边对不上，就说明用户动过手，一个字都不碰。
+    ///
+    /// 这张表是**历史事实**（4.0.0 写过什么），不跟着默认值变；
+    /// 搬到哪里由 defaultModel(for:) 说了算。4.1.4 把默认值改回"快"那一档之后，
+    /// 这一步对还没升上来的老用户就只剩一个作用：把指令型号拉回和润色同一个。
     private static let autoPairs40: [LLMProvider: (polish: String, command: String)] = [
         .openai: ("gpt-5.6-luna", "gpt-5.6-terra"),
         .deepseek: ("deepseek-flash", "deepseek-v4-pro"),
@@ -666,8 +682,11 @@ enum LLMCatalog {
     /// AI 页上那条一次性提示。nil = 没有可说的（没迁移过、或者用户已经点过「知道了」）。
     ///
     /// 为什么非说不可：4.0.0 的「快」档写进去的那一对，和出厂默认一字不差，迁移分不出
-    /// 「停在默认」与「明确选过便宜档」。分不出就只能把改动摆在明面上——
-    /// OpenAI 那一档 luna → sol 是约 20 倍的输入价差，而润色每句话都要跑一次。
+    /// 「停在默认」与「明确选过某一档」。分不出就只能把改动摆在明面上。
+    ///
+    /// 话要**中性**（4.1.4）：4.0.1 那一版写的是"跟着升级换成了…想省钱在「模型」里挑"，
+    /// 而默认值这一版是往"更快更便宜"那边走的——同一句话会变成当面说反话。
+    /// 只说改了什么、去哪儿改回来。
     static func modelChangeNotice(_ raw: String) -> String? {
         let pairs = raw.split(separator: ",").compactMap { pair -> String? in
             let parts = pair.split(separator: ">", maxSplits: 1)
@@ -676,10 +695,56 @@ enum LLMCatalog {
         }
         guard !pairs.isEmpty else { return nil }
         let list = pairs.joined(separator: tr("、", ", "))
-        // 一行结论 + 一颗「知道了」（Plan C 的边界状态预算）：为什么会变、怎么省钱
-        // 各占一句话的那一版是一段话，用户扫一眼就跳过去了
-        return tr("默认型号跟着升级换成了 \(list)，想省钱在「模型」里挑。",
-                  "The default model moved up to \(list) - pick a cheaper one under Model to spend less.")
+        // 一行结论 + 一颗「知道了」（Plan C 的边界状态预算）
+        return tr("默认型号换成了 \(list)，要换回来在「模型」里挑。",
+                  "The default model changed to \(list) - pick another one under Model.")
+    }
+
+    // MARK: - 一次性迁移到「默认用快的那一档」（4.1.4）
+
+    /// 4.1.4 迁移标记。写在 UserDefaults 里，只跑一次。
+    static let fastDefaultMigrationFlagKey = "migratedToFastDefault"
+
+    /// 被这一版换掉的**老默认值**：只有阿里云这一档。
+    ///
+    /// 为什么只搬它、而且明知道可能是用户手选的也照搬：qwen3.8-max 在听写这条路上
+    /// 慢得不能用（实测润色 4–12 秒，撞得上 12 秒超时 = 整句话白说，见默认值那段注释），
+    /// 留着它的人每天都在撞这堵墙，而"我是不是自己选过这个型号"他自己都未必记得。
+    /// OpenAI / DeepSeek 那两档不搬：gpt-5.6-sol 实测 1.6–3.5 秒，是能用的——
+    /// 那可能是一个深思熟虑的选择，替他改掉才是真正的越权。
+    private static let supersededDefaults: [LLMProvider: (from: String, to: String)] = [
+        .qwen: ("qwen3.8-max", "qwen3.8-flash"),
+    ]
+
+    /// 一处默认值迁移：哪一档、哪个键、从什么改成什么。
+    /// 带着 provider 是为了那行日志（`Default model migrated provider=qwen from=… to=…`）——
+    /// 只报键名的话，读日志的人还要自己把键名翻回服务商。
+    struct DefaultModelChange: Equatable {
+        let provider: LLMProvider
+        let key: String
+        let from: String
+        let to: String
+    }
+
+    /// 迁移规则（**纯函数**，单测钉死）。
+    ///
+    /// - stored: **持久域**里真的存着的值（nil = 从来没存过）。
+    ///   这一条与别的迁移不同，必须读持久域而不是 `d.string(forKey:)`：后者会把注册默认值
+    ///   也算进来，于是"从来没选过型号"的人会被判成"存着老默认值"，然后被写进一个
+    ///   本来就等于新默认值的字符串——从此他的型号被钉死，以后再改默认值也轮不到他。
+    ///   没存过的人什么都不用做：注册默认值本身已经换成新的了。
+    static func migrationToFastDefaultChanges(stored: [String: String?]) -> [DefaultModelChange] {
+        var changes: [DefaultModelChange] = []
+        for provider in [LLMProvider.openai, .deepseek, .qwen] {
+            guard let pair = supersededDefaults[provider] else { continue }
+            let keys = modelKeys(for: provider)
+            for key in [keys.polish, keys.command] {
+                guard storedValue(stored, key) == pair.from else { continue }
+                changes.append(DefaultModelChange(provider: provider, key: key,
+                                                  from: pair.from, to: pair.to))
+            }
+        }
+        return changes
     }
 
     // MARK: - 错误话术

@@ -103,8 +103,9 @@ enum CloudASRSettings {
     // MARK: 接入地址
 
     /// 现在该往哪台主机发。**没有"区域"这个概念了**（用户 2026-09-19 拍板）：
-    /// 用户粘了接入地址就用它，否则用上一次试通的那台，都没有就用候选表的第一项——
-    /// 真正的答案由 AlibabaHostResolver 在验证 Key 时试出来（见 AlibabaEndpoint）。
+    /// 存着接入地址就用它，否则用上一次试出来的那台，都没有就用候选表的第一项——
+    /// 真正的答案由 AlibabaHostResolver 试出来（验证 Key / 失败恢复 / 每周一次的开机复查
+    /// 那三条路，见 AlibabaEndpoint）。**日常听写走的就是这里，一句话都不探测。**
     static func alibabaHost(pastedHost: String, resolvedHost: String,
                             workspace: String, legacyRegionSlug: String?,
                             apiKey: String) -> String {
@@ -113,14 +114,60 @@ enum CloudASRSettings {
                                    apiKey: apiKey).first ?? AlibabaEndpoint.defaultHost
     }
 
-    /// 当前设置下的候选主机表（验证 / 「测试识别」用它逐台试）
+    /// 当前设置下的候选主机表，**给整表探测用**（验证 Key / 失败恢复 / 开机的周期复查）。
+    ///
+    /// 与正常听写那一档（alibabaHost）的唯一差别：上一次试出来的那台不占表头。
+    /// 4.1.4 之前它钉在第一位，而探测"第一台答应就收工"——于是缓存里种着北京的人
+    /// 永远试不到新加坡（见 AlibabaEndpoint 顶部那笔实测）。现在它仍然是候选之一，
+    /// 只是要和别人比一次延迟。
     static func currentHostCandidates(apiKey: String) -> [String] {
         let s = Settings.shared
         return AlibabaEndpoint.candidates(pastedHost: s.qwenAPIHost,
                                           resolvedHost: s.qwenResolvedHost,
                                           workspace: s.qwenWorkspaceID,
                                           legacyRegionSlug: s.qwenRegion.regionSlug,
-                                          apiKey: apiKey)
+                                          apiKey: apiKey,
+                                          pinsResolvedFirst: false)
+    }
+
+    /// 试出接入地址——**并在"存着的那条粘贴地址已经死了"时丢掉它再试一圈**。
+    ///
+    /// 为什么这一层非有不可（4.1.4）：界面上那个「接入地址」输入框已经拿掉了，可设置里、
+    /// 别人给的设置文件里仍可能存着一条。它一旦 401 / 连不上，候选表就只剩这一台，
+    /// 每句话都失败，而屏幕上没有任何地方能把它清掉——那是一条改不掉的坏设置。
+    /// 判据是纯函数（AlibabaEndpoint.dropsPastedHost）：只有 401 与"连不上"才丢，
+    /// 403/404/限流都说明这台主机本身是对的。
+    ///
+    /// 验证 Key、失败恢复、开机复查几条路全走这里，所以这件事只会发生一次、也只写一处。
+    /// - candidates: 这一趟要试的候选表（正常都传 currentHostCandidates；冒烟测试会指定一台）。
+    static func resolveHost(apiKey: String,
+                            candidates: [String],
+                            completion: @escaping (Result<String, CloudASRFailure>) -> Void) {
+        AlibabaHostResolver.resolve(apiKey: apiKey, candidates: candidates) { result in
+            guard case .failure(let failure) = result else {
+                // 刚刚问过整张表了：把时间戳记下来，下次开机的那趟周期复查就不必再问一遍
+                //（同一个问题问两次，而每问一次都要把 Key 发给每一台主机）。
+                // 存着接入地址的那一趟不算：它只问了一台，不是"挑最快"的那种探测。
+                if Settings.shared.qwenAPIHost.isEmpty { AlibabaFastestHostRefresh.stamp() }
+                completion(result)
+                return
+            }
+            guard AlibabaEndpoint.dropsPastedHost(pastedHost: Settings.shared.qwenAPIHost,
+                                                  status: failure.status) else {
+                completion(result)
+                return
+            }
+            // 记的是"发生了这件事"，地址本身抹掉工作空间编号（与日志里其余主机同一条纪律）
+            Log.warn("Qwen pasted host dropped host="
+                     + AlibabaEndpoint.redacted(Settings.shared.qwenAPIHost)
+                     + " status=\(failure.status): falling back to the full probe")
+            Settings.shared.qwenAPIHost = ""
+            AlibabaHostResolver.resolve(apiKey: apiKey,
+                                        candidates: currentHostCandidates(apiKey: apiKey)) { retried in
+                if case .success = retried { AlibabaFastestHostRefresh.stamp() }
+                completion(retried)
+            }
+        }
     }
 
     /// 把 Key 里认出来的 WorkspaceId 落盘一次（只在验证 / 探测那一刻调用）。
@@ -144,7 +191,7 @@ enum CloudASRSettings {
         if let normalized = AlibabaEndpoint.normalizeHost(host) {
             s.qwenResolvedHost = normalized
             // 只有这里写得出"已验证"：这条路的每一个调用方都是**真的联过网**
-            //（粘 Key 那一趟、「探测接入地址」、失败后的恢复探测）。迁移种下的那台不算，
+            //（粘 Key 那一趟、失败后的恢复探测、每周一次的开机复查）。迁移种下的那台不算，
             // 否则它吃 401 时恢复流程一次都不会跑（见 AlibabaEndpoint.hostLooksVerified）。
             s.qwenHostVerified = true
             Log.info("Qwen host resolved host=\(AlibabaEndpoint.redacted(normalized))")
@@ -291,7 +338,7 @@ enum CloudFallbackDecision: Equatable {
     }
 }
 
-// MARK: - 连通性探针（粘贴即验证 / 「测试识别」按钮）
+// MARK: - 连通性探针（粘贴即验证 / 把云端识别开关拨开那一下）
 
 /// 往云端发 1 秒合成音，看这条链路通不通。
 ///
@@ -412,10 +459,13 @@ enum CloudASRProbe {
         attempt(0)
     }
 
-    /// 「测试识别」按钮上那一行结果（纯函数，单测钉住措辞）
+    /// 云端识别开关旁边那一行结果（纯函数，单测钉住措辞）。
+    /// 4.1.4 起这一行不再由一颗按钮触发：把开关拨开那一下就会跑一次（见 CloudRecognitionFields）。
+    /// 所以第一句说的是**这个开关现在的意思**——"可用"，而不是"刚才连通过一次"。
+    /// 往返毫秒数与真正跑通的型号仍然留着：那正是用户唯一能看见的"这条链路快不快"。
     static func successText(_ outcome: Outcome) -> String {
-        var base = tr("云端识别已连通 ✓ 往返 \(outcome.milliseconds) 毫秒",
-                      "Cloud recognition reached ✓ round trip \(outcome.milliseconds) ms")
+        var base = tr("云端识别可用 ✓ 往返 \(outcome.milliseconds) 毫秒",
+                      "Cloud recognition works ✓ round trip \(outcome.milliseconds) ms")
         if let model = outcome.model, !model.isEmpty {
             base += " · " + model
         }
@@ -424,7 +474,7 @@ enum CloudASRProbe {
     }
 }
 
-// MARK: - 「粘贴即验证」/「测试识别」的完整一趟（阿里云）
+// MARK: - 「粘贴即验证」/「把云端识别拨开」的完整一趟（阿里云）
 
 /// 阿里云这一档验一次 Key 要回答两个问题，而且顺序不能反：
 ///   1. 这把 Key 属于哪台接入主机？—— GET /compatible-mode/v1/models，不花钱、不传音频。
@@ -448,7 +498,7 @@ enum CloudASRSetup {
                               completion: @escaping (Result<Success, CloudASRFailure>) -> Void) {
         let started = DispatchTime.now()
         Log.info("CloudASR verify start provider=alibaba candidates=\(candidates.count)")
-        AlibabaHostResolver.resolve(apiKey: apiKey, candidates: candidates) { hostResult in
+        CloudASRSettings.resolveHost(apiKey: apiKey, candidates: candidates) { hostResult in
             switch hostResult {
             case .failure(let failure):
                 Log.warn("CloudASR verify failed at host step status=\(failure.status) "

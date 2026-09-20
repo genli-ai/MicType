@@ -89,9 +89,9 @@ If the hotkey still does not work after Accessibility appears enabled, remove Mi
 
 **Cloud recognition is one switch**, and it lives with the rest of your AI setup: Settings → **Cloud AI** → pick **Alibaba Cloud** → *Also recognize speech in the cloud*. It is off by default. Useful when this Mac is slow, the takes are long, or you need a language the local model handles poorly. Two things are stated right next to the switch: **your audio is uploaded to that provider**, and **that provider bills you by the second of audio** — with the price, the one-time enabling step and the provider's retention statement in the ⓘ beside the section title.
 
-- **One key, one host, no region choice.** Cloud recognition uses the same Model Studio key as polish and commands, and the same endpoint. MicType finds that endpoint itself: when you paste the key it tries candidate hosts with a free model-list request, stops at the first that accepts the key, and remembers it — so there is no International/China picker to get wrong. An optional **API host** field takes the console's `apiHost` (or a full URL) if you would rather name it yourself; paste one and MicType uses only that host. The same probe also runs **during normal use**: if a request fails with 401, or the host cannot be reached at all, and that host was never verified, MicType resolves it right then — voice commands wait for the answer and retry once, while polish hands you the recognized text immediately and lets the probe fix the host for the next sentence.
+- **One key, one host, and MicType picks the fastest one.** Cloud recognition uses the same Model Studio key as polish and commands, and the same endpoint. MicType finds that endpoint itself: verifying the key asks every candidate host in parallel for a free model list, and among the hosts that accept the key it keeps **the fastest** — so there is no International/China picker to get wrong, no host field to fill in, and nothing to press. This matters more than it sounds: one key is often accepted by several regional endpoints, and from the UAE the difference between two of them was 44.7 s and 6.9 s for the same recording. Because the chosen host can go stale — you move, the provider re-routes — MicType quietly re-runs that probe at launch once a week and keeps whichever host is fastest then. The same probe also runs **during normal use**: if a request fails with 401, or the host cannot be reached at all, and that host was never confirmed, MicType resolves it right then — voice commands wait for the answer and retry once, while polish hands you the recognized text immediately and lets the probe fix the host for the next sentence. Everyday dictation never probes: it just uses the host that was chosen.
 - **The model is `qwen3-asr-flash`** — the one model the synchronous endpoint serves. A setting left over from 4.0.0 naming `qwen-audio-3.0-asr-flash` falls back to it automatically and is remembered.
-- **Verified before you rely on it.** Pasting the key sends one second of synthetic tone to the recognition endpoint, which also proves you have enabled the model once in Model Studio's Model Gallery. A **Test recognition** button repeats that round trip any time and reports the round-trip time.
+- **Verified before you rely on it, in one action.** Pasting the key sends one second of synthetic tone to the recognition endpoint, which also proves you have enabled the model once in Model Studio's Model Gallery. Turning the cloud-recognition switch on runs that same check by itself and reports the round-trip time next to the switch; if it fails, the switch goes back off — a switch that is on always means it works.
 - Your custom vocabulary is sent along as hotwords, and the recognition-language setting becomes the language hint. If a cloud request fails and the local model is installed, MicType re-runs the recording locally and says so — rather than losing it. The live grey draft always comes from the local model, and a cloud take is uploaded only after you release the key. Switch to a different AI provider and recognition returns to on-device.
 
 **Recognition language** is set under Settings → On-device recognition. Leave it on Auto, or pick a language — with a language chosen, every segment of a long dictation is locked to it, which prevents the model from drifting to another language mid-recording.
@@ -110,13 +110,13 @@ With AI, three decisions and no more:
 
 - **One provider**: OpenAI, DeepSeek or Alibaba Cloud (Model Studio). Other OpenAI-compatible endpoints and a **local model** on your own machine (Ollama / LM Studio — no key needed, nothing leaves your computer) are configured through an imported settings file rather than on-screen fields; whichever one you are actually using always stays visible in the picker, so you can always switch back. The live one is marked **In use ✓**; picking another only previews its key and model, and MicType switches over once that provider's key verifies.
 - **One key**, verified as you paste it (Checking… / Connected ✓ / Failed, with the reason and what to do). A key that does not verify is never written to the Keychain. There is no second key field anywhere in the app.
-- **One Model dropdown** — polish and commands always run the same model, so this is the only model decision there is (the split fields are gone, and an older split pair is pulled back together once at launch). Defaults: `gpt-5.6-sol`, `deepseek-v4-pro`, `qwen3.8-max` — each provider's strongest mainstream tier, with cheaper tiers one click away in the same list. Pick *Custom…* to type any model name.
+- **One Model dropdown** — polish and commands always run the same model, so this is the only model decision there is (the split fields are gone, and an older split pair is pulled back together once at launch). Defaults: `gpt-5.6-luna`, `deepseek-flash`, `qwen3.8-flash` — each provider's balanced, fast tier, because polish runs on every single sentence and a model that thinks for ten seconds is a worse default than one that answers in two. The flagship tiers are one click away in the same list, labelled as such. Pick *Custom…* to type any model name.
 
 **Custom rules** is one multi-line box under those three: long-standing preferences for the AI (*sign as Gen*, *keep English jargon untranslated*), carried by every polish and every voice command. It is the only box of its kind on this page.
 
 **Web search** is on by default wherever the provider offers it, with the price beside the switch (about $0.01 per search on OpenAI; billed at your provider's own rates on Alibaba Cloud). It applies only to hold-to-command — the polish behind tap-to-dictate never searches — and where a provider has no web search there is no switch, just one line saying so. **Priority processing** (a higher token price for steadier latency) is shown only under OpenAI, the only provider that offers it.
 
-*Advanced* (collapsed) now holds only the rare things: a one-request **model test**, plus the model-name field and a **Refresh model list** button for the two providers with no built-in list.
+*Advanced* exists only for the two providers with no built-in model list (other OpenAI-compatible services and local models): the model-name field, **Refresh model list** and a one-request **model test**. For OpenAI, DeepSeek and Alibaba Cloud the model comes from the dropdown and the key was verified when you pasted it, so the section is not shown at all.
 
 Polish modes:
 
@@ -304,9 +304,9 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 
 **云端识别是一个开关**，而且和你的 AI 配置放在一起：设置 → **云端 AI** → 选「阿里云百炼」→「识别也用云端」。默认关着。这台 Mac 慢、录音长、或者要识别本地模型不擅长的语言时才值得开。开关旁边就写着两件事：**你的音频会上传到该服务商**、**该服务商按音频秒数向你计费**；单价、先开通模型那一步、留存口径与出错回落本机，都在这一段标题旁边那颗 ⓘ 里。
 
-- **一把 Key、一台主机，没有区域选择题。** 云端识别用的就是润色与指令那把百炼 Key、那一台接入地址。地址由 MicType 自己试出来：粘 Key 的时候拿免费的型号清单请求逐台试候选主机，第一台认这把 Key 的就是答案并记住——不再有「国际站 / 中国站」可以选错。另有**可选**的「接入地址」框，给想自己指定的人：把控制台的 `apiHost`（或整条 URL）粘进去，MicType 就只用这一台。这套探测在**正常使用中也会跑**：一趟请求吃了 401、或者主机压根连不上，而这台主机又从来没验证通过过时，MicType 当场就去试——**按住说指令会等结果并重发一次**，**润色不等**（立刻把识别原文交给你，探测在后台把主机记下来，下一句就对了）。
+- **一把 Key、一台主机，而且挑最快的那台。** 云端识别用的就是润色与指令那把百炼 Key、那一台接入地址。地址由 MicType 自己试出来：验证 Key 时拿免费的型号清单请求**并发**问遍候选主机，在认这把 Key 的那几台里留下**最快**的一台——不再有「国际站 / 中国站」可以选错，不再有「接入地址」要你填，也没有任何按钮要你点。这件事比听起来重要：同一把 Key 常常被好几个区域端点同时接受，而在 UAE 实测里，两台都"能用"的主机跑同一段录音是 44.7 秒对 6.9 秒。选定的那台会变旧（你换个地方住、服务商调链路），所以 MicType 每周在启动时悄悄重跑一次这套探测，留下当时最快的那台。这套探测在**正常使用中也会跑**：一趟请求吃了 401、或者主机压根连不上，而这台主机又从来没试通过时，MicType 当场就去试——**按住说指令会等结果并重发一次**，**润色不等**（立刻把识别原文交给你，探测在后台把主机记下来，下一句就对了）。日常听写一次都不探测，直接用选定的那台。
 - **识别模型是 `qwen3-asr-flash`**——同步端点上唯一提供的那个。设置里还留着 4.0.0 的 `qwen-audio-3.0-asr-flash` 时会自动回落到它并记住。
-- **先验过再用**：粘贴 Key 会立刻发 1 秒合成音到识别端点，连「模型有没有在百炼『模型广场』开通过」一起验到；旁边的**「测试识别」**按钮随时可以再跑一遍并报出往返毫秒数。
+- **先验过再用，而且只有一个动作**：粘贴 Key 会立刻发 1 秒合成音到识别端点，连「模型有没有在百炼『模型广场』开通过」一起验到；把「识别也用云端」开关拨开时同样会自己跑一次，结果与往返毫秒数就写在开关旁边——**测不通开关自动弹回关闭**，开着的开关永远意味着它真的能用。
 - 专有词汇表会作为热词一起发过去，识别语言设置会变成语言提示。云端请求失败时，**本地模型在就整段改用本地再识别一遍**并明说，而不是丢掉你的录音。实时灰字草稿永远来自本地模型；云端档是松手之后才上传。换成别家 AI 服务商时，识别自动回到本机。
 
 **识别语言**在 设置 → 本地识别 里设置。保持「自动」即可；一旦指定语言，长录音的每一段都会锁住这个语言，杜绝录到一半漂到别的语言。
@@ -325,13 +325,13 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 
 - **一家服务商**：OpenAI、DeepSeek 或阿里云百炼。其他 OpenAI 兼容接口、以及跑在你自己机器上的**本机模型**（Ollama / LM Studio——不用 Key，什么都不出本机）改由「导入设置…」配置，界面上不再摆地址与型号输入框；不过**你正在用的那一档永远摆在选择器上**，随时能切回去。生效的那一档旁边写着**「正在使用 ✓」**；点别的一档只是预览它的 Key 与模型，**验证通过才真的换过去**。
 - **一把 Key**，在粘贴的当下就会被验证（正在验证… / 已连通 ✓ / 连不上 + 原因与下一步）；验证不过的 Key 不会被写进钥匙串。全 App 没有第二个 Key 输入框。
-- **一个「模型」下拉**——润色和指令永远用同一个型号，所以模型这件事只有这一个决定（分开设的入口已经没有了，老配置里不一致的那一对会在启动时拉回一致）。默认分别是 `gpt-5.6-sol`、`deepseek-v4-pro`、`qwen3.8-max`——每家最主流的那个好模型；想省钱的档就在同一个下拉里。选「自定义…」可以手填任意型号名。
+- **一个「模型」下拉**——润色和指令永远用同一个型号，所以模型这件事只有这一个决定（分开设的入口已经没有了，老配置里不一致的那一对会在启动时拉回一致）。默认分别是 `gpt-5.6-luna`、`deepseek-flash`、`qwen3.8-flash`——每家均衡偏快的那一档：润色是每句话都要跑一次的东西，一个想十秒才答的模型不是更好的默认值。想要旗舰就在同一个下拉里，那几项标着「旗舰」。选「自定义…」可以手填任意型号名。
 
 **「自定义规则」**是这三个控件下面的一个多行框：写给 AI 的长期偏好（「署名用 Gen」「英文术语保留原文」），每次润色和每条语音指令都会带上它。整页只有这一个框。
 
 **联网搜索默认开**（服务商支持的话），单价就写在开关旁边（OpenAI 每次约 $0.01；阿里云按服务商自己的价目计费）。它**只在按住说指令时**才可能联网——轻点听写的润色永远不联网；不支持的服务商连开关都不摆，只留一行说明。**「优先处理」**（多付 token 单价换更稳的延迟）**只在 OpenAI 档出现**，因为只有它有这个档位。
 
-**「高级」**（默认折叠）里只剩真正少见的事：拿当前型号发一次最短请求的**「测试模型」**，外加没有内置清单那两档的型号名输入框与**「刷新模型列表」**。
+**「高级」**整段只留给没有内置型号清单的那两档（其他 OpenAI 兼容服务 / 本机模型）：型号名输入框、**「刷新模型列表」**与**「测试模型」**。三家官方档的型号来自下拉、Key 在粘的时候就验过了，所以那三档连这一段都不出现。
 
 润色档位：
 

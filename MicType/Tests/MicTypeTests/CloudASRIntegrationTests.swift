@@ -129,11 +129,102 @@ final class CloudASRIntegrationTests: XCTestCase {
         XCTAssertEqual(candidates.count, Set(candidates).count, "候选表不能有重复，重复就是白跑一趟")
     }
 
-    /// 上一次试通的那台排第一：正常使用时候选表实际上只用得到它
+    /// 上一次试出来的那台排第一：正常听写时候选表实际上只用得到它（一句话都不探测）
     func testResolvedHostIsTriedFirst() {
         let candidates = AlibabaEndpoint.candidates(resolvedHost: "dashscope.aliyuncs.com",
                                                     workspace: "ws-abc")
         XCTAssertEqual(candidates.first, "dashscope.aliyuncs.com")
+    }
+
+    /// 整表探测时它**不占表头**（4.1.4）：钉在第一位会让它在"快得分不出高下"时白捡一个胜出，
+    /// 而那正是要消掉的那一幕（缓存里种着北京 → 新加坡永远没机会）。仍然要在表里。
+    func testFullProbeDoesNotPinTheResolvedHostFirst() {
+        let candidates = AlibabaEndpoint.candidates(resolvedHost: "ws-abc.cn-beijing.maas.aliyuncs.com",
+                                                    workspace: "ws-abc",
+                                                    pinsResolvedFirst: false)
+        XCTAssertEqual(candidates.first, "ws-abc.ap-southeast-1.maas.aliyuncs.com")
+        XCTAssertTrue(candidates.contains("ws-abc.cn-beijing.maas.aliyuncs.com"))
+        XCTAssertEqual(candidates.count, Set(candidates).count)
+    }
+
+    /// 上一次那台不在拼得出来的那几台里（比如它本来是粘进来的）：整表探测也不能把它丢掉
+    func testFullProbeStillKeepsAnUnrelatedResolvedHost() {
+        let candidates = AlibabaEndpoint.candidates(resolvedHost: "gateway.example.com",
+                                                    workspace: "ws-abc",
+                                                    pinsResolvedFirst: false)
+        XCTAssertTrue(candidates.contains("gateway.example.com"))
+        XCTAssertNotEqual(candidates.first, "gateway.example.com")
+    }
+
+    /// 新加坡排在北京前面（用户 2026-09-20 拍板）。顺序只在"平手"时起作用，
+    /// 但平手恰恰是最容易出错的那一档；国际站共享主机同样排在中国站前面。
+    func testSingaporeComesBeforeBeijing() {
+        let suffixes = AlibabaEndpoint.workspaceSuffixes
+        guard let sg = suffixes.firstIndex(where: { $0.hasPrefix("ap-southeast-1.") }),
+              let bj = suffixes.firstIndex(where: { $0.hasPrefix("cn-beijing.") }) else {
+            return XCTFail("这两档一个都不能少")
+        }
+        XCTAssertEqual(sg, 0, "新加坡必须是第一项")
+        XCTAssertLessThan(sg, bj)
+        XCTAssertEqual(suffixes.count, 5, "4.0.0 能选的每一档都必须还在（少一条就有人再也试不到）")
+
+        let shared = AlibabaEndpoint.candidates()
+        XCTAssertEqual(shared, [AlibabaEndpoint.sharedInternationalHost,
+                                AlibabaEndpoint.sharedChinaHost])
+    }
+
+    /// 存着的那条接入地址只有**死透了**才丢：401（不认这把 Key）与 status 0（连不上）。
+    /// 403/404/限流说明主机本身是对的，丢掉它等于把用户送去一台他没指定的主机。
+    func testPastedHostIsDroppedOnlyWhenItIsReallyDead() {
+        let host = "ws-abc.cn-beijing.maas.aliyuncs.com"
+        XCTAssertTrue(AlibabaEndpoint.dropsPastedHost(pastedHost: host, status: 401))
+        XCTAssertTrue(AlibabaEndpoint.dropsPastedHost(pastedHost: host, status: 0))
+        for status in [200, 403, 404, 429, 500] {
+            XCTAssertFalse(AlibabaEndpoint.dropsPastedHost(pastedHost: host, status: status),
+                           "HTTP \(status) 说明这台主机是对的")
+        }
+        XCTAssertFalse(AlibabaEndpoint.dropsPastedHost(pastedHost: "", status: 401),
+                       "压根没存过就没什么可丢的")
+    }
+
+    /// 拼不出主机名的脏值：**任何状态码下都该丢**，而且不必等它失败一次。
+    /// 4.1.4 起界面上没有这个输入框了——留着它只会让候选表少一台、让错误信息
+    /// 指向一个用户根本碰不到的东西。
+    func testJunkStoredHostIsAlwaysDropped() {
+        for junk in ["我的主机", "接入地址：xxx", "not a host", "-bad.example.com"] {
+            XCTAssertTrue(AlibabaEndpoint.storedHostIsJunk(junk), junk)
+            for status in [200, 401, 403, 404, 0] {
+                XCTAssertTrue(AlibabaEndpoint.dropsPastedHost(pastedHost: junk, status: status),
+                              "\(junk) / HTTP \(status)")
+            }
+        }
+        XCTAssertFalse(AlibabaEndpoint.storedHostIsJunk(""), "空着是常态，不是脏值")
+        XCTAssertFalse(AlibabaEndpoint.storedHostIsJunk("   "))
+        XCTAssertFalse(AlibabaEndpoint.storedHostIsJunk("https://dashscope-intl.aliyuncs.com/api/v1"),
+                       "整条 URL 归一得出主机名，是好值")
+    }
+
+    // MARK: - 每周按"最快"复查一次接入地址（4.1.4）
+
+    /// 为什么是周期而不是一次性：选定的那台主机日常一句话都不复查，而它会变旧
+    ///（用户换地方、服务商调链路）。界面上又没有任何"重新探测"的按钮可按，
+    /// 所以只能自己每周问一遍。
+    func testHostRefreshRunsWhenItHasNeverRunOrIsAWeekOld() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func should(_ last: Date?, hasKey: Bool = true, pastedHost: String = "") -> Bool {
+            AlibabaFastestHostRefresh.shouldRun(lastProbe: last, now: now,
+                                                hasKey: hasKey, pastedHost: pastedHost)
+        }
+        XCTAssertTrue(should(nil), "从来没问过：这次就问")
+        XCTAssertFalse(should(now.addingTimeInterval(-6 * 24 * 3600)), "6 天前刚问过，别天天发 Key")
+        XCTAssertTrue(should(now.addingTimeInterval(-8 * 24 * 3600)), "8 天前那次该过期了")
+        XCTAssertTrue(should(now.addingTimeInterval(-AlibabaFastestHostRefresh.interval)),
+                      "整整一周，边界上算过期")
+        XCTAssertFalse(should(nil, hasKey: false), "没有 Key 连问都问不出来")
+        XCTAssertFalse(should(nil, pastedHost: "https://ws-abc.cn-beijing.maas.aliyuncs.com/api/v1"),
+                       "设置文件给了答案：不该被我们按'更快'换掉")
+        XCTAssertTrue(should(nil, pastedHost: "  我的主机  "),
+                      "拼不出主机名的脏值等于没填（它会被单独丢掉）")
     }
 
     /// 什么线索都没有时也必须给得出候选表（共享主机两台）
@@ -162,39 +253,138 @@ final class CloudASRIntegrationTests: XCTestCase {
                        "共享主机里没有工作空间编号，原样报出来更有用")
     }
 
-    // MARK: - 逐台试出接入地址
+    // MARK: - 并发试一圈、挑最快的那台
 
     /// 200 = 就是它；403 也算——鉴权已经过了（Key 属于这台），换一台解决不了
     func testResolverStopRules() {
         XCTAssertTrue(AlibabaHostResolver.accepts(status: 200))
         XCTAssertTrue(AlibabaHostResolver.accepts(status: 403))
         XCTAssertFalse(AlibabaHostResolver.accepts(status: 401))
-        XCTAssertTrue(AlibabaHostResolver.keepsTrying(status: 401), "Key 不属于这台 → 试下一台")
+        XCTAssertTrue(AlibabaHostResolver.keepsTrying(status: 401), "Key 不属于这台")
         XCTAssertTrue(AlibabaHostResolver.keepsTrying(status: 404))
         XCTAssertTrue(AlibabaHostResolver.keepsTrying(status: 0), "DNS 都不通 = 这台主机不存在")
         XCTAssertFalse(AlibabaHostResolver.keepsTrying(status: 429), "限流跟主机无关，换一台也一样")
     }
 
-    /// 401 一路试到那台认它的主机为止（不碰网络：假发送器）
-    func testResolverWalksPastUnauthorizedHosts() {
+    private func attempt(_ host: String, _ status: Int, _ ms: Int,
+                         _ code: String? = nil) -> AlibabaHostResolver.Attempt {
+        AlibabaHostResolver.Attempt(host: host, status: status, code: code, milliseconds: ms)
+    }
+
+    /// 认这把 Key 的有好几台时选**最快**的——哪怕它排在表的最后。
+    /// 这就是 4.1.4 这一版的全部理由：北京与新加坡都回 200，而从 UAE 过去差了一个数量级。
+    func testDecidePicksTheFastestAcceptedHost() {
+        let hosts = ["beijing.example.com", "singapore.example.com", "tokyo.example.com"]
+        let decision = AlibabaHostResolver.decide(candidates: hosts, attempts: [
+            attempt("beijing.example.com", 200, 1800),
+            attempt("singapore.example.com", 200, 240),
+            attempt("tokyo.example.com", 401, 300, "InvalidApiKey"),
+        ])
+        guard case .chosen(let winner, let accepted) = decision else {
+            return XCTFail("有人认了这把 Key：\(decision)")
+        }
+        XCTAssertEqual(winner.host, "singapore.example.com")
+        XCTAssertEqual(accepted, 2, "北京也认这把 Key——正是它先答应过一次才有这一版")
+    }
+
+    /// 403 也算"认了"：鉴权过了，只是模型没开通——换一台主机解决不了这件事
+    func testDecideCountsForbiddenAsAccepted() {
+        let hosts = ["a.example.com", "b.example.com"]
+        let decision = AlibabaHostResolver.decide(candidates: hosts, attempts: [
+            attempt("a.example.com", 401, 50, "InvalidApiKey"),
+            attempt("b.example.com", 403, 900, "Arrearage"),
+        ])
+        guard case .chosen(let winner, _) = decision else { return XCTFail("403 = 就是这一台") }
+        XCTAssertEqual(winner.host, "b.example.com")
+    }
+
+    /// 快得分不出高下（150 ms 以内）：按候选表的顺序选，也就是新加坡胜出。
+    /// 一次探测的抖动本来就有几十毫秒，拿它当"更快"是在赌骰子。
+    func testDecideBreaksNearTiesByCandidateOrder() {
+        let hosts = ["singapore.example.com", "beijing.example.com"]
+        let nearTie = AlibabaHostResolver.decide(candidates: hosts, attempts: [
+            attempt("beijing.example.com", 200, 300),
+            attempt("singapore.example.com", 200, 380),
+        ])
+        guard case .chosen(let winner, _) = nearTie else { return XCTFail("\(nearTie)") }
+        XCTAssertEqual(winner.host, "singapore.example.com", "差 80 ms 算平手 → 表里靠前的赢")
+
+        // 差得够多就认数字，顺序让位
+        let clear = AlibabaHostResolver.decide(candidates: hosts, attempts: [
+            attempt("beijing.example.com", 200, 300),
+            attempt("singapore.example.com", 200, 900),
+        ])
+        guard case .chosen(let fast, _) = clear else { return XCTFail("\(clear)") }
+        XCTAssertEqual(fast.host, "beijing.example.com", "差 600 ms 不是平手")
+    }
+
+    /// 一台都不认：报**最有用**的那一条。
+    /// 401（"这把 Key 哪台都不属于"）比 status 0（连 DNS 都没通，多半是工作空间编号猜错了）
+    /// 有信息量得多；而限流 / 5xx 跟主机根本没关系，最该原样报出去。
+    func testDecidePrefersTheMostInformativeFailure() {
+        let hosts = ["guess.example.com", "shared.example.com"]
+        let keyRejected = AlibabaHostResolver.decide(candidates: hosts, attempts: [
+            attempt("guess.example.com", 0, 6000),
+            attempt("shared.example.com", 401, 120, "InvalidApiKey"),
+        ])
+        guard case .rejected(let reported) = keyRejected else { return XCTFail("\(keyRejected)") }
+        XCTAssertEqual(reported.status, 401)
+        XCTAssertEqual(reported.code, "InvalidApiKey")
+
+        let throttled = AlibabaHostResolver.decide(candidates: hosts, attempts: [
+            attempt("guess.example.com", 401, 100, "InvalidApiKey"),
+            attempt("shared.example.com", 429, 100, "Throttling.RateQuota"),
+        ])
+        guard case .rejected(let rate) = throttled else { return XCTFail("\(throttled)") }
+        XCTAssertEqual(rate.status, 429, "限流跟主机无关，换一台也一样——这句话最该说")
+
+        // 404 比"连不上"有用，但比 401 没用
+        let notFound = AlibabaHostResolver.decide(candidates: hosts, attempts: [
+            attempt("guess.example.com", 0, 100),
+            attempt("shared.example.com", 404, 100, "ModelNotFound"),
+        ])
+        guard case .rejected(let missing) = notFound else { return XCTFail("\(notFound)") }
+        XCTAssertEqual(missing.status, 404)
+    }
+
+    /// 一条结论都没回来（整趟超时）：仍然要给得出一个失败，而不是永远等下去
+    func testDecideFallsBackWhenNothingCameBack() {
+        let decision = AlibabaHostResolver.decide(candidates: ["a.example.com"], attempts: [])
+        guard case .rejected(let reported) = decision else { return XCTFail("\(decision)") }
+        XCTAssertEqual(reported.status, 0)
+        XCTAssertEqual(reported.host, "a.example.com")
+    }
+
+    /// 每一台都要试到（不碰网络：假发送器），而且不是试到第一台答应就停
+    func testResolverProbesEveryCandidateAndTakesTheFastest() {
         var tried = [String]()
         let done = expectation(description: "resolved")
         AlibabaHostResolver.resolve(apiKey: "sk-ws-abc.zzz",
                                     candidates: ["a.example.com", "b.example.com", "c.example.com"],
                                     send: { request, completion in
-            tried.append(request.url?.host ?? "?")
-            completion(request.url?.host == "c.example.com" ? 200 : 401, "InvalidApiKey", nil)
+            let host = request.url?.host ?? "?"
+            tried.append(host)
+            // a 与 c 都认这把 Key；a 慢得多，所以答案必须是 c
+            switch host {
+            case "a.example.com":
+                DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) { completion(200, nil, nil) }
+            case "c.example.com":
+                completion(200, nil, nil)
+            default:
+                completion(401, "InvalidApiKey", nil)
+            }
         }) { result in
-            guard case .success(let host) = result else { return XCTFail("第三台该被认出来") }
-            XCTAssertEqual(host, "c.example.com")
+            guard case .success(let host) = result else { return XCTFail("有两台认了这把 Key") }
+            XCTAssertEqual(host, "c.example.com", "a 也答应了，但它慢 400 ms")
             done.fulfill()
         }
-        wait(for: [done], timeout: 2)
-        XCTAssertEqual(tried, ["a.example.com", "b.example.com", "c.example.com"])
+        wait(for: [done], timeout: 3)
+        XCTAssertEqual(Set(tried), ["a.example.com", "b.example.com", "c.example.com"],
+                       "每一台都要问一遍，才谈得上挑最快的")
     }
 
-    /// 全试完都不认：报最后一台的原因，而且那句话要指向"去控制台粘接入地址"
-    func testResolverReportsTheLastReasonWhenNothingWorks() {
+    /// 全试完都不认：报那条最有用的原因（而不是"最后回来的那一条"）
+    func testResolverReportsTheMostUsefulReasonWhenNothingWorks() {
         let done = expectation(description: "failed")
         AlibabaHostResolver.resolve(apiKey: "sk-test",
                                     candidates: ["a.example.com", "b.example.com"],
@@ -202,15 +392,19 @@ final class CloudASRIntegrationTests: XCTestCase {
             guard case .failure(let failure) = result else { return XCTFail("不该成功") }
             XCTAssertEqual(failure.status, 401)
             XCTAssertEqual(failure.code, "InvalidApiKey")
-            XCTAssertTrue(failure.message.contains("接入地址") || failure.message.contains("API host"),
-                          "401 的下一步是去控制台粘接入地址，不是再翻一遍 Key")
+            // 4.1.4 起这句话**不再指路"去粘接入地址"**（那个框已经没有了），
+            // 改成说我们真正知道的那件事：每一台都试过，没有一台认这把 Key
+            XCTAssertTrue(failure.message.contains("Key") || failure.message.contains("key"),
+                          failure.message)
             done.fulfill()
         }
         wait(for: [done], timeout: 2)
     }
 
-    /// 限流这种"跟主机没关系"的失败要立刻报出来，不该把同一把 Key 再发几趟
-    func testResolverStopsOnAnUnrelatedFailure() {
+    /// 限流这种"跟主机没关系"的失败仍然要当面报出来。
+    /// 4.1.4 起并发发，所以每一台都会被问一遍（串行那一版是"撞上就立刻停"）——
+    /// 换来的是墙钟时间从"逐台 × 每台 6 秒"降到"最慢那一台"。
+    func testResolverStillReportsAnUnrelatedFailure() {
         var calls = 0
         let done = expectation(description: "failed")
         AlibabaHostResolver.resolve(apiKey: "sk-test",
@@ -224,7 +418,7 @@ final class CloudASRIntegrationTests: XCTestCase {
             done.fulfill()
         }
         wait(for: [done], timeout: 2)
-        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(calls, 2)
     }
 
     func testResolverRefusesToProbeWithoutAKey() {

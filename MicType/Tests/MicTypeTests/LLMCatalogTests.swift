@@ -27,15 +27,16 @@ final class LLMCatalogTests: XCTestCase {
         XCTAssertTrue(LLMCatalog.qwenPresets.contains(LLMCatalog.defaultModel(for: .qwen)))
     }
 
-    /// 默认一律是这家最好的主流型号（用户 2026-09-19 拍板）。
-    /// 4.0.0 是"润色用最便宜的、指令贵一档"——省下来的钱是真的，代价是默认体验由最弱的
-    /// 那个模型代表，而绝大多数人从不改默认值。想省钱的人在「模型」下拉里选得到。
-    func testDefaultsAreTheStrongestMainstreamModel() {
-        XCTAssertEqual(LLMCatalog.polishDefault(for: .openai), "gpt-5.6-sol")
-        XCTAssertEqual(LLMCatalog.commandDefault(for: .openai), "gpt-5.6-sol")
-        XCTAssertEqual(LLMCatalog.polishDefault(for: .deepseek), "deepseek-v4-pro")
-        XCTAssertEqual(LLMCatalog.commandDefault(for: .deepseek), "deepseek-v4-pro")
-        XCTAssertEqual(LLMCatalog.polishDefault(for: .qwen), "qwen3.8-max")
+    /// 默认一律是这家**均衡偏快**的那一档（用户 2026-09-20 拍板，推翻前一天那条"必须是旗舰"）。
+    /// 润色是每句话都要跑一次的东西，它的全部价值是顺手：实测 qwen3.8-flash 1.8–3.6 秒，
+    /// 而 qwen3.8-max 4–12 秒、还撞得上 12 秒的润色超时——那一次整句话就白说了。
+    /// 想要旗舰的人在「模型」下拉里一眼选得到（那一档标着「旗舰」）。
+    func testDefaultsAreTheBalancedFastTier() {
+        XCTAssertEqual(LLMCatalog.polishDefault(for: .openai), "gpt-5.6-luna")
+        XCTAssertEqual(LLMCatalog.commandDefault(for: .openai), "gpt-5.6-luna")
+        XCTAssertEqual(LLMCatalog.polishDefault(for: .deepseek), "deepseek-flash")
+        XCTAssertEqual(LLMCatalog.commandDefault(for: .deepseek), "deepseek-flash")
+        XCTAssertEqual(LLMCatalog.polishDefault(for: .qwen), "qwen3.8-flash")
     }
 
     // MARK: - 温度能力
@@ -98,7 +99,7 @@ final class LLMCatalogTests: XCTestCase {
     func testAutomaticPolishDefaultsMoveToTheCurrentDefault() {
         for old in [nil, "gpt-4o-mini", "gpt-5.4-nano", "gpt-5.5"] {
             let writes = migrate(polish: old, command: "gpt-5.4-mini")
-            XCTAssertEqual(writes[SettingsKeys.chatModel], "gpt-5.6-sol", old ?? "nil")
+            XCTAssertEqual(writes[SettingsKeys.chatModel], "gpt-5.6-luna", old ?? "nil")
         }
     }
 
@@ -111,20 +112,20 @@ final class LLMCatalogTests: XCTestCase {
 
     func testAutomaticCommandDefaultMovesToTheCurrentDefault() {
         XCTAssertEqual(migrate(polish: "gpt-5.5", command: nil)[SettingsKeys.openaiCommandModel],
-                       "gpt-5.6-sol")
+                       "gpt-5.6-luna")
         XCTAssertEqual(migrate(polish: "gpt-5.5", command: "gpt-5.4-mini")[SettingsKeys.openaiCommandModel],
-                       "gpt-5.6-sol")
+                       "gpt-5.6-luna")
     }
 
     /// DeepSeek 那三个型号已经不存在了：不改名的话每次调用都失败——所以无论是不是手选的都得改。
     /// 改成的是**最接近的活型号**（不是我们推荐的那个）：这一步只负责"别让它 404"。
     func testDeadDeepSeekModelsAreRenamed() {
-        let writes = migrate(polish: "gpt-5.6-sol", command: "gpt-5.6-sol",
+        let writes = migrate(polish: "gpt-5.6-luna", command: "gpt-5.6-luna",
                              dsPolish: "deepseek-v4-flash", dsCommand: "deepseek-reasoner")
         XCTAssertEqual(writes[SettingsKeys.deepseekModel], "deepseek-flash")
         XCTAssertEqual(writes[SettingsKeys.deepseekCommandModel], "deepseek-v4-pro")
 
-        let chat = migrate(polish: "gpt-5.6-sol", command: "gpt-5.6-sol",
+        let chat = migrate(polish: "gpt-5.6-luna", command: "gpt-5.6-luna",
                            dsPolish: "deepseek-chat", dsCommand: "deepseek-v4-pro")
         XCTAssertEqual(chat[SettingsKeys.deepseekModel], "deepseek-flash")
         XCTAssertNil(chat[SettingsKeys.deepseekCommandModel])
@@ -132,23 +133,23 @@ final class LLMCatalogTests: XCTestCase {
 
     /// 没存过 DeepSeek 型号的人直接拿到新默认
     func testUnsetDeepSeekModelsGetTheNewDefaults() {
-        let writes = migrate(polish: "gpt-5.6-sol", command: "gpt-5.6-sol",
+        let writes = migrate(polish: "gpt-5.6-luna", command: "gpt-5.6-luna",
                              dsPolish: nil, dsCommand: nil)
-        XCTAssertEqual(writes[SettingsKeys.deepseekModel], "deepseek-v4-pro")
-        XCTAssertEqual(writes[SettingsKeys.deepseekCommandModel], "deepseek-v4-pro")
+        XCTAssertEqual(writes[SettingsKeys.deepseekModel], "deepseek-flash")
+        XCTAssertEqual(writes[SettingsKeys.deepseekCommandModel], "deepseek-flash")
     }
 
     /// 已经在新型号上 → 一个键都不写（迁移幂等，跑第二遍不该有任何动作）
     func testMigrationIsANoOpOnCurrentValues() {
-        let writes = migrate(polish: "gpt-5.6-sol", command: "gpt-5.6-sol")
+        let writes = migrate(polish: "gpt-5.6-luna", command: "gpt-5.6-luna")
         XCTAssertTrue(writes.isEmpty, "\(writes)")
     }
 
     /// 空字符串等同于"没存过"（钥匙串/备份导入留下的空值不该被当成手选型号）
     func testEmptyStringCountsAsUnset() {
-        XCTAssertEqual(migrate(polish: "   ", command: "")[SettingsKeys.chatModel], "gpt-5.6-sol")
+        XCTAssertEqual(migrate(polish: "   ", command: "")[SettingsKeys.chatModel], "gpt-5.6-luna")
         XCTAssertEqual(migrate(polish: "   ", command: "")[SettingsKeys.openaiCommandModel],
-                       "gpt-5.6-sol")
+                       "gpt-5.6-luna")
     }
 
     // MARK: - 迁移到「默认用最好的型号」（4.0.1）
@@ -167,28 +168,28 @@ final class LLMCatalogTests: XCTestCase {
         return LLMCatalog.migrationToBestDefault(current: current)
     }
 
-    /// 还停在 4.0.0 那几对自动默认上的用户（润色便宜一档 + 指令贵一档）整体抬到新默认
-    func testFourZeroAutoPairsMoveToTheBestDefault() {
+    /// 还停在 4.0.0 那几对自动默认上的用户（润色便宜一档 + 指令贵一档）整体搬到**当前默认值**。
+    /// 4.1.4 把默认值改回"快"那一档之后，这一步对他们只剩一个作用：把指令型号拉回和润色同一个
+    ///（润色那一边本来就是这个值，不该白写一次）——搬到哪里始终由 defaultModel(for:) 说了算。
+    func testFourZeroAutoPairsMoveToTheCurrentDefault() {
         let openai = bestDefault([.openai: ("gpt-5.6-luna", "gpt-5.6-terra")])
-        XCTAssertEqual(openai[SettingsKeys.chatModel], "gpt-5.6-sol")
-        XCTAssertEqual(openai[SettingsKeys.openaiCommandModel], "gpt-5.6-sol")
+        XCTAssertNil(openai[SettingsKeys.chatModel])
+        XCTAssertEqual(openai[SettingsKeys.openaiCommandModel], "gpt-5.6-luna")
 
         let deepseek = bestDefault([.deepseek: ("deepseek-flash", "deepseek-v4-pro")])
-        XCTAssertEqual(deepseek[SettingsKeys.deepseekModel], "deepseek-v4-pro")
-        // 指令那一边本来就是 v4-pro：值没变就不该写（迁移只写真正要改的键）
-        XCTAssertNil(deepseek[SettingsKeys.deepseekCommandModel])
+        XCTAssertNil(deepseek[SettingsKeys.deepseekModel])
+        XCTAssertEqual(deepseek[SettingsKeys.deepseekCommandModel], "deepseek-flash")
 
         let qwen = bestDefault([.qwen: ("qwen3.8-flash", "qwen3.8-max")])
-        XCTAssertEqual(qwen[SettingsKeys.qwenModel], "qwen3.8-max")
-        XCTAssertNil(qwen[SettingsKeys.qwenCommandModel])
+        XCTAssertNil(qwen[SettingsKeys.qwenModel])
+        XCTAssertEqual(qwen[SettingsKeys.qwenCommandModel], "qwen3.8-flash")
     }
 
     /// 没存过 = 出厂默认，和"停在自动默认上"是同一件事
-    func testUnsetModelsAlsoMoveToTheBestDefault() {
+    func testUnsetModelsAlsoMoveToTheCurrentDefault() {
         let writes = bestDefault([.openai: (nil, nil), .qwen: (nil, nil)])
-        XCTAssertEqual(writes[SettingsKeys.chatModel], "gpt-5.6-sol")
-        XCTAssertEqual(writes[SettingsKeys.openaiCommandModel], "gpt-5.6-sol")
-        XCTAssertEqual(writes[SettingsKeys.qwenModel], "qwen3.8-max")
+        XCTAssertEqual(writes[SettingsKeys.openaiCommandModel], "gpt-5.6-luna")
+        XCTAssertEqual(writes[SettingsKeys.qwenCommandModel], "qwen3.8-flash")
     }
 
     /// 铁律：手选过的一个都不动。**只要有一边对不上那对自动默认**，就说明用户动过手，
@@ -202,9 +203,9 @@ final class LLMCatalogTests: XCTestCase {
 
     /// 已经在新默认上 → 一个键都不写（幂等，跑第二遍不该有任何动作）
     func testBestDefaultMigrationIsANoOpOnCurrentValues() {
-        let writes = bestDefault([.openai: ("gpt-5.6-sol", "gpt-5.6-sol"),
-                                  .deepseek: ("deepseek-v4-pro", "deepseek-v4-pro"),
-                                  .qwen: ("qwen3.8-max", "qwen3.8-max")])
+        let writes = bestDefault([.openai: ("gpt-5.6-luna", "gpt-5.6-luna"),
+                                  .deepseek: ("deepseek-flash", "deepseek-flash"),
+                                  .qwen: ("qwen3.8-flash", "qwen3.8-flash")])
         XCTAssertTrue(writes.isEmpty, "\(writes)")
     }
 
@@ -306,9 +307,11 @@ final class LLMCatalogTests: XCTestCase {
         let probing = LLMCatalog.qwenUnverifiedHost401(probing: true).fullText
         XCTAssertTrue(probing.contains("接入地址"), probing)
         XCTAssertFalse(probing.contains("Key 无效"), probing)
-        // 试完一圈仍然不对：换成"这把 Key 不属于试过的这些接入地址"，指路去粘控制台那条地址
+        // 试完一圈仍然不对：换成"试过的每一个接入地址都不认这把 Key"，
+        // 下一步是去核对 Key 本身（4.1.4 起不再指路"去粘接入地址"——那个框已经没有了）
         let exhausted = LLMCatalog.qwenUnverifiedHost401(probing: false).fullText
         XCTAssertTrue(exhausted.contains("接入地址"), exhausted)
+        XCTAssertFalse(exhausted.contains("粘"), exhausted)
         XCTAssertNotEqual(exhausted, probing)
     }
 
@@ -601,13 +604,71 @@ final class LLMCatalogTests: XCTestCase {
 
         let changes = LLMCatalog.migrationToBestDefaultChanges(current: current)
         XCTAssertEqual(changes, [
-            LLMCatalog.ModelChange(key: SettingsKeys.chatModel, from: "gpt-5.6-luna", to: "gpt-5.6-sol"),
-            LLMCatalog.ModelChange(key: SettingsKeys.openaiCommandModel, from: "gpt-5.6-terra", to: "gpt-5.6-sol"),
-        ])
+            LLMCatalog.ModelChange(key: SettingsKeys.openaiCommandModel,
+                                   from: "gpt-5.6-terra", to: "gpt-5.6-luna"),
+        ], "润色那一边已经等于当前默认值，不该出现在改动清单里")
         // writes 由 changes 推出来：两者永远说同一件事
         let writes = LLMCatalog.migrationToBestDefault(current: current)
-        XCTAssertEqual(writes[SettingsKeys.chatModel], "gpt-5.6-sol")
+        XCTAssertEqual(writes[SettingsKeys.openaiCommandModel], "gpt-5.6-luna")
         XCTAssertEqual(writes.count, changes.count)
+    }
+
+    // MARK: - 迁移到「默认用快的那一档」（4.1.4）
+
+    private func fastDefault(_ stored: [String: String?]) -> [LLMCatalog.DefaultModelChange] {
+        LLMCatalog.migrationToFastDefaultChanges(stored: stored)
+    }
+
+    /// 明确存着老默认值 qwen3.8-max 的人搬到 qwen3.8-flash——**润色与指令两个键都搬**。
+    /// 这一档是例外（明知可能是手选的也照搬）：实测它润色 4–12 秒、撞得上 12 秒超时，
+    /// 留着它的人每天都在撞这堵墙。改动会留一行日志。
+    func testStoredQwenFlagshipMovesToTheFastDefault() {
+        let keys = LLMCatalog.modelKeys(for: .qwen)
+        let changes = fastDefault([keys.polish: "qwen3.8-max", keys.command: "qwen3.8-max"])
+        XCTAssertEqual(changes, [
+            LLMCatalog.DefaultModelChange(provider: .qwen, key: keys.polish,
+                                          from: "qwen3.8-max", to: "qwen3.8-flash"),
+            LLMCatalog.DefaultModelChange(provider: .qwen, key: keys.command,
+                                          from: "qwen3.8-max", to: "qwen3.8-flash"),
+        ])
+    }
+
+    /// 从来没选过型号的人**一个键都不写**：注册默认值本身已经换成新的了，
+    /// 往持久域里写一个等于新默认值的字符串只会把他的型号永久钉死（以后再改默认值轮不到他）
+    func testNeverChosenModelsAreLeftAlone() {
+        let keys = LLMCatalog.modelKeys(for: .qwen)
+        XCTAssertTrue(fastDefault([keys.polish: nil, keys.command: nil]).isEmpty)
+        XCTAssertTrue(fastDefault([keys.polish: "  ", keys.command: nil]).isEmpty,
+                      "空白等同于没存过")
+    }
+
+    /// OpenAI / DeepSeek 存着的值**一个都不碰**：gpt-5.6-sol 实测 1.6–3.5 秒，是能用的，
+    /// 那可能是一个深思熟虑的选择。这一版只救慢到不能用的那一档。
+    func testOtherProvidersKeepWhateverTheyStored() {
+        let openai = LLMCatalog.modelKeys(for: .openai)
+        let deepseek = LLMCatalog.modelKeys(for: .deepseek)
+        XCTAssertTrue(fastDefault([openai.polish: "gpt-5.6-sol", openai.command: "gpt-5.6-sol",
+                                   deepseek.polish: "deepseek-v4-pro",
+                                   deepseek.command: "deepseek-v4-pro"]).isEmpty)
+    }
+
+    /// 手选了别的阿里云型号（别名、3.7）也不动：这一条只认那一个被换掉的老默认值
+    func testOtherQwenModelsAreNotTouched() {
+        let keys = LLMCatalog.modelKeys(for: .qwen)
+        XCTAssertTrue(fastDefault([keys.polish: "qwen-max", keys.command: "qwen-max"]).isEmpty)
+        XCTAssertTrue(fastDefault([keys.polish: "qwen3.7-plus", keys.command: "qwen3.7-plus"]).isEmpty)
+        // 已经在新默认上 → 幂等
+        XCTAssertTrue(fastDefault([keys.polish: "qwen3.8-flash",
+                                   keys.command: "qwen3.8-flash"]).isEmpty)
+    }
+
+    /// 只有一边存着老默认值（4.1.0 之前润色 / 指令可以分开设）：那一边照样要搬
+    func testOnlyTheKeyThatStoredTheOldDefaultMoves() {
+        let keys = LLMCatalog.modelKeys(for: .qwen)
+        let changes = fastDefault([keys.polish: "qwen3.8-flash", keys.command: "qwen3.8-max"])
+        XCTAssertEqual(changes.count, 1)
+        XCTAssertEqual(changes.first?.key, keys.command)
+        XCTAssertEqual(changes.first?.provider, .qwen)
     }
 
     /// 存的是型号名、不是句子（句子按看的时候那一刻的语言拼），同一对只留一份

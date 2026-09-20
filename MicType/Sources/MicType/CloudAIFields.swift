@@ -126,38 +126,43 @@ struct ModelPickerField: View {
     }
 }
 
-/// 阿里云那一档的「识别也用云端」开关 + 说明 + 接入地址（可选）+（设置页才有的）探测与测试。
+/// 阿里云那一档的「识别也用云端」开关 + 一行代价 + 一行结论。**整段只有这三行。**
 ///
 /// 只有阿里云有这一档：OpenAI 的转写端点 4.0.1 起不再提供，DeepSeek 没有识别接口。
 /// 开关本身只写一条设置（识别引擎），判据走 AISetup.engine（纯函数，单测钉死）。
+///
+/// 4.1.4 把这一段上的**所有**接入地址与测试控件都收掉了（用户 2026-09-20 实测后拍板：
+/// 「三个东西要测，太复杂」「永远别让用户去碰接入地址」）：
+///   • **「接入地址（可选）」输入框**——见 KeyEntryView 末尾那段注释；
+///   • **「测试识别」按钮**——把开关拨开本来就是"我要用它"，那一刻自己去测一次就好。
+///     测不通就把开关拨回去：**开着的开关必须意味着它真的能用**，否则用户以为配好了，
+///     直到某一次听写才发现每段录音都白传了一趟；
+///   • **「已试通的接入地址 + 重新探测」那一行**——主机名对用户毫无意义，而那颗按钮是
+///     第三个"要点一下试试"的东西。它唯一不可替代的用途（强制重挑一台）改由
+///     AlibabaFastestHostRefresh 每周自动做一次，外加每次验证 Key / 失败恢复都顺带做掉。
 struct CloudRecognitionFields: View {
-    /// 设置页给全套（探测接入地址 / 测试识别）；引导页只摆开关、说明和接入地址框——
-    /// 首配的人手上还没有"上一次试通的那台"可以重新探测。
-    var showsDiagnostics: Bool = true
+    /// Key 验证通过的次数。**一个动作管到底**：验一次 Key，开着的云端识别就跟着重测一次，
+    /// 用户不必再去找第二颗按钮（4.1.4 起那颗按钮也确实没有了）。
+    var keyVerifiedTick: Int = 0
     /// 开关动过之后调用方要做的事（引导页据此重算"AI 现在跑不跑得起来"）
     var onEngineChange: (() -> Void)? = nil
 
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
-    @AppStorage(SettingsKeys.qwenAPIHost) private var qwenAPIHost = ""
-    @AppStorage(SettingsKeys.qwenResolvedHost) private var qwenResolvedHost = ""
     @AppStorage(SettingsKeys.cloudAlibabaModel) private var cloudAlibabaModel = AlibabaASRModel.qwen3Flash.rawValue
 
-    /// 「探测接入地址」那一趟的状态与结论（快照：切语言 / 改配置就清）
-    @State private var hostProbing = false
-    @State private var hostProbeResult = ""
-    @State private var hostProbeOK = false
-    /// 「测试识别」那一行结论（同样是快照）
-    @State private var cloudTesting = false
-    @State private var cloudTestResult = ""
-    @State private var cloudTestOK = false
+    /// 拨开开关那一刻自动跑的那次检查（一次性快照）
+    @State private var checking = false
+    @State private var checkResult = ""
+    @State private var checkOK = false
     /// 这一行结论属于哪一次配置。探针要跑几秒到几分钟（阿里云超时 120s），期间用户完全可以
-    /// 改地址、关掉开关——回来的那条旧结论绝不能落在新配置下面。
-    @State private var cloudTestGeneration = 0
+    /// 把开关拨回去、换一把 Key——回来的那条旧结论绝不能落在新配置下面。
+    @State private var checkGeneration = 0
 
     private var isOn: Bool { RecognitionEngineChoice.parse(recognitionEngine) == .cloudAlibaba }
 
     /// 开关 ←→ 识别引擎。哪一档由 AISetup.engine 说了算，界面这边不自己拼 rawValue。
+    /// 拨开就当场测一次（见 runCheck）；拨回去只是关掉，不必测什么。
     private var engineBinding: Binding<Bool> {
         Binding(get: { isOn },
                 set: { on in
@@ -165,88 +170,48 @@ struct CloudRecognitionFields: View {
                     recognitionEngine = next.rawValue
                     Log.info("Cloud recognition engine=\(next.rawValue)")
                     onEngineChange?()
+                    if on {
+                        runCheck()
+                    } else {
+                        invalidateCheck()
+                    }
                 })
     }
 
     var body: some View {
         Group {
-            // 三个 onChange 都挂在开关上（挂在 Group 上会被逐个子视图各触发一次）：
-            // 引擎可能被别处改掉（「使用方式」切回只用本地、导入设置文件），地址可能被改，
-            // 语言切换会让已经生成的结论文字变成上一门语言的快照——三种情况都要作废旧结论。
+            // onChange 都挂在开关上（挂在 Group 上会被逐个子视图各触发一次）。
             Toggle(tr("识别也用云端", "Also recognize speech in the cloud"), isOn: engineBinding)
-                .onChange(of: recognitionEngine) { _, _ in invalidateCloudTest() }
-                .onChange(of: qwenAPIHost) { _, _ in
-                    hostProbeResult = ""
-                    invalidateCloudTest()
+                // 引擎被别处改掉（「使用方式」切回只用本地、导入设置文件）：那句「可用 ✓」
+                // 不能挂在一个已经关掉的开关旁边。**失败那句留着**——它正是开关自己弹回去的原因，
+                // 擦掉它等于让开关无缘无故跳回 OFF。
+                .onChange(of: recognitionEngine) { _, _ in
+                    if checkOK { invalidateCheck() }
                 }
-                .onChange(of: l10n.language) { _, _ in
-                    hostProbeResult = ""
-                    invalidateCloudTest()
+                // Key 验证通过：开着的话顺手把这条链路也重测一次（一个动作管到底）
+                .onChange(of: keyVerifiedTick) { _, _ in
+                    if isOn { runCheck() }
                 }
+                // 结论是一次性快照，切语言要清掉（见 CLAUDE.md「i18n 快照字符串」）
+                .onChange(of: l10n.language) { _, _ in invalidateCheck() }
             // 开关旁边只留一行：开着说代价（上传 + 按秒计费），关着说默认（不出这台 Mac）。
             // 单价、留存、先开通模型、出错回落全部收进段头那颗 ⓘ（SettingsCopy.cloudRecognitionInfo）
             Caption(isOn ? cloudAlibabaModel + " · " + SettingsCopy.cloudRecognitionCost
                          : SettingsCopy.cloudRecognitionOff)
-
-            // 接入地址：**可选**输入框，不是选择器。地址由 MicType 自己试（见 AlibabaEndpoint），
-            // 这个框只留给"我就是知道地址"的人，空着才是常态。输入框 / 说明 / 格式提示与引导页共用一份。
-            QwenHostField.field(host: $qwenAPIHost)
-
-            if showsDiagnostics {
-                hostRow
-                if isOn { testRow }
-            }
+            checkRow
         }
     }
 
-    // MARK: 接入地址：试通的那台 + 重新探测（只有设置页有）
+    // MARK: 开关旁边那一行结论（原来那颗「测试识别」按钮的去处）
 
+    /// 这一行是**一次性状态快照**（正在测 / 测完的结论），不是控件说明——所以不进
+    /// SettingsCopy 那张预算表，也不用 Caption（见 SettingsCopyBudgetTests 的两条纪律）。
     @ViewBuilder
-    private var hostRow: some View {
-        if !qwenAPIHost.isEmpty {
-            Caption(SettingsCopy.hostFilledManually)
-        } else {
-            // 这一行**在地址还没定下来时也要有**：钥匙串里已经有 Key 的人（从 4.0.0 升上来、
-            // 或导入过设置）不会再粘一次 Key，而粘 Key 是原先唯一的探测入口。
-            HStack(alignment: .firstTextBaseline) {
-                Text(qwenResolvedHost.isEmpty
-                     ? SettingsCopy.hostNotDetectedYet
-                     : SettingsCopy.hostInUse + qwenResolvedHost)
-                    .font(.caption)
-                    .foregroundColor(qwenResolvedHost.isEmpty ? .orange : .secondary)
-                    .textSelection(.enabled)
-                Spacer()
-                Button(hostProbing ? tr("探测中…", "Detecting…")
-                                   : (qwenResolvedHost.isEmpty ? tr("探测接入地址", "Detect endpoint")
-                                                               : tr("重新探测", "Detect again"))) {
-                    runHostProbe()
-                }
-                .fixedSize()
-                .disabled(hostProbing)
-            }
-            if !hostProbeResult.isEmpty {
-                Text(hostProbeResult)
-                    .font(.caption)
-                    .foregroundColor(hostProbeOK ? .green : .orange)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var testRow: some View {
-        HStack {
-            Button(cloudTesting ? tr("测试中…", "Testing…") : tr("测试识别", "Test recognition")) {
-                runCloudTest()
-            }
-            .disabled(cloudTesting)
-            Spacer()
-        }
-        if !cloudTestResult.isEmpty {
-            Text(cloudTestResult)
+    private var checkRow: some View {
+        if checking || !checkResult.isEmpty {
+            Text(checking ? tr("正在测云端识别…", "Checking cloud recognition…") : checkResult)
                 .font(.caption)
-                .foregroundColor(cloudTestOK ? .green : .orange)
+                .foregroundColor(checking ? .secondary : (checkOK ? .green : .orange))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -255,87 +220,65 @@ struct CloudRecognitionFields: View {
     // MARK: 动作
 
     /// 配置变了：上一次的结论作废，在飞的那一次也不要了。
-    /// 「测试中…」的标志位一并复位——不然改了配置之后按钮永远灰着，等一个再也不会落地的结果。
-    private func invalidateCloudTest() {
-        cloudTestGeneration &+= 1
-        cloudTestResult = ""
-        cloudTesting = false
+    /// 「正在测…」的标志位一并复位——不然改了配置之后那一行永远停在"正在测"，
+    /// 等一个再也不会落地的结果。
+    private func invalidateCheck() {
+        checkGeneration &+= 1
+        checkResult = ""
+        checking = false
+        // 这一位也必须清：上面那条 onChange 只在"上一次是成功"时才擦结论，
+        // 留着一个陈旧的 true，下一次把开关拨开时那条 onChange 会当场把刚起飞的检查作废
+        //（屏幕上"正在测…"闪一下就没了，而结果永远不会落地）
+        checkOK = false
     }
 
-    /// 探一次接入地址：拿钥匙串里那把 Key 逐台试 `GET /compatible-mode/v1/models`（不花钱、不传音频）。
-    /// **成败都进日志**——用户抄着屏幕上这句话来问的时候，日志里必须找得到。
-    private func runHostProbe() {
-        let key = KeychainHelper.loadAPIKey(account: LLMProvider.qwen.keychainAccount) ?? ""
-        guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            hostProbeOK = false
-            hostProbeResult = tr("先在上面粘一把阿里云 Key，再探测接入地址",
-                                 "Paste an Alibaba Cloud key above first, then detect the endpoint")
-            Log.warn("Qwen host probe skipped: no key")
-            return
-        }
-        CloudASRSettings.rememberWorkspace(fromKey: key)
-        // 重新探测 = 忘掉上一次那台（否则它排在第一位，"重新"就成了摆设）
-        qwenResolvedHost = ""
-        Settings.shared.qwenHostVerified = false
-        hostProbing = true
-        hostProbeResult = ""
-        invalidateCloudTest()
-        Log.info("Qwen host probe started")
-        AlibabaHostResolver.resolve(apiKey: key,
-                                    candidates: CloudASRSettings.currentHostCandidates(apiKey: key)) { result in
-            hostProbing = false
-            switch result {
-            case .success(let host):
-                CloudASRSettings.rememberResolution(host: host, model: nil)
-                hostProbeOK = true
-                hostProbeResult = SettingsCopy.hostInUse + host
-            case .failure(let failure):
-                hostProbeOK = false
-                hostProbeResult = failure.message
-                Log.warn("Qwen host probe failed status=\(failure.status) code=\(failure.code ?? "-") "
-                         + "copy=" + String(failure.message.prefix(200)))
-            }
-        }
-    }
-
-    /// 发一次 1 秒合成音，报往返毫秒数。失败时把云端的原话摆出来（它本来就带"下一步怎么办"）。
+    /// 拨开开关（或刚验过 Key）那一刻自动跑的这一次检查：发 1 秒合成音，报往返毫秒数。
     /// 先把接入地址试出来、模型 404 时自动换 qwen3-asr-flash（见 CloudASRSetup）。
-    /// **不管成败，结论都进日志**：4.0.0 这个按钮报 404、日志里却一行都没有，用户只能靠抄屏。
-    private func runCloudTest() {
+    ///
+    /// **测不通就把开关拨回 OFF**：开着的开关必须意味着"它真的能用"。不拨回去的话，
+    /// 用户以为配好了，而每一次听写都要先白传一整段音频、再回落本机模型。
+    /// **不管成败，结论都进日志**：4.0.0 那颗按钮报 404、日志里却一行都没有，用户只能靠抄屏。
+    private func runCheck() {
         guard let config = CloudASRSettings.currentConfig() else {
-            cloudTestOK = false
-            cloudTestResult = tr("云端识别没开，没有云端可测",
-                                 "Cloud recognition is off — there is no cloud endpoint to test")
-            Log.warn("Cloud test skipped: local engine")
+            // 走到这里只可能是这半秒里引擎又被改回本机档
+            Log.warn("Cloud recognition check skipped: local engine")
             return
         }
-        cloudTestGeneration &+= 1
-        let generation = cloudTestGeneration
-        cloudTesting = true
-        cloudTestResult = ""
-        Log.info("Cloud test started provider=\(config.provider.rawValue)")
+        guard !config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            checkOK = false
+            checkResult = tr("先在上面粘一把阿里云 Key", "Paste an Alibaba Cloud key above first")
+            Log.warn("Cloud recognition check skipped: no key")
+            turnOff(reason: "no key")
+            return
+        }
+        checkGeneration &+= 1
+        let generation = checkGeneration
+        checking = true
+        checkResult = ""
+        Log.info("Cloud recognition check started provider=\(config.provider.rawValue)")
 
-        // 这几秒里用户可能已经关掉开关或改了地址：那条结论对应的是**旧**配置，
-        // 落在新配置下面就是一句"已连通 ✓"骗人
+        // 这几秒里用户可能已经把开关拨回去或换了 Key：那条结论对应的是**旧**配置，
+        // 落在新配置下面就是一句"可用 ✓"骗人
         func settle(_ result: Result<CloudASRProbe.Outcome, CloudASRFailure>) {
             switch result {
             case .success(let outcome):
-                Log.info("Cloud test ok provider=\(config.provider.rawValue) "
+                Log.info("Cloud recognition check ok provider=\(config.provider.rawValue) "
                          + "model=\(outcome.model ?? "-") ms=\(outcome.milliseconds)")
             case .failure(let failure):
-                Log.warn("Cloud test failed provider=\(config.provider.rawValue) "
+                Log.warn("Cloud recognition check failed provider=\(config.provider.rawValue) "
                          + "status=\(failure.status) code=\(failure.code ?? "-") "
                          + "copy=" + String(failure.message.prefix(200)))
             }
-            guard generation == cloudTestGeneration else { return }
-            cloudTesting = false
+            guard generation == checkGeneration else { return }
+            checking = false
             switch result {
             case .success(let outcome):
-                cloudTestOK = true
-                cloudTestResult = CloudASRProbe.successText(outcome)
+                checkOK = true
+                checkResult = CloudASRProbe.successText(outcome)
             case .failure(let failure):
-                cloudTestOK = false
-                cloudTestResult = failure.message
+                checkOK = false
+                checkResult = failure.message
+                turnOff(reason: "check failed")
             }
         }
 
@@ -350,7 +293,7 @@ struct CloudRecognitionFields: View {
                 // 记住这台主机与真正能用的那个模型。两条设置都是 @AppStorage 绑着的，
                 // 界面会自己跟上。代数对不上 = 这几秒里配置被改过：那这条结论属于旧配置，
                 // 连地址带模型都不许落盘。
-                if generation == cloudTestGeneration {
+                if generation == checkGeneration {
                     CloudASRSettings.rememberResolution(host: success.host, model: success.model)
                 }
                 settle(.success(success.outcome))
@@ -358,6 +301,14 @@ struct CloudRecognitionFields: View {
                 settle(.failure(failure))
             }
         }
+    }
+
+    /// 测不通：把开关拨回本机档。**只改这一条设置**，Key、地址、模型一个都不动。
+    private func turnOff(reason: String) {
+        guard isOn else { return }
+        recognitionEngine = RecognitionEngineChoice.local.rawValue
+        Log.warn("Cloud recognition switched back to local: \(reason)")
+        onEngineChange?()
     }
 }
 
@@ -399,8 +350,6 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
     /// 模型下拉与云端识别开关露不露面。引导页要"这一档真的通了"才露——
     /// 还没连上就先摆一个花钱的选择，用户点下去也不知道点没点上
     let showsModel: Bool
-    /// 云端识别那一段带不带「探测接入地址 / 测试识别」（首配的人手上还没有"上一次试通的那台"）
-    let showsDiagnostics: Bool
     /// 选择器下面要不要那行「这一档未配置」。引导页传 false：它自己那行
     /// providerNotAdoptedYet 把同一件事说得更全，两行并排就是同一个状态说两遍
     var showsNotSetUpHint: Bool = false
@@ -410,6 +359,11 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
     @ViewBuilder var usageNotices: () -> UsageNotices
     /// 「服务商」下面的边界状态（地址被改过、这一档还没 Key……）
     @ViewBuilder var providerNotices: () -> ProviderNotices
+
+    /// Key 验证通过的次数。**一个动作管到底**（用户 2026-09-20 拍板：一个测试，不是三个）：
+    /// 验一次 Key，下面开着的云端识别跟着重测一次。计数住在这里而不是两个调用方里，
+    /// 是因为设置页与引导页共用这一串控件——写两份早晚有一处漏掉。
+    @State private var keyVerifiedTick = 0
 
     private var usingAI: Bool { usageMode.wrappedValue == .withAI }
 
@@ -464,7 +418,7 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
             }
             if showsCloudRecognition {
                 Section {
-                    CloudRecognitionFields(showsDiagnostics: showsDiagnostics,
+                    CloudRecognitionFields(keyVerifiedTick: keyVerifiedTick,
                                            onEngineChange: onEngineChange)
                 } header: {
                     SectionHeader(title: cloudRecognitionTitle, info: SettingsCopy.cloudRecognitionInfo)
@@ -491,7 +445,7 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
             }
             if showsCloudRecognition {
                 SectionHeader(title: cloudRecognitionTitle, info: SettingsCopy.cloudRecognitionInfo)
-                CloudRecognitionFields(showsDiagnostics: showsDiagnostics,
+                CloudRecognitionFields(keyVerifiedTick: keyVerifiedTick,
                                        onEngineChange: onEngineChange)
             }
         }
@@ -519,7 +473,12 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
 
     private var keyField: some View {
         KeyEntryView(provider: selected, model: keyProbeModel, probe: keyProbe,
-                     onStatusChange: onKeyStatus)
+                     onStatusChange: { status in
+                         // 验证通过 = 这套配置刚刚被真的确认过一次。开着云端识别的话，
+                         // 下面那个开关旁的结论也该跟着重来一遍（CloudRecognitionFields 盯着这个计数）
+                         if case .connected = status { keyVerifiedTick &+= 1 }
+                         onKeyStatus?(status)
+                     })
     }
 
     private var modelField: some View {
