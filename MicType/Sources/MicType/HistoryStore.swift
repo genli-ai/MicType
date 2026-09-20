@@ -51,7 +51,19 @@ struct HistoryItem: Identifiable, Codable, Equatable {
 final class HistoryStore: ObservableObject {
     static let shared = HistoryStore()
     private let legacyKey = "history"
-    private let maxCount = 200
+
+    /// 保留多少条。**数字只写这一处**：关于页那句"最多 N 条"由 storageNote 从这里现取，
+    /// 4.1.0 之前关于页和「输入」页那颗 ⓘ 各自把 200 硬写了一遍，改一次就有两个答案。
+    static let maxCount = 200
+    private var maxCount: Int { Self.maxCount }
+
+    /// 听写历史存在哪儿、多少条、出不出这台 Mac——**全 App 唯一出处**（关于页渲染它）。
+    /// 这是一句隐私陈述，所以和 PrivacyCopy 那六句一样只在关于页出现；
+    /// 「输入」页那颗 ⓘ 只说怎么关、怎么清（SettingsCopy.behaviourInfo）。
+    static var storageNote: String {
+        tr("听写历史以明文存在本机 Application Support 目录（history.json），最多 \(maxCount) 条，从不上传。",
+           "Transcripts are kept in plain text on this Mac, in Application Support (history.json), up to \(maxCount) entries, and are never uploaded.")
+    }
     /// 文件写入放后台队列：add() 发生在听写交付路径上，主线程一毫秒都不该浪费
     private let ioQueue = DispatchQueue(label: "com.mictype.history.io")
 

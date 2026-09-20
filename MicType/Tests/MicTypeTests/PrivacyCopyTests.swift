@@ -40,6 +40,36 @@ final class PrivacyCopyTests: XCTestCase {
         }
     }
 
+    /// Key 怎么存、钱怎么付：关于页那两句和 Key 输入框旁边那两句必须是**同一串**。
+    /// 4.1.0 之前是两套各写各的措辞（关于页「不写进文件」vs ⓘ 里「加密、仅本机可读」），
+    /// 改一处漏一处就是两句对不上的承诺——而扫描器只数 `PrivacyCopy.`，看不见这种漂移。
+    func testKeyAndBillingPromisesHaveASingleSource() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            XCTAssertEqual(PrivacyCopy.keyInKeychain, LLMCatalog.keyStorageNote)
+            XCTAssertEqual(PrivacyCopy.youPayProvider, LLMCatalog.billingNote)
+        }
+    }
+
+    /// 听写历史存哪儿、最多几条：关于页那一句和条数那个常量只有一个出处。
+    /// 「输入」页那颗 ⓘ 只说怎么关、怎么清——它再也不自己写一遍条数了
+    func testHistoryStorageFactsHaveASingleSource() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            XCTAssertTrue(HistoryStore.storageNote.contains("\(HistoryStore.maxCount)"),
+                          HistoryStore.storageNote)
+            XCTAssertFalse(SettingsCopy.behaviourInfo.contains("\(HistoryStore.maxCount)"),
+                           SettingsCopy.behaviourInfo)
+        }
+        L10n.shared.language = .zh
+        XCTAssertFalse(SettingsCopy.behaviourInfo.contains("从不上传"), SettingsCopy.behaviourInfo)
+        L10n.shared.language = .en
+        XCTAssertFalse(SettingsCopy.behaviourInfo.lowercased().contains("never uploaded"),
+                       SettingsCopy.behaviourInfo)
+        XCTAssertFalse(CJKSourceScanner.containsFlagged(HistoryStore.storageNote),
+                       HistoryStore.storageNote)
+    }
+
     func testEveryLineIsPresentAndDistinctInBothLanguages() {
         for language in AppLanguage.allCases {
             L10n.shared.language = language

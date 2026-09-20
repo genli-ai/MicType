@@ -180,7 +180,9 @@ enum LLMProvider: String, CaseIterable {
         case .deepseek: return "DeepSeek"
         case .qwen: return tr("阿里云", "Alibaba Cloud")
         case .custom: return tr("其他服务", "Other service")
-        case .local: return tr("本机模型", "On-device")
+        // 「本机模型」：和 displayName 用同一个英文名。分段选择器写 "On-device"、
+        // 底下那行边界状态写 "Local model"，英文用户会以为屏幕上是两个东西
+        case .local: return tr("本机模型", "Local model")
         }
     }
 
@@ -231,8 +233,10 @@ enum AIUsageMode: String, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .localOnly: return tr("只用本地", "Local only")
-        case .withAI: return tr("本地 + AI", "Local + AI")
+        // 英文侧一律叫 on-device：这一档说的是"识别与输入都在这台 Mac 上"，
+        // 而 "Local" 在英文界面里已经是本机大模型那一档的名字（LLMProvider.local）
+        case .localOnly: return tr("只用本地", "On-device only")
+        case .withAI: return tr("本地 + AI", "On-device + AI")
         }
     }
 }

@@ -115,11 +115,14 @@ enum LLMCatalog {
     /// 下拉下面那一句。两件事必须写出来：**润色和指令用的是同一个型号**（不说的话，
     /// 用户会以为自己只挑了其中一个），以及要分开选去哪儿。默认型号名也点出来——
     /// 藏起来只会让人不敢点。nil = 这个服务商没有内置型号（下拉本身也不显示）。
+    ///
+    /// 长度走设置页那条"一行说明"的线：型号名是专有名词，不算进那 16 字，剩下的话必须装得下
+    /// （SettingsCopyBudgetTests 按"去掉型号名之后"量它）。4.0.1 这句话是 44 字的一段解释。
     static func modelMenuSummary(provider: LLMProvider) -> String? {
         let fallback = defaultModel(for: provider)
         guard !fallback.isEmpty else { return nil }
-        return tr("润色和指令默认用同一个模型（默认 \(fallback)，最强的主流档）；要分开选在「高级」里。",
-                  "Polish and commands share this model (default \(fallback), the strongest mainstream tier); split them under Advanced.")
+        return tr("润色和指令共用 \(fallback)，分开设在高级",
+                  "Polish and commands share \(fallback); split them under Advanced.")
     }
 
     /// 某个服务商的「润色型号 / 指令型号」分别存在哪两个 UserDefaults 键上。
@@ -417,9 +420,11 @@ enum LLMCatalog {
     static var webSearchPriceNote: String { tr("每次搜索约 $0.01（OpenAI 按 $10 / 1000 次计）外加 token 费用，默认关闭。",
                                        "About $0.01 per search (OpenAI bills $10 per 1000 calls) plus tokens. Off by default.") }
 
-    /// 优先处理档同样要把代价写在开关旁：token 单价翻倍
-    static var fastTierPriceNote: String { tr("延迟更低更稳，token 单价约 2 倍，默认关闭。实际档位由服务商决定，可能被降回普通档。",
-                                      "Lower and steadier latency at about 2x the token price, off by default. The provider decides the actual tier and may fall back to the standard one.") }
+    /// 优先处理档同样要把代价写在开关旁：token 单价翻倍。
+    /// **单价只写这一处**——4.1.0 之前开关标题里还硬写着一个「2 倍」，改价就会有两个数字打架。
+    /// 「实际档位由服务商决定」是解释不是代价，收进「高级」那颗 ⓘ（advancedInfo）。
+    static var fastTierPriceNote: String { tr("延迟更低更稳，token 单价约 2 倍，默认关闭。",
+                                      "Lower, steadier latency at about 2x the token price. Off by default.") }
 
     /// 服务商回传的 service_tier 原值算不算"真的跑在优先档上"。
     /// OpenAI 回 "fast"，别的兼容端点习惯叫 "priority"——后者也得算数，

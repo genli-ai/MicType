@@ -89,6 +89,114 @@ final class SettingsCopyBudgetTests: XCTestCase {
         }
     }
 
+    /// 渲染层要照同一条线截断远端目录里那行说明，所以那个数字必须就是这里的数字
+    func testTheRenderedCaptionLimitIsThisBudget() {
+        L10n.shared.language = .zh
+        XCTAssertEqual(SettingsCopy.captionLimit, Self.captionZhLimit)
+        L10n.shared.language = .en
+        XCTAssertEqual(SettingsCopy.captionLimit, Self.captionEnLimit)
+    }
+
+    /// 模型目录那一行说明直接渲染在选择器下面，所以内置那几条同样要过这条线。
+    /// （目录是远端可更新的，线上发一条长的我们拦不住——那一头由渲染时的截断兜着。）
+    func testModelCatalogNotesFitTheCaptionBudget() {
+        // 量的是**代码里那张字面表**（内置目录）：缓存下来的远端目录不进单测，
+        // 否则这条线量的是这台机器上碰巧缓存了什么
+        L10n.shared.language = .zh
+        for model in ModelCatalog.builtIn.models {
+            let note = model.languagesNote.localized
+            XCTAssertFalse(note.contains("\n"), note)
+            XCTAssertLessThanOrEqual(note.count, Self.captionZhLimit,
+                                     "模型目录那一行超预算：\(model.repo) \(note)")
+        }
+        L10n.shared.language = .en
+        for model in ModelCatalog.builtIn.models {
+            let note = model.languagesNote.localized
+            XCTAssertLessThanOrEqual(note.count, Self.captionEnLimit, note)
+            XCTAssertFalse(CJKSourceScanner.containsFlagged(note), note)
+        }
+    }
+
+    /// 「模型」下拉下面那一句也是一行说明。型号名是专有名词（点名它是 4.0.1 的修复），
+    /// 不算进那 16 字——**剩下的话必须装得下**，4.0.1 那一版是 44 字的一段解释
+    func testModelMenuSummaryFitsTheCaptionBudgetBesideTheModelID() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            let limit = language == .zh ? Self.captionZhLimit : Self.captionEnLimit
+            for provider in LLMProvider.allCases {
+                guard let summary = LLMCatalog.modelMenuSummary(provider: provider) else { continue }
+                let withoutModelID = summary.replacingOccurrences(
+                    of: LLMCatalog.defaultModel(for: provider), with: "")
+                XCTAssertFalse(summary.contains("\n"), summary)
+                XCTAssertLessThanOrEqual(withoutModelID.count, limit,
+                                         "\(provider.rawValue) 的下拉说明超预算：\(summary)")
+            }
+        }
+    }
+
+    // MARK: - 说的话和代码做的事对得上
+
+    /// 云端识别开着的时候，「使用方式」下面那一行**绝不能**还写着"本机识别"。
+    /// AISetup.mode 把"引擎是云端"也算成「本地 + AI」，所以只看档位选文案，正好会在
+    /// 每段录音都在上传的那一刻说反话——这是这条测试唯一要拦的东西。
+    func testUsageCaptionFollowsTheEngineNotJustTheMode() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            XCTAssertEqual(SettingsCopy.usageCaption(mode: .localOnly, engine: .local),
+                           SettingsCopy.usageLocalOnly)
+            // 「只用本地」这一档本来就不可能是云端引擎，真出现了也仍然只说这一句
+            XCTAssertEqual(SettingsCopy.usageCaption(mode: .withAI, engine: .local),
+                           SettingsCopy.usageWithAI)
+            for engine in RecognitionEngineChoice.allCases where engine.isCloud {
+                let caption = SettingsCopy.usageCaption(mode: .withAI, engine: engine)
+                XCTAssertEqual(caption, SettingsCopy.usageWithCloudRecognition, caption)
+                XCTAssertNotEqual(caption, SettingsCopy.usageWithAI)
+            }
+        }
+        L10n.shared.language = .zh
+        XCTAssertFalse(SettingsCopy.usageWithCloudRecognition.contains("本机"),
+                       SettingsCopy.usageWithCloudRecognition)
+        L10n.shared.language = .en
+        XCTAssertFalse(SettingsCopy.usageWithCloudRecognition.lowercased().contains("on this mac"),
+                       SettingsCopy.usageWithCloudRecognition)
+    }
+
+    /// 「只用本地」写回的只有"润色关掉 + 识别回本机"，**钥匙串里那把 Key 不动**，
+    /// 而指令路径只看 LLMClient.isConfigured——所以这一档下按住说指令照样会计费。
+    /// 边界那一行（storedKeyWhileLocalOnly）说的就是这件事，ⓘ 不许在隔壁说反话。
+    func testUsageInfoDoesNotContradictTheStoredKeyNotice() {
+        L10n.shared.language = .zh
+        XCTAssertFalse(SettingsCopy.usageInfo.contains("那一档没有"), SettingsCopy.usageInfo)
+        XCTAssertTrue(SettingsCopy.usageInfo.contains("按住说指令仍然要有 Key"), SettingsCopy.usageInfo)
+        XCTAssertTrue(SettingsCopy.storedKeyWhileLocalOnly(provider: "OpenAI").contains("计费"))
+
+        L10n.shared.language = .en
+        let en = SettingsCopy.usageInfo.lowercased()
+        XCTAssertFalse(en.contains("not available"), SettingsCopy.usageInfo)
+        XCTAssertTrue(en.contains("still needs a key"), SettingsCopy.usageInfo)
+    }
+
+    /// 「关于我」只有指令那条路读（AgentService.userContextHint），润色那条路只带词汇表和
+    /// 自定义规则（PolishService.polishPrompt）。这两句话是**数据流向**，写错就是告诉用户
+    /// 每一次轻点都在把个人信息发出去。
+    func testPersonalBoxesCopyMatchesWhereTheTextActuallyGoes() {
+        L10n.shared.language = .zh
+        XCTAssertTrue(SettingsCopy.personalBoxesShared.contains("关于我"),
+                      SettingsCopy.personalBoxesShared)
+        XCTAssertTrue(SettingsCopy.personalBoxesShared.contains("指令"),
+                      SettingsCopy.personalBoxesShared)
+        // 「两个框都…」是 4.1.0 之前那一版：它把「关于我」也算进了润色那条路
+        XCTAssertFalse(SettingsCopy.personalBoxesShared.contains("两个框"),
+                       SettingsCopy.personalBoxesShared)
+        XCTAssertFalse(SettingsCopy.personalInfo.contains("两个框都"), SettingsCopy.personalInfo)
+
+        L10n.shared.language = .en
+        XCTAssertFalse(SettingsCopy.personalBoxesShared.lowercased().contains("both boxes"),
+                       SettingsCopy.personalBoxesShared)
+        XCTAssertFalse(SettingsCopy.personalInfo.lowercased().contains("both boxes go"),
+                       SettingsCopy.personalInfo)
+    }
+
     // MARK: - 两种语言
 
     func testEnglishSideHasNoCJK() {
@@ -185,6 +293,43 @@ final class SettingsCopyBudgetTests: XCTestCase {
                        "引导里只留一句隐私文案（第一屏的数据流向），现在有 \(onboardingReferences) 处")
     }
 
+    /// 引导里那句隐私承诺只有第一屏那一条（PrivacyCopy.audioStaysLocal），而且它写清了边界：
+    /// 只有选了云端引擎才上传。上面那条测试只数 `PrivacyCopy.` 出现了几次，所以**换个说法**
+    /// 复述同一句承诺它一个都拦不住——4.1.0 之前权限页就写着"识别过程不联网"，
+    /// 而那一页可以从第三屏（摆着「识别也用云端」开关）点「上一步」回来。
+    func testOnboardingDoesNotParaphraseThePrivacyPromise() throws {
+        let source = try String(contentsOf: Self.sourcesDirectory
+                                    .appendingPathComponent("OnboardingWindow.swift"),
+                                encoding: .utf8)
+        let code = Self.stripComments(source)
+        // 只拦"无条件的本机承诺"这一类说法。"这台 Mac 上跑"这种讲清楚了边界的句子不在此列
+        for phrase in ["不联网", "识别全在本机", "no network", "recognized on this Mac"] {
+            XCTAssertFalse(code.contains(phrase), """
+                引导里换了个说法复述隐私承诺：\(phrase)
+                —— 默认那一档的承诺只写第一屏那一句（PrivacyCopy.audioStaysLocal），
+                它把"选了云端引擎才上传"这条边界也写清了；这里复述一遍就会在云端档下变成假话。
+                """)
+        }
+    }
+
+    /// `Caption` 收什么字都行，于是"顺手在视图里写一句说明"永远是最省事的写法——
+    /// 而那一句谁也量不到。4.1.0 之前正是这样漏掉了好几行。
+    /// 文案要么住在 SettingsCopy / OnboardingCopy（被上面那几条逐条量），要么是价格、
+    /// 是一次性状态快照；**就地现写一句**这条路直接堵掉。
+    func testNoAdHocCaptionLiteralsOutsideTheCopyTables() throws {
+        let dir = Self.sourcesDirectory
+        var offenders: [String] = []
+        for file in Self.swiftFiles(under: dir) {
+            let source = try String(contentsOf: dir.appendingPathComponent(file), encoding: .utf8)
+            let count = Self.stripComments(source).components(separatedBy: "Caption(tr(").count - 1
+            if count > 0 { offenders.append("\(file)（\(count) 处）") }
+        }
+        XCTAssertTrue(offenders.isEmpty, """
+            这几处直接把字面量塞进了 Caption，没有任何预算量得到它：\(offenders.joined(separator: "、"))
+            —— 一行说明请写进 SettingsCopy / OnboardingCopy。
+            """)
+    }
+
     /// 关于页仍然逐句摆着那六句——这条是上面那条的反面：收口不能收成"哪儿都不说了"
     func testAboutPanelStillRendersAllSixLines() throws {
         let source = try String(contentsOf: Self.sourcesDirectory.appendingPathComponent("SettingsEditors.swift"),
@@ -236,7 +381,7 @@ final class SettingsCopyBudgetTests: XCTestCase {
         return out
     }
 
-    private static func swiftFiles(under dir: URL) -> [String] {
+    static func swiftFiles(under dir: URL) -> [String] {
         let root = dir.standardizedFileURL.path + "/"
         guard let walker = FileManager.default.enumerator(at: dir.standardizedFileURL,
                                                           includingPropertiesForKeys: nil) else { return [] }
@@ -248,7 +393,7 @@ final class SettingsCopyBudgetTests: XCTestCase {
         return out.sorted()
     }
 
-    private static var sourcesDirectory: URL {
+    static var sourcesDirectory: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()

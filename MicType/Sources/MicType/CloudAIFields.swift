@@ -90,8 +90,7 @@ struct ModelPickerField: View {
                     Text(tr("自定义…", "Custom…")).tag("")
                 }
                 if selection.wrappedValue.isEmpty {
-                    TextField(tr("型号名（润色和指令都用它）", "Model name (used for both polish and commands)"),
-                              text: customText)
+                    TextField(tr("型号名", "Model name"), text: customText)
                         .textFieldStyle(.roundedBorder)
                 }
                 // 下拉下面唯一那一行（润色和指令共用这一个型号、要分开去「高级」）。
@@ -247,7 +246,7 @@ struct CloudRecognitionFields: View {
         guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             hostProbeOK = false
             hostProbeResult = tr("先在上面粘一把阿里云 Key，再探测接入地址",
-                                 "Paste an Alibaba key above first, then detect the endpoint")
+                                 "Paste an Alibaba Cloud key above first, then detect the endpoint")
             Log.warn("Qwen host probe skipped: no key")
             return
         }
@@ -282,7 +281,7 @@ struct CloudRecognitionFields: View {
         guard let config = CloudASRSettings.currentConfig() else {
             cloudTestOK = false
             cloudTestResult = tr("云端识别没开，没有云端可测",
-                                 "Cloud recognition is off - there is no cloud endpoint to test")
+                                 "Cloud recognition is off — there is no cloud endpoint to test")
             Log.warn("Cloud test skipped: local engine")
             return
         }
@@ -355,6 +354,10 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
     let style: Style
     /// 这一刻看着的那一档（引导页可能还没被采纳为生效服务商）
     let selected: LLMProvider
+    /// 这一刻的识别引擎。**「使用方式」那一行说什么由它决定**：AISetup.mode 把"引擎是云端"
+    /// 也算成「本地 + AI」，只看档位的话，开着阿里云识别的人会在这一页第一行读到"本机识别"。
+    /// 由调用方传进来（两处都有自己的 @AppStorage，开关一翻这一行就跟着重画）。
+    let engine: RecognitionEngineChoice
     let usageMode: Binding<AIUsageMode>
     let provider: Binding<LLMProvider>
     let offered: [LLMProvider]
@@ -393,8 +396,7 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
         Section {
             usagePicker
             // 这一档现在是什么，一行说完；两档各自的代价收在段头那颗 ⓘ 里
-            Caption(usageMode.wrappedValue == .localOnly ? SettingsCopy.usageLocalOnly
-                                                         : SettingsCopy.usageWithAI)
+            Caption(usageCaption)
             usageNotices()
         } header: {
             SectionHeader(title: usageTitle, info: SettingsCopy.usageInfo)
@@ -456,6 +458,13 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
 
     // MARK: 控件本体（两种摆法共用这四个）
 
+    /// 这一档现在是什么，一行说完（哪一句由 SettingsCopy.usageCaption 这个纯函数判，单测钉死）
+    private var usageCaption: String {
+        SettingsCopy.usageCaption(mode: usageMode.wrappedValue, engine: engine)
+    }
+
+    /// 选择器自己不再带标签：上面那一行（设置页的段名 / 引导页的标题）写的就是「使用方式」，
+    /// 两处摆在一起读起来像排版坏了。无障碍那边仍然要有名字，所以补一条 accessibilityLabel。
     private var usagePicker: some View {
         Picker(tr("使用方式：", "How you use MicType:"), selection: usageMode) {
             ForEach(AIUsageMode.allCases, id: \.rawValue) { mode in
@@ -463,6 +472,8 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
             }
         }
         .pickerStyle(.segmented)
+        .labelsHidden()
+        .accessibilityLabel(usageTitle)
     }
 
     private var keyField: some View {

@@ -304,6 +304,34 @@ final class OnboardingCopyTests: XCTestCase {
                         .lowercased().contains("download"))
     }
 
+    /// 引导里那些整句的说明：装不进 16 字，但同样要有一条线。
+    /// 窗口高度写死 470，一句一句加下去谁也不觉得自己是"那一句"——加到装不下只会
+    /// 默默多出一段滚动，没有任何测试会红（4.1.0 之前这十几行一条都没被量过）。
+    func testEveryParagraphStaysUnderItsOwnBudget() {
+        L10n.shared.language = .zh
+        for line in OnboardingCopy.paragraphs {
+            XCTAssertFalse(line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            XCTAssertFalse(line.contains("\n"), "引导里的说明不写成多段：\(line)")
+            XCTAssertLessThanOrEqual(line.count, 60, "引导说明超预算（中文 ≤ 60 字）：\(line)")
+        }
+        L10n.shared.language = .en
+        for line in OnboardingCopy.paragraphs {
+            XCTAssertFalse(line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            XCTAssertLessThanOrEqual(line.count, 200, "English paragraph is over budget: \(line)")
+            XCTAssertFalse(containsCJKOrFullWidth(line), line)
+        }
+    }
+
+    /// 漏写一侧的典型表现：两种语言拿到同一串
+    func testEveryParagraphIsWrittenInBothLanguages() {
+        L10n.shared.language = .zh
+        let zh = OnboardingCopy.paragraphs
+        L10n.shared.language = .en
+        let en = OnboardingCopy.paragraphs
+        XCTAssertEqual(zh.count, en.count)
+        for (a, b) in zip(zh, en) { XCTAssertNotEqual(a, b, "这一句没走 tr()：\(a)") }
+    }
+
     /// 计入预算的那两行确实被挂进了设置页那张总表——挂漏了，16 字那条线就量不到引导
     func testGuideCaptionsAreCountedByTheCopyBudget() {
         for language in [AppLanguage.zh, .en] {

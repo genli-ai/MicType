@@ -175,9 +175,11 @@ struct ModelCatalog: Codable, Equatable {
                                            en: "Qwen3-ASR 0.6B 6-bit (recommended, fast)"),
                 sizeBytes: 861_775_040,
                 quant: "6bit",
+                // 这一行渲染在选择器下面，走设置页"一行说明"那条线（中文 ≤ 16 字）：
+                // 语言总数、"识别全程在本机"都已经写在段头那颗 ⓘ 里，这里只留挑模型时要看的那一点
                 languagesNote: LocalizedText(
-                    zh: "30 种语言 + 22 种中文方言；中英文最稳，阿语可用，识别全程在本机。",
-                    en: "30 languages + 22 Chinese dialects; strongest on Chinese and English, usable on Arabic, fully on-device."),
+                    zh: "中英文最稳，阿语可用",
+                    en: "Strongest on Chinese and English, usable on Arabic"),
                 recommended: true,
                 recommendedFor: [],
                 minAppVersion: "4.0.0",
@@ -188,9 +190,10 @@ struct ModelCatalog: Codable, Equatable {
                                            en: "Qwen3-ASR 1.7B 4-bit (more accurate, slower)"),
                 sizeBytes: 1_607_630_579,
                 quant: "4bit",
+                // 同上一条：慢一倍、更吃内存是挑模型时要看的；"不太吃热词"那条建议在 ⓘ 里
                 languagesNote: LocalizedText(
-                    zh: "参数更大，整体更准，但实测慢约一倍、内存占用也更高；它对词汇表热词的响应不如 0.6B，夹英文专名的口述建议仍用推荐档加词汇表。",
-                    en: "A larger model: more accurate overall, but measured about twice as slow and heavier on memory. It responds to vocabulary hotwords less than the 0.6B model, so for speech with embedded English names the recommended model plus a vocabulary is still the better route."),
+                    zh: "更准，但慢约一倍、更吃内存",
+                    en: "More accurate, about twice as slow and heavier on memory"),
                 recommended: false,
                 recommendedFor: [],
                 minAppVersion: "4.0.0",

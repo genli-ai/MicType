@@ -159,7 +159,7 @@ enum SettingsSummary {
                              polishLevel: PolishLevel,
                              engine: RecognitionEngineChoice) -> Card {
         guard AISetup.mode(polishLevel: polishLevel, engine: engine) == .withAI else {
-            return Card(sentence: tr("未启用 · 只用本地", "Off · local only"), badge: nil)
+            return Card(sentence: tr("未启用 · 只用本地", "Off · on-device only"), badge: nil)
         }
         var parts = [provider.segmentName]
         // 润色关着还落在这一档 = 云端识别开着。这会儿那个润色型号一次都不会被用到，

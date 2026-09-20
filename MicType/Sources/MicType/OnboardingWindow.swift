@@ -168,26 +168,157 @@ enum OnboardingCopy {
         return nil
     }
 
+    // MARK: 四屏上那些 caption 字号的句子
+    //
+    // 为什么非收进来不可：它们原来是散在视图里的 Text(tr(...))，一个都没被量过，
+    // 而窗口高度写死 470——每加一句话都在往 ScrollView 里塞，谁也看不出这一屏一共说了多少字。
+    // 收进来之后由 `paragraphs` 逐条量（见 SettingsCopyBudgetTests）。
+
+    /// 欢迎屏两张手势卡的正文。
+    /// 「识别在本机」**不在这里说**：这一屏底下那句 PrivacyCopy.audioStaysLocal 已经把它说全了，
+    /// 而且说得比这里准（它写清了"选了云端引擎才会上传"这条边界）。
+    static var dictateCardDetail: String {
+        tr("说什么，打什么。", "Exactly what you said, typed out.")
+    }
+
+    static var commandCardDetail: String {
+        tr("改写选中的文字、帮你起草回复、或直接下一条指令；松手执行。",
+           "Rewrite the selection, draft a reply, or just give an instruction; release to run.")
+    }
+
+    static var twoGesturesNeverGuessed: String {
+        tr("两种手势泾渭分明——MicType 从不猜你想要哪一种。",
+           "Two gestures, no guessing — MicType never infers which one you meant.")
+    }
+
+    /// 权限页两条权限各自的用途
+    static var microphonePurpose: String {
+        tr("录下你说的话，用于本机识别。", "Records your voice for on-device recognition.")
+    }
+
+    static var accessibilityPurpose: String {
+        tr("监听快捷键，并把文字粘贴到光标处。", "Listens for the hotkey and pastes text at your cursor.")
+    }
+
+    static var micCheckHint: String {
+        tr("说一句话，看电平条动起来——顺手也能在这里换麦克风。",
+           "Say something and watch the meter move — you can switch microphones here too.")
+    }
+
+    /// 模型已经在本机躺好了。
+    /// **只说"就绪"，不说"识别过程不联网"**：这一页可以从第三屏点「上一步」回来，
+    /// 而第三屏正摆着「识别也用云端」那个开关——开着它的时候，"不联网"是一句假话。
+    /// 默认档那条承诺由第一屏的 PrivacyCopy.audioStaysLocal 负责，而且它写清了边界。
+    static var modelReadyHere: String {
+        tr("识别模型已就绪 ✓", "Speech model ready ✓")
+    }
+
+    static var modelNotDownloadedHere: String {
+        tr("识别模型还没下载。", "The speech model is not downloaded yet.")
+    }
+
+    static var permissionsStuckHint: String {
+        tr("在系统设置里勾上 MicType；已经勾了还是红叉，就把它删掉再加回来。",
+           "Tick MicType in System Settings; if it is ticked but still red, remove it from the list and add it back.")
+    }
+
+    /// 第三屏：选择器换了一档，但还没验证通过 —— 生效的仍然是原来那一档
+    static func providerNotAdoptedYet(current: String) -> String {
+        tr("验证通过才会换过去，在此之前仍用 \(current)",
+           "MicType switches over only once a key is verified, and keeps using \(current)")
+    }
+
+    /// 第三屏：这一档没有内置型号，不填型号名就是"看着配好了、每次调用都是空型号"
+    static var modelNameNeeded: String {
+        tr("这一档还要在 设置 → 云端 AI → 高级 填一个型号名",
+           "This provider needs a model name under Settings → Cloud AI → Advanced")
+    }
+
+    /// 第四屏：怎么试一次
+    static func tryItInstruction(hotkey: String) -> String {
+        tr("光标已经在下面的框里。轻点 \(hotkey)，说一句话，再轻点一次结束。",
+           "The cursor is already in the box below. Tap \(hotkey), speak, then tap again to finish.")
+    }
+
+    static var modelWarmingUp: String {
+        tr("识别模型正在载入，第一句可能要多等几秒。",
+           "The speech model is still loading — your first sentence may take a few extra seconds.")
+    }
+
+    static var modelMissingForTryIt: String {
+        tr("识别模型还没下载好，现在轻点是说不出字的。",
+           "The speech model is not downloaded yet, so tapping now will not produce any text.")
+    }
+
+    static var modelStillDownloading: String {
+        tr("识别模型还在下载，下完就能说话了。",
+           "The speech model is still downloading — you can speak as soon as it lands.")
+    }
+
+    static var escCancels: String {
+        tr("录音中按 Esc 可以取消。", "Press Esc while recording to cancel.")
+    }
+
+    static func holdToCommandTip(hotkey: String) -> String {
+        tr("按住 \(hotkey) 说指令，松手执行。",
+           "Hold \(hotkey) to speak a command, release to run it.")
+    }
+
+    static var menuBarTip: String {
+        tr("菜单栏的麦克风图标里有历史记录、润色档位和设置。",
+           "The menu-bar mic icon holds your history, polish mode and settings.")
+    }
+
+    static var vocabularyTip: String {
+        tr("人名、术语老是听错？在 设置 → 本地识别 的词汇表里填「错写=正写」，一次搞定。",
+           "Names or jargon misheard? Add \"wrong=right\" to the vocabulary in Settings → On-device recognition.")
+    }
+
+    static var reopenGuide: String {
+        tr("随时可以在 设置 → 输入 里重新打开这份引导。",
+           "You can reopen this guide any time from Settings → Input.")
+    }
+
     /// 权限页开头那两句。第二句**只在模型真的在下**的时候才说：
     /// 选了云端识别的人压根不下这 860MB，取消过 / 失败过的人下面那一行正写着「已取消」，
     /// 而这句话还在说"已经在后台下载"——当面说假话比少说一句糟得多。
     static func permissionsIntro(modelDownloading: Bool) -> String {
         let base = tr("授权后这一页会自己变绿并继续，不用重启 MicType。",
-                      "The badges turn green on their own once granted and the guide moves on - no restart needed.")
+                      "The badges turn green on their own once granted and the guide moves on — no restart needed.")
         guard modelDownloading else { return base }
         return base + tr("识别模型正在后台下载。",
                          " The speech model is downloading in the background.")
     }
 
-    /// 引导里计入文案预算的那几行（SettingsCopy.allCaptions 把它们并进同一张表逐条量：
-    /// 设置页那条 16 字的线对引导同样成立，两处不该各有一套尺子）。
+    /// 挂在控件下面、走设置页那条 16 字线的几行（SettingsCopy.allCaptions 把它们并进同一张表
+    /// 逐条量：第一次打开 MicType 的人最没耐心读字，凭什么反而不受那条线约束）。
     static var captions: [String] {
         [hotkeyChoice, dictationUnavailable, confirmHotkeyFirst, permissionsStillMissing]
     }
 
+    /// 引导里那些**整句的说明**。它们说的是"这一步要做什么、现在是什么状态"，装不进 16 字，
+    /// 所以另算一条线（中文 ≤ 60 字、英文 ≤ 200 字符，由 OnboardingCopyTests 量）。
+    ///
+    /// 这张表存在的理由和设置页那三张一样：窗口高度写死 470，一句一句加下去谁也不觉得自己是
+    /// "那一句"，而加到装不下只会变成默默多出一段滚动，没有任何测试会红。
+    static var paragraphs: [String] {
+        [usageExplanation, aiSkipReassurance,
+         dictateCardDetail, commandCardDetail, twoGesturesNeverGuessed,
+         permissionsIntro(modelDownloading: false), permissionsIntro(modelDownloading: true),
+         microphonePurpose, accessibilityPurpose, micCheckHint,
+         modelReadyHere, modelNotDownloadedHere, permissionsStuckHint,
+         providerNotAdoptedYet(current: "OpenAI"), modelNameNeeded,
+         tryItInstruction(hotkey: "⌥"), modelWarmingUp, modelMissingForTryIt,
+         modelStillDownloading, escCancels,
+         holdToCommandTip(hotkey: "⌥"), menuBarTip, vocabularyTip, reopenGuide,
+         doneAIStatus(status: .ready, hotkey: "⌥"),
+         doneAIStatus(status: .commandsOnly, hotkey: "⌥"),
+         doneAIStatus(status: .off, hotkey: "⌥")]
+    }
+
     /// 第三屏的标题。这一屏就是设置页那一个决定的首配版本，名字必须和那里一致。
     static var usageHeadline: String {
-        tr("使用方式（可选，随时能改）", "How you use MicType (optional, changeable any time)")
+        tr("使用方式（可选，随时能改）", "How you use MicType (optional — change it any time)")
     }
 
     /// 两句话说清一把 Key 到底买到什么。写清边界比写得漂亮重要：
@@ -199,7 +330,7 @@ enum OnboardingCopy {
 
     static var aiSkipReassurance: String {
         tr("跳过也没关系：轻点听写完整可用，以后随时能在 设置 → 云端 AI 里补一把 Key。",
-           "Skipping is fine - tap-to-dictate is fully usable, and you can add a key later under Settings → Cloud AI.")
+           "Skipping is fine — tap-to-dictate is fully usable, and you can add a key later under Settings → Cloud AI.")
     }
 
 
@@ -214,7 +345,7 @@ enum OnboardingCopy {
                       "AI polish and voice commands are ready. Hold \(hotkey) and say \"make this more formal\".")
         case .commandsOnly:
             return tr("你选了只用本地：轻点听写不润色。钥匙串里那把 Key 还在，按住 \(hotkey) 说指令仍然会用它（按次计费）。",
-                      "You picked local only, so tap-to-dictate does not polish. Your stored key is still there: holding \(hotkey) to command still uses it, and is still billed.")
+                      "You picked on-device only, so tap-to-dictate does not polish. Your stored key is still there: holding \(hotkey) to command still uses it, and is still billed.")
         case .off:
             return tr("你现在是纯本机听写，完整可用。想要润色和语音指令，去 设置 → 云端 AI 填一把 Key。",
                       "You're on pure on-device dictation. Add a key under Settings → Cloud AI.")
@@ -605,17 +736,14 @@ private struct WelcomePage: View {
                     GestureCard(symbol: "hand.tap",
                                 gesture: tr("轻点 \(key)", "Tap \(key)"),
                                 title: tr("本地听写", "Dictate"),
-                                detail: tr("说什么，打什么。识别全在本机完成。",
-                                           "Exactly what you said, typed out, recognized on this Mac."))
+                                detail: OnboardingCopy.dictateCardDetail)
                     GestureCard(symbol: "hand.tap.fill",
                                 gesture: tr("按住 \(key) 说", "Hold \(key)"),
                                 title: tr("语音指令", "Command"),
-                                detail: tr("改写选中的文字、帮你起草回复、或直接下一条指令；松手执行。",
-                                           "Rewrite the selection, draft a reply, or just give an instruction; release to run."))
+                                detail: OnboardingCopy.commandCardDetail)
                 }
 
-                Text(tr("两种手势泾渭分明——MicType 从不猜你想要哪一种。",
-                        "Two gestures, no guessing — MicType never infers which one you meant."))
+                Text(OnboardingCopy.twoGesturesNeverGuessed)
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -688,7 +816,7 @@ private struct PermissionsPage: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 PermissionRow(title: tr("麦克风", "Microphone"),
-                              detail: tr("录下你说的话，用于本机识别。", "Records your voice for on-device recognition."),
+                              detail: OnboardingCopy.microphonePurpose,
                               ok: model.micOK) {
                     Permissions.ensureMicrophone { granted in
                         model.micOK = granted
@@ -698,7 +826,7 @@ private struct PermissionsPage: View {
                 }
 
                 PermissionRow(title: tr("辅助功能", "Accessibility"),
-                              detail: tr("监听快捷键，并把文字粘贴到光标处。", "Listens for the hotkey and pastes text at your cursor."),
+                              detail: OnboardingCopy.accessibilityPurpose,
                               ok: model.axOK) {
                     Permissions.promptAccessibility()
                     Permissions.openAccessibilitySettings()
@@ -709,8 +837,7 @@ private struct PermissionsPage: View {
                 // （复用设置 → 本地识别 的 MicCheckPanel，v4.0 调研 §4.5：Wispr Flow 也是这个顺序）。
                 if model.micOK {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(tr("说一句话，看电平条动起来——顺手也能在这里换麦克风。",
-                                "Say something and watch the meter move — you can switch microphones here too."))
+                        Text(OnboardingCopy.micCheckHint)
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -722,17 +849,15 @@ private struct PermissionsPage: View {
                 }
 
                 if modelExists {
-                    Text(tr("识别模型已就绪 ✓ 它在这台 Mac 上跑，识别过程不联网。",
-                            "Speech model ready ✓ It runs on this Mac, with no network during recognition."))
+                    Text(OnboardingCopy.modelReadyHere)
                         .font(.caption)
                         .foregroundColor(.secondary)
                 } else if !downloader.isDownloading {
                     // 下载没在跑又没下好：多半是刚被取消，或者一开始就失败了。
                     // 不自动重试（几百 MB 的事不背着用户反复开始），给一颗按钮。
                     HStack {
-                        Text(downloader.statusText.isEmpty
-                             ? tr("识别模型还没下载。", "The speech model is not downloaded yet.")
-                             : downloader.statusText)
+                        Text(downloader.statusText.isEmpty ? OnboardingCopy.modelNotDownloadedHere
+                                                            : downloader.statusText)
                             .font(.caption)
                             .foregroundColor(.orange)
                         Spacer()
@@ -747,8 +872,7 @@ private struct PermissionsPage: View {
                 }
 
                 if !(model.micOK && model.axOK) {
-                    Text(tr("在系统设置里勾上 MicType；已经勾了还是红叉，就把它删掉再加回来。",
-                            "Tick MicType in System Settings; if it is ticked but still red, remove it from the list and add it back."))
+                    Text(OnboardingCopy.permissionsStuckHint)
                         .font(.caption)
                         .foregroundColor(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -912,6 +1036,7 @@ private struct HowYouUsePage: View {
                 // 才采纳（adoptIfUsable），所以两处各写自己的 Binding setter。
                 CloudSetupCore(style: .onboarding,
                                selected: selected,
+                               engine: engineChoice,
                                usageMode: usageModeBinding,
                                provider: providerBinding,
                                offered: offered,
@@ -964,16 +1089,13 @@ private struct HowYouUsePage: View {
     private var providerNotices: some View {
         if selected.requiresAPIKey, Settings.shared.llmProvider != selected,
            !selectedHasStoredKey {
-            Caption(tr("验证通过才会换过去，在此之前仍用 \(Settings.shared.llmProvider.segmentName)",
-                       "MicType switches over only once a key is verified, and keeps using \(Settings.shared.llmProvider.segmentName)"))
+            Caption(OnboardingCopy.providerNotAdoptedYet(current: Settings.shared.llmProvider.segmentName))
         }
         // 本机模型 / 其他兼容服务没有内置型号，型号名只有用户自己知道。不说这一句的话，
         // 这一档看着像配好了，实际每次调用都是"型号名是空的"。
         if LLMCatalog.modelMenu(for: selected).isEmpty,
            polishModelBinding.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            Caption(tr("这一档还要在 设置 → 云端 AI → 高级 填一个型号名",
-                       "This provider needs a model name under Settings - Cloud AI - Advanced"),
-                    warning: true)
+            Caption(OnboardingCopy.modelNameNeeded, warning: true)
         }
     }
 
@@ -1155,8 +1277,7 @@ private struct TryItPage: View {
                     }
                     Spacer()
                 }
-                Text(tr("光标已经在下面的框里。轻点 \(key)，说一句话，再轻点一次结束——文字会直接落进来。",
-                        "The cursor is already in the box below. Tap \(key), say something, then tap again to finish — the text lands right here."))
+                Text(OnboardingCopy.tryItInstruction(hotkey: key))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1170,8 +1291,7 @@ private struct TryItPage: View {
                 // 模型在加载中：能试，只是第一句慢。和"没下载"分开说——
                 // 两句话的意思完全不同（一个要等几秒，一个得先下 860MB）
                 if localModelWarmingUp {
-                    Text(tr("识别模型正在载入，第一句可能要多等几秒。",
-                            "The speech model is still loading - your first sentence may take a few extra seconds."))
+                    Text(OnboardingCopy.modelWarmingUp)
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1179,10 +1299,8 @@ private struct TryItPage: View {
 
                 if localModelMissing {
                     HStack(alignment: .firstTextBaseline) {
-                        Text(downloader.statusText.isEmpty
-                             ? tr("识别模型还没下载好，现在轻点是说不出字的。",
-                                  "The speech model is not downloaded yet, so tapping now will not produce any text.")
-                             : downloader.statusText)
+                        Text(downloader.statusText.isEmpty ? OnboardingCopy.modelMissingForTryIt
+                                                            : downloader.statusText)
                             .font(.caption)
                             .foregroundColor(.orange)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1216,10 +1334,8 @@ private struct TryItPage: View {
                 }
 
                 HStack {
-                    Text(downloader.isDownloading
-                         ? tr("识别模型还在下载，下完就能说话了。",
-                              "The speech model is still downloading - you can speak as soon as it lands.")
-                         : tr("录音中按 Esc 可以取消。", "Press Esc while recording to cancel."))
+                    Text(downloader.isDownloading ? OnboardingCopy.modelStillDownloading
+                                                   : OnboardingCopy.escCancels)
                         .font(.caption)
                         .foregroundColor(downloader.isDownloading ? .orange : .secondary)
                     Spacer()
@@ -1236,24 +1352,20 @@ private struct TryItPage: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                     TipRow(symbol: "hand.tap.fill",
-                           text: tr("按住 \(key) 说指令，松手执行。",
-                                    "Hold \(key) to speak a command, release to run it."))
+                           text: OnboardingCopy.holdToCommandTip(hotkey: key))
                     // 有 Key / 没 Key 两种收尾：这一行是用户离开引导时对"我现在有什么"的最后印象，
                     // 说反了他要么白等一个不会发生的润色，要么以为自己还没配好
                     TipRow(symbol: model.aiReady ? "wand.and.stars" : "cpu",
                            text: OnboardingCopy.doneAIStatus(status: model.aiStatus, hotkey: key))
                     TipRow(symbol: "menubar.arrow.up.rectangle",
-                           text: tr("菜单栏的麦克风图标里有历史记录、润色档位和设置。",
-                                    "The menu-bar mic icon holds your history, polish mode and settings."))
+                           text: OnboardingCopy.menuBarTip)
                     TipRow(symbol: "text.book.closed",
-                           text: tr("人名、术语老是听错？在 设置 → 本地识别 的词汇表里填「错写=正写」，一次搞定。",
-                                    "Names or jargon misheard? Add \"wrong=right\" to the vocabulary in Settings → On-device recognition."))
+                           text: OnboardingCopy.vocabularyTip)
                 }
 
                 // 页名跟着设置窗口走：4.0.2 的 Plan C 把「通用」改成了「输入」，
                 // 指路的句子指向一个不存在的页名比不指路更糟
-                Text(tr("随时可以在 设置 → 输入 里重新打开这份引导。",
-                        "You can reopen this guide any time from Settings → Input."))
+                Text(OnboardingCopy.reopenGuide)
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Spacer(minLength: 0)

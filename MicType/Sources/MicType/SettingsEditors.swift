@@ -265,9 +265,15 @@ struct RecognitionEditor: View {
         recognitionLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ar"
     }
 
-    /// 当前选中模型的语言能力说明（来自模型目录；没写就不占一行）
+    /// 当前选中模型的语言能力说明（来自模型目录；没写就不占一行）。
+    ///
+    /// 目录是**远端可更新**的：内置那两条由单测按 16 字量着，但线上发一条 60 字的说明我们拦不住，
+    /// 而这一行就摆在选择器下面。所以渲染时照同一条线截断——细则本来就该在段头那颗 ⓘ 里。
     private var selectedModelLanguagesNote: String {
-        catalogStore.catalog.model(repo: qwenRepo)?.languagesNote.localized ?? ""
+        let note = catalogStore.catalog.model(repo: qwenRepo)?.languagesNote.localized ?? ""
+        let limit = SettingsCopy.captionLimit
+        guard note.count > limit else { return note }
+        return String(note.prefix(limit - 1)) + "…"
     }
 
     /// 选中的这一档还在目录里吗（换代下架后就不在了）
@@ -501,8 +507,8 @@ struct RecognitionEditor: View {
     @ViewBuilder
     private var vocabularySection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(tr("专有词汇表（人名、品牌、术语，逗号或换行分隔）：",
-                    "Custom vocabulary (names, brands, jargon — comma or newline separated):"))
+            Text(tr("专有词汇表（逗号或换行分隔）：",
+                    "Custom vocabulary (comma or newline separated):"))
             TextEditor(text: $vocabulary)
                 .font(.system(size: 12))
                 .frame(height: 90)
@@ -658,6 +664,7 @@ struct CloudEditor: View {
             // 这一页与引导页真正不同的只有一点：这里是"选了就生效"，引导页要验证通过才采纳。
             CloudSetupCore(style: .settings,
                            selected: selected,
+                           engine: engineChoice,
                            usageMode: usageModeBinding,
                            provider: providerBinding,
                            offered: offeredProviders,
@@ -890,7 +897,8 @@ struct CloudEditor: View {
                    testing: testing, refreshing: refreshing,
                    onTest: { runModelTest(tr("指令模型", "Command model"), commandModelBinding.wrappedValue) },
                    onRefresh: refreshModelList)
-        Caption(SettingsCopy.splitModelsRationale)
+        // 这里**不再挂一行说明**：「润色求快求省、指令求质量」是"为什么要分开设"，
+        // 段头那颗 ⓘ（advancedInfo）里逐字写着同一句，挂在这儿等于一段话读两遍
         if !refreshStatus.isEmpty {
             Caption(refreshStatus)
         }
@@ -909,20 +917,21 @@ struct CloudEditor: View {
     private var costlySwitches: some View {
         Toggle(tr("语音指令允许联网搜索", "Let voice commands search the web"), isOn: $webSearch)
             .disabled(searchStyle == .unsupported)
-        // 代价写在开关旁边：这两条是**价格**，不是解释，绝不搬进 ⓘ 里
-        Caption(searchStyle == .unsupported
-                ? tr("此服务商不支持。", "This provider does not support it.")
-                : LLMCatalog.webSearchPriceNote)
+        // 代价写在开关旁边：价格是**代价**，不是解释，绝不搬进 ⓘ 里。
+        // 这一档压根没有这个功能时，价格对他不成立——用"这一档没有"顶掉那一行，而不是两行都摆
+        Caption(searchStyle == .unsupported ? SettingsCopy.webSearchUnsupported
+                                            : LLMCatalog.webSearchPriceNote)
 
-        Toggle(tr("优先处理（token 单价 2 倍）", "Priority processing (2x token price)"), isOn: $fastTier)
+        // 标题里**不写单价**：单价只有 LLMCatalog.fastTierPriceNote 一个出处（就在下面那一行），
+        // 两处各写一个数字的结果是改一次价就有两个数字打架（4.1.0 之前标题里硬写着「2 倍」）
+        Toggle(tr("优先处理", "Priority processing"), isOn: $fastTier)
             .disabled(selected != .openai)
-        Caption(LLMCatalog.fastTierPriceNote
-                + (selected == .openai ? "" : tr("　只有 OpenAI 有这个档位。", " Only OpenAI offers this tier.")))
+        Caption(selected == .openai ? LLMCatalog.fastTierPriceNote
+                                    : SettingsCopy.fastTierOpenAIOnly)
         // 这一行的用途是揭发"勾了优先处理却被服务商降回普通档"。开关关着的时候它无事可揭
         if fastTier, let tier = lastServiceTier {
             let ranFast = LLMCatalog.servedPriorityTier(tier)
-            Caption(tr("上一次请求实际跑在：", "Last request actually ran at: ")
-                    + LLMCatalog.serviceTierName(tier),
+            Caption(SettingsCopy.lastServiceTier + LLMCatalog.serviceTierName(tier),
                     warning: !ranFast)
         }
     }
@@ -955,7 +964,7 @@ struct CloudEditor: View {
             refreshing = false
             guard let ids = ids, !ids.isEmpty else {
                 refreshStatus = tr("端点没有返回模型列表，下拉里仍是内置清单",
-                                   "The endpoint returned no model list - the built-in picks are unchanged")
+                                   "The endpoint returned no model list — the built-in picks are unchanged")
                 return
             }
             fetchedModels = ids
@@ -1129,8 +1138,11 @@ struct AboutPanel: View {
             ForEach(PrivacyCopy.allLines, id: \.self) { line in
                 Text(line)
             }
-            Text(tr("听写历史以明文保存在本机 Application Support 目录，最多 200 条：可在 设置 → 输入 关掉记录，或在菜单栏「最近记录」里清空、逐条删除。",
-                    "Transcripts are kept in plain text on this Mac (up to 200): turn recording off in Settings → Input, or clear and delete them from Recent Transcripts in the menu bar."))
+            // 存哪儿、多少条、上不上传：出处只有 HistoryStore.storageNote 一个（条数就是那个常量）。
+            // 这里只补一句"去哪儿关、去哪儿清"
+            Text(HistoryStore.storageNote
+                 + tr("可在 设置 → 输入 关掉记录，或在菜单栏「最近记录」里清空、逐条删除。",
+                      " Turn recording off in Settings → Input, or clear and delete them from Recent Transcripts in the menu bar."))
             Text(tr("「复制诊断信息」只包含版本、系统、芯片、设置摘要、最近的耗时数字和今天的日志尾巴（日志里的路径和账户名已脱敏）——不含 API Key，也不含任何听写内容，可以放心贴给别人。",
                     "“Copy diagnostics” includes only the version, system, chip, a settings summary, recent timings and today's log tail (paths and your account name in it are redacted) — never your API key and never any transcribed text, so it is safe to paste to someone."))
         }

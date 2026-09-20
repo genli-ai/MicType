@@ -22,6 +22,12 @@ import Foundation
 /// 但永远不许写成一段话。
 enum SettingsCopy {
 
+    /// 控件说明那条线的数字本身（中文 ≤ 16 字 / 英文 ≤ 60 字符）。
+    /// 放在这里是因为**渲染层也要用它**：识别模型那一行说明来自可远端更新的模型目录，
+    /// 目录里写多长我们管不着，只能在渲染时照同一条线截断——单测量的是同一个数字
+    /// （SettingsCopyBudgetTests 断言两边相等）。
+    static var captionLimit: Int { L10n.shared.language == .zh ? 16 : 60 }
+
     // MARK: - 输入
 
     /// 快捷键选择器下面唯一那一行。Esc 取消这件事收进 ⓘ——它是用到的时候才要知道的
@@ -58,16 +64,25 @@ enum SettingsCopy {
            "On multiple displays the overlay always appears on the screen holding the pointer; this only picks where it sits there. While recording, the small button at the right end of the capsule does exactly what pressing Esc does, without taking focus away from the app you are typing into.")
     }
 
-    /// 录音那颗 ⓘ：自动收尾的语义 + 录音上限那一整句（数字全部来自常量，见 recordingLimitCopy）
+    /// 录音那颗 ⓘ：草稿落在哪儿 + 录音上限那一整句（数字全部来自常量，见 recordingLimitCopy）。
+    ///
+    /// **"自动收尾不是丢弃"那一句不在这里写**：recordingLimitCopy 的末尾正写着
+    /// 「到上限自动收尾，说过的内容全部识别并插入」——同一颗气泡里说两遍，读的人会以为是两件事。
     static var recordingInfo: String {
-        tr("自动结束＝正常收尾这一段，不是丢弃；草稿只在悬浮窗里，不落到光标处。\n",
-           "Auto-stop finishes the take normally — it is still transcribed and inserted, nothing is discarded. The live draft stays in the floating window and never reaches your cursor.\n")
+        tr("草稿只在悬浮窗里，不落到光标处。\n",
+           "The live draft stays in the floating window and never reaches your cursor.\n")
             + DictationController.recordingLimitCopy
     }
 
+    /// 行为那颗 ⓘ：**只说怎么操作**。
+    ///
+    /// 「存在哪儿、最多几条、不上传」那一句不在这里写：它是一句隐私陈述，出处只有一个
+    /// （HistoryStore.storageNote，关于页逐句摆出来）。4.1.0 之前这里自己写了一版
+    /// （「history.json、200 条」）而关于页写的是另一版（「Application Support 目录、明文」），
+    /// 条数一改就有两个答案。
     static var behaviourInfo: String {
-        tr("听写历史只存在本机 history.json 里，最多 200 条，从不上传。关掉即停止记录；已有的记录可在菜单栏「最近记录 → 清空记录」清空，或在历史窗口（⌘Y）里逐条删。",
-           "Transcripts are kept on this Mac in history.json (up to 200) and are never uploaded. Turning this off stops recording immediately; existing entries are left alone — clear them from the menu bar (Recent Transcripts → Clear History) or delete them one by one in the History window (⌘Y).")
+        tr("关掉即停止记录，已有的记录不动：清空在菜单栏「最近记录 → 清空记录」，逐条删在历史窗口（⌘Y）。",
+           "Turning this off stops recording immediately and leaves existing entries alone: clear them from the menu bar (Recent Transcripts → Clear History), or delete them one by one in the History window (⌘Y).")
     }
 
     static var backupInfo: String {
@@ -111,7 +126,7 @@ enum SettingsCopy {
     }
 
     static var performanceCloudRoundTrip: String {
-        tr("云端档：「识别」量的是往返", "Cloud engine: that figure is a round trip")
+        tr("云端档：「识别」量的是往返", "Cloud engine: the ASR figure is a round trip")
     }
 
     /// 麦克风自检那段说明（设置页收进 ⓘ，引导页同样引用这一句）
@@ -125,9 +140,13 @@ enum SettingsCopy {
            "Pick a language when you speak something else, or when mixed speech gets detected wrong; it only affects recognition. Cloud engines read the same setting: a specific language is sent as a hint, and a language the provider does not know is never sent at all.")
     }
 
+    /// 识别模型那颗 ⓘ。
+    ///
+    /// **回落那一句不在这里**：「云端识别开着时本机模型还管草稿与回落」是云端识别那一档的事实，
+    /// 写在做那个选择的地方（cloudRecognitionInfo）。控件旁边那行 localModelStillUsed 是它的一句话版本。
     static var modelInfo: String {
-        tr("Qwen3-ASR：约 30 种语言 + 22 种中文方言，自动检测语言，识别完全在本机进行，模型来自 HuggingFace。云端识别开着时，本机模型仍然负责实时草稿和云端出错时的回落。",
-           "Qwen3-ASR: about 30 languages plus 22 Chinese dialects, automatic language detection, fully on-device, downloaded from HuggingFace. With cloud recognition on, the on-device model still produces the live draft and catches the take if the cloud call fails.")
+        tr("Qwen3-ASR：约 30 种语言 + 22 种中文方言，自动检测语言，识别完全在本机进行，模型来自 HuggingFace。1.7B 更准但不太吃词汇表热词，夹英文专名的口述建议用推荐档。",
+           "Qwen3-ASR: about 30 languages plus 22 Chinese dialects, automatic language detection, fully on-device, downloaded from HuggingFace. The 1.7B model is more accurate but responds less to vocabulary hotwords, so speech with embedded English names does better on the recommended one.")
     }
 
     static var vocabularyInfo: String {
@@ -159,17 +178,34 @@ enum SettingsCopy {
         tr("本机识别，再交服务商润色", "Recognized on this Mac, then polished by your provider")
     }
 
+    /// 同一段的第二种：**云端识别开着的时候**这一行绝不能还写着"本机识别"。
+    /// 4.1.0 之前这一行只看「使用方式」那一档，而 AISetup.mode 把"引擎是云端"也算成「本地 + AI」
+    /// ——于是开着阿里云识别的人，在这一页读到的第一句话是"识别在本机"，而每段录音都在上传。
+    static var usageWithCloudRecognition: String {
+        tr("云端识别，再交服务商润色", "Recognized in the cloud, then polished by your provider")
+    }
+
+    /// 「使用方式」那一段下面那一行到底说哪一句。**纯函数**：判错了不会崩，但会在
+    /// 每段录音都在上传的那一刻对着用户说"识别在本机"，所以由单测钉住。
+    ///
+    /// 判据是**识别引擎本身**，不是「使用方式」那一档——AISetup.mode 把"引擎是云端"也算成
+    /// 「本地 + AI」，只看档位就永远选不到云端那一句。
+    static func usageCaption(mode: AIUsageMode, engine: RecognitionEngineChoice) -> String {
+        guard mode != .localOnly else { return usageLocalOnly }
+        return engine.isCloud ? usageWithCloudRecognition : usageWithAI
+    }
+
     /// 其他兼容服务 / 本机模型没有内置型号：指路「高级」，而不是摆一个点了没反应的下拉
     static var modelNameInAdvanced: String {
-        tr("型号名在下面的「高级」里填", "Name the model under Advanced below")
+        tr("型号名在下面的「高级」里填", "Type the model id under Advanced below")
     }
 
+    /// 两个框的**去向不一样**，这一行说的就是这件事。
+    /// PolishService 只读词汇表和自定义规则（PolishService.polishPrompt），
+    /// 「关于我」只有 AgentService.userContextHint 读——也就是只有按住说指令那条路才发出去。
+    /// 写成"两个框润色和指令都读"，等于告诉用户每一次轻点都在把个人信息发出去。
     static var personalBoxesShared: String {
-        tr("润色和指令都会读这两个框", "Both boxes are read by polish and by commands")
-    }
-
-    static var splitModelsRationale: String {
-        tr("润色求快求省，指令求质量", "Polish wants speed and cost; commands want quality")
+        tr("规则两边都用；「关于我」只给指令", "Rules go to both; About-me only to commands")
     }
 
     /// 云端识别开关下面那一行。**代价写在开关旁边**，具体单价在 ⓘ 里（同一个事实只写一处）
@@ -188,16 +224,21 @@ enum SettingsCopy {
 
     /// 阿里云接入地址那个**可选**输入框：空着才是常态
     static var hostAutoDetected: String {
-        tr("留空即可，MicType 自己试", "Leave it empty: MicType finds the endpoint itself")
+        tr("留空即可，MicType 自己试", "Leave it empty: MicType detects the endpoint")
     }
 
     static var hostFilledManually: String {
-        tr("填了地址就只用它，不再试", "With a host filled in, MicType never probes")
+        tr("填了地址就只用它，不再探测", "With an endpoint filled in, MicType stops auto-detecting")
     }
 
+    /// 使用方式那颗 ⓘ。两句话都**只许说代码真会做的事**：
+    ///   • 「只用本地」写回的是"润色关掉 + 识别回本机"（AISetup.localOnlyWrites），**不删 Key**，
+    ///     而指令路径只看 LLMClient.isConfigured、不看档位——所以这一档下按住说指令照样会计费
+    ///     （storedKeyWhileLocalOnly 那条边界说的就是这件事）。写成"那一档没有指令"就是当面说假话。
+    ///   • 「本地 + AI」下识别在哪儿，由下面那个「云端识别」开关决定，不是这一档决定的。
     static var usageInfo: String {
-        tr("「只用本地」：识别和输入全在这台 Mac 上，不联网、不花钱，也不需要填 Key；按住说指令需要 AI，那一档没有。\n「本地 + AI」：轻点听写照旧在本机识别，文字再交给你选的服务商润色，按住说指令也走这家。",
-           "Local only: recognition and typing all happen on this Mac — no network, no cost, no key. Hold-to-command needs AI, so it is not available there.\nLocal + AI: tapping still recognizes on this Mac and the text is then polished by the provider you pick; hold-to-command uses the same one.")
+        tr("「只用本地」：识别和输入全在这台 Mac 上，不联网、不花钱；按住说指令仍然要有 Key，这一档不替你删 Key。\n「本地 + AI」：文字交给你选的服务商润色，按住说指令也走这家；识别在本机还是云端，看下面那个「云端识别」开关。",
+           "On-device only: recognition and typing all happen on this Mac — no network, no cost. Hold-to-command still needs a key, and this mode does not remove one.\nOn-device + AI: your text is polished by the provider you pick, and hold-to-command uses the same one; whether recognition runs here or in the cloud is set by the Cloud recognition switch below.")
     }
 
     static var providerInfo: String {
@@ -220,24 +261,27 @@ enum SettingsCopy {
     /// 另点出来的一档，它的代价只该出现在做这个选择的地方。同一个事实仍然只写一处。
     static var cloudRecognitionInfo: String {
         tr("每段录音都会上传给阿里云识别，按音频秒数计费（约每小时 0.13 美元）。第一次用之前要在百炼控制台把这个模型开通一次。阿里云声明不拿这些数据训练模型，但会保存调用数据，没有公布保留期。云端出错时自动改用本机模型再识别一遍。",
-           "Every recording is uploaded to Alibaba for recognition, billed by the second (about $0.13 per hour) directly by the provider. Before the first use, enable the model once in the Alibaba Model Studio console. Alibaba states this data is not used to train models, but it does store data generated by API calls, with no published retention period. If the cloud call fails, MicType re-runs recognition on this Mac.")
+           "Every recording is uploaded to Alibaba Cloud for recognition, billed by the second (about $0.13 per hour) directly by the provider. Before the first use, enable the model once in the Alibaba Cloud Model Studio console. Alibaba Cloud states this data is not used to train models, but it does store data generated by API calls, with no published retention period. If the cloud call fails, MicType re-runs recognition on this Mac.")
     }
 
+    /// 两个框各自跟着哪条路走。**最后一句是数据流向，不是修辞**：
+    /// 「关于我」只有 AgentService.userContextHint 读（按住说指令那条路），
+    /// 润色那条路只带词汇表和自定义规则（PolishService.polishPrompt）。
     static var personalInfo: String {
-        tr("「关于我」例如「署名用 Gen」「邮件偏正式、聊天随意」，按住说指令、草拟邮件时会代入。\n「自定义规则」例如「英文术语保留原文」「数字用阿拉伯数字」。两个框都会跟着请求发给服务商。",
-           "About me, for example \"sign as Gen\" or \"formal in email, casual in chat\" — voice commands use it when drafting.\nCustom rules, for example \"keep English jargon untranslated\" or \"use Arabic numerals\". Both boxes go to your provider with the request.")
+        tr("「关于我」例如「署名用 Gen」「邮件偏正式、聊天随意」，只有按住说指令时才发出去。\n「自定义规则」例如「英文术语保留原文」「数字用阿拉伯数字」，润色和指令都带着它。",
+           "About me, for example \"sign as Gen\" or \"formal in email, casual in chat\" — it goes out only when you hold to command.\nCustom rules, for example \"keep English jargon untranslated\" or \"use Arabic numerals\" — polish and commands both carry them.")
     }
 
     /// 「高级」那颗 ⓘ：共用的一段 + 这一家型号的一句。每一档都要过 120 字那条线
     static func advancedInfo(provider: LLMProvider) -> String {
-        let shared = tr("「模型」下拉一次改两个型号，这里可以分开设：润色每句都跑，求快求省；指令低频，求质量。「刷新」问端点它当前有哪些型号。",
-                        "The Model drop-down above writes both model fields at once; here you can split them: polish runs on every sentence and wants speed and low cost, while commands are rare and want quality. Refresh asks the endpoint what it serves today.")
+        let shared = tr("「模型」下拉一次改两个型号，这里能分开设：润色求快求省，指令求质量。「刷新」问端点有哪些型号。勾了优先处理也可能被服务商降回普通档。",
+                        "The Model drop-down above writes both model fields at once; here you can split them: polish runs on every sentence and wants speed and low cost, while commands are rare and want quality. Refresh asks the endpoint what it serves today. With priority processing on, the provider still decides the actual tier and may fall back to the standard one.")
         switch provider {
         case .openai:
             return shared + tr("\nluna 最便宜，terra 平衡，sol 旗舰，astra 最强也最贵。",
                                "\nluna is the cheapest, terra is balanced, sol is the flagship, astra is the strongest and priciest.")
         case .deepseek:
-            return shared + tr("\ndeepseek-flash 快且便宜，润色时自动关掉思考模式；deepseek-v4-pro 更强。",
+            return shared + tr("\ndeepseek-flash 快且便宜，润色时不思考；deepseek-v4-pro 更强。",
                                "\ndeepseek-flash is fast and cheap — thinking mode is turned off for polish; deepseek-v4-pro is stronger.")
         case .qwen:
             return shared + tr("\nqwen3.8-max 是当前代旗舰，qwen-max 是跟着换代走的稳定别名。",
@@ -251,10 +295,28 @@ enum SettingsCopy {
         }
     }
 
+    /// 联网搜索这一档压根没有：开关是灰的，那行价格也就无事可说
+    static var webSearchUnsupported: String {
+        tr("这家服务商没有联网搜索", "Web search is not available from this provider")
+    }
+
+    /// 优先处理只有 OpenAI 有：开关灰着的时候，这一行**代替**价格出现（价格对他不成立）
+    static var fastTierOpenAIOnly: String {
+        tr("只有 OpenAI 有这个档位", "Only OpenAI offers this tier")
+    }
+
+    /// 一次性状态快照（"上一次那趟实际跑在哪一档"），不是控件说明——所以不进 captions，
+    /// 但仍然只写一处，免得和 LLMCatalog.serviceTierName 拼出两种说法
+    static var lastServiceTier: String {
+        tr("上一次请求实际跑在：", "Last request actually ran at: ")
+    }
+
     static var cloudCaptions: [String] {
-        [usageLocalOnly, usageWithAI, modelNameInAdvanced, personalBoxesShared, splitModelsRationale,
+        [usageLocalOnly, usageWithAI, usageWithCloudRecognition,
+         modelNameInAdvanced, personalBoxesShared,
          localModelNeedsNoKey, cloudRecognitionCost, cloudRecognitionOff,
-         hostAutoDetected, hostFilledManually]
+         hostAutoDetected, hostFilledManually,
+         webSearchUnsupported, fastTierOpenAIOnly]
     }
 
     static var cloudInfos: [String] {
@@ -270,7 +332,7 @@ enum SettingsCopy {
     }
 
     static var accessibilityMissing: String {
-        tr("辅助功能还没授权，热键无效", "Accessibility is not granted: no hotkey, no typing")
+        tr("辅助功能没授权：热键和输入都无效", "Accessibility is not granted: no hotkey, no typing")
     }
 
     static var overviewCaptions: [String] {
@@ -305,7 +367,7 @@ enum SettingsCopy {
     /// 识别停在阿里云、服务商却换走了：那个开关只在阿里云档渲染，于是界面上没有关掉它的控件
     static var strandedAlibabaRecognition: String {
         tr("识别还走着阿里云（按秒计费），服务商却不是它。",
-           "Recognition still goes to Alibaba (billed per second) although your provider is not Alibaba.")
+           "Recognition still goes to Alibaba Cloud (billed per second) although your provider is not Alibaba Cloud.")
     }
 
     /// 登录项没改成：受管的 Mac 上它可能被 MDM 挡住，开关自己弹回去而屏幕上一个字都没有，
@@ -327,7 +389,7 @@ enum SettingsCopy {
 
     static var hostMalformed: String {
         tr("这串不像接入地址，清空即交回自动探测。",
-           "That does not look like a host name. Clear it to hand the job back to auto-detection.")
+           "That does not look like an endpoint. Clear it to hand the job back to auto-detection.")
     }
 
     static var hostNotDetectedYet: String {
@@ -373,8 +435,9 @@ enum SettingsCopy {
 
     // MARK: - 预算表（单测按这几张表逐条量）
 
-    /// 引导那几行也走同一条预算线（文字本身住在 OnboardingCopy 里，那是引导的文案出处）：
+    /// 引导里**挂在控件下面**那几行也走同一条预算线（文字本身住在 OnboardingCopy 里）：
     /// 第一次打开 MicType 的人最没耐心读字，凭什么反而不受这 16 字的约束。
+    /// 引导里那些整句的说明装不进 16 字，另算一条线（OnboardingCopy.paragraphs）。
     static var allCaptions: [String] {
         inputCaptions + recognitionCaptions + cloudCaptions + overviewCaptions
             + OnboardingCopy.captions

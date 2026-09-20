@@ -61,17 +61,16 @@ enum PrivacyCopy {
         return retention(provider: provider, baseURL: Settings.shared.baseURL(for: provider))
     }
 
-    /// Key 只在钥匙串里：不进设置文件、不随导出走（SettingsBackup 从不导出 Key）
-    static var keyInKeychain: String {
-        tr("API Key 只存在 macOS 钥匙串里，不写进文件、也不随设置导出。",
-           "Your API key lives in the macOS Keychain, never in a file or an export.")
-    }
+    /// Key 只在钥匙串里：不进设置文件、不随导出走（SettingsBackup 从不导出 Key）。
+    ///
+    /// **句子本身不在这里写**：同一件事在 Key 输入框那颗 ⓘ 里也要说，而那一处的唯一出处是
+    /// LLMCatalog.keyStorageNote。两边各写一版的结果是关于页说"不写进文件"、设置页说
+    /// "加密、仅本机可读"——改一处漏一处就自相矛盾。和 webSearchBilled 同一条做法：引用，不复述。
+    static var keyInKeychain: String { LLMCatalog.keyStorageNote }
 
-    /// 费用直付服务商：MicType 不代理请求
-    static var youPayProvider: String {
-        tr("费用直接结给服务商：MicType 不代理你的请求、不加价。",
-           "You pay the provider directly; MicType never proxies your requests and never adds a markup.")
-    }
+    /// 费用直付服务商：MicType 不代理请求。同上——Key 输入框下面那一行价格用的是同一个出处
+    /// （LLMCatalog.billingNote，KeyEntryView 渲染它）。
+    static var youPayProvider: String { LLMCatalog.billingNote }
 
     /// 联网搜索是显式付费开关，默认关。
     /// **单价不在这里写**：它只有一个出处 LLMCatalog.webSearchPriceNote（设置页开关旁用的是
