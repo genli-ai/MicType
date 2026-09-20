@@ -109,12 +109,17 @@ final class LLMClientTests: XCTestCase {
         XCTAssertNil(body["thinking"])
     }
 
-    /// 指令低频、要质量 → 同 DeepSeek 的政策：不碰思考开关，保留服务商默认
-    func testQwenCommandLeavesThinkingAlone() {
-        let body = LLMClient.chatBody(model: "qwen3.8-max",
-                                      messages: [["role": "user", "content": "hi"]],
-                                      temperature: nil, purpose: .command, provider: .qwen)
-        XCTAssertNil(body["enable_thinking"])
+    /// 指令也关：人盯着悬浮窗等的一次调用，等不到的质量等于没有质量（DeepSeek 那条政策不照搬）
+    func testQwenCommandDisablesThinkingToo() {
+        // 4.1.2 给指令留着思考 → 十几个字的指令两次等满 25 s 超时（服务端平均 ~17 s）。
+        // 带着联网搜索的那一趟同样要关：搜索结果一进来，思考的 token 只会更多。
+        for style in [LLMCatalog.WebSearchStyle.qwenEnableSearch, .unsupported] {
+            let body = LLMClient.chatBody(model: "qwen3.8-max",
+                                          messages: [["role": "user", "content": "hi"]],
+                                          temperature: nil, purpose: .command, provider: .qwen,
+                                          searchStyle: style)
+            XCTAssertEqual(body["enable_thinking"] as? Bool, false, "style=\(style)")
+        }
     }
 
     /// enable_thinking 是 DashScope 专有字段：别的端点收到只会多一个它不认识的键（有的直接 400）

@@ -427,13 +427,16 @@ enum LLMClient {
             body["thinking"] = ["type": "disabled"]
         }
         // 阿里云同理，字段名不同：qwen3.5 / 3.6 / 3.7 / 3.8 这几条线**默认开思考**
-        //（老的 qwen3-max / qwen-plus / qwen-flash 默认关，所以 4.1.1 之前没人注意到），
-        // 而我们一次都没关过它。用户 2026-09-20 的 4.1.1 日志：qwen3.8-max 润色 ~25 个字
-        // 用掉 3889 ms / 8730 ms，更长的直接撞满 12 s 超时——润色的全部价值是"顺手"，
-        // 等到超时就等于这次润色白做。兼容模式上的开关是根级字段 `enable_thinking`。
-        // 指令沿用 DeepSeek 那条的政策：**不发**这个字段，保留服务商默认的思考能力（低频、要质量）。
-        // purpose == nil 只有直接调 chatBody 的单测会出现（见 chat 的默认参数），跟着润色一起关是对的。
-        if provider == .qwen, purpose != .command {
+        //（老的 qwen3-max / qwen-plus / qwen-flash 默认关，所以 4.1.1 之前没人注意到）。
+        // 兼容模式上的开关是根级字段 `enable_thinking`，**润色和指令都关**：
+        // - 润色（4.1.1 日志）：qwen3.8-max 润色 ~25 个字用掉 3889 ms / 8730 ms，更长的直接撞满 12 s 超时。
+        // - 指令（4.1.2 日志）：4.1.2 照 DeepSeek 的政策给指令留着思考，结果一句十几个字的指令
+        //   两次都等满 25 s 超时，同一句话换 OpenAI 4.9 s 就回来了；阿里云控制台显示这几趟在
+        //   **服务端**平均就要约 17 s——慢的是思考，不是 UAE 这条链路。官方文档自己也写着思考
+        //   占输出 token 的六成以上、延迟"远高于"非思考模式。语音指令是人盯着悬浮窗等的一次调用，
+        //   等不到的质量等于没有质量。DeepSeek 那条政策不照搬：那边的指令实测等得到。
+        // purpose == nil 只有直接调 chatBody 的单测会出现（见 chat 的默认参数），一并关掉。
+        if provider == .qwen {
             body["enable_thinking"] = false
         }
         // service_tier 是 OpenAI 的字段；别的服务商收到只会多一个它不认识的键（有的直接 400）

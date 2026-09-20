@@ -782,9 +782,11 @@ enum LLMCatalog {
     ///   仍会重试的只剩验证 / 测试那几条路。
     static func timeoutCopy(retried: Bool = false) -> ErrorCopy {
         let text = retried
-            ? tr("请求超时（已重试一次，网络到 API 太慢）",
-                 "Request timed out (retried once — the network to the API is too slow)")
-            : tr("请求超时（网络到 API 太慢）", "Request timed out — the network to the API is too slow")
+            // 不指认"网络"：4.1.2 的日志里阿里云那几趟超时，服务端自己就算了 ~17 s（思考模式），
+            // 而这句话让用户去怀疑自己的网络和 Key。我们只知道"没等到"，就只说这个。
+            ? tr("请求超时（已重试一次，服务商响应太慢）",
+                 "Request timed out (retried once — the provider took too long to respond)")
+            : tr("请求超时（服务商响应太慢）", "Request timed out — the provider took too long to respond")
         return ErrorCopy(text: text, actionLabel: nil, actionURL: nil)
     }
 
