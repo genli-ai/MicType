@@ -263,6 +263,31 @@ enum SettingsCopy {
         tr("本机模型不需要 Key，也不花钱", "On-device models need no key and cost nothing")
     }
 
+    // MARK: 接入地址（只有阿里云有，见 QwenHostField）
+
+    /// 空着——也就是绝大多数人该有的样子
+    static var hostAutoDetected: String {
+        tr("留空自动挑最快的一台", "Leave empty to pick the fastest")
+    }
+
+    /// 填了。这一行是**代价**不是解释：填了就没有自动探测了，出问题也不会替他换一台
+    static var hostPinned: String {
+        tr("只用这一台，不再自动挑", "Only this host; no auto-detection")
+    }
+
+    /// 填的东西拼不出主机名。**不删、不清空**，只说它现在不算数
+    static var hostMalformed: String {
+        tr("这串不像接入地址，暂不使用", "Not a hostname, so it is ignored for now")
+    }
+
+    /// 接入地址那颗 ⓘ：**去哪儿找**是这一段唯一值得多说的事。
+    /// 今天（2026-09-21）实测的那件事也写进去：Key 里 `sk-ws-` 后面那一段并不是业务空间 ID，
+    /// 所以自动挑出来的那台可能不是控制台上写的那台——两台都能用，但用户想要哪台是他的自由。
+    static var hostInfo: String {
+        tr("留空时 MicType 自己并发试一圈，挑认这把 Key 又最快的那台。想固定用某一台，就填百炼控制台 API Key 页上的「接入地址（apiHost）」：填了之后润色、指令、云端识别全走它，不再自动挑，也不会因为一次失败被换掉。",
+           "Left empty, MicType probes the candidates in parallel and keeps the fastest one that accepts your key. To pin one, paste the API host shown on the API Key page of the Model Studio console: polish, commands and cloud recognition then all go there, with no auto-detection and no switching away after a failure.")
+    }
+
     /// 使用方式那颗 ⓘ。两句话都**只许说代码真会做的事**：
     ///   • 「只用本地」写回的是"润色关掉 + 识别回本机"（AISetup.localOnlyWrites），**不删 Key**，
     ///     而指令路径只看 LLMClient.isConfigured、不看档位——所以这一档下按住说指令照样会计费
@@ -378,7 +403,8 @@ enum SettingsCopy {
     static var cloudCaptions: [String] {
         [usageLocalOnly, usageWithAI, usageWithCloudRecognition,
          providerNotSetUp(current: "OpenAI"), modelNameInAdvanced, modelUsedForBoth,
-         localModelNeedsNoKey, cloudRecognitionCost, cloudRecognitionOff,
+         localModelNeedsNoKey, hostAutoDetected, hostPinned, hostMalformed,
+         cloudRecognitionCost, cloudRecognitionOff,
          webSearchUnsupported]
     }
 
@@ -386,7 +412,7 @@ enum SettingsCopy {
     static var cloudInfos: [String] {
         [usageInfo, providerInfo, keyInfo(cloudASRProbe: false), keyInfo(cloudASRProbe: true),
          cloudRecognitionInfo(provider: .alibaba), cloudRecognitionInfo(provider: .openai),
-         webSearchInfo, advancedInfo]
+         hostInfo, webSearchInfo, advancedInfo]
             + LLMProvider.allCases.map { cloudModelInfo(provider: $0) }
     }
 

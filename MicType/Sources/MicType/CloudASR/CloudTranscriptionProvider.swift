@@ -495,12 +495,10 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
             return .failure(failure)
         }
         guard let url = Self.endpoint(host: host) else {
-            // 几乎到不了这里：候选表本身就会跳过拼不出主机名的值，而存着的脏值在开机与
-            // 设置导入时就被丢掉了（Settings.dropJunkPastedHost）。真走到了也**不指任何控件**
-            // ——4.1.4 起界面上与接入地址有关的东西一个都没有了，让用户"去某处改"只会让他白找。
-            // 只说两件真事：这一次发不出去，而地址会自己重挑。
-            return .failure(CloudASRFailure(tr("这一次没能发往阿里云：接入地址无效，MicType 会自己重新试出一台，请再说一次",
-                                               "This take could not be sent to Alibaba Cloud: the endpoint was invalid. MicType will find a working one by itself - please say it again")))
+            // 几乎到不了这里：候选表本身就会跳过拼不出主机名的值。真走到了就指回那一栏
+            //（4.3.1 起「接入地址」输入框又在屏幕上了，指得出来的东西才值得说）
+            return .failure(CloudASRFailure(tr("这一次没能发往阿里云：「接入地址」这一栏不是一个主机名。改掉它，或清空它交回自动探测",
+                                               "This take could not be sent to Alibaba Cloud: the API host field is not a hostname. Fix it, or clear it to hand the job back to auto-detection")))
         }
         let body = Self.requestBody(model: model,
                                     audioDataURI: WAVEncoder.dataURI(wav: wav),

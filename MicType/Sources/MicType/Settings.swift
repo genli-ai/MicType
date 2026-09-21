@@ -243,20 +243,49 @@ enum AISetup {
         current == .off ? .smart : current
     }
 
-    /// 服务商 + 「识别也用云端」那个开关 → 识别引擎该是哪一档。
+    /// 这一家有没有云端识别这条路（纯函数）。
     ///
-    /// 4.2.2 起**两家都有**（OpenAI 的实时转写端点实测可用，而且它认词汇表热词）：
-    /// 阿里云 → cloudAlibaba，OpenAI → cloudOpenAI，其余（DeepSeek / 网关 / 本机模型）
-    /// 没有识别接口，一律回本机。
-    /// 换到没有这条路的服务商就回本机：不然用户换完服务商，音频还在往老那家传，
-    /// 而界面上已经没有那个开关可以关了。
-    static func engine(provider: LLMProvider, cloudRecognition: Bool) -> RecognitionEngineChoice {
-        guard cloudRecognition else { return .local }
+    /// OpenAI 还要求**是官方接口**：实时地址是写死的 `api.openai.com`，把 Base URL 指向
+    /// 第三方网关的人打开那个开关，音频会绕过他自己的网关直接去 OpenAI——既不是他要的，
+    /// 也可能根本没有额度（判据与 CloudASRSettings.openAIUsesOfficialEndpoint 同源）。
+    static func supportsCloudRecognition(provider: LLMProvider, officialOpenAI: Bool) -> Bool {
+        switch provider {
+        case .qwen: return true
+        case .openai: return officialOpenAI
+        case .deepseek, .custom, .local: return false
+        }
+    }
+
+    /// **意愿 + 当前生效的服务商 → 实际识别引擎。全 App 唯一的推导出处。**
+    ///
+    /// 4.3.1 起「识别也用云端」记的是一个**与服务商无关的意愿**（cloudRecognitionWanted），
+    /// 实际走哪一档由这个函数推出来（用户 2026-09-21 推翻了 4.3.0 的做法）。
+    /// 4.3.0 是"换服务商就把开关关掉，让他重新同意一次价钱"——而用户在设置里本来就会
+    /// 来回点几家对比，每采纳一次就要重新打开一次开关。价钱已经写在开关旁边了
+    /// （4.3.0 起关着也显示「打开后约 $…」），那一句就够了。
+    ///
+    /// 于是三种情形各归各位：
+    ///   • 阿里云 ↔ OpenAI（官方接口）：意愿为开 → 引擎跟着换过去，开关一直开着；
+    ///   • 切到没有这条路的那几家（DeepSeek / 自定义 / 本机模型 / OpenAI 指着网关）
+    ///     或「只用本地」：实际回本机，而**意愿一个字都不动**——切回来自动恢复；
+    ///   • 意愿为关：永远是本机。
+    static func engine(provider: LLMProvider, cloudRecognition wanted: Bool,
+                       officialOpenAI: Bool = CloudASRSettings.openAIUsesOfficialEndpoint)
+        -> RecognitionEngineChoice {
+        guard wanted, supportsCloudRecognition(provider: provider,
+                                               officialOpenAI: officialOpenAI) else { return .local }
         switch provider {
         case .qwen: return .cloudAlibaba
         case .openai: return .cloudOpenAI
         case .deepseek, .custom, .local: return .local
         }
+    }
+
+    /// 老设置里没有"意愿"这个键（4.3.1 之前只有引擎）：由引擎推出来一次。
+    /// 设置导入走的也是这一条（导出的仍以实际引擎为准，见 SettingsBackup）——
+    /// 别让一份旧文件把意愿弄丢，也别让它凭空打开一个要花钱的开关。
+    static func cloudRecognitionWanted(fromEngine engine: RecognitionEngineChoice) -> Bool {
+        engine.isCloud
     }
 
     /// 云端识别停在 OpenAI、服务商却不是 OpenAI——与下面阿里云那一条同一件事：
@@ -282,19 +311,43 @@ enum AISetup {
         engine == .cloudAlibaba && provider != .qwen
     }
 
-    /// 换服务商时识别引擎要不要跟着回本机。nil = 不用动。
+    /// 采纳新服务商这一下，识别引擎该怎么走（**纯函数**，单测钉死）。
     ///
     /// 设置页与引导页各有一处换服务商的入口，两处必须做同一件事——4.0.1 里只有设置页做了，
     /// 于是从引导里换走服务商的人，音频还在往阿里云传，而 AI 页上已经没有那个开关了。
-    ///
-    /// **4.2.2 起：只要云端识别开着，换生效服务商就一律关掉它**（用户 2026-09-21 拍板），
-    /// 哪怕换过去的那一家也支持云端识别。理由是钱：阿里云约 $0.13/小时、OpenAI 约 $1/小时，
-    /// 差了近八倍——"我同意把音频传给 A 并按 A 的价钱付费"不等于"我同意传给 B 并按 B 的价钱付费"。
-    /// 让他在新服务商下自己再拨一次，那一下旁边就写着新的单价。
-    static func engineAfterProviderChange(current: RecognitionEngineChoice,
-                                          next: LLMProvider) -> RecognitionEngineChoice? {
-        guard current.isCloud else { return nil }
-        return .local
+    /// **只在真的采纳时调**（预览不算：点着看看的那一档什么都不该变）。
+    enum CloudRecognitionMove: Equatable {
+        /// 引擎已经对了，什么都不用改
+        case unchanged
+        /// 云端识别落到这一档上。**要对新服务商当面验一次**——
+        /// 「开着的开关必须意味着它真的能用」这条不因为是自动换过去的就打折
+        case moved(RecognitionEngineChoice)
+        /// 新服务商没有这条路：实际回本机，**意愿留着**，切回支持的那几家时自动恢复
+        case paused
+    }
+
+    static func cloudRecognitionMove(wanted: Bool, current: RecognitionEngineChoice,
+                                     next: LLMProvider,
+                                     officialOpenAI: Bool) -> CloudRecognitionMove {
+        let target = engine(provider: next, cloudRecognition: wanted, officialOpenAI: officialOpenAI)
+        guard target != current else { return .unchanged }
+        return target.isCloud ? .moved(target) : .paused
+    }
+
+    /// 这一下该记哪一行日志（纯函数；只有 ASCII，不上界面，两处调用点共用一份措辞）。
+    /// nil = 没发生什么值得记的事。
+    static func cloudRecognitionMoveLog(_ move: CloudRecognitionMove, wasCloud: Bool,
+                                        next: LLMProvider) -> String? {
+        switch move {
+        case .unchanged:
+            return nil
+        case .moved(let engine):
+            // 从一家云端换到另一家 = "保持开着"；从本机恢复回来 = "restored"
+            let verb = wasCloud ? "kept on" : "restored"
+            return "Cloud recognition \(verb): provider=\(next.rawValue) engine=\(engine.rawValue)"
+        case .paused:
+            return "Cloud recognition paused: provider=\(next.rawValue) (wanted=on)"
+        }
     }
 
     /// 「只用本地」这一档里，钥匙串里还躺着一把能用的 Key：必须当面说一句。
@@ -393,6 +446,7 @@ enum SettingsKeys {
     static let qwenModelRepo = "qwenModelRepo"
     static let recognitionLanguage = "recognitionLanguage"  // 识别语言（"" = 自动检测）
     static let recognitionEngine = "recognitionEngine"      // 识别引擎：local（默认）/ cloudAlibaba / cloudOpenAI
+    static let cloudRecognitionWanted = "cloudRecognitionWanted"  // 「识别也用云端」这个**意愿**（与当前服务商无关）
     static let cloudAlibabaModel = "cloudAlibabaModel"      // 云端·阿里云用哪个识别模型
     static let modelCatalogLastCheck = "modelCatalogLastCheck"      // 上次**成功**取到模型目录的时间（epoch 秒，0 = 没成功过）
     static let modelCatalogRetryAfter = "modelCatalogRetryAfter"    // 上次取目录失败后的退避时间点（epoch 秒，0 = 没有）
@@ -415,7 +469,7 @@ enum SettingsKeys {
     // 它们仍是候选主机表最好的排序线索（见 AlibabaEndpoint.candidates），但不再有 UI。
     static let qwenRegion = "qwenRegion"                    // 老设置：DashScope 接入区域
     static let qwenWorkspaceID = "qwenWorkspaceID"          // 老设置：WorkspaceId（主机名第一段）
-    static let qwenAPIHost = "qwenAPIHost"                  // 存着的接入地址（4.1.4 起只来自导入的设置文件）
+    static let qwenAPIHost = "qwenAPIHost"                  // 用户填的接入地址（可选；空 = 自动探测）
     static let qwenResolvedHost = "qwenResolvedHost"        // 试通并记住的那台主机（本机缓存，不进设置导出）
     /// 上面那台主机是**真的联网试通过**的，而不是 4.0.1 迁移按老区域种下的（见 AlibabaEndpoint.hostLooksVerified）。
     /// 只有 CloudASRSettings.rememberResolution 写得出真；恢复探测要不要跑就看它。
@@ -472,6 +526,7 @@ final class Settings {
             SettingsKeys.recognitionLanguage: RecognitionLanguages.autoCode,
             // 识别引擎默认永远是本地：音频出不出这台 Mac 这种事，只能由用户自己点
             SettingsKeys.recognitionEngine: RecognitionEngineChoice.local.rawValue,
+            SettingsKeys.cloudRecognitionWanted: false,
             // 同步识别端点上只有 qwen3-asr-flash（4.0.0 默认的 3.0 打它必 404，见 AlibabaASRModel）
             SettingsKeys.cloudAlibabaModel: AlibabaASRModel.qwen3Flash.rawValue,
             // 模型目录 / 升级的本机状态（不进设置导出：跟这台机器的磁盘绑定）
@@ -729,6 +784,19 @@ final class Settings {
             }
             d.set(true, forKey: "migratedWebSearchDefaultOn")
         }
+
+        // 一次性迁移（4.3.1）：「识别也用云端」从"跟着引擎走"改成一个独立的意愿
+        //（用户 2026-09-21 推翻了 4.3.0 那条"换服务商就关掉"）。老设置里没有这个键，
+        // 由当前引擎推出来一次：引擎是云端 = 他打开过，本机 = 没打开过。
+        // 不迁的话，升上来的云端识别用户开关会显示"关"，而音频照常在上传。
+        if !d.bool(forKey: "migratedCloudRecognitionWanted") {
+            let engine = RecognitionEngineChoice.parse(
+                d.string(forKey: SettingsKeys.recognitionEngine) ?? "")
+            let wanted = AISetup.cloudRecognitionWanted(fromEngine: engine)
+            d.set(wanted, forKey: SettingsKeys.cloudRecognitionWanted)
+            Log.info("Cloud recognition wish migrated from engine=\(engine.rawValue) wanted=\(wanted)")
+            d.set(true, forKey: "migratedCloudRecognitionWanted")
+        }
     }
 
     /// 「关于我」→「自定义规则」的合并（迁移与设置导入共用这一份）。
@@ -743,20 +811,6 @@ final class Settings {
         d.set("", forKey: SettingsKeys.aboutMe)
         // 内容本身绝不进日志（那是用户写给 AI 的私人偏好），只记发生过这件事
         Log.info("About-me merged into custom rules")
-    }
-
-    /// 存着的接入地址是串脏值就丢掉（开机与设置导入共用这一份）。
-    ///
-    /// 为什么要主动丢而不是报一句错：4.1.4 起界面上没有这个输入框了，用户既看不见它也改不掉。
-    /// 而一串拼不出主机名的值在候选表里本来就会被静默跳过——留着它唯一的作用，
-    /// 就是让「接入地址不合法」这类话有机会说出口，而那句话指不出任何用户能动的东西。
-    /// 判据是纯函数（AlibabaEndpoint.storedHostIsJunk），丢掉记一行日志。
-    func dropJunkPastedHost() {
-        let stored = qwenAPIHost
-        guard AlibabaEndpoint.storedHostIsJunk(stored) else { return }
-        d.set("", forKey: SettingsKeys.qwenAPIHost)
-        // 原值可能是用户手抄的半截 URL，不适合原样进日志；只记长度与"发生过"
-        Log.warn("Qwen stored host discarded: not a hostname (length=\(stored.count))")
     }
 
     /// 把每一档的「指令型号」拉回「润色型号」（迁移与设置导入共用这一份）
@@ -1190,6 +1244,14 @@ final class Settings {
     var recognitionEngine: RecognitionEngineChoice {
         get { RecognitionEngineChoice.parse(d.string(forKey: SettingsKeys.recognitionEngine) ?? "") }
         set { d.set(newValue.rawValue, forKey: SettingsKeys.recognitionEngine) }
+    }
+
+    /// 「识别也用云端」这个开关记的**意愿**，与当前服务商无关（4.3.1 起）。
+    /// 实际走哪一档由 AISetup.engine(provider:cloudRecognition:) 推出来——
+    /// 换服务商不再把它抹掉，切到没有这条路的那几家只是暂时落回本机。
+    var cloudRecognitionWanted: Bool {
+        get { d.bool(forKey: SettingsKeys.cloudRecognitionWanted) }
+        set { d.set(newValue, forKey: SettingsKeys.cloudRecognitionWanted) }
     }
 
     /// 云端·阿里云那一档用哪个模型。默认 qwen3-asr-flash：同步识别端点上只有它

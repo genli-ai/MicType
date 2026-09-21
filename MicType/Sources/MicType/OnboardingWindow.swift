@@ -955,10 +955,11 @@ private struct HowYouUsePage: View {
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKeys.polishLevel) private var polishLevel = PolishLevel.smart.rawValue
     @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
-    /// 阿里云那一档的接入地址由 MicType 自己试出来（4.0.1 拿掉了区域选择器，
-    /// 4.1.4 连那个可选输入框也拿掉了）。这里盯着它只有一个用途：导入的设置文件里
-    /// 可能带着一条，而它一旦被丢掉（见 CloudASRSettings.resolveHost），
-    /// 这一档能不能连得上就变了——那一屏的"AI 跑不跑得起来"得跟着重算。
+    /// 「识别也用云端」的**意愿**（与当前服务商无关，见 AISetup.engine）
+    @AppStorage(SettingsKeys.cloudRecognitionWanted) private var cloudRecognitionWanted = false
+    /// 阿里云那一档的接入地址默认由 MicType 自己试出来（4.0.1 拿掉了区域选择器），
+    /// 4.3.1 起这一屏上又有那个可选输入框了（QwenHostField，与设置页共用）。
+    /// 这里盯着它：地址一改，这一档发往哪台主机就变了，"AI 跑不跑得起来"得跟着重算。
     @AppStorage(SettingsKeys.qwenAPIHost) private var qwenAPIHost = ""
     /// 「模型」下拉写的是这两个键之一。必须是 @AppStorage 而不是裸 UserDefaults：
     /// 这一屏没有任何东西盯着型号键的话，选完 body 不重算，下拉框还停在旧的那一项，
@@ -1201,11 +1202,19 @@ private struct HowYouUsePage: View {
         Settings.shared.llmProvider = provider
         inUseProvider = provider
         Log.info("Onboarding adopted provider=\(provider.rawValue)")
-        // 换走之后音频不能还在往阿里云传，而 AI 页上那个开关这时已经不渲染了。
-        // 判据与设置页那处换服务商同源（AISetup.engineAfterProviderChange），两处不各写一份
-        if let engine = AISetup.engineAfterProviderChange(current: engineChoice, next: provider) {
-            recognitionEngine = engine.rawValue
-            Log.info("Onboarding cloud recognition off: provider=\(provider.rawValue)")
+        // 云端识别跟着换过去（4.3.1 起**不再关掉它**）。判据与设置页那处换服务商同源
+        //（AISetup.cloudRecognitionMove），两处不各写一份；意愿一个字都不动
+        let move = AISetup.cloudRecognitionMove(
+            wanted: cloudRecognitionWanted, current: engineChoice, next: provider,
+            officialOpenAI: CloudASRSettings.openAIUsesOfficialEndpoint)
+        if let line = AISetup.cloudRecognitionMoveLog(move, wasCloud: engineChoice.isCloud,
+                                                      next: provider) {
+            Log.info("Onboarding " + line)
+        }
+        switch move {
+        case .unchanged: break
+        case .moved(let engine): recognitionEngine = engine.rawValue
+        case .paused: recognitionEngine = RecognitionEngineChoice.local.rawValue
         }
     }
 }

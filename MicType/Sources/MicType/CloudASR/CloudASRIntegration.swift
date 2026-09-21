@@ -130,43 +130,39 @@ enum CloudASRSettings {
                                           pinsResolvedFirst: false)
     }
 
-    /// 试出接入地址——**并在"存着的那条粘贴地址已经死了"时丢掉它再试一圈**。
+    /// 试出接入地址。验证 Key、失败恢复、开机复查几条路全走这里。
     ///
-    /// 为什么这一层非有不可（4.1.4）：界面上那个「接入地址」输入框已经拿掉了，可设置里、
-    /// 别人给的设置文件里仍可能存着一条。它一旦 401 / 连不上，候选表就只剩这一台，
-    /// 每句话都失败，而屏幕上没有任何地方能把它清掉——那是一条改不掉的坏设置。
-    /// 判据是纯函数（AlibabaEndpoint.dropsPastedHost）：只有 401 与"连不上"才丢，
-    /// 403/404/限流都说明这台主机本身是对的。
+    /// **用户自己填了接入地址时，这里只试他那一台，失败就如实报失败**（4.3.1，用户 2026-09-21
+    /// 拍板）。4.1.4–4.3.0 是反过来的：那一台 401 / 连不上就把它清掉、回落整表探测——
+    /// 当时界面上没有这个输入框，一条死地址真能把人困住。现在框回来了，那条"替他删"
+    /// 就成了纯粹的越权：他填的东西必须保持原样，屏幕上说清楚哪儿不通，改不改由他。
     ///
-    /// 验证 Key、失败恢复、开机复查几条路全走这里，所以这件事只会发生一次、也只写一处。
     /// - candidates: 这一趟要试的候选表（正常都传 currentHostCandidates；冒烟测试会指定一台）。
     static func resolveHost(apiKey: String,
                             candidates: [String],
                             completion: @escaping (Result<String, CloudASRFailure>) -> Void) {
+        let pinned = AlibabaEndpoint.normalizeHost(Settings.shared.qwenAPIHost) != nil
         AlibabaHostResolver.resolve(apiKey: apiKey, candidates: candidates) { result in
             guard case .failure(let failure) = result else {
                 // 刚刚问过整张表了：把时间戳记下来，下次开机的那趟周期复查就不必再问一遍
                 //（同一个问题问两次，而每问一次都要把 Key 发给每一台主机）。
-                // 存着接入地址的那一趟不算：它只问了一台，不是"挑最快"的那种探测。
-                if Settings.shared.qwenAPIHost.isEmpty { AlibabaFastestHostRefresh.stamp() }
+                // 填了接入地址的那一趟不算：它只问了一台，不是"挑最快"的那种探测。
+                if !pinned { AlibabaFastestHostRefresh.stamp() }
                 completion(result)
                 return
             }
-            guard AlibabaEndpoint.dropsPastedHost(pastedHost: Settings.shared.qwenAPIHost,
-                                                  status: failure.status) else {
+            // 只试了他指定的那一台，那就别说成"每一个接入地址都不认这把 Key"（那是整表探测的话）。
+            // 这一句指回那个输入框——现在它真的在屏幕上（判据与措辞都是纯函数，单测钉死）
+            guard pinned,
+                  let copy = AlibabaHostResolver.pastedHostFailureCopy(status: failure.status,
+                                                                       code: failure.code) else {
                 completion(result)
                 return
             }
-            // 记的是"发生了这件事"，地址本身抹掉工作空间编号（与日志里其余主机同一条纪律）
-            Log.warn("Qwen pasted host dropped host="
+            Log.warn("Qwen pinned host failed host="
                      + AlibabaEndpoint.redacted(Settings.shared.qwenAPIHost)
-                     + " status=\(failure.status): falling back to the full probe")
-            Settings.shared.qwenAPIHost = ""
-            AlibabaHostResolver.resolve(apiKey: apiKey,
-                                        candidates: currentHostCandidates(apiKey: apiKey)) { retried in
-                if case .success = retried { AlibabaFastestHostRefresh.stamp() }
-                completion(retried)
-            }
+                     + " status=\(failure.status) code=\(failure.code ?? "-") (kept as entered)")
+            completion(.failure(CloudASRFailure(copy, code: failure.code, status: failure.status)))
         }
     }
 
@@ -180,6 +176,8 @@ enum CloudASRSettings {
     /// 换好的主机下一段录音才用得上。单飞闸与 60 秒冷却都在 resolveNow 里，
     /// 所以"每台都被拒"的那把 Key 不会变成每句话一趟探测。
     static func recoverIfEndpointDenied(_ failure: CloudASRFailure) {
+        // 用户自己填了接入地址：一趟都不探测（与 LLM 那条路同一条规矩，见 AlibabaHostRecovery.action）
+        guard AlibabaEndpoint.normalizeHost(Settings.shared.qwenAPIHost) == nil else { return }
         guard Settings.shared.recognitionEngine == .cloudAlibaba,
               AlibabaEndpoint.deniesEndpointAccess(status: failure.status,
                                                    code: failure.code, message: nil) else { return }
@@ -280,6 +278,38 @@ enum CloudASRSettings {
         guard let provider = choice.cloudProvider else { return true }
         let key = KeychainHelper.loadCloudASRKey(for: provider) ?? ""
         return !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+// MARK: - 「这一家这次运行里已经当面验过一次」
+
+/// 只为一件事（4.3.1）：换服务商时云端识别会自动落到新一家上，那一刻要不要再花一秒钱测一遍。
+///
+/// **内存态、按服务商**：切走又切回来不该每次都测（用户在设置里就是来回点着对比的），
+/// 但重启一次就重新测——Key 可能被吊销、额度可能用完，而这两件事我们无从得知。
+/// 与 CloudStreamingAvailability 分开：那一份记的是"实时这条链路用不了"（更细，按主机），
+/// 这一份记的是"这一家整条云端识别刚刚验过"。
+enum CloudRecognitionCheckMemory {
+
+    private static let lock = NSLock()
+    private static var checked: Set<String> = []
+
+    static func isChecked(_ provider: CloudASRProvider) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return checked.contains(provider.rawValue)
+    }
+
+    static func markChecked(_ provider: CloudASRProvider) {
+        lock.lock(); checked.insert(provider.rawValue); lock.unlock()
+    }
+
+    /// 验失败了 / Key 换了：忘掉，下次落到这一家时重新测
+    static func forget(_ provider: CloudASRProvider) {
+        lock.lock(); checked.remove(provider.rawValue); lock.unlock()
+    }
+
+    static func resetForTesting() {
+        lock.lock(); checked = []; lock.unlock()
     }
 }
 

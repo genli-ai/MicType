@@ -13,6 +13,7 @@ final class AlibabaHostRecoveryTests: XCTestCase {
 
     private func action(isAlibaba: Bool = true,
                         hostSettled: Bool = false,
+                        hostPinned: Bool = false,
                         canWaitForResolve: Bool = true,
                         status: Int = 401,
                         code: String? = nil,
@@ -20,6 +21,7 @@ final class AlibabaHostRecoveryTests: XCTestCase {
                         urlErrorCode: Int? = nil,
                         attemptsLeft: Int = 1) -> AlibabaHostRecovery.Action {
         AlibabaHostRecovery.action(isAlibaba: isAlibaba, hostSettled: hostSettled,
+                                   hostPinned: hostPinned,
                                    canWaitForResolve: canWaitForResolve, status: status,
                                    code: code, message: message,
                                    urlErrorCode: urlErrorCode, attemptsLeft: attemptsLeft)
@@ -127,8 +129,54 @@ final class AlibabaHostRecoveryTests: XCTestCase {
                        .resolveInBackground)
     }
 
+    /// "定下来了"这一位从哪儿来：用户填的那一台永远算数，自动试出来的那台要**真的试通过**。
+    /// 这条测试碰真的 UserDefaults（Settings.shared），所以跑完把两项还原。
+    func testPinnedHostAlwaysCountsAsSettled() {
+        let s = Settings.shared
+        let savedHost = s.qwenAPIHost
+        let savedResolved = s.qwenResolvedHost
+        let savedVerified = s.qwenHostVerified
+        defer {
+            s.qwenAPIHost = savedHost
+            s.qwenResolvedHost = savedResolved
+            s.qwenHostVerified = savedVerified
+        }
+
+        s.qwenAPIHost = ""
+        s.qwenResolvedHost = ""
+        s.qwenHostVerified = false
+        XCTAssertFalse(LLMClient.alibabaHostSettled, "什么都没有：该去试")
+        XCTAssertFalse(LLMClient.alibabaHostPinned)
+
+        s.qwenAPIHost = "https://ws-abc.ap-southeast-1.maas.aliyuncs.com/api/v1"
+        XCTAssertTrue(LLMClient.alibabaHostSettled, "他填了地址：一趟都不试")
+        XCTAssertTrue(LLMClient.alibabaHostPinned)
+
+        // 拼不出主机名的输入等同于没填（但它仍然原样留在设置里，不归这里管）
+        s.qwenAPIHost = "我的主机"
+        XCTAssertFalse(LLMClient.alibabaHostSettled)
+        XCTAssertFalse(LLMClient.alibabaHostPinned)
+
+        s.qwenAPIHost = ""
+        s.qwenResolvedHost = "dashscope-intl.aliyuncs.com"
+        s.qwenHostVerified = true
+        XCTAssertTrue(LLMClient.alibabaHostSettled, "上一次真的试通过")
+        XCTAssertFalse(LLMClient.alibabaHostPinned, "那是试出来的，不是他填的")
+    }
+
+    /// 用户自己填了接入地址：**一趟都不探测**（4.3.1，用户 2026-09-21 拍板）。
+    /// 他给的是答案不是建议——背着他换一台，日志里发的主机就和他看到的设置对不上了。
+    /// 这道闸要拦住每一档，包括 access-denied 那一条（它的全部意义就是"自动换一台"）。
+    func testAPinnedHostIsNeverProbed() {
+        XCTAssertEqual(action(hostPinned: true, status: 401), .none)
+        XCTAssertEqual(action(hostPinned: true, status: 403, code: "access_denied"), .none)
+        XCTAssertEqual(action(hostPinned: true, status: 0,
+                              urlErrorCode: NSURLErrorCannotFindHost), .none)
+    }
+
     /// **"已经定下来了"也要试**：那个"验证过"是 GET /models 挣来的，而这一版证明
     /// 它什么都不证明。不绕过这道闸的话，用户被永久钉死在一台什么都干不了的主机上。
+    /// （只对**自动探测出来**的主机成立；他自己填的那一台见上面那条。）
     func testEndpointAccessDeniedIgnoresTheSettledFlag() {
         XCTAssertEqual(action(hostSettled: true, status: 403, code: "access_denied"),
                        .resolveAndRetry)

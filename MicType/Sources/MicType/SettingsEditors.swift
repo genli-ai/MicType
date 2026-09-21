@@ -642,6 +642,8 @@ struct CloudEditor: View {
     /// 识别引擎：云端识别的开关就在这一页（阿里云那一档下面），「本地识别」页只读它。
     /// 同一个账号、同一把 Key、同一台主机只在这里选一次。
     @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
+    /// 「识别也用云端」的**意愿**（与当前服务商无关，见 AISetup.engine）
+    @AppStorage(SettingsKeys.cloudRecognitionWanted) private var cloudRecognitionWanted = false
     /// 4.0.1 的默认型号迁移改掉了什么（"旧>新"）。点过「知道了」就清空。
     @AppStorage(SettingsKeys.modelMigrationNotice) private var modelMigrationNotice = ""
     @State private var testResult = ""
@@ -863,9 +865,19 @@ struct CloudEditor: View {
                     case .localOnly:
                         let writes = AISetup.localOnlyWrites()
                         polishLevel = writes.polish.rawValue
+                        // **意愿一个字都不动**（4.3.1）：这一档只是把识别拉回本机，
+                        // 切回「本地 + AI」时要能原样恢复
                         recognitionEngine = writes.engine.rawValue
                     case .withAI:
                         polishLevel = AISetup.polishAfterEnablingAI(currentPolishLevel).rawValue
+                        // 把存着的那个意愿重新兑现出来（它可能在「只用本地」那一档下被暂停着）
+                        let restored = AISetup.engine(provider: inUseProvider,
+                                                      cloudRecognition: cloudRecognitionWanted)
+                        if restored != engineChoice {
+                            recognitionEngine = restored.rawValue
+                            Log.info("Cloud recognition restored: provider=\(inUseProvider.rawValue) "
+                                     + "engine=\(restored.rawValue)")
+                        }
                     }
                     Log.info("AI usage mode=\(newMode.rawValue)")
                 })
@@ -929,14 +941,30 @@ struct CloudEditor: View {
         guard AISetup.adoptsProvider(current: inUseProvider, next: next,
                                      requiresKey: next.requiresAPIKey, hasKey: hasKey,
                                      polishModel: polishModelBinding.wrappedValue) else { return }
-        // 换走之后音频不能还在往阿里云传——而且界面上已经没有那个开关可以关了。
-        // 判据是纯函数，引导页换服务商走的是同一条
-        if let engine = AISetup.engineAfterProviderChange(current: engineChoice, next: next) {
-            recognitionEngine = engine.rawValue
-            Log.info("Cloud recognition off: provider=\(next.rawValue)")
-        }
+        // 云端识别跟着换过去（4.3.1 起**不再关掉它**：用户来回点几家对比是常态，
+        // 而价钱就写在开关旁边）。判据是纯函数，引导页换服务商走的是同一条。
+        applyCloudRecognitionMove(next)
         provider = next.rawValue
         Log.info("AI provider adopted=\(next.rawValue)")
+    }
+
+    /// 采纳新服务商之后把识别引擎调整到位。**意愿（cloudRecognitionWanted）一个字都不动**——
+    /// 它记的是"我要不要云端识别"，与这一刻用哪一家无关（用户 2026-09-21 拍板）。
+    /// 真正落到新一家上时那次「它能不能用」的检查由 CloudRecognitionFields 自己发起
+    /// （与手动拨开开关同一条路、同一个状态行）。
+    private func applyCloudRecognitionMove(_ next: LLMProvider) {
+        let move = AISetup.cloudRecognitionMove(wanted: cloudRecognitionWanted,
+                                                current: engineChoice, next: next,
+                                                officialOpenAI: CloudASRSettings.openAIUsesOfficialEndpoint)
+        if let line = AISetup.cloudRecognitionMoveLog(move, wasCloud: engineChoice.isCloud,
+                                                      next: next) {
+            Log.info(line)
+        }
+        switch move {
+        case .unchanged: break
+        case .moved(let engine): recognitionEngine = engine.rawValue
+        case .paused: recognitionEngine = RecognitionEngineChoice.local.rawValue
+        }
     }
 
     /// 选择器里摆哪几档：三家云服务商，外加**正在看的那一档和正在用的那一档**

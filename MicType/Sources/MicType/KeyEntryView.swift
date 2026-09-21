@@ -82,6 +82,14 @@ final class KeyVerifier: ObservableObject {
         status = .idle
     }
 
+    /// Key 没变，但它要发去的**地方**变了（阿里云那一栏「接入地址」）。
+    /// 上一次的"已验证"是对着上一台主机挣来的，对新地址一个字都不算数——
+    /// 忘掉它，下一次 verifyNow() 才会真的再发一趟（needsVerification 靠的就是这一位）。
+    func forgetVerification() {
+        verifiedKey = nil
+        invalidate()
+    }
+
     /// 用户又动了输入框：把上一次的结论撤掉，别让旧的 ✓ 挂在一把新 Key 旁边
     func invalidate() {
         guard status != .idle else { return }
@@ -291,6 +299,10 @@ struct KeyEntryView: View {
     /// 用哪条链路验这把 Key。默认走 LLM（AI 页）；识别页传 `.cloudASR(...)`，
     /// 直接打识别端点、发 1 秒合成音（理由见 KeyVerifier.Probe）
     var probe: KeyVerifier.Probe = .llm
+    /// 「接入地址」那一栏被改过几次（阿里云才有，见 QwenHostField）。
+    /// 它一变就拿同一把 Key 对着新地址重验一次：**那是整页唯一的手动测试**，
+    /// 所以结果就显示在下面这行 Key 状态行上，用户不必再去找第二个地方看。
+    var hostChangeTick: Int = 0
     /// 验证结束时通知外面（true = 通过）。菜单栏的「配置 AI…」之类要据此刷新。
     var onStatusChange: ((KeyVerifier.Status) -> Void)? = nil
 
@@ -355,6 +367,13 @@ struct KeyEntryView: View {
         .onChange(of: verifier.status) { _, newValue in
             onStatusChange?(newValue)
         }
+        // 地址换了：同一把 Key 要对着新那一台重验一次（KeyVerifier 那边先忘掉旧结论，
+        // 否则 needsVerification 会因为"Key 没变"直接把这一趟吃掉）
+        .onChange(of: hostChangeTick) { _, _ in
+            guard provider == .qwen else { return }
+            verifier.forgetVerification()
+            verifyNow()
+        }
         // 状态行是一次性快照，切语言要跟着换（见 CLAUDE.md「i18n 快照字符串」）
         .onChange(of: l10n.language) { _, _ in verifier.invalidate() }
     }
@@ -383,12 +402,6 @@ struct KeyEntryView: View {
     }
 }
 
-// 4.1.4 删掉了这里的「接入地址（可选）」输入框（用户 2026-09-20 拍板）。
-//
-// 它要求用户去百炼控制台认出「接入地址（apiHost）」这个概念、抄对一串主机名，而抄错一个字符
-// 的表现是"鉴权失败"——一个大多数人看不懂、填错了还查不出来的框。它换来的能力（指定主机）
-// 现在由 App 自己做得更好：整表并发试一遍，挑**认这把 Key 且最快**的那台（AlibabaHostResolver）。
-//
-// 存着的值仍然认（导入的设置文件里还带着 qwenAPIHost），但它一旦 401 / 连不上就会被丢掉、
-// 交回自动探测（AlibabaEndpoint.dropsPastedHost）：界面上已经没有地方能清空它了，
-// 留着就是一条改不掉的坏设置。
+// 阿里云的「接入地址（可选）」输入框在 CloudAIFields.QwenHostField 里（4.1.4 删过，
+// 4.3.1 按用户 2026-09-21 的要求加了回来）。它摆在这个 Key 输入框的下面、两处共用，
+// 改完由 hostChangeTick 推着这里重验一次——见那边的注释。

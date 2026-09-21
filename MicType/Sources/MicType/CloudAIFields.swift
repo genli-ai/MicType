@@ -7,6 +7,87 @@ import SwiftUI
 // 也就没人告诉他云端识别是可选的、要花钱的。同一个决定只写一处，两处就不会走散
 // （与 QwenHostField、PrivacyCopy 同一条纪律）。
 
+/// 阿里云那一档的「接入地址（可选）」输入框（设置页与引导页共用这一个）。
+///
+/// 来历：4.1.4 把它删了（那时的理由是"大多数人看不懂、填错了表现为鉴权失败"），
+/// 4.3.1 按用户 2026-09-21 的要求加回来。理由是那天的实测——百炼控制台 API Key 页上
+/// 明写着一条「接入地址（apiHost）」，那一条对话 / 同步识别 / 实时 WebSocket 三样全通，
+/// 而自动探测落到了另一台（Key 里 `sk-ws-` 后面那一段与业务空间 ID 并不相同）。
+/// 两者都不算错，但**用户要能把控制台上那一条原样填进来**。
+///
+/// 三条规矩：
+///   • 空着是常态 = 自动探测，一个字都不变；
+///   • 填了就**只用这一台**（润色 / 指令、同步识别、实时 WebSocket 全走它），
+///     不探测、不被每周复查换掉、失败也不替他换；
+///   • 拼不出主机名的输入当场提示，**照常按"没填"处理，但一个字都不删**。
+///
+/// 改完要重新验证：提交（回车 / 失焦 / 停手 0.8 秒）之后，这一栏把 tick 推给 KeyEntryView，
+/// 那边拿同一把 Key 对着新地址重跑一次验证——那是整页唯一的手动测试，结果仍显示在 Key 的状态行。
+struct QwenHostField: View {
+    /// 地址提交了（真的写回了设置）。调用方据此触发重新验证。
+    var onCommit: () -> Void = {}
+
+    @AppStorage(SettingsKeys.qwenAPIHost) private var storedHost = ""
+    /// 输入框里这一刻的字。**不直接绑 @AppStorage**：那样每敲一个字母都会落盘一次，
+    /// 而落盘就意味着候选表当场变成"一台半截主机名"，日志里全是拼到一半的地址。
+    @State private var text = ""
+    @State private var commitWork: DispatchWorkItem?
+    @FocusState private var focused: Bool
+
+    /// 停手多久算"填完了"。0.8 秒是抄 Key 那一栏的经验：再短会在手打中途触发一次验证，
+    /// 再长会让人以为这一栏没反应（它没有「确定」按钮）。
+    private static let settleDelay: TimeInterval = 0.8
+
+    var body: some View {
+        TextField(tr("接入地址（可选）", "API host (optional)"), text: $text)
+            .textFieldStyle(.roundedBorder)
+            .focused($focused)
+            .onSubmit { commit() }
+            .onAppear { text = storedHost }
+            // 别处改了它（导入设置文件、别的窗口）：跟上，但别把正在敲的字顶掉
+            .onChange(of: storedHost) { _, newValue in
+                guard !focused, newValue != text else { return }
+                text = newValue
+            }
+            .onChange(of: text) { _, _ in scheduleCommit() }
+            .onChange(of: focused) { _, isFocused in
+                if !isFocused { commit() }
+            }
+        // 控件旁边**永远只有一行**（Plan C 的预算）：填错了说错在哪，否则空着说默认、
+        // 填了说代价。三句话互斥，不叠着摆。
+        if AlibabaEndpoint.storedHostIsJunk(text) {
+            // **不删、不清空**，只说它现在不算数（用户 2026-09-21：上次填了什么就保持什么）
+            Caption(SettingsCopy.hostMalformed, warning: true)
+        } else {
+            Caption(AlibabaEndpoint.normalizeHost(text) == nil
+                    ? SettingsCopy.hostAutoDetected : SettingsCopy.hostPinned)
+        }
+    }
+
+    /// 停手 0.8 秒就当填完了（没有「确定」按钮，所以必须自己判）
+    private func scheduleCommit() {
+        commitWork?.cancel()
+        let work = DispatchWorkItem { commit() }
+        commitWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.settleDelay, execute: work)
+    }
+
+    /// 写回设置。**只有真的变了才写、才重新验证**——失焦事件每次切页都来一发，
+    /// 每来一发就重验一次的话，用户会看到状态行无缘无故闪一下。
+    private func commit() {
+        commitWork?.cancel()
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != storedHost else { return }
+        let before = AlibabaEndpoint.normalizeHost(storedHost)
+        storedHost = trimmed
+        Log.info("Qwen host field set to=" + (trimmed.isEmpty ? "auto"
+                                              : AlibabaEndpoint.redacted(trimmed)))
+        // 归一之后还是同一台（补了个 https:// 之类）就不必重验：那一趟要花几秒和几个 token
+        guard AlibabaEndpoint.normalizeHost(trimmed) != before else { return }
+        onCommit()
+    }
+}
+
 /// 服务商分段选择器 +「正在使用 ✓」。
 ///
 /// 换档之后要做什么**不写在这里**：4.1.1 起两处是同一条语义——看着的那一档，
@@ -157,6 +238,9 @@ struct CloudRecognitionFields: View {
 
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
+    /// 开关记的是**意愿**，不是当前引擎（4.3.1 起，用户 2026-09-21 拍板）：
+    /// 换服务商不再把它抹掉，实际走哪一档由 AISetup.engine 推出来。
+    @AppStorage(SettingsKeys.cloudRecognitionWanted) private var cloudRecognitionWanted = false
 
     /// 拨开开关那一刻自动跑的那次检查（一次性快照）
     @State private var checking = false
@@ -174,23 +258,40 @@ struct CloudRecognitionFields: View {
     /// 这一家的云端识别供应商（摆得出这个开关就一定有；理论上取不到时按阿里云算）
     private var asrProvider: CloudASRProvider { engineWhenOn.cloudProvider ?? .alibaba }
 
-    private var isOn: Bool { RecognitionEngineChoice.parse(recognitionEngine) == engineWhenOn }
+    /// 开关显示的是**意愿**。这一段只在"这一家支持云端识别"时才渲染
+    ///（见 CloudSetupCore.showsCloudRecognition），所以意愿为开 = 这一刻真的在用云端。
+    private var isOn: Bool { cloudRecognitionWanted }
 
-    /// 开关 ←→ 识别引擎。哪一档由 AISetup.engine 说了算，界面这边不自己拼 rawValue。
-    /// 拨开就当场测一次（见 runCheck）；拨回去只是关掉，不必测什么。
+    /// 开关 ←→ 意愿（+ 由它推出来的引擎）。哪一档由 AISetup.engine 说了算，
+    /// 界面这边不自己拼 rawValue。拨开就当场测一次（见 runCheck）；拨回去只是关掉。
     private var engineBinding: Binding<Bool> {
         Binding(get: { isOn },
                 set: { on in
+                    cloudRecognitionWanted = on
                     let next = AISetup.engine(provider: provider, cloudRecognition: on)
                     recognitionEngine = next.rawValue
-                    Log.info("Cloud recognition engine=\(next.rawValue)")
+                    Log.info("Cloud recognition wanted=\(on) engine=\(next.rawValue)")
                     onEngineChange?()
                     if on {
                         runCheck()
                     } else {
+                        CloudRecognitionCheckMemory.forget(asrProvider)
                         invalidateCheck()
                     }
                 })
+    }
+
+    /// 这一段刚出现在屏幕上（换服务商换过来了 / 从「只用本地」切回来了 / 刚打开设置窗口）：
+    /// 开关开着、而这一家这次运行里还没当面验过 → 现在验一次。
+    ///
+    /// 为什么非验不可（4.3.1）：换服务商不再关掉这个开关，于是云端识别会**自动**落到
+    /// 一家从没验过的服务商上。「开着的开关必须意味着它真的能用」这条不因为是自动换过去的
+    /// 就打折——测不通照样把开关弹回去并写明原因（turnOff 那条路）。
+    /// 为什么要有那份记忆：用户在设置里就是来回点几家对比的，切走又切回来不该每次都花一秒钱。
+    private func verifyIfLandedHere() {
+        guard isOn, !checking, !CloudRecognitionCheckMemory.isChecked(asrProvider) else { return }
+        Log.info("Cloud recognition check on arrival provider=\(asrProvider.rawValue)")
+        runCheck()
     }
 
     var body: some View {
@@ -209,6 +310,12 @@ struct CloudRecognitionFields: View {
                 }
                 // 结论是一次性快照，切语言要清掉（见 CLAUDE.md「i18n 快照字符串」）
                 .onChange(of: l10n.language) { _, _ in invalidateCheck() }
+                // 换服务商换过来了：这一家还没验过就现在验（见 verifyIfLandedHere）
+                .onChange(of: provider) { _, _ in
+                    invalidateCheck()
+                    verifyIfLandedHere()
+                }
+                .onAppear { verifyIfLandedHere() }
             // 开关旁边只留一行：开着说型号 + 代价 + 单价，关着说默认（不出这台 Mac）+ 打开后的单价。
             // 留存、先开通模型、出错回落收进段头那颗 ⓘ（SettingsCopy.cloudRecognitionInfo）。
             //
@@ -303,8 +410,10 @@ struct CloudRecognitionFields: View {
                     checking = false
                     checkOK = true
                     checkResult = CloudASRProbe.successText(outcome)
+                    CloudRecognitionCheckMemory.markChecked(config.provider)
                     return
                 }
+                CloudRecognitionCheckMemory.markChecked(config.provider)
                 CloudStreamingProbe.run(config: live) { streaming in
                     Log.info("Cloud recognition realtime check=\(streaming)")
                     guard generation == checkGeneration else { return }
@@ -316,6 +425,7 @@ struct CloudRecognitionFields: View {
                 checking = false
                 checkOK = false
                 checkResult = failure.message
+                CloudRecognitionCheckMemory.forget(config.provider)
                 turnOff(reason: "check failed")
             }
         }
@@ -341,9 +451,13 @@ struct CloudRecognitionFields: View {
         }
     }
 
-    /// 测不通：把开关拨回本机档。**只改这一条设置**，Key、地址、模型一个都不动。
+    /// 测不通：把开关拨回去。**只改这两条设置**（意愿 + 引擎），Key、地址、模型一个都不动。
+    ///
+    /// 4.3.1 起这是**唯一**允许自动关掉这个开关的情况：换服务商不再关它，但
+    /// 「开着的开关必须意味着它真的能用」这一条没变——测不通就得弹回去，并把原因留在状态行上。
     private func turnOff(reason: String) {
         guard isOn else { return }
+        cloudRecognitionWanted = false
         recognitionEngine = RecognitionEngineChoice.local.rawValue
         Log.warn("Cloud recognition switched back to local: \(reason)")
         onEngineChange?()
@@ -402,6 +516,9 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
     /// 验一次 Key，下面开着的云端识别跟着重测一次。计数住在这里而不是两个调用方里，
     /// 是因为设置页与引导页共用这一串控件——写两份早晚有一处漏掉。
     @State private var keyVerifiedTick = 0
+    /// 「接入地址」那一栏刚被改过的次数。推给 KeyEntryView，让它拿同一把 Key 对着新地址
+    /// 重验一次——**那是整页唯一的手动测试**，所以结果仍然显示在 Key 的状态行上。
+    @State private var hostChangeTick = 0
 
     private var usingAI: Bool { usageMode.wrappedValue == .withAI }
 
@@ -455,6 +572,15 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
             } header: {
                 SectionHeader(title: keyTitle, info: SettingsCopy.keyInfo(cloudASRProbe: keyProbe != .llm))
             }
+            // 「接入地址」只在阿里云这一档出现：只有百炼的控制台会给你一条 apiHost，
+            // OpenAI / DeepSeek 的地址是固定的，摆一个永远该留空的框只会让人以为自己漏填了
+            if showsHostField {
+                Section {
+                    hostField
+                } header: {
+                    SectionHeader(title: hostTitle, info: SettingsCopy.hostInfo)
+                }
+            }
             if showsModel {
                 Section {
                     modelField
@@ -487,6 +613,10 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
             providerNotices()
             SectionHeader(title: keyTitle, info: SettingsCopy.keyInfo(cloudASRProbe: keyProbe != .llm))
             keyField
+            if showsHostField {
+                SectionHeader(title: hostTitle, info: SettingsCopy.hostInfo)
+                hostField
+            }
             if showsModel {
                 SectionHeader(title: modelTitle, info: SettingsCopy.cloudModelInfo(provider: selected))
                 modelField
@@ -520,8 +650,16 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
         .accessibilityLabel(usageTitle)
     }
 
+    /// 只有阿里云有「接入地址」这回事（见 QwenHostField 的注释）
+    private var showsHostField: Bool { selected == .qwen }
+
+    private var hostField: some View {
+        QwenHostField(onCommit: { hostChangeTick &+= 1 })
+    }
+
     private var keyField: some View {
         KeyEntryView(provider: selected, model: keyProbeModel, probe: keyProbe,
+                     hostChangeTick: hostChangeTick,
                      onStatusChange: { status in
                          // 验证通过 = 这套配置刚刚被真的确认过一次。开着云端识别的话，
                          // 下面那个开关旁的结论也该跟着重来一遍（CloudRecognitionFields 盯着这个计数）
@@ -548,6 +686,7 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
     private var usageTitle: String { tr("使用方式", "How you use MicType") }
     private var providerTitle: String { tr("服务商", "Provider") }
     private var keyTitle: String { "API Key" }
+    private var hostTitle: String { tr("接入地址（可选）", "API host (optional)") }
     private var modelTitle: String { tr("模型", "Model") }
     private var cloudRecognitionTitle: String { tr("云端识别（可选）", "Cloud recognition (optional)") }
 }

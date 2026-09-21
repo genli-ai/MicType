@@ -173,35 +173,52 @@ final class CloudASRIntegrationTests: XCTestCase {
                                 AlibabaEndpoint.sharedChinaHost])
     }
 
-    /// 存着的那条接入地址只有**死透了**才丢：401（不认这把 Key）与 status 0（连不上）。
-    /// 403/404/限流说明主机本身是对的，丢掉它等于把用户送去一台他没指定的主机。
-    func testPastedHostIsDroppedOnlyWhenItIsReallyDead() {
-        let host = "ws-abc.cn-beijing.maas.aliyuncs.com"
-        XCTAssertTrue(AlibabaEndpoint.dropsPastedHost(pastedHost: host, status: 401))
-        XCTAssertTrue(AlibabaEndpoint.dropsPastedHost(pastedHost: host, status: 0))
-        for status in [200, 403, 404, 429, 500] {
-            XCTAssertFalse(AlibabaEndpoint.dropsPastedHost(pastedHost: host, status: status),
-                           "HTTP \(status) 说明这台主机是对的")
+    /// 填了接入地址 = 候选表只有这一台：不拿他的 Key 去试别处（4.3.1 起界面上又能填了）
+    func testFilledHostIsTheOnlyCandidate() {
+        for entered in ["ws-abc.cn-beijing.maas.aliyuncs.com",
+                        "https://ws-abc.cn-beijing.maas.aliyuncs.com",
+                        "https://ws-abc.cn-beijing.maas.aliyuncs.com/api/v1",
+                        "  WS-ABC.CN-BEIJING.MAAS.ALIYUNCS.COM  "] {
+            XCTAssertEqual(AlibabaEndpoint.candidates(pastedHost: entered,
+                                                      resolvedHost: "dashscope-intl.aliyuncs.com",
+                                                      workspace: "ws-abc",
+                                                      apiKey: "sk-ws-abc.zzz"),
+                           ["ws-abc.cn-beijing.maas.aliyuncs.com"], entered)
         }
-        XCTAssertFalse(AlibabaEndpoint.dropsPastedHost(pastedHost: "", status: 401),
-                       "压根没存过就没什么可丢的")
+        // 留空 = 自动探测，一个字都没变
+        XCTAssertGreaterThan(AlibabaEndpoint.candidates(pastedHost: "  ", apiKey: "sk-x").count, 1)
     }
 
-    /// 拼不出主机名的脏值：**任何状态码下都该丢**，而且不必等它失败一次。
-    /// 4.1.4 起界面上没有这个输入框了——留着它只会让候选表少一台、让错误信息
-    /// 指向一个用户根本碰不到的东西。
-    func testJunkStoredHostIsAlwaysDropped() {
+    /// 拼不出主机名的输入：**照常按"没填"处理（自动探测），但一个字都不删**。
+    /// 4.1.4–4.3.0 是"开机/导入时丢掉"，那是因为当时界面上没有这个框；框回来之后
+    /// 替用户删掉他亲手敲的东西就只是越权（用户 2026-09-21：上次填了什么就保持什么）。
+    func testJunkHostIsIgnoredButNeverDeleted() {
         for junk in ["我的主机", "接入地址：xxx", "not a host", "-bad.example.com"] {
             XCTAssertTrue(AlibabaEndpoint.storedHostIsJunk(junk), junk)
-            for status in [200, 401, 403, 404, 0] {
-                XCTAssertTrue(AlibabaEndpoint.dropsPastedHost(pastedHost: junk, status: status),
-                              "\(junk) / HTTP \(status)")
-            }
+            // 等同于没填：候选表照常是整张表
+            XCTAssertGreaterThan(AlibabaEndpoint.candidates(pastedHost: junk,
+                                                            apiKey: "sk-x").count, 1, junk)
         }
         XCTAssertFalse(AlibabaEndpoint.storedHostIsJunk(""), "空着是常态，不是脏值")
         XCTAssertFalse(AlibabaEndpoint.storedHostIsJunk("   "))
         XCTAssertFalse(AlibabaEndpoint.storedHostIsJunk("https://dashscope-intl.aliyuncs.com/api/v1"),
                        "整条 URL 归一得出主机名，是好值")
+    }
+
+    /// 他填的那一台没通：报**指回那一栏**的话，而不是整表探测那句"每一个接入地址都不认"
+    func testPinnedHostFailureCopyPointsAtTheField() {
+        L10n.shared.language = .zh
+        let copy = AlibabaHostResolver.pastedHostFailureCopy(status: 401, code: "InvalidApiKey")
+        XCTAssertNotNil(copy)
+        XCTAssertTrue(copy!.contains("接入地址"), copy!)
+        XCTAssertTrue(copy!.contains("清空"), "下一步要给得出：改它，或清空交回自动探测")
+        XCTAssertTrue(copy!.contains("401"), copy!)
+        // 端点访问被拒那一档自己的话更准（它点名"去默认业务空间建 Key"），不许被这句盖掉
+        XCTAssertNil(AlibabaHostResolver.pastedHostFailureCopy(status: 403, code: "access_denied"))
+        L10n.shared.language = .en
+        let en = AlibabaHostResolver.pastedHostFailureCopy(status: 0, code: nil)
+        XCTAssertNotNil(en)
+        XCTAssertFalse(en!.contains("(0)"), "没上网时那个 (0) 对用户没有任何意义")
     }
 
     // MARK: - 每周按"最快"复查一次接入地址（4.1.4）
@@ -221,6 +238,8 @@ final class CloudASRIntegrationTests: XCTestCase {
         XCTAssertTrue(should(now.addingTimeInterval(-AlibabaFastestHostRefresh.interval)),
                       "整整一周，边界上算过期")
         XCTAssertFalse(should(nil, hasKey: false), "没有 Key 连问都问不出来")
+        XCTAssertFalse(should(nil, pastedHost: "ws-abc.cn-beijing.maas.aliyuncs.com"),
+                       "他填了地址：每周复查一趟都不许跑，更不许把它换掉")
         // 4.1.4 那一版的戳不算数：它只问了 /models，可能选中一台 chat 全 403 的主机。
         // 不作废的话，升上来的人最长要等七天才被重挑一次，而这七天里每句话都失败。
         XCTAssertTrue(AlibabaFastestHostRefresh.shouldRun(

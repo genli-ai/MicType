@@ -18,10 +18,14 @@ import Foundation
 // 从 UAE 往北京传一段 25.7 秒的录音（约 1.1 MB base64）要 44.7 秒，同一把 Key 在新加坡站
 // 转 63 秒音频只要 6.9 秒。两台都"能用"，可差了一个数量级，而先后顺序纯属表的排法。
 //
-// 4.1.4 同时拿掉了界面上那个「接入地址（可选）」输入框：一个大多数人看不懂、填错了表现为
-// "鉴权失败"的框，价值远不如让 App 自己挑最快的那台。存着的值仍然认（导入设置文件还带着它），
-// 但它一旦 401 / 连不上就会被丢掉并交回自动探测——界面上已经没有地方能清空它了，
-// 留着就是一条改不掉的坏设置。
+// 4.1.4 拿掉过界面上那个「接入地址（可选）」输入框，4.3.1 又**加了回来**（用户 2026-09-21 拍板）：
+// 百炼控制台的 API Key 页上明写着一条「接入地址（apiHost）」，而今天实测那一条三样全通
+//（对话 / 同步识别 / 实时 WebSocket），自动探测却因为"Key 里 sk-ws- 那一段 ≠ 业务空间 ID"
+// 落到了别的主机上。自动挑仍然是默认，但用户要能把控制台上那一条原样填进来并固定用它。
+//
+// 填了就**只用它**：不探测、不被每周复查换掉、失败也不替他换一台（那样只会让日志和
+// 他看到的设置对不上）。拼不出主机名的输入照样不用，但**一个字都不删**——
+// 用户 2026-09-21 的原话是"上次填了什么就保持什么"。
 //
 // 一条主机同时决定两件事：润色/指令走 {host}/compatible-mode/v1，云端识别走
 // {host}/api/v1/…。两边同源，改一处两处一起变——这正是 4.0.0 里"两页各选一次区域"
@@ -144,9 +148,9 @@ enum AlibabaEndpoint {
     /// 候选主机。**第一项是"没试过时先用哪一台"**（正常听写就取它，见 CloudASRSettings.alibabaHost）；
     /// 真要挑哪一台由 AlibabaHostResolver 并发试一遍、按延迟选（见那边的 decide）。
     ///
-    /// - pastedHost: 存着的接入地址（4.1.4 起界面上没有这个框了，只可能来自导入的设置文件）。
-    ///   **有就只用它**——它是用户/设置文件给的答案，不该拿他的 Key 去试别的主机。
-    ///   死了怎么办见 dropsPastedHost：丢掉它，交回下面这张完整的表。
+    /// - pastedHost: 用户填的接入地址（设置里那一栏，或导入的设置文件带来的）。
+    ///   **有就只用它**——那是他给的答案，不该拿他的 Key 去试别的主机，失败也不替他换
+    ///   （见 CloudASRSettings.resolveHost）。拼不出主机名的输入等同于没填，但不会被删掉。
     /// - resolvedHost: 上一次试出来的那台（正常使用时候选表就这一项，不再探测）。
     /// - workspace / apiKey: 工作空间专属主机排在共享主机**前面**——知道 WorkspaceId
     ///   就说明这个账号挂在某个区域端点上，先试它命中率最高（省掉一趟必然 401 的国际站往返；
@@ -192,28 +196,14 @@ enum AlibabaEndpoint {
         return out
     }
 
-    /// 存着的这条接入地址是**一串拼不出主机名的脏值**吗（空着不算）。
+    /// 输入框里这串字**拼不出一个主机名**吗（空着不算——空着是常态）。
     ///
-    /// 它只可能来自导入的设置文件（4.1.4 起界面上没有这个输入框了），而这种值在候选表里
-    /// 会被静默跳过——用户看不见它、改不了它，日志和错误信息却都绕着它打转。直接丢掉最省事，
-    /// 而且什么都不必告诉用户：他本来就没填过。
+    /// 界面上当场提示用（4.3.1 起「接入地址」输入框又回来了）。这种值在候选表里本来就会被
+    /// 静默跳过，所以行为上等同于"没填"（照常自动探测）——但**绝不替用户删掉它**：
+    /// 那是他亲手敲进去的东西，删了他连自己填错在哪都看不到（用户 2026-09-21 强调：
+    /// 上次填了什么就保持什么）。4.1.4–4.3.0 那条开机/导入时丢脏值的迁移因此撤掉了。
     static func storedHostIsJunk(_ raw: String) -> Bool {
         !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && normalizeHost(raw) == nil
-    }
-
-    /// 存着的那条接入地址该不该**丢掉、交回自动探测**。
-    ///
-    /// 4.1.4 起界面上没有那个输入框了（用户 2026-09-20 拍板），所以一条坏掉的地址会变成
-    /// 一条**改不掉的设置**：候选表只剩它一台，每句话 401，而屏幕上没有任何地方能把它清掉。
-    /// 两种该丢：
-    ///   • 拼不出主机名的脏值——任何时候都该丢（见 storedHostIsJunk）；
-    ///   • 401（这把 Key 不属于它）与 status 0（DNS / 连接都不通）。
-    /// 403 / 404 / 429 / 5xx **不丢**——那几种恰恰说明主机是对的（鉴权过了、或者只是这一刻不行），
-    /// 丢掉它反而把用户送去一台他没指定的主机。
-    static func dropsPastedHost(pastedHost: String, status: Int) -> Bool {
-        guard !pastedHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        guard normalizeHost(pastedHost) != nil else { return true }
-        return status == 401 || status == 0
     }
 
     /// 这一次失败是不是**"这台主机不让这把 Key 访问端点"**（纯函数，单测钉死）。
@@ -318,6 +308,7 @@ enum AlibabaHostRecovery {
     /// - urlErrorCode: 网络层错误码（NSURLError*），没有就传 nil
     static func action(isAlibaba: Bool,
                        hostSettled: Bool,
+                       hostPinned: Bool = false,
                        canWaitForResolve: Bool,
                        status: Int,
                        code: String? = nil,
@@ -325,6 +316,11 @@ enum AlibabaHostRecovery {
                        urlErrorCode: Int?,
                        attemptsLeft: Int) -> Action {
         guard isAlibaba, attemptsLeft > 0 else { return .none }
+        // 用户自己填了接入地址：**一趟都不探测**（4.3.1，用户 2026-09-21 拍板）。
+        // 他给的是答案，不是建议——失败就如实报失败，让他去改那一栏或清空它；
+        // 背着他换一台的结果是"我明明填了 A，日志里却在发 B"，那比失败更难查。
+        // 这道闸要排在 access-denied 那一条前面：那一条的全部意义就是"自动换一台"。
+        guard !hostPinned else { return .none }
         // **端点访问被拒（403 access_denied）要绕过 hostSettled 那道闸**（4.1.5）。
         // 那个"已经定下来了"是 GET /models 挣来的，而 2026-09-20 的实测证明它什么都不证明：
         // 同一台主机 /models 回 200、chat 与识别回 403。不绕过的话，用户会被永久钉死在
@@ -506,8 +502,8 @@ enum AlibabaFastestHostRefresh {
     /// - lastProbe: 上一次问出结果的时间；nil = 从来没有
     /// - stampedVersion: 那一趟是哪一版逻辑跑的（0 = 没有戳 / 4.1.4 之前）
     /// - hasKey: 钥匙串里有阿里云的 Key（没有 Key 连问都问不出来，跑了也是白跑）
-    /// - pastedHost: 存着的接入地址。有就不跑——那是设置文件给的答案，不该被我们按"更快"换掉
-    ///   （它死了 / 是串脏值会被 dropsPastedHost 丢掉，那是另一条路）。
+    /// - pastedHost: 用户填的接入地址。有就不跑——他给的是答案，不该被我们按"更快"换掉。
+    ///   拼不出主机名的输入等同于没填（照常复查），但那串字一个都不会被删。
     static func shouldRun(lastProbe: Date?, stampedVersion: Int = logicVersion,
                           now: Date = Date(),
                           hasKey: Bool, pastedHost: String) -> Bool {
@@ -542,9 +538,8 @@ enum AlibabaFastestHostRefresh {
 
     /// 开机复查一趟（AppDelegate 在后台队列上调用）。**绝不挡路**：听写、录音、启动都不等它。
     static func runAtLaunch(defaults: UserDefaults = .standard) {
-        // 设置文件可能带进来一串拼不出主机名的接入地址。界面上已经没有地方能改它，
-        // 留着只会把候选表压成"一台不存在的主机"——开机先把它丢掉（判据是纯函数）
-        Settings.shared.dropJunkPastedHost()
+        // 拼不出主机名的接入地址（用户填错、或设置文件带进来的）**不删**：它在候选表里
+        // 本来就等同于没填，所以下面那趟复查照跑，而屏幕上那一栏留着原样让他自己改
         let key = KeychainHelper.loadAPIKey(account: LLMProvider.qwen.keychainAccount)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard shouldRun(lastProbe: lastProbe(defaults),
@@ -806,6 +801,24 @@ enum AlibabaHostResolver {
         }
         let fallback = reported ?? Confirmation(host: "", status: 0)
         return AlibabaASRClient.failure(status: fallback.status, code: fallback.code, message: nil)
+    }
+
+    /// 用户**自己填了接入地址**、而那一台没通时说的话（纯函数，单测钉死）。
+    ///
+    /// 为什么不能沿用通用那句：通用那句是「试过的每一个接入地址都不认这把 Key」——
+    /// 而这一趟只试了一台，还是他指定的那一台。照那句去核对 Key 是查错了方向：
+    /// 十有八九是这一栏里的地址与这把 Key 不是一对（今天实测：业务空间 ID ≠ Key 里
+    /// `sk-ws-` 后面那一段，按 Key 猜出来的主机 /models 过、真请求 403）。
+    /// 所以这句话只说两件事：**是这一台不收**，以及**下一步在哪**——改这一栏，或清空它交回自动探测。
+    ///
+    /// 返回 nil = 沿用原来那句（端点访问被拒那一档自己的话更准，它点名了"去默认业务空间建 Key"）。
+    static func pastedHostFailureCopy(status: Int, code: String?) -> String? {
+        guard !AlibabaEndpoint.deniesEndpointAccess(status: status, code: code, message: nil) else {
+            return nil
+        }
+        let tail = status > 0 ? " (\(status))" : ""
+        return tr("你填的接入地址没能用这把 Key 接通\(tail)。到百炼控制台核对「接入地址」，或清空这一栏交回自动探测。",
+                  "The API host you entered did not accept this key\(tail). Check the host in the Model Studio console, or clear the field to hand the job back to auto-detection.")
     }
 
     /// 那一句专门的话（全 App 唯一出处：确认阶段与运行中的 403 都引用它）

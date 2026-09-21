@@ -69,7 +69,7 @@ import UniformTypeIdentifiers
 //   recognitionEngine       ← recognitionEngine      / （Windows 暂无）      "local" | "cloudAlibaba" | "cloudOpenAI"
 //   recognitionLanguage     ← recognitionLanguage    / （Windows 暂无）      语言代码，"" = 自动检测
 //   cloudAlibabaModel       ← cloudAlibabaModel      / （Windows 暂无）      "qwen3-asr-flash" | "qwen-audio-3.0-asr-flash"
-//   qwenApiHost             ← qwenAPIHost            / （Windows 暂无）      百炼接入地址（4.1.4 起界面上没有这个框；空 = 自动探测）
+//   qwenApiHost             ← qwenAPIHost            / （Windows 暂无）      百炼接入地址（用户可填；空 = 自动探测）
 //   qwenRegion              ← qwenRegion             / （Windows 暂无）      老设置：DashScope 接入区域（4.0.1 起界面上没有了）
 //   qwenWorkspaceId         ← qwenWorkspaceID        / （Windows 暂无）      老设置：区域端点主机名第一段
 //   speechModelRepo         ← qwenModelRepo          / （Windows 暂无）      HuggingFace 仓库 ID（"owner/name"）
@@ -452,9 +452,15 @@ enum SettingsBackup {
             Settings.shared.autoStopSilenceSeconds = ($0 > 0 && $0 < 1) ? 1 : $0
         }
 
-        // 识别引擎要当面念出来：这一项决定录音会不会离开这台 Mac，是整份文件里最该被看见的一条
+        // 识别引擎要当面念出来：这一项决定录音会不会离开这台 Mac，是整份文件里最该被看见的一条。
+        //
+        // 「识别也用云端」那个**意愿**（4.3.1 起的 cloudRecognitionWanted）**不进设置文件**，
+        // 导入时由引擎推出来：导出的一直是实际引擎，一份 4.3.0 或更早的文件里压根没有这个键。
+        // 不推的话，收下一份 cloudAlibaba 的文件之后，音频在上传而开关显示"关"；
+        // 反过来单独收一个意愿键又会凭空打开一个按秒计费的开关。
         enumValue(Key.recognitionEngine, notable: true) { (v: RecognitionEngineChoice) in
             Settings.shared.recognitionEngine = v
+            Settings.shared.cloudRecognitionWanted = AISetup.cloudRecognitionWanted(fromEngine: v)
         }
         // 这一项决定云端识别打的是哪个模型（也就是按什么价钱计费），和模型名同一条纪律
         enumValue(Key.cloudAlibabaModel, notable: true) { (v: AlibabaASRModel) in
@@ -494,16 +500,13 @@ enum SettingsBackup {
         // 这条走的是"要不要记录"这个偏好，历史内容本身照旧不进备份文件
         bool(Key.keepHistory) { Settings.shared.keepHistory = $0 }
 
-        // 2.5) 收下之后立刻把几条归一规则重新套一遍（4.1.1 / 4.1.4）：
+        // 2.5) 收下之后立刻把两条合并规则重新套一遍（4.1.1）：
         //   • 文件里可能还带着老的「关于我」——界面上已经没有那个框了，不并进规则就是静默丢失；
         //   • 文件里可能带着分开设的润色/指令型号——界面上也已经没有分开设的入口，
         //     留着就是一条改不动的设置（下拉显示「自定义…」，指令跑的却是另一个型号）；
-        //   • 文件里的接入地址可能压根拼不出主机名——界面上同样没有地方能改它，
-        //     留着只会让候选表少一台、让错误信息指向一个用户碰不到的东西。
         // 与启动时那几条同一份实现，不各写一遍。
         Settings.shared.normalizePersonalFields()
         Settings.shared.normalizeModelPair()
-        Settings.shared.dropJunkPastedHost()
 
         // 3) 不认识的键：只计数，绝不写进任何地方（API Key 就算被手工塞进来也止步于此）
         for key in settings.keys where !Key.all.contains(key) {
@@ -623,11 +626,11 @@ extension SettingsBackup {
             if summary.notableChanges.contains(where: {
                 $0.hasPrefix(Key.qwenRegion) || $0.hasPrefix(Key.qwenApiHost)
             }) {
-                // 4.1.4 起界面上与接入地址有关的控件一个都没有了，所以这句话**不指任何控件**：
-                // 只说会发生什么（换一台服务器）、以及它坏了之后会自己回到自动探测
-                //（CloudASRSettings.resolveHost 会把连不上的那条丢掉）。
-                lines.append(tr("这份文件带来一个百炼接入地址：润色与云端识别会改发到那台服务器（可能是另一个司法辖区）。它一旦连不上，MicType 会丢掉它、自己重新试出一台。",
-                                "This file brings its own Model Studio endpoint: polish and cloud recognition will go to that server, possibly in a different jurisdiction. If it stops working, MicType drops it and finds a working one by itself."))
+                // 4.3.1 起「接入地址」那一栏又在屏幕上了，所以这句话指回它——而且要说清楚
+                // **它不会被自动换掉**（那条"失败就丢掉重试"的规矩已经撤了）：
+                // 收下一份别人的设置之后，音频落在哪台服务器上必须是他自己能看见、能改的。
+                lines.append(tr("这份文件带来一个百炼接入地址：润色与云端识别会改发到那台服务器（可能是另一个司法辖区）。不是自己要的就到「云端 AI → 接入地址」清空它，交回自动探测。",
+                                "This file brings its own Model Studio endpoint: polish and cloud recognition will go to that server, possibly in a different jurisdiction. Clear it under Cloud AI → API host to hand the job back to auto-detection if you did not want it."))
             }
             // 引擎被文件改成云端 = 从此每段录音都会上传。这句重话必须说
             if summary.notableChanges.contains(where: {

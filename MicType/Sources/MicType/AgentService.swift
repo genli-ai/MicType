@@ -813,14 +813,21 @@ enum LLMClient {
     /// 也可能是 4.0.1 迁移按老区域**种**下的，从没联过网。种子吃 401 恰恰是最该去试一圈的
     /// 那一幕（北京站的种子 + 新加坡工作空间的 Key），所以这里认的是"验证过"那一位。
     ///
-    /// 4.1.4 起**存着的粘贴地址不再算"定下来了"**：界面上那个输入框已经没有了，
-    /// 一条连不上的粘贴地址（只可能来自导入的设置文件）会变成一条改不掉的设置——
-    /// 每句话 401、恢复探测又因为"地址已经定下来"一次都不跑，用户彻底卡住。
-    /// 现在让它照常触发恢复，那条路会先丢掉这台死主机再试一圈（CloudASRSettings.resolveHost）。
-    /// 它要是好好的，压根不会走到这里。
+    /// **用户自己填的接入地址永远算"定下来了"**（4.3.1 起又是这样，用户 2026-09-21 拍板）：
+    /// 他给的是答案，探测一趟都不该跑。4.1.4–4.3.0 反过来算过——那是因为当时界面上
+    /// 没有这个输入框，一条死地址会把人困住；框回来之后，"替他换一台"就只是让日志
+    /// 和他看到的设置对不上。它不通就照常失败，屏幕上说清楚，改不改由他。
     static var alibabaHostSettled: Bool {
         let s = Settings.shared
+        if AlibabaEndpoint.normalizeHost(s.qwenAPIHost) != nil { return true }
         return s.qwenHostVerified && AlibabaEndpoint.normalizeHost(s.qwenResolvedHost) != nil
+    }
+
+    /// 接入地址是**用户自己填的**吗。hostSettled 之外还要单独有这一位：
+    /// 「端点访问被拒」那一档会绕过 hostSettled 去自动换一台（4.1.5 加的），
+    /// 而填了地址的人恰恰不能被换（见 AlibabaHostRecovery.action）。
+    static var alibabaHostPinned: Bool {
+        AlibabaEndpoint.normalizeHost(Settings.shared.qwenAPIHost) != nil
     }
 
     /// 这一趟失败之后要不要先把接入地址试出来。抽出来是为了让 send 里那一段保持一句话长度。
@@ -832,6 +839,7 @@ enum LLMClient {
                                        attemptsLeft: Int) -> AlibabaHostRecovery.Action {
         AlibabaHostRecovery.action(isAlibaba: provider == .qwen,
                                    hostSettled: alibabaHostSettled,
+                                   hostPinned: alibabaHostPinned,
                                    // 润色等不起那 30 秒：它的全部价值是"顺手"
                                    canWaitForResolve: purpose != .polish,
                                    status: status,

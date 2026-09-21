@@ -118,4 +118,52 @@ final class QwenLiveEndpointTests: XCTestCase {
         }
         wait(for: [asrDone], timeout: 120)
     }
+
+    /// 填了接入地址就**只用这一台**（4.3.1）。
+    ///
+    /// 假发送器测得到"候选表只有一台"，测不到的是这一条：那一台真的接得通对话。
+    /// 用 dashscope-intl 当靶子——它对任何一把百炼 Key 都该通，不依赖这把测试 Key
+    /// 属于哪个业务空间。跑完把设置还原，绝不改用户真实的那一栏。
+    func testPinnedHostIsTheOneThatGetsUsed() throws {
+        guard let key = liveKey else {
+            throw XCTSkip("需要 MICTYPE_QWEN_TEST_KEY 或 ~/.config/mictype/qwen_test_key 才跑（会真的花钱）")
+        }
+        let pinned = AlibabaEndpoint.sharedInternationalHost
+        let saved = Settings.shared.qwenAPIHost
+        Settings.shared.qwenAPIHost = pinned
+        defer { Settings.shared.qwenAPIHost = saved }
+
+        let candidates = CloudASRSettings.currentHostCandidates(apiKey: key)
+        XCTAssertEqual(candidates, [pinned], "填了地址：候选表只有这一台")
+
+        var resolved: String?
+        let done = expectation(description: "resolve")
+        CloudASRSettings.resolveHost(apiKey: key, candidates: candidates) { result in
+            switch result {
+            case .success(let host): resolved = host
+            case .failure(let failure):
+                XCTFail("填的那一台没通：status=\(failure.status) \(failure.message)")
+            }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 120)
+        XCTAssertEqual(resolved, pinned, "解析结果必须就是他填的那一台，一台都不许多试")
+        print("live: pinned host=\(AlibabaEndpoint.redacted(pinned)) resolved="
+              + AlibabaEndpoint.redacted(resolved ?? "-"))
+
+        var chat = URLRequest(url: try XCTUnwrap(AlibabaEndpoint.chatCompletionsURL(host: pinned)))
+        chat.httpMethod = "POST"
+        chat.timeoutInterval = 30
+        chat.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
+        chat.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        chat.httpBody = try JSONSerialization.data(
+            withJSONObject: AlibabaHostResolver.confirmBody(model: LLMCatalog.qwenDefaultModel))
+        let chatResult = send(chat)
+        print("live: pinned chat host=\(AlibabaEndpoint.redacted(pinned)) "
+              + "status=\(chatResult.status) code=\(chatResult.code ?? "-")")
+        XCTAssertEqual(chatResult.status, 200, "填的这一台要真的能对话")
+        // 填了地址就不该再有"每周复查"来把它换掉
+        XCTAssertFalse(AlibabaFastestHostRefresh.shouldRun(lastProbe: nil, hasKey: true,
+                                                           pastedHost: pinned))
+    }
 }
