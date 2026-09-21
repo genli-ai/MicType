@@ -149,7 +149,6 @@ struct CloudRecognitionFields: View {
 
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
-    @AppStorage(SettingsKeys.cloudAlibabaModel) private var cloudAlibabaModel = AlibabaASRModel.qwen3Flash.rawValue
 
     /// 拨开开关那一刻自动跑的那次检查（一次性快照）
     @State private var checking = false
@@ -194,9 +193,13 @@ struct CloudRecognitionFields: View {
                 }
                 // 结论是一次性快照，切语言要清掉（见 CLAUDE.md「i18n 快照字符串」）
                 .onChange(of: l10n.language) { _, _ in invalidateCheck() }
-            // 开关旁边只留一行：开着说代价（上传 + 按秒计费），关着说默认（不出这台 Mac）。
-            // 单价、留存、先开通模型、出错回落全部收进段头那颗 ⓘ（SettingsCopy.cloudRecognitionInfo）
-            Caption(isOn ? cloudAlibabaModel + " · " + SettingsCopy.cloudRecognitionCost
+            // 开关旁边只留一行：开着说代价（边说边传 + 按秒计费），关着说默认（不出这台 Mac）。
+            // 单价、留存、先开通模型、出错回落全部收进段头那颗 ⓘ（SettingsCopy.cloudRecognitionInfo）。
+            //
+            // 型号名写的是**实时那个**（AlibabaRealtimeClient.model），不是设置里存的
+            // cloudAlibabaModel：4.1.7 起这一档默认走实时接口，存着的那个只是实时用不了时
+            // 接手的整段上传档。屏幕上该写"按下去会发生什么"，而不是"设置里存着什么"。
+            Caption(isOn ? AlibabaRealtimeClient.model + " · " + SettingsCopy.cloudRecognitionCost
                          : SettingsCopy.cloudRecognitionOff)
             checkRow
         }
@@ -270,12 +273,26 @@ struct CloudRecognitionFields: View {
                          + "copy=" + String(failure.message.prefix(200)))
             }
             guard generation == checkGeneration else { return }
-            checking = false
             switch result {
             case .success(let outcome):
-                checkOK = true
-                checkResult = CloudASRProbe.successText(outcome)
+                // 同步那条路通了，再问一句**实时**这条链路通不通：两种"可用"的体验差着一个
+                // 数量级（松手 0.25 秒 vs 录完再传），而用户就是在这一刻决定要不要按下这个开关。
+                // 代价是再花 1 秒音频的钱（约 $0.000035），与上面那趟探针同一量级。
+                guard let live = CloudASRSettings.currentConfig() else {
+                    checking = false
+                    checkOK = true
+                    checkResult = CloudASRProbe.successText(outcome)
+                    return
+                }
+                CloudStreamingProbe.run(config: live) { streaming in
+                    Log.info("Cloud recognition realtime check=\(streaming)")
+                    guard generation == checkGeneration else { return }
+                    checking = false
+                    checkOK = true
+                    checkResult = CloudASRProbe.successText(outcome, streaming: streaming)
+                }
             case .failure(let failure):
+                checking = false
                 checkOK = false
                 checkResult = failure.message
                 turnOff(reason: "check failed")

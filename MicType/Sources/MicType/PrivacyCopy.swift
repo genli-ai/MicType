@@ -17,9 +17,14 @@ enum PrivacyCopy {
     /// v4.0 起多了一档**可选**的云端识别，所以这句话必须把边界说全：
     /// 不能再写成无条件的"音频不出这台 Mac"（那会变成一句在云端档下不成立的承诺），
     /// 也不能改成含糊的"可能会上传"（默认档下音频确实一个字节都不出去）。
+    ///
+    /// 4.1.7 起后半句要写得更狠一点：那一档已经不是"录完再传"了——按下热键就连上，
+    /// **你说话的同时**音频就在往阿里云去（这样松手才能 0.25 秒出结果）。
+    /// 于是 Esc 的语义也变了：它立刻停止上传，但已经传出去的那几秒**收不回来**。
+    /// 不写这一句，用户会以为按 Esc 等于什么都没发生过。
     static var audioStaysLocal: String {
-        tr("默认本地识别：录音与识别都在这台 Mac 上完成，只有选择云端引擎时音频才会上传。",
-           "On-device recognition by default: recording and recognition run on this Mac; audio is uploaded only if you choose a cloud engine.")
+        tr("默认本地识别：录音与识别都在这台 Mac 上完成，只有选择云端引擎时音频才会上传——那一档是你说话的同时就在传，按 Esc 会立刻停止，但已经传出去的部分收不回来。",
+           "On-device recognition by default: recording and recognition run on this Mac; audio is uploaded only if you choose a cloud engine - and then it goes up while you are still speaking. Esc stops it at once, but whatever already left cannot be taken back.")
     }
 
     /// 出门的是哪些文字。

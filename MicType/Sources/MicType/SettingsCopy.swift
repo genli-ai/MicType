@@ -237,9 +237,13 @@ enum SettingsCopy {
         tr("预览中，仍用 " + current, "Previewing — still using " + current)
     }
 
-    /// 云端识别开关下面那一行。**代价写在开关旁边**，具体单价在 ⓘ 里（同一个事实只写一处）
+    /// 云端识别开关下面那一行。**代价写在开关旁边**，具体单价在 ⓘ 里（同一个事实只写一处）。
+    ///
+    /// 4.1.7 起写「边说边上传」而不是「音频上传」：这一档已经不是录完再传了——
+    /// 按下热键就连上，你说话的同时音频就在往阿里云去（这样松手才能 0.25 秒出结果）。
+    /// 写成"上传"会让人以为按 Esc 就什么都没发出去过，那是假的。
     static var cloudRecognitionCost: String {
-        tr("音频上传 · 按秒计费", "Audio is uploaded, billed per second")
+        tr("边说边上传 · 按秒计费", "Audio streams up as you speak, billed per second")
     }
 
     static var cloudRecognitionOff: String {

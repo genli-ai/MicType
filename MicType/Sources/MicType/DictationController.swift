@@ -142,6 +142,10 @@ final class DictationController {
     /// 云端识别引擎。**用到才建**：默认档的用户这辈子都不会创建它。
     /// 建一次就一直留着（内部只有一把锁和一条队列，不占资源），每轮开录前用 update(config:) 刷新配置。
     private var cloudEngine: CloudASREngine?
+    /// 这一轮的云端**实时**会话（阿里云档才可能有）。按下热键就建连，录音中边说边传，
+    /// 松手只剩「发完最后一截 + 一条 finish」——实测松手到终稿恒为 0.23–0.28 秒，与时长无关。
+    /// nil = 这一轮走整段上传（本机档、别家云端、这台主机实时用不了，见 CloudStreamingSession.make）。
+    private var cloudStreaming: CloudStreamingSession?
     /// 这一轮实际用的引擎与它是不是云端。都在**开录这一刻**定格：录到一半去设置里改引擎，
     /// 不该让正在录的这一段换一条链路（与 autoStopSilence 的快照同理）。
     private var sessionEngine: SpeechEngine = QwenEngine.shared
@@ -239,6 +243,10 @@ final class DictationController {
     /// 两遍预览之间的最小空闲间隙，以及"按实测耗时成比例"的那条下限（半个解码时长）
     private static let previewMinIdleSeconds: Double = 0.4
     private static let previewIdleLatencyRatio: Double = 0.5
+
+    /// 云端实时每次最多从录音缓冲里切多少秒。电平回调每约 85 ms 来一次，
+    /// 正常一次只有一百来毫秒；这条上限只是"卡过一下之后别一口气切走十分钟"的保险绳。
+    private static let streamChunkMaxSeconds: Double = 30
 
     /// 预转写最早从什么时候开始：录音超过"该分段"的门槛（AudioSegmenter.segmentThresholdSeconds）
     /// 才动手。90 s 以内的录音行为与分段之前**完全一致**（一次过，一个字不差），
@@ -564,6 +572,8 @@ final class DictationController {
     /// 配不出配置（设置在这半秒里被改回本地档）时退回本机：走到这里说明 engineReadiness
     /// 已经放行过，宁可用本机跑一遍，也不能让这段录音掉在地上。
     private func prepareSessionEngine() {
+        cloudStreaming?.abandon()
+        cloudStreaming = nil
         guard let config = CloudASRSettings.currentConfig() else {
             sessionEngine = QwenEngine.shared
             sessionUsesCloud = false
@@ -582,6 +592,30 @@ final class DictationController {
         sessionUsesCloud = true
         Log.info("Session engine=cloud provider=\(config.provider.rawValue) "
                  + "hints=\(config.languageHints.joined(separator: ","))")
+        // 阿里云那一档再往前一步：能开实时就开。开不了（别家 / 没 Key / 这台主机实时用不了）
+        // 时 make 返回 nil，这一轮原样走整段上传，行为与 4.1.6 逐字一致。
+        let generation = self.generation
+        guard let stream = CloudStreamingSession.make(config: config, fallback: engine) else { return }
+        stream.onDraft = { [weak self] draft in
+            guard let self = self, self.isCurrent(generation), self.phase == .recording else { return }
+            // 关了草稿的人一个字都不该看到（与预转写那条同一条纪律）。**不看 previewEnabled**：
+            // 那一位还要求本机模型已就绪，而只用云端的人根本没下过模型——
+            // 服务端的中间结果恰恰是他第一次能看到草稿的机会。
+            guard Settings.shared.livePreview else { return }
+            self.overlay.showDraft(draft)
+        }
+        stream.onStreamingLost = { [weak self] in
+            guard let self = self, self.isCurrent(generation), self.phase == .recording else { return }
+            // 实时在松手前就断了：这一段照 4.1.6 整段上传（会话自己接手），
+            // 本机那遍灰字预览也重新打开——别让这一段录音一个字都看不见
+            self.startLivePreview(generation: generation)
+            // 从"现在"接着看，别把开头几十秒重解一遍：那段话云端的中间结果已经显示过了，
+            // 而本机预览的窗口只有 20 秒，从头来过等于用户盯着一段早就读完的旧草稿
+            self.previewWindowStart = self.recorder.recordedSampleCount
+        }
+        stream.start()
+        cloudStreaming = stream
+        sessionEngine = stream
     }
 
     /// 结束当前一轮：作废所有在途回调 + 掐断网络请求 + 清掉本轮上下文，状态回 idle
@@ -597,6 +631,10 @@ final class DictationController {
         // 云端那一路还要把在飞的 HTTP 请求真的掐掉（取消之后引擎不再回调，与 LLMClient 同约定）：
         // 只叫停"后续段落"的话，用户按了 Esc 还得等当前这一段传完、转完
         if sessionUsesCloud { cloudEngine?.cancel() }
+        // 实时那条 socket 直接断掉，**不发 finish**：用户按 Esc 就是不要这一段了。
+        // 已经传出去的那几秒收不回来（隐私文案里当面写着这一点）
+        cloudStreaming?.abandon()
+        cloudStreaming = nil
         // 指针清掉，但**不动已经写进历史的那一条**——那正是"取消也不丢字"的落点
         pendingHistoryID = nil
         committedText = ""
@@ -666,19 +704,41 @@ final class DictationController {
         return String(format: "%d:%02d", whole / 60, whole % 60)
     }
 
+    /// 长段口述这一路到底怎么变成文字。三条路的体验完全不同，写同一句话就一定有人被骗到：
+    ///   • 本机：录音中**边说边转**，每段约 45 秒，转完一段显示一段（QwenEngine 在跑）；
+    ///   • 云端实时：**边说边传**，松手后整段一次出结果，**不分段**
+    ///     （实测按时间切 commit 会在每个接缝丢字，所以这条路上永远不分段）；
+    ///   • 云端整段上传：松手之后才按段上传（实时用不了时的那条退路，也就是 4.1.6 的行为）。
+    enum RecordingFlow: Equatable {
+        case progressiveLocal
+        case cloudStreaming
+        case cloudUpload
+    }
+
+    /// 当前设置下走哪条路。**不读钥匙串**——这句话每次渲染设置页都要算一遍，
+    /// 而主机名按存着的那几项就拼得出来，够用来问"这台主机这次运行里被判过实时不可用吗"。
+    static func currentRecordingFlow() -> RecordingFlow {
+        let s = Settings.shared
+        guard s.recognitionEngine == .cloudAlibaba else {
+            return s.recognitionEngine.isCloud ? .cloudUpload : .progressiveLocal
+        }
+        let host = CloudASRSettings.alibabaHost(pastedHost: s.qwenAPIHost,
+                                                resolvedHost: s.qwenResolvedHost,
+                                                workspace: s.qwenWorkspaceID,
+                                                legacyRegionSlug: s.qwenRegion.regionSlug,
+                                                apiKey: "")
+        return CloudStreamingAvailability.isUnsupported(host: host) ? .cloudUpload : .cloudStreaming
+    }
+
     /// 设置 → 录音 里那句说明。**数字全部来自常量**：上限、预警提前量、分段长度改了，
     /// 这句话自己跟着变。这一条是被"界面上说 5 分钟、代码里其实是 10 分钟"坑出来的规矩
     /// （用户唯一能查到上限的地方就是这行字，它和代码对不上等于骗人）。
-    /// 纯函数、可单测。
-    /// 这一句里「边说边转」那半句只对本机引擎成立：录音中的预转写是 QwenEngine 在跑
-    /// （resetLiveSegments(active: !sessionUsesCloud)），云端档要松手之后才分段上传。
-    /// 所以按当前引擎给两个版本，别让只用云端的人去等一个永远不会出现的逐段进度。
     static var recordingLimitCopy: String {
-        recordingLimitCopy(progressive: !Settings.shared.recognitionEngine.isCloud)
+        recordingLimitCopy(flow: currentRecordingFlow())
     }
 
-    /// 纯函数版（单测直接喂 progressive，不碰 UserDefaults）
-    static func recordingLimitCopy(progressive: Bool) -> String {
+    /// 纯函数版（单测直接喂 flow，不碰 UserDefaults）
+    static func recordingLimitCopy(flow: RecordingFlow) -> String {
         let limit = minutesLabel(maxRecordingSeconds)
         let warn = secondsLabel(preFinishWarningSeconds)
         let segment = secondsLabel(AudioSegmenter.targetSeconds)
@@ -686,15 +746,23 @@ final class DictationController {
         // 少掉的是"悬浮窗会显示已录时长与上限"这类屏幕上自己看得见的话
         let head = tr("单次录音上限 \(limit)，到点前 \(warn) 提醒一次。",
                       "A take is capped at \(limit), with a warning \(warn) before the end. ")
-        let segmenting = progressive
-            ? tr("长段口述边说边转，每段约 \(segment)，转完一段显示一段；",
-                 "Long dictation is transcribed while you speak, in segments of about \(segment); ")
-            : tr("长段口述在松手后按每段约 \(segment) 上传识别，转完一段显示一段；",
-                 "Long dictation is uploaded in segments of about \(segment) after you release the hotkey, "
-                 + "each shown as soon as it is ready; ")
+        let middle: String
+        switch flow {
+        case .progressiveLocal:
+            middle = tr("长段口述边说边转，每段约 \(segment)，转完一段显示一段；",
+                        "Long dictation is transcribed while you speak, in segments of about \(segment); ")
+        case .cloudStreaming:
+            // 这一档**不提 45 秒**：它压根不分段，写个段长只会让人等一个不会出现的逐段进度
+            middle = tr("长段口述边说边上传，松手后整段一次出结果，不分段；",
+                        "Long dictation is uploaded as you speak and comes back in one piece, never split; ")
+        case .cloudUpload:
+            middle = tr("长段口述在松手后按每段约 \(segment) 上传识别，转完一段显示一段；",
+                        "Long dictation is uploaded in segments of about \(segment) after you release the hotkey, "
+                        + "each shown as soon as it is ready; ")
+        }
         let tail = tr("到上限自动收尾，说过的内容全部识别并插入。",
                       "at the cap MicType wraps up and inserts everything you have said.")
-        return head + segmenting + tail
+        return head + middle + tail
     }
 
     /// 一行版：只报上限本身。设置页的「录音」段只给一行（Plan C 的文案预算），
@@ -753,6 +821,8 @@ final class DictationController {
         }
         // 录音中的预转写：够一段就转一段（闸门都在 updateLiveSegments 里）
         updateLiveSegments()
+        // 云端实时：把新录到的这一截交给那条 socket（闸门都在 pumpStreamingAudio 里）
+        pumpStreamingAudio()
 
         if softHintShown {
             if !finishWarningShown, elapsed >= Self.maxRecordingSeconds - Self.preFinishWarningSeconds {
@@ -777,6 +847,28 @@ final class DictationController {
         finishRecording()
     }
 
+    // MARK: - 云端实时：边说边传
+
+    /// 录音电平回调里顺手调一次（主线程，约每 85 ms）：把录音缓冲里新出现的采样交给实时会话。
+    ///
+    /// 与预转写那条（updateLiveSegments）一样**不自己开定时器**——那条回调本来就跟着音频走，
+    /// 多一条定时器只会多一处要管的生命周期。切多少不必精确：客户端自己按 ≤3 秒一帧分帧、
+    /// 按 ≤20× 实时节流，这里只负责"别漏、别重"。
+    /// **指令模式（按住）同样走这条**：那一路的等待一样压在识别上。
+    private func pumpStreamingAudio() {
+        guard let stream = cloudStreaming, stream.isLive, phase == .recording else { return }
+        let chunk = recorder.snapshot(fromSampleIndex: stream.queuedSampleCount,
+                                      maxCount: Int(Self.streamChunkMaxSeconds * 16000))
+        guard !chunk.isEmpty else { return }
+        stream.enqueue(chunk)
+    }
+
+    /// 取消这一轮的实时会话（不发 finish）。静音门判「没说话」与各条早退路径共用它。
+    private func abandonStreaming() {
+        cloudStreaming?.abandon()
+        cloudStreaming = nil
+    }
+
     // MARK: - 伪流式预览（录音中的灰字草稿）
 
     /// 录音一开始就起的预览循环。三道闸门：用户开关、模型已就绪、录够 1.5s。
@@ -788,6 +880,13 @@ final class DictationController {
         previewWindowStart = 0
         previewCommitted = ""
         guard Settings.shared.livePreview else { return }
+        // 云端实时那一路的草稿由服务端的中间结果供给（见 prepareSessionEngine 里的 onDraft）：
+        // 同一段音频没必要在本机再解码一遍，GPU 和模型都留着万一要回落时用。
+        // 实时中途断了会走 onStreamingLost 再来调一次这里，那时这道闸门已经放开了。
+        guard cloudStreaming?.isLive != true else {
+            Log.info("Live preview served by the cloud stream")
+            return
+        }
         // 模型还在加载（或刚换过模型）时不开：预览绝不能替用户去等十几秒的加载，
         // 更不能和加载抢 GPU。这一轮就安静地按老样子走。
         guard QwenEngine.shared.isModelReady else {
@@ -1254,6 +1353,9 @@ final class DictationController {
             // 太短当作误触
             Log.info("Recording stop discarded \(levelLog) (<0.4s)")
             resetLiveSegments(active: false)
+            // 这一段不送识别 → 实时那条 socket 也别发 finish，直接掐掉
+            //（行为与今天一致；已经传出去的那几秒收不回来，见隐私文案）
+            abandonStreaming()
             phase = .idle
             // 是设备变更把录音打断的就说清楚，别让用户以为是自己按错了
             if let fault = takeSessionNote() {
@@ -1267,6 +1369,7 @@ final class DictationController {
             // 几乎无声（误触或没说话）：不送识别——空音频会诱发模型把热词上下文"复读"成识别结果
             Log.info("Recording stop silence-gated \(levelLog)")
             resetLiveSegments(active: false)
+            abandonStreaming()
             phase = .idle
             // 有故障附注（设备被拔/切走、到最长时长自动收尾）＝真出了事，必须出声——
             // 眼睛不在屏幕底部的人只有这一声能提醒他这一轮被丢了。

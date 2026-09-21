@@ -494,6 +494,27 @@ enum CloudASRProbe {
         guard !outcome.text.isEmpty else { return base }
         return base + tr("，返回：", ", returned: ") + String(outcome.text.prefix(20))
     }
+
+    /// 同一行，外加**实时那条链路通没通**（纯函数，单测钉住措辞）。
+    ///
+    /// 4.1.7 起「云端识别可用」有两种形态，而两者的体验差着一个数量级：实时是松手就有结果
+    /// （0.25 秒，与录音长度无关），录完再传要等一趟与录音长度成正比的上传（71 秒录音 8.6 秒）。
+    /// 用户恰恰是在按下这个开关的这一刻最该知道自己买到的是哪一种。
+    /// `.inconclusive`（网络抖了 / 超时）**什么都不多说**：把一次抖动写成"这把 Key 不支持实时"
+    /// 比不说更糟——他会照着这句话去换 Key。
+    static func successText(_ outcome: Outcome, streaming: CloudStreamingProbe.Outcome) -> String {
+        let base = successText(outcome)
+        switch streaming {
+        case .live:
+            return base + tr("；边说边传，松手就有结果",
+                             "; it streams as you speak, so the text is ready when you let go")
+        case .unsupported:
+            return base + tr("；这把 Key 不支持实时，录完再传",
+                             "; this key has no realtime support, so audio is sent after you finish")
+        case .inconclusive:
+            return base
+        }
+    }
 }
 
 // MARK: - 「粘贴即验证」/「把云端识别拨开」的完整一趟（阿里云）

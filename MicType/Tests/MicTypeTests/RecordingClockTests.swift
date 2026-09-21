@@ -44,42 +44,88 @@ final class RecordingClockTests: XCTestCase {
     /// 设置 → 录音 那句说明里的数字**必须来自常量**（写死的数字迟早和代码对不上，
     /// 而这行字是用户唯一能查到上限的地方）
     func testRecordingCopyReadsTheConstants() {
+        let flows: [DictationController.RecordingFlow] = [.progressiveLocal, .cloudStreaming,
+                                                          .cloudUpload]
         for language in AppLanguage.allCases {
             let saved = L10n.shared.language
             L10n.shared.language = language
             defer { L10n.shared.language = saved }
-            let copy = DictationController.recordingLimitCopy
-            XCTAssertTrue(copy.contains(DictationController.minutesLabel(
-                DictationController.maxRecordingSeconds)), "\(language): \(copy)")
-            XCTAssertTrue(copy.contains(DictationController.secondsLabel(
-                DictationController.preFinishWarningSeconds)), "\(language): \(copy)")
-            XCTAssertTrue(copy.contains(DictationController.secondsLabel(
-                AudioSegmenter.targetSeconds)), "\(language): \(copy)")
+            for flow in flows {
+                let copy = DictationController.recordingLimitCopy(flow: flow)
+                XCTAssertTrue(copy.contains(DictationController.minutesLabel(
+                    DictationController.maxRecordingSeconds)), "\(language) \(flow): \(copy)")
+                XCTAssertTrue(copy.contains(DictationController.secondsLabel(
+                    DictationController.preFinishWarningSeconds)), "\(language) \(flow): \(copy)")
+                // 段长只有**真的分段**的那两条路才说：实时那条不分段，写个段长就是假话
+                XCTAssertEqual(copy.contains(DictationController.secondsLabel(
+                    AudioSegmenter.targetSeconds)), flow != .cloudStreaming,
+                               "\(language) \(flow): \(copy)")
+            }
+            // 当前设置那一版（界面真正渲染的就是它）同样要说全上限与预警
+            let live = DictationController.recordingLimitCopy
+            XCTAssertTrue(live.contains(DictationController.minutesLabel(
+                DictationController.maxRecordingSeconds)), "\(language): \(live)")
         }
     }
 
-    /// 「边说边转」那半句只对本机引擎成立（云端是松手之后才分段上传）。
-    /// 两个版本都得把三个常量说全，而且不能互相抄成同一句话
-    func testRecordingCopyDistinguishesCloudFromLocal() {
+    /// 三条路三句话，一句都不能互相抄：本机是录音中就转，云端实时是边说边传、整段一次出，
+    /// 云端整段上传是松手之后才分段传。写混了，用户就会去等一个不会出现的逐段进度
+    func testRecordingCopyDistinguishesEveryFlow() {
         for language in AppLanguage.allCases {
             let saved = L10n.shared.language
             L10n.shared.language = language
             defer { L10n.shared.language = saved }
-            let local = DictationController.recordingLimitCopy(progressive: true)
-            let cloud = DictationController.recordingLimitCopy(progressive: false)
-            XCTAssertNotEqual(local, cloud, "\(language)：云端那一档必须换一句话")
-            for copy in [local, cloud] {
-                XCTAssertTrue(copy.contains(DictationController.minutesLabel(
-                    DictationController.maxRecordingSeconds)), "\(language): \(copy)")
-                XCTAssertTrue(copy.contains(DictationController.secondsLabel(
-                    AudioSegmenter.targetSeconds)), "\(language): \(copy)")
+            let local = DictationController.recordingLimitCopy(flow: .progressiveLocal)
+            let streaming = DictationController.recordingLimitCopy(flow: .cloudStreaming)
+            let upload = DictationController.recordingLimitCopy(flow: .cloudUpload)
+            XCTAssertEqual(Set([local, streaming, upload]).count, 3, "\(language)：三档必须各说各的")
+            // ⓘ 的预算是中文 ≤ 120 字，而这三句前面还挂着"草稿只在悬浮窗里"那一句
+            if language == .zh {
+                for copy in [local, streaming, upload] {
+                    XCTAssertLessThanOrEqual(copy.count, 100, copy)
+                }
             }
         }
         L10n.shared.language = .en
-        XCTAssertTrue(DictationController.recordingLimitCopy(progressive: true)
-            .contains("while you speak"))
-        XCTAssertFalse(DictationController.recordingLimitCopy(progressive: false)
-            .contains("while you speak"), "云端档不能承诺录音过程中就转写")
+        XCTAssertTrue(DictationController.recordingLimitCopy(flow: .progressiveLocal)
+            .contains("transcribed while you speak"))
+        // 云端整段上传那一档不能承诺录音过程中就在传，更不能承诺在转
+        XCTAssertFalse(DictationController.recordingLimitCopy(flow: .cloudUpload)
+            .contains("as you speak"), "整段上传那一档不能承诺边说边传")
+        // 实时那一档必须说清是边说边传（这正是它与上一档的全部区别）
+        XCTAssertTrue(DictationController.recordingLimitCopy(flow: .cloudStreaming)
+            .contains("as you speak"))
+        XCTAssertFalse(DictationController.recordingLimitCopy(flow: .cloudStreaming)
+            .contains("transcribed while you speak"), "实时是在传，不是在本机转")
+        L10n.shared.language = .zh
+        XCTAssertTrue(DictationController.recordingLimitCopy(flow: .cloudStreaming)
+            .contains("不分段"))
+    }
+
+    /// 走哪条路由设置 + 这次运行的实时可用性决定（纯函数拿不到的那一半）
+    func testRecordingFlowFollowsTheEngineAndStreamingAvailability() {
+        let saved = Settings.shared.recognitionEngine
+        defer {
+            Settings.shared.recognitionEngine = saved
+            CloudStreamingAvailability.resetForTesting()
+        }
+        CloudStreamingAvailability.resetForTesting()
+        Settings.shared.recognitionEngine = .local
+        XCTAssertEqual(DictationController.currentRecordingFlow(), .progressiveLocal)
+        Settings.shared.recognitionEngine = .cloudOpenAI
+        XCTAssertEqual(DictationController.currentRecordingFlow(), .cloudUpload,
+                       "OpenAI 那一档没有实时接口")
+        Settings.shared.recognitionEngine = .cloudAlibaba
+        XCTAssertEqual(DictationController.currentRecordingFlow(), .cloudStreaming)
+        // 这台主机这次运行里被判过"实时用不了"：那句话得换回整段上传那一版
+        let s = Settings.shared
+        let host = CloudASRSettings.alibabaHost(pastedHost: s.qwenAPIHost,
+                                                resolvedHost: s.qwenResolvedHost,
+                                                workspace: s.qwenWorkspaceID,
+                                                legacyRegionSlug: s.qwenRegion.regionSlug,
+                                                apiKey: "")
+        CloudStreamingAvailability.markUnsupported(host: host, reason: "test")
+        XCTAssertEqual(DictationController.currentRecordingFlow(), .cloudUpload)
     }
 
     // MARK: 处理中按 Esc 到底是什么意思
