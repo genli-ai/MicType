@@ -491,6 +491,222 @@ public sealed class TextPostProcessorTests
         Assert.Null(TextPostProcessor.PolishDriftCheck("三个人五点到", "5个人3点到"));
     }
 
+    // 4.2.1：编号列表 / 时间 / 英文数字（与 Mac 端 NumericFingerprintTests 同名用例一一对应）
+
+    /// 提示词第 8 条**要求**润色把多个要点整理成编号列表，于是成品里凭空多出「1. 2. 3.」——
+    /// 原文里一个数字都没有。长口述最需要润色，却每次都被这道校验拦下
+    [Theory]
+    [InlineData("首先要把合同发出去然后给客户回个电话最后把报销单交了",
+                "1. 把合同发出去\n2. 给客户回电话\n3. 提交报销单")]
+    [InlineData("主要有三点第一个是时间第二个是人手第三个是预算", "主要有三点：1. 时间；2. 人手；3. 预算。")]
+    [InlineData("两件事一个是合同一个是发票", "两件事：(1) 合同 (2) 发票")]
+    public void NumberedListMarkersPass(string raw, string polished)
+    {
+        Assert.Null(TextPostProcessor.PolishDriftCheck(raw, polished));
+    }
+
+    /// 引出句里的**条数**也是润色数出来的，不是说话人说的
+    /// （联网实测：说话人说「有几个问题」，模型写「目前主要有3个问题：」+ 1. 2. 3.）
+    [Fact]
+    public void ListCountInTheLeadInSentenceIsCovered()
+    {
+        const string raw = "这个项目现在有几个问题嗯首先是时间太紧我们原来定的是这个月底但是现在看起来肯定来不及"
+            + "然后就是人手也不够本来说好的两个人现在只有一个人还有就是预算这块其实已经超了一些了"
+            + "所以我的想法是要么我们把范围砍一砍要么就往后推一推大概就是这个意思你看一下";
+        const string polished = "关于这个项目，目前主要有3个问题：\n1. 时间太紧，原定本月底完成；"
+            + "\n2. 人手不足：原计划2人，现仅1人；\n3. 预算超支。\n建议缩减范围或推迟交付。";
+        Assert.Null(TextPostProcessor.PolishDriftCheck(raw, polished));
+    }
+
+    /// **联网实测抓到的那一句**：润色一边把「两个人 / 一个人」转成「2人 / 1人」，
+    /// 一边自己新造了「三个问题」「二选一」——4.2.1 之前 extra 池要减去润色侧的 wildcard，
+    /// 新造的那个「二」正好抵掉了本该解释「2人」的 wildcard 2
+    [Fact]
+    public void PolishMintingItsOwnChineseNumeralsDoesNotCancelTheRawWildcards()
+    {
+        const string raw = "这个项目现在有几个问题嗯首先是时间太紧我们原来定的是这个月底但是现在看起来肯定来不及"
+            + "然后就是人手也不够本来说好的两个人现在只有一个人还有就是预算这块其实已经超了一些了"
+            + "所以我的想法是要么我们把范围砍一砍要么就往后推一推大概就是这个意思你看一下";
+        const string polished = "关于这个项目，目前主要有三个问题：\n1. 时间太紧，原定月底完成，现在看肯定来不及；"
+            + "\n2. 人手不够，原计划2人，现在只有1人；\n3. 预算已超支。"
+            + "\n建议二选一：要么缩减项目范围，要么延后交付时间。请看一下。";
+        Assert.Null(TextPostProcessor.PolishDriftCheck(raw, polished));
+    }
+
+    /// **已知代价，诚实记在这里**：原文里的孤立汉字数字可以解释一个同值的阿拉伯数字，
+    /// 哪怕那个汉字还留在成品里。换来的是上面那一类不再被误杀
+    [Fact]
+    public void KnownCostABareNumeralCanExplainOneSameValuedDigit()
+    {
+        Assert.Null(TextPostProcessor.PolishDriftCheck("三个人来", "三个人来，花了3小时"));
+    }
+
+    /// 底线没松：原文一个数字都没有就兜不住；值不对照样拦
+    [Theory]
+    [InlineData("今天开会讨论了方案", "今天开会讨论了3个方案")]
+    [InlineData("本来说好的两个人", "本来说好5人")]
+    public void TheExtraPoolStillHasABottomLine(string raw, string polished)
+    {
+        Assert.NotNull(TextPostProcessor.PolishDriftCheck(raw, polished));
+    }
+
+    /// 条数说错了、或条目里凭空冒出数字，照样拦
+    [Theory]
+    [InlineData("这几个事都得办合同要发邮件要回会议室要订",
+                "主要有4个问题：\n1. 发合同\n2. 回邮件\n3. 订会议室")]
+    [InlineData("这几个事都得办预算要定延期要谈人手要补",
+                "主要有3个问题：\n1. 预算50万\n2. 延期\n3. 补人手")]
+    public void WrongListCountOrInventedItemNumberIsRejected(string raw, string polished)
+    {
+        Assert.NotNull(TextPostProcessor.PolishDriftCheck(raw, polished));
+    }
+
+    /// 列表条数那桶软数字出身在**润色侧**，只解释润色多出来的位
+    [Fact]
+    public void ListCountSoftDigitsOnlyExplainPolishedExtras()
+    {
+        Assert.Equal("3", TextPostProcessor.DigitSummary(
+            TextPostProcessor.NumericFingerprint("有3件事：\n1. 甲\n2. 乙\n3. 丙").ListCountDigits));
+        Assert.Empty(TextPostProcessor.NumericFingerprint("有3件事").ListCountDigits);
+        // 原文说了数字、润色把它丢了 —— 列表条数不能替它开脱
+        Assert.NotNull(TextPostProcessor.PolishDriftCheck("预算是一百零一万还有三件事要办",
+                                                          "有3件事：\n1. 甲\n2. 乙\n3. 丙"));
+    }
+
+    /// 列表项**里面**的真数字照样一位不许变；假列表也偷渡不进来
+    [Fact]
+    public void ListMarkersDoNotWeakenTheGuard()
+    {
+        Assert.Null(TextPostProcessor.PolishDriftCheck("第一预算是一百零一万第二时间要两周",
+                                                       "1. 预算101万\n2. 时间两周"));
+        Assert.NotNull(TextPostProcessor.PolishDriftCheck("第一预算是一百零一万第二时间要两周",
+                                                          "1. 预算102万\n2. 时间两周"));
+        Assert.NotNull(TextPostProcessor.PolishDriftCheck("预算的事还要再看看延期的事也要定下来",
+                                                          "1. 预算50万\n2. 延期"));
+    }
+
+    /// 只有连成 1,2,…,n（n ≥ 2）才算列表；别的一律当数据
+    [Theory]
+    [InlineData("版本4.1.6", 0)]
+    [InlineData("1.5元，2.5元", 0)]
+    [InlineData("1. 只有一条", 0)]
+    [InlineData("3. 这个 5. 那个", 0)]
+    [InlineData("1. 这个\n2. 那个", 2)]
+    public void OnlyAConsecutiveSequenceCountsAsAList(string text, int markers)
+    {
+        Assert.Equal(markers, TextPostProcessor.StrippedOfListMarkers(text).Markers);
+    }
+
+    /// 「一点」以前被整条当口头禅摘掉，润色写出来的「1点」于是成了没人认领的多余数字
+    [Theory]
+    [InlineData("明天下午一点开会", "明天下午1点开会")]
+    [InlineData("一点到三点都有空", "1点到3点都有空")]
+    [InlineData("三点十分结束", "3点10分结束")]
+    [InlineData("三点十分结束", "3:10结束")]
+    [InlineData("下午三点半再碰一次", "下午3点半再碰一次")]
+    [InlineData("下午三点半再碰一次", "下午3:30再碰一次")]
+    [InlineData("下午三点半再碰一次", "下午15:30再碰一次")]
+    [InlineData("晚上八点一刻出发", "晚上8:15出发")]
+    [InlineData("有一点累", "有点累")]
+    public void ClockHoursSurvive(string raw, string polished)
+    {
+        Assert.Null(TextPostProcessor.PolishDriftCheck(raw, polished));
+    }
+
+    /// 钟点改错了照样拦——软数字只解释"说法自带的那几位"
+    [Theory]
+    [InlineData("下午三点开会", "下午16:00开会")]
+    [InlineData("三点十分结束", "3点20分结束")]
+    [InlineData("一点到三点", "1点到4点")]
+    public void WrongClockTimeIsStillRejected(string raw, string polished)
+    {
+        Assert.NotNull(TextPostProcessor.PolishDriftCheck(raw, polished));
+    }
+
+    /// 「十分」的两副面孔：前面挨着点 / 数字时是 10，别处是"非常"
+    [Theory]
+    [InlineData("三点十分", "01")]
+    [InlineData("四十分钟", "04")]
+    [InlineData("十分重要", "")]
+    [InlineData("这件事十分好", "")]
+    public void TenMinutesVersusVeryMuch(string text, string digits)
+    {
+        Assert.Equal(digits, Fingerprint(text).Digits);
+    }
+
+    /// 软数字：点半 → 30、点一刻 → 15、点三刻 → 45、下午 N 点 → N+12
+    [Theory]
+    [InlineData("三点半", "03")]
+    [InlineData("八点一刻", "15")]
+    [InlineData("九点三刻", "45")]
+    [InlineData("下午三点", "15")]
+    [InlineData("上午三点", "")]
+    public void SoftDigitsComeFromTimeWords(string text, string soft)
+    {
+        Assert.Equal(soft, TextPostProcessor.DigitSummary(TextPostProcessor.SoftDigits(text)));
+    }
+
+    /// 英文数字词：模型自己就会把 "twenty five dollars" 写成 "$25"
+    [Theory]
+    [InlineData("it costs twenty five dollars", "It costs $25.")]
+    [InlineData("let's meet on March third", "Let's meet on March 3.")]
+    [InlineData("let's meet on March third", "Let's meet on March 3rd.")]
+    [InlineData("call me at nine thirty", "Call me at 9:30.")]
+    [InlineData("we shipped it in two thousand twenty six", "We shipped it in 2026.")]
+    [InlineData("we shipped it in twenty twenty six", "We shipped it in 2026.")]
+    [InlineData("there were a hundred and one issues", "There were 101 issues.")]
+    [InlineData("three people came", "3 people came.")]
+    [InlineData("one of the things we discussed", "One thing we discussed.")]
+    public void EnglishNumberWordsPass(string raw, string polished)
+    {
+        Assert.Null(TextPostProcessor.PolishDriftCheck(raw, polished));
+    }
+
+    /// 英文数值改了照样拦
+    [Theory]
+    [InlineData("it costs twenty five dollars", "It costs $35.")]
+    [InlineData("fifteen people came", "50 people came.")]
+    [InlineData("we need more seats", "we need 5 seats")]
+    public void EnglishNumbersChangedAreRejected(string raw, string polished)
+    {
+        Assert.NotNull(TextPostProcessor.PolishDriftCheck(raw, polished));
+    }
+
+    /// 英文数字的口径对照表
+    [Theory]
+    [InlineData("twenty five", "25", "")]
+    [InlineData("twenty-five", "25", "")]
+    [InlineData("Twenty Five", "25", "")]
+    [InlineData("fifteen", "15", "")]
+    [InlineData("a hundred and one", "011", "")]
+    [InlineData("two thousand twenty six", "0226", "")]
+    [InlineData("twenty twenty six", "0226", "")]
+    [InlineData("nine thirty", "03", "9")]
+    [InlineData("three", "", "3")]
+    [InlineData("March third", "", "3")]
+    [InlineData("none someone often tension anyone", "", "")]
+    [InlineData("hundreds of people", "", "")]
+    public void EnglishNumberFingerprints(string text, string digits, string wildcards)
+    {
+        var fp = Fingerprint(text);
+        Assert.Equal(digits, fp.Digits);
+        Assert.Equal(wildcards, fp.Wildcards);
+    }
+
+    /// 失败原因后面那几面旗子：只有个数与真假，一个字都不来自用户
+    [Fact]
+    public void FailureFlagsAreDiagnosticButCarryNoContent()
+    {
+        var reason = TextPostProcessor.PolishDriftCheck("预算的事再看看", "1. 预算50万\n2. 延期");
+        Assert.NotNull(reason);
+        Assert.Contains("extra=", reason);
+        Assert.Contains("listMarkers=", reason);
+        Assert.Contains("rawTimeWords=", reason);
+        Assert.Contains("rawEnglishNumbers=", reason);
+        Assert.DoesNotContain("50", reason);
+        Assert.DoesNotContain("预算", reason);
+    }
+
     // 阿拉伯语安全：与 Mac 端 TextPostProcessorTests.swift 的同名用例一一对应
 
     /// 阿语句读 ، ؟ ؛ 一律保持原样：换成 ASCII 就是改写用户说的话

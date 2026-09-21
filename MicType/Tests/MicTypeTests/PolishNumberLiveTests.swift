@@ -1,59 +1,118 @@
 import XCTest
 @testable import MicType
 
-// MARK: - 真·联网验收：数字写法（4.1.6）
+// MARK: - 真·联网验收：数字写法（4.1.6 起，4.2.1 扩到列表 / 时间 / 英文）
 //
-// 这一条回答的是单测回答不了的那个问题：**模型真的会照第 7 条把汉字数字写成阿拉伯数字吗，
+// 这一条回答的是单测回答不了的那个问题：**模型真的会照第 7 条把数字写成阿拉伯数字吗，
 // 而保真校验放不放行？** 提示词改了没人验，等于没改；归一化写对了但模型不配合，
-// 用户看到的还是「一百零一人民币」。
+// 用户看到的还是「一百零一人民币」或者一句「润色结果与原文出入过大」。
 //
 // 默认**不跑**（LLM 输出有随机性，门禁不该绑在它上面），要两个条件：
 //   • 环境变量 MICTYPE_LIVE_POLISH=1
-//   • Key：MICTYPE_QWEN_TEST_KEY 或 ~/.config/mictype/qwen_test_key（**永远不 print**）
+//   • Key（**永远不 print**）：
+//       阿里云 —— MICTYPE_QWEN_TEST_KEY 或 ~/.config/mictype/qwen_test_key
+//       OpenAI —— MICTYPE_OPENAI_TEST_KEY 或 ~/.config/mictype/openai_test_key
+//     OpenAI 那半边没有 Key 就单独跳过（用户实际在用的是 gpt-5.6-luna，有 Key 时最该跑的就是它）。
 //
 // 跑法（xcodebuild 要用 TEST_RUNNER_ 前缀把环境变量传进测试进程）：
 //   TEST_RUNNER_MICTYPE_LIVE_POLISH=1 xcodebuild test -scheme MicType \
 //     -destination 'platform=macOS,arch=arm64' -derivedDataPath .xcbuild \
 //     -only-testing:MicTypeTests/PolishNumberLiveTests
 //
-// 代价：7 次 qwen3.8-flash 的短请求，合计不到一分钱。
+// 代价：每个服务商 10 次短请求，合计几分钱。
 final class PolishNumberLiveTests: XCTestCase {
 
     /// 阿里云国际站的兼容模式接口——润色走的就是这条路
-    private static let endpoint = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
-    private static let model = "qwen3.8-flash"
+    private static let qwenEndpoint = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
+    private static let qwenModel = "qwen3.8-flash"
+    /// OpenAI 官方端点 + 用户实际在用的型号（润色走 Responses）
+    private static let openAIEndpoint = "https://api.openai.com/v1/responses"
+    private static let openAIModel = "gpt-5.6-luna"
 
-    /// 拿到那把 Key。**永远不 print、不写日志、不落盘**
-    private var liveKey: String? {
-        let env = (ProcessInfo.processInfo.environment["MICTYPE_QWEN_TEST_KEY"] ?? "")
+    /// 十句验收语料：左边是本机识别模型真会吐出来的样子，右边是成品里必须出现的东西
+    /// （nil = 这一句本来就不该出现新数字，只验保真校验放行）
+    private static let cases: [(raw: String, expect: String?)] = [
+        ("一共是一百零一人民币然后运费另外算十二块五", "101"),
+        ("我是二零一一年毕业的然后二零一九年三月十五号来的", "2011"),
+        ("下午三点半开会大概两三个人参加十分重要你们千万别迟到", "3点半"),
+        ("增长了百分之二十左右大概有一万二千个用户其中三分之一是付费的", "20%"),
+        ("电话是幺三八零零幺三八零零零房间号是二零一八", "13800138000"),
+        ("第一次来万一迟到了你先等我一下我们一起走", nil),
+        ("版本四点一点六修了三个问题跑了七百三十二个测试", "732"),
+        // 4.2.1 新增三条：编号列表 / 时间 / 英文数字——正是用户日志里回退的那三类
+        ("这个项目现在有几个问题嗯首先是时间太紧我们原来定的是这个月底但是现在看起来肯定来不及"
+         + "然后就是人手也不够本来说好的两个人现在只有一个人还有就是预算这块其实已经超了一些了"
+         + "所以我的想法是要么我们把范围砍一砍要么就往后推一推大概就是这个意思你看一下", nil),
+        ("明天下午一点开会三点十分结束后天下午三点半再碰一次", "1点"),
+        ("it costs twenty five dollars we'll meet on March third and three people are coming", "25"),
+    ]
+
+    // MARK: - Key（永远不 print、不写日志、不落盘）
+
+    private func liveKey(env: String, file: String) -> String? {
+        let fromEnv = (ProcessInfo.processInfo.environment[env] ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        if !env.isEmpty { return env }
-        let path = NSHomeDirectory() + "/.config/mictype/qwen_test_key"
+        if !fromEnv.isEmpty { return fromEnv }
+        let path = NSHomeDirectory() + "/.config/mictype/" + file
         guard let contents = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
         let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    /// 发一次真的润色请求，返回模型吐出来的成品文本
-    private func polish(_ raw: String, key: String) throws -> String {
-        var request = URLRequest(url: try XCTUnwrap(URL(string: Self.endpoint)))
-        request.httpMethod = "POST"
-        request.timeoutInterval = 60
-        request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // 系统提示词取**线上那一份**（PolishService.systemPrompt），原文照样用定界块包住，
-        // 与 PolishService.polish 逐字一致；qwen3.5–3.8 默认开思考，润色必须关掉
+    private func requireLiveRun() throws {
+        guard ProcessInfo.processInfo.environment["MICTYPE_LIVE_POLISH"] == "1" else {
+            throw XCTSkip("需要 MICTYPE_LIVE_POLISH=1 才跑（会真的调用模型、真的花钱）")
+        }
+    }
+
+    // MARK: - 两条真实链路
+
+    /// 阿里云：chat/completions。系统提示词取**线上那一份**，原文照样用定界块包住
+    private func polishWithQwen(_ raw: String, key: String) throws -> String {
         let body: [String: Any] = [
-            "model": Self.model,
+            "model": Self.qwenModel,
+            // qwen3.5–3.8 默认开思考，润色必须关掉（4.1.2 踩过）
             "enable_thinking": false,
             "messages": [
                 ["role": "system", "content": PolishService.systemPrompt(for: .smart)],
                 ["role": "user", "content": "<<<原文>>>\n" + raw + "\n<<<结束>>>"],
             ],
         ]
+        let json = try post(Self.qwenEndpoint, body: body, key: key)
+        guard let choices = json["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw MTError("unparseable qwen response")
+        }
+        return content.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// OpenAI：Responses。请求体直接用 App 自己那份 `LLMClient.responsesBody`——
+    /// 复制一份到测试里的话，线上改了参数这条验收照样绿，那就白验了
+    private func polishWithOpenAI(_ raw: String, key: String) throws -> String {
+        let body = LLMClient.responsesBody(
+            model: Self.openAIModel,
+            system: PolishService.systemPrompt(for: .smart),
+            user: "<<<原文>>>\n" + raw + "\n<<<结束>>>",
+            purpose: .polish,
+            temperature: nil,
+            maxOutputTokens: LLMCatalog.maxOutputTokens(inputCharacters: raw.count,
+                                                        minimum: LLMCatalog.polishMinOutputTokens))
+        let json = try post(Self.openAIEndpoint, body: body, key: key)
+        let payload = LLMClient.parseResponsesPayload(json)
+        guard let text = payload.text else { throw MTError("unparseable openai response") }
+        return text
+    }
+
+    private func post(_ endpoint: String, body: [String: Any], key: String) throws -> [String: Any] {
+        var request = URLRequest(url: try XCTUnwrap(URL(string: endpoint)))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 90
+        request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        var output = ""
+        var parsed: [String: Any] = [:]
         var failure: String?
         let waiter = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: request) { data, response, error in
@@ -61,50 +120,46 @@ final class PolishNumberLiveTests: XCTestCase {
             if let error = error { failure = error.localizedDescription; return }
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard status == 200, let data = data else { failure = "HTTP \(status)"; return }
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let choices = json["choices"] as? [[String: Any]],
-                  let message = choices.first?["message"] as? [String: Any],
-                  let content = message["content"] as? String else {
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 failure = "unparseable response"
                 return
             }
-            output = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            parsed = json
         }.resume()
-        _ = waiter.wait(timeout: .now() + 70)
+        _ = waiter.wait(timeout: .now() + 100)
         if let failure = failure { throw MTError(failure) }
-        return output
+        return parsed
     }
 
-    /// 七句实测语料：左边是本机识别模型真会吐出来的样子（汉字数字），
-    /// 右边是这一版必须在成品里看到的阿拉伯数字（nil = 这一句本来就不该出现数字）
-    func testPolishWritesArabicNumeralsAndTheGuardLetsThemThrough() throws {
-        guard ProcessInfo.processInfo.environment["MICTYPE_LIVE_POLISH"] == "1" else {
-            throw XCTSkip("需要 MICTYPE_LIVE_POLISH=1 才跑（会真的调用模型、真的花钱）")
-        }
-        guard let key = liveKey else {
-            throw XCTSkip("需要 MICTYPE_QWEN_TEST_KEY 或 ~/.config/mictype/qwen_test_key")
-        }
+    // MARK: - 验收
 
-        let cases: [(raw: String, expect: String?)] = [
-            ("一共是一百零一人民币然后运费另外算十二块五", "101"),
-            ("我是二零一一年毕业的然后二零一九年三月十五号来的", "2011"),
-            ("下午三点半开会大概两三个人参加十分重要你们千万别迟到", "3点半"),
-            ("增长了百分之二十左右大概有一万二千个用户其中三分之一是付费的", "20%"),
-            ("电话是幺三八零零幺三八零零零房间号是二零一八", "13800138000"),
-            ("第一次来万一迟到了你先等我一下我们一起走", nil),
-            ("版本四点一点六修了三个问题跑了七百三十二个测试", "732"),
-        ]
-
-        for (raw, expect) in cases {
-            let polished = try polish(raw, key: key)
-            print("live polish:\n  raw      = \(raw)\n  polished = \(polished)")
+    private func check(_ label: String, polish: (String) throws -> String) rethrows {
+        for (raw, expect) in Self.cases {
+            let polished = try polish(raw)
+            print("live polish [\(label)]:\n  raw      = \(raw)\n  polished = \(polished)")
             if let expect = expect {
-                XCTAssertTrue(polished.contains(expect),
-                              "成品里应该出现「\(expect)」：\(polished)")
+                XCTAssertTrue(polished.contains(expect), "成品里应该出现「\(expect)」：\(polished)")
             }
-            // 这才是重点：模型照做之后，保真校验必须放行——4.1.5 会把每一句都判成 digits changed
+            // 这才是重点：模型照做之后，保真校验必须放行
             XCTAssertNil(TextPostProcessor.polishDriftCheck(raw: raw, polished: polished),
                          "保真校验不该拦这一句：\(polished)")
         }
+    }
+
+    func testQwenWritesArabicNumeralsAndTheGuardLetsThemThrough() throws {
+        try requireLiveRun()
+        guard let key = liveKey(env: "MICTYPE_QWEN_TEST_KEY", file: "qwen_test_key") else {
+            throw XCTSkip("需要 MICTYPE_QWEN_TEST_KEY 或 ~/.config/mictype/qwen_test_key")
+        }
+        try check("qwen") { try polishWithQwen($0, key: key) }
+    }
+
+    /// 用户实际在用的那一档。没有 Key 就干净地跳过——这个文件现在还不存在
+    func testOpenAIWritesArabicNumeralsAndTheGuardLetsThemThrough() throws {
+        try requireLiveRun()
+        guard let key = liveKey(env: "MICTYPE_OPENAI_TEST_KEY", file: "openai_test_key") else {
+            throw XCTSkip("需要 MICTYPE_OPENAI_TEST_KEY 或 ~/.config/mictype/openai_test_key")
+        }
+        try check("openai") { try polishWithOpenAI($0, key: key) }
     }
 }

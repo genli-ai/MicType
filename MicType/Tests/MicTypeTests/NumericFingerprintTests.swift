@@ -267,6 +267,259 @@ final class NumericFingerprintTests: XCTestCase {
             raw: "明天上午开会，不对，是下午开会", polished: "明天下午开会。"))
     }
 
+    // MARK: - 编号列表的序号（4.2.1）
+
+    /// 提示词第 8 条**要求**润色把多个要点整理成编号列表，于是成品里凭空多出「1. 2. 3.」——
+    /// 原文里一个数字都没有。4.1.6 的用户日志里 `rawCount=0 polishedCount=5 distinct=0/4`
+    /// 就是这么来的（四个要点 + 一个别的数），长口述最需要润色，却每次都被拦。
+    func testNumberedListMarkersArePass() {
+        let cases: [(String, String)] = [
+            // 提示词自带的那个示范
+            ("嗯那个方案我想了一下其实现在最大的问题是时间太紧然后人也不够嗯预算其实有点超了所以要么砍掉一部分功能要么往后推两周大概这个意思",
+             "关于这个方案，目前主要有三个问题：\n1. 时间太紧；\n2. 人手不够；\n3. 预算略有超支。\n建议二选一：砍掉部分功能，或往后推两周。"),
+            // 首先 / 然后 / 最后 → 编号
+            ("首先要把合同发出去然后给客户回个电话最后把报销单交了",
+             "1. 把合同发出去\n2. 给客户回电话\n3. 提交报销单"),
+            // 行内列表（分号分隔）
+            ("主要有三点第一个是时间第二个是人手第三个是预算",
+             "主要有三点：1. 时间；2. 人手；3. 预算。"),
+            // 括号形式
+            ("两件事一个是合同一个是发票", "两件事：(1) 合同 (2) 发票"),
+        ]
+        for (raw, polished) in cases {
+            XCTAssertNil(TextPostProcessor.polishDriftCheck(raw: raw, polished: polished),
+                         "编号列表不该被判成凭空多出数字：\(polished)")
+        }
+    }
+
+    /// 列表项**里面**的真数字照样一位不许变
+    func testNumbersInsideListItemsAreStillChecked() {
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(
+            raw: "第一预算是一百零一万第二时间要两周",
+            polished: "1. 预算101万\n2. 时间两周"))
+        // 数值改了照样拦
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(
+            raw: "第一预算是一百零一万第二时间要两周",
+            polished: "1. 预算102万\n2. 时间两周"))
+    }
+
+    /// 引出句里的**条数**同样是润色数出来的，不是说话人说的。
+    /// 4.2.1 的联网验收里真碰到了：说话人说「有几个问题」，模型写「目前主要有3个问题：」
+    /// 外加 1. 2. 3. 三条——序号摘掉之后，那个 3 成了没人认领的多余数字
+    /// （日志 `digits changed rawCount=0 polishedCount=3 … listMarkers=3`）。
+    func testListCountInTheLeadInSentenceIsCovered() {
+        let raw = "这个项目现在有几个问题嗯首先是时间太紧我们原来定的是这个月底但是现在看起来肯定来不及"
+            + "然后就是人手也不够本来说好的两个人现在只有一个人还有就是预算这块其实已经超了一些了"
+            + "所以我的想法是要么我们把范围砍一砍要么就往后推一推大概就是这个意思你看一下"
+        let polished = "关于这个项目，目前主要有3个问题：\n1. 时间太紧，原定本月底完成；"
+            + "\n2. 人手不足：原计划2人，现仅1人；\n3. 预算超支。\n建议缩减范围或推迟交付。"
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(raw: raw, polished: polished))
+    }
+
+    /// **联网实测抓到的那一句**（三遍里挂一遍）：润色一边把口语的「两个人 / 一个人」转成
+    /// 「2人 / 1人」，一边自己新造了「三个问题」「二选一」两个汉字数字。
+    /// 4.2.1 之前 extra 池要减去润色侧的 wildcard，新造的那个「二」正好抵掉了本该解释
+    /// 「2人」的那个 wildcard 2 —— 一段忠实的润色就这么被丢回原文。
+    func testPolishMintingItsOwnChineseNumeralsDoesNotCancelTheRawWildcards() {
+        let raw = "这个项目现在有几个问题嗯首先是时间太紧我们原来定的是这个月底但是现在看起来肯定来不及"
+            + "然后就是人手也不够本来说好的两个人现在只有一个人还有就是预算这块其实已经超了一些了"
+            + "所以我的想法是要么我们把范围砍一砍要么就往后推一推大概就是这个意思你看一下"
+        let polished = "关于这个项目，目前主要有三个问题：\n1. 时间太紧，原定月底完成，现在看肯定来不及；"
+            + "\n2. 人手不够，原计划2人，现在只有1人；\n3. 预算已超支。"
+            + "\n建议二选一：要么缩减项目范围，要么延后交付时间。请看一下。"
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(raw: raw, polished: polished))
+    }
+
+    /// **已知代价，诚实记在这里**（4.2.1 拿掉 extra 池那道减法换来的）：
+    /// 原文里有一个孤立的汉字数字时，它可以解释一个同值的阿拉伯数字，
+    /// 哪怕那个汉字还原样留在成品里。换来的是上面那一类不再被误杀。
+    /// 守卫真正的底线没松：见下面两条——原文没有数字就一个都兜不住，值不对照样拦。
+    func testKnownCostABareNumeralCanExplainOneSameValuedDigit() {
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(raw: "三个人来", polished: "三个人来，花了3小时"))
+    }
+
+    /// 原文一个数字都没有 → 池子是空的，凭空造一个数照样拦
+    func testInventedDigitWithNoNumeralInTheRawIsStillRejected() {
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "今天开会讨论了方案",
+                                                           polished: "今天开会讨论了3个方案"))
+    }
+
+    /// 值不对照样拦：原文说两个人，成品写 5 人
+    func testAWildcardOnlyExplainsItsOwnValue() {
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "本来说好的两个人",
+                                                           polished: "本来说好5人"))
+    }
+
+    /// 条数**说错了**就不放过：3 条列表配「4个问题」，那个 4 没人认领
+    func testAWrongListCountIsStillRejected() {
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(
+            raw: "这几个事都得办合同要发邮件要回会议室要订",
+            polished: "主要有4个问题：\n1. 发合同\n2. 回邮件\n3. 订会议室"))
+    }
+
+    /// 条数对了也只放过条数那一位：条目里凭空冒出来的数照样拦
+    func testTheListCountDoesNotExcuseInventedNumbersInItems() {
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(
+            raw: "这几个事都得办预算要定延期要谈人手要补",
+            polished: "主要有3个问题：\n1. 预算50万\n2. 延期\n3. 补人手"))
+    }
+
+    /// 两位数的条数（共12项）同样算数
+    func testTwoDigitListCountIsCovered() {
+        let items = (1...12).map { "\($0). 要办的一件事" }.joined(separator: "\n")
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(
+            raw: "今天要办的事挺多的一件一件说吧",
+            polished: "共12项：\n" + items))
+    }
+
+    /// 列表条数那桶软数字出身在**润色侧**，只解释润色多出来的位，
+    /// 绝不参与「原文有、润色没有」那一侧
+    func testListCountSoftDigitsOnlyExplainPolishedExtras() {
+        let fingerprint = TextPostProcessor.numericFingerprint("有3件事：\n1. 甲\n2. 乙\n3. 丙")
+        XCTAssertEqual(TextPostProcessor.digitSummary(fingerprint.listCountDigits), "3")
+        // 没摘到连号列表就没有这桶
+        XCTAssertEqual(TextPostProcessor.numericFingerprint("有3件事").listCountDigits, [:])
+        // 原文说了数字、润色把它丢了 —— 列表条数不能替它开脱
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(
+            raw: "预算是一百零一万还有三件事要办",
+            polished: "有3件事：\n1. 甲\n2. 乙\n3. 丙"))
+    }
+
+    /// **假列表偷渡不进来**：原文没有的数字，套一层「1. 2.」照样拦
+    func testAFakeListCannotSmuggleANumber() {
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(
+            raw: "预算的事还要再看看延期的事也要定下来",
+            polished: "1. 预算50万\n2. 延期"))
+    }
+
+    /// 只有连成 1,2,…,n（n ≥ 2）才算列表；别的一律当数据，一个字都不动
+    func testOnlyAConsecutiveSequenceCountsAsAList() {
+        XCTAssertEqual(TextPostProcessor.strippedOfListMarkers("版本4.1.6").markers, 0)
+        XCTAssertEqual(TextPostProcessor.strippedOfListMarkers("1.5元，2.5元").markers, 0)
+        XCTAssertEqual(TextPostProcessor.strippedOfListMarkers("1. 只有一条").markers, 0)
+        XCTAssertEqual(TextPostProcessor.strippedOfListMarkers("3. 这个 5. 那个").markers, 0)
+        XCTAssertEqual(TextPostProcessor.strippedOfListMarkers("1. 这个\n2. 那个").markers, 2)
+        // 摘掉的只是序号本身，正文里的数字原样留着
+        XCTAssertEqual(TextPostProcessor.numericFingerprint("1. 预算101万\n2. 两周").digits,
+                       TextPostProcessor.numericFingerprint("预算101万 两周").digits)
+    }
+
+    // MARK: - 时间（4.2.1）
+
+    /// 「一点」以前被整条当成口头禅摘掉，于是润色写出来的「1点」成了没人认领的多余数字
+    func testClockHoursSurvive() {
+        let cases: [(String, String)] = [
+            ("明天下午一点开会", "明天下午1点开会"),
+            ("一点到三点都有空", "1点到3点都有空"),
+            ("三点十分结束", "3点10分结束"),
+            ("三点十分结束", "3:10结束"),
+            ("下午三点半再碰一次", "下午3点半再碰一次"),
+            ("下午三点半再碰一次", "下午3:30再碰一次"),
+            ("下午三点半再碰一次", "下午15:30再碰一次"),
+            ("晚上八点一刻出发", "晚上8:15出发"),
+            ("有一点累", "有点累"),                      // 「一点」= 一些 的那一支照样放行
+        ]
+        for (raw, polished) in cases {
+            XCTAssertNil(TextPostProcessor.polishDriftCheck(raw: raw, polished: polished),
+                         "时间说法不该被判跑飞：「\(raw)」→「\(polished)」")
+        }
+    }
+
+    /// 钟点改错了照样拦——软数字只解释"说法自带的那几位"，不解释别的
+    func testWrongClockTimeIsStillRejected() {
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "下午三点开会", polished: "下午16:00开会"))
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "三点十分结束", polished: "3点20分结束"))
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "一点到三点", polished: "1点到4点"))
+    }
+
+    /// 「十分」的两副面孔：前面挨着点 / 数字时是 10，别处是"非常"
+    func testTenMinutesVersusVeryMuch() {
+        assertFingerprint("三点十分", digits: "01", wildcards: "3")
+        assertFingerprint("四十分钟", digits: "04")
+        assertFingerprint("十分重要", digits: "")
+        assertFingerprint("这件事十分好", digits: "")
+    }
+
+    /// 软数字只站在"解释多出来的位"这一侧，绝不要求对面出现
+    func testSoftDigitsOnlyExplainExtras() {
+        XCTAssertEqual(TextPostProcessor.digitSummary(TextPostProcessor.softDigits(in: "三点半")), "03")
+        XCTAssertEqual(TextPostProcessor.digitSummary(TextPostProcessor.softDigits(in: "八点一刻")), "15")
+        XCTAssertEqual(TextPostProcessor.digitSummary(TextPostProcessor.softDigits(in: "九点三刻")), "45")
+        XCTAssertEqual(TextPostProcessor.digitSummary(TextPostProcessor.softDigits(in: "下午三点")), "15")
+        XCTAssertEqual(TextPostProcessor.digitSummary(TextPostProcessor.softDigits(in: "上午三点")), "")
+        // 「三点半」→「3点半」：软数字没被用上也不影响
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(raw: "三点半开会", polished: "3点半开会"))
+    }
+
+    // MARK: - 英文数字词（4.2.1）
+
+    /// gpt-5.6-luna 不管提示词怎么写都会自己把 "twenty five dollars" 写成 "$25"——
+    /// 这道校验以前只认汉字数字，于是每一句带英文数字词的听写都回退原文
+    func testEnglishNumberWordsPass() {
+        let cases: [(String, String)] = [
+            ("it costs twenty five dollars", "It costs $25."),
+            ("let's meet on March third", "Let's meet on March 3."),
+            ("let's meet on March third", "Let's meet on March 3rd."),
+            ("call me at nine thirty", "Call me at 9:30."),
+            ("we shipped it in two thousand twenty six", "We shipped it in 2026."),
+            ("we shipped it in twenty twenty six", "We shipped it in 2026."),
+            ("there were a hundred and one issues", "There were 101 issues."),
+            ("three people came", "3 people came."),
+            ("one of the things we discussed", "One of the things we discussed."),
+            ("one of the things we discussed", "One thing we discussed."),
+        ]
+        for (raw, polished) in cases {
+            XCTAssertNil(TextPostProcessor.polishDriftCheck(raw: raw, polished: polished),
+                         "英文数字不该被判跑飞：「\(raw)」→「\(polished)」")
+        }
+    }
+
+    /// 英文数值改了照样拦
+    func testEnglishNumbersChangedAreRejected() {
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "it costs twenty five dollars",
+                                                           polished: "It costs $35."))
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "fifteen people came",
+                                                           polished: "50 people came."))
+    }
+
+    /// 英文数字的口径对照表
+    func testEnglishNumberFingerprints() {
+        assertFingerprint("twenty five", digits: "25")
+        assertFingerprint("twenty-five", digits: "25")
+        assertFingerprint("Twenty Five", digits: "25")          // 大小写不敏感
+        assertFingerprint("fifteen", digits: "15")
+        assertFingerprint("a hundred and one", digits: "011")
+        assertFingerprint("two thousand twenty six", digits: "0226")
+        assertFingerprint("twenty twenty six", digits: "0226")   // 20 + 26，位数和 2026 一样
+        assertFingerprint("nine thirty", digits: "03", wildcards: "9")
+        assertFingerprint("three", digits: "", wildcards: "3")
+        assertFingerprint("March third", digits: "", wildcards: "3")
+        // **绝不能在别的词里面认出数字**
+        assertFingerprint("none someone often tension anyone", digits: "", wildcards: "")
+        assertFingerprint("hundreds of people", digits: "", wildcards: "")
+    }
+
+    // MARK: - 日志旗子（4.2.1）
+
+    /// 失败原因后面那几面旗子：只有个数与真假，一个字都不来自用户
+    func testFailureFlagsAreDiagnosticButCarryNoContent() {
+        let reason = TextPostProcessor.polishDriftCheck(raw: "预算的事再看看", polished: "1. 预算50万\n2. 延期")
+        XCTAssertNotNil(reason)
+        XCTAssertTrue(reason!.contains("extra="))
+        XCTAssertTrue(reason!.contains("missing="))
+        XCTAssertTrue(reason!.contains("listMarkers="))
+        XCTAssertTrue(reason!.contains("rawTimeWords="))
+        XCTAssertTrue(reason!.contains("rawEnglishNumbers="))
+        XCTAssertFalse(reason!.contains("50"))          // 数字本身永远不许出现
+        XCTAssertFalse(reason!.contains("预算"))
+        // 时间 / 英文那两面旗子确实会亮
+        let timeReason = TextPostProcessor.polishDriftCheck(raw: "下午三点开会", polished: "下午16:00开会")
+        XCTAssertTrue(timeReason?.contains("rawTimeWords=true") ?? false)
+        let englishReason = TextPostProcessor.polishDriftCheck(raw: "it costs twenty five dollars",
+                                                              polished: "It costs $35.")
+        XCTAssertTrue(englishReason?.contains("rawEnglishNumbers=true") ?? false)
+    }
+
     // MARK: - 老规矩一条都不许破
 
     /// 阿语：数字是词（خمسة），ITN 只能由润色做，所以纯新增数字照旧放行；

@@ -69,6 +69,13 @@ final class CJKUIStringGuardTests: XCTestCase {
         "NumericFingerprint.swift:arabicUnitRegex",
         "NumericFingerprint.swift:arabicAbbreviatedRegex",
         "NumericFingerprint.swift:groupSeparatorRegex",
+        // 4.2.1：编号列表的序号、时间说法（点半 / 一刻 / 下午）——同样是拿去和文本比对的规则
+        "NumericFingerprint.swift:listMarkerRegex",
+        "NumericFingerprint.swift:clockFractionRegex",
+        "NumericFingerprint.swift:clockHourRegex",
+        "NumericFingerprint.swift:afternoonMarkers",
+        "NumericFingerprint.swift:softDigits",
+        "NumericFingerprint.swift:timeWordRegex",
         "NumericFingerprint.swift:unitValues",
         "NumericFingerprint.swift:chineseDigitValues",
         "NumericFingerprint.swift:chineseUnitValues",

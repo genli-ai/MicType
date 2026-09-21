@@ -413,10 +413,18 @@ final class TextPostProcessorTests: XCTestCase {
         XCTAssertFalse(TextPostProcessor.digitsOnlyAdded(raw: ["6": 1], polished: ["7": 1]))
     }
 
-    /// 非阿语文本不吃这条容差：英文/中文的数字是模型直接听出来的，凭空多一个就是跑飞
+    /// 非阿语文本不吃那条「只新增数字就放行」的容差：**原文里没有的数字，凭空冒出来就是跑飞**。
+    ///
+    /// 4.2.1 起 "five seats" → "5 seats" 不再算凭空冒出来：英文数字词和汉字数字一样
+    /// 会被指纹认出来（five 是没有上下文的单个小数 → wildcard，正好解释那个 5），
+    /// 那是**同一个数换了写法**，不是新数。这条测试因此改用真的凭空多出来的例子——
+    /// 它要守的东西一个字没变：阿语那条容差绝不外溢到别的文字。
     func testDriftCheckKeepsTheStrictDigitRuleForOtherScripts() {
-        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "we need five seats",
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "we need more seats",
                                                            polished: "we need 5 seats"))
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "we need five seats",
+                                                           polished: "we need 15 seats"))
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "今天开会", polished: "今天开了5个会"))
         XCTAssertFalse(TextPostProcessor.isMostlyArabic("we need five seats"))
         XCTAssertTrue(TextPostProcessor.isMostlyArabic("لدينا خمسة اجتماعات"))
     }

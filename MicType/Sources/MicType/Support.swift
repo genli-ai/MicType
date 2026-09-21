@@ -381,17 +381,23 @@ enum TextPostProcessor {
             // 把今天日志的尾巴整段放进剪贴板，用户会把它贴进 issue。原样带上数字等于把他刚说的
             // 验证码 / 电话 / 金额漏出去（四位数按多重集也就 24 种排列）。
             if !digitsPreserved(rawFingerprint, polFingerprint) {
+                // 后面那几面旗子（多了几位、少了几位、有没有列表序号 / 时间 / 英文数字）
+                // 同样一个字都不带用户内容——4.1.6 那两行 `rawCount=0 polishedCount=3`
+                // 说明"凭空多出三位"，却看不出那三位是列表序号还是时间，只能靠猜
                 return "digits changed rawCount=\(rawDigits.values.reduce(0, +))"
                     + " polishedCount=\(polDigits.values.reduce(0, +))"
                     + " distinct=\(rawDigits.count)/\(polDigits.count)"
+                    + numericFailureFlags(rawFingerprint, polFingerprint)
             }
             // 第二层：原文里每一个多位数都得原封不动地出现在润色里。
             // 零的位置错了 / 数位调了个儿（一万零二百 → 12000、一百零一 → 110）在第一层
             // 是看不出来的——两边的数字字符多重集一模一样。同样只报个数。
             let missing = missingNumberTokens(rawFingerprint, polFingerprint)
             if !missing.isEmpty {
+                // 这一行自己就带 missing=，旗子里那一对计数不再重复挂（免得日志里一个 key 出现两次）
                 return "number rewritten tokens=\(rawFingerprint.tokens.count)"
                     + " missing=\(missing.count)"
+                    + numericFailureFlags(rawFingerprint, polFingerprint, includeCounts: false)
             }
         }
         // 2) 否定词计数：允许少量增减（删口头重复、句式改写会动一两个），差太多说明语义被翻转。

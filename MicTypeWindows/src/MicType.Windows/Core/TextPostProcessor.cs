@@ -281,17 +281,22 @@ public static partial class TextPostProcessor
         // 也就 24 种排列，等于没脱敏。Mac 端（Support.swift polishDriftCheck）同源。
         if (!DigitsPreserved(rawFingerprint, polFingerprint))
         {
+            // 后面那几面旗子（多了几位、少了几位、有没有列表序号 / 时间 / 英文数字）
+            // 同样一个字都不带用户内容——光看 rawCount=0 polishedCount=3 猜不出是哪一类
             return $"digits changed rawCount={rawDigits.Values.Sum()}"
                  + $" polishedCount={polDigits.Values.Sum()}"
-                 + $" distinct={rawDigits.Count}/{polDigits.Count}";
+                 + $" distinct={rawDigits.Count}/{polDigits.Count}"
+                 + NumericFailureFlags(rawFingerprint, polFingerprint);
         }
         // 第二层：原文里每一个多位数都得原封不动地出现在润色里。零的位置错了 / 数位调了个儿
         // （一万零二百 → 12000、一百零一 → 110）在第一层看不出来——两边多重集一模一样。同样只报个数。
         var missingTokens = MissingNumberTokens(rawFingerprint, polFingerprint);
         if (missingTokens.Count > 0)
         {
+            // 这一行自己就带 missing=，旗子里那一对计数不再重复挂
             return $"number rewritten tokens={rawFingerprint.Tokens.Count}"
-                 + $" missing={missingTokens.Count}";
+                 + $" missing={missingTokens.Count}"
+                 + NumericFailureFlags(rawFingerprint, polFingerprint, includeCounts: false);
         }
 
         // 2) 否定词计数：允许少量增减（删口头重复、句式改写会动一两个），差太多说明语义被翻转。
@@ -363,16 +368,26 @@ public static partial class TextPostProcessor
     /// 第二层判据就靠这两样：汉字转阿拉伯数字最典型的错是**零的位置错了 / 数位调了个儿**
     /// （一万零二百 = 10200 写成 12000、一百零一 = 101 写成 110），这几对的数字字符多重集
     /// 一模一样，只有"这个数原封不动出现过吗"看得出来。
-    public static (Dictionary<char, int> Digits, Dictionary<char, int> Wildcards,
-                   List<string> Tokens, string Text) NumericFingerprint(string text)
+    /// SoftDigits = 时间说法自带的那几位（点半 → 30、下午三点 → 15）：**只解释对面多出来的位**，
+    /// 从不要求对面有。ListMarkers / HasTimeWords / HasEnglishNumbers 只给日志当旗子用。
+    public static NumberFingerprint NumericFingerprint(string text)
     {
         var work = FoldedDigits(text);            // a) 全角 / 阿拉伯-印度数字折半角
+        var delisted = StrippedOfListMarkers(work);  // a2) 编号列表的序号（1. 2. 3.）
+        work = delisted.Text;
         work = StrippedOfNumberIdioms(work);      // b) 含数字字却不表数量的固定说法
+        var soft = SoftDigits(work);              // b2) 时间的软数字（汉字数字还看得见时算）
         work = ExpandedArabicUnits(work);         // c) 1万2 → 12000、1.2万 → 12000
         var wildcards = new Dictionary<char, int>();
         work = ExpandedChineseNumerals(work, wildcards);  // d) 汉字数字 → 阿拉伯数字
+        var hasEnglish = false;
+        work = ExpandedEnglishNumerals(work, wildcards, ref hasEnglish);  // d2) 英文数字词
         work = StrippedOfGroupSeparators(work);   // f) 1,000 = 1000、138-0013-8000 = 13800138000
-        return (DigitMultiset(work), wildcards, NumberTokens(work), work);  // e)
+        return new NumberFingerprint(DigitMultiset(work), wildcards, NumberTokens(work), work,
+                                     soft, delisted.Markers,
+                                     delisted.Markers >= 2 ? DigitsOf(delisted.Markers)
+                                                           : new Dictionary<char, int>(),
+                                     ContainsTimeWords(text), hasEnglish);
     }
 
     /// 归一化之后连续 ≥ 2 位的数字串，去重。**只收 ≥ 2 位**：单个数字由多重集 + wildcard
@@ -403,26 +418,76 @@ public static partial class TextPostProcessor
         return DigitsPreserved(r, p) && MissingNumberTokens(r, p).Count == 0;
     }
 
-    /// 第一层：数字字符的多重集 + wildcard 兜底（对称地走两遍）
-    private static bool DigitsPreserved(
-        (Dictionary<char, int> Digits, Dictionary<char, int> Wildcards, List<string> Tokens, string Text) r,
-        (Dictionary<char, int> Digits, Dictionary<char, int> Wildcards, List<string> Tokens, string Text) p)
+    /// 第一层：数字字符的多重集 + wildcard 兜底（对称地走两遍）。
+    /// 软数字只站在 extra 这一侧：原文说「三点半」，润色写 3:30 / 15:30 都放行；
+    /// 但反过来绝不要求润色里非得出现 30。
+    ///
+    /// 两桶软数字各有各的**出身侧**，混不得：时间那桶来自**原文**，列表条数那桶来自**润色**
+    /// （列表是润色摆的，条数也是它数出来的），所以都只解释润色多出来的位，
+    /// 绝不参与 missing 那一侧。
+    ///
+    /// **extra 那一侧的池子不再减去润色的 wildcard（4.2.1 实测后改）**：
+    /// 减法的前提是"润色里还留着的那个汉字数字就是原文里的同一个"，而它不是——
+    /// 润色一边**转换**口语数字（两个人 → 2人），一边按提示词第 8 条**新造**结构性的
+    /// 汉字数字（二选一 / 三个问题），多重集分不清哪个是哪个，新造的「二」抵掉了本该解释
+    /// 「2人」的 wildcard，一段忠实的润色就被丢掉（长口述约三次挂一次）。
+    /// 代价是单向的小口子：原文里的孤立汉字数字可以解释一个同值的阿拉伯数字，哪怕那个汉字
+    /// 还留在成品里。多位数仍由多重集 + 连续 token 钉着，原文没数字时池子是空的。
+    /// 与 Mac 端同源。
+    private static bool DigitsPreserved(NumberFingerprint r, NumberFingerprint p)
     {
         var missing = Subtracting(r.Digits, p.Digits);
         var extra = Subtracting(p.Digits, r.Digits);
+        var extraPool = Merging(Merging(r.Wildcards, r.SoftDigits), p.ListCountDigits);
         return Covered(missing, Subtracting(p.Wildcards, r.Wildcards))
-            && Covered(extra, Subtracting(r.Wildcards, p.Wildcards));
+            && Covered(extra, extraPool);
+    }
+
+    /// 一个数拆成数字字符的多重集（12 → {1:1, 2:1}）
+    private static Dictionary<char, int> DigitsOf(int number)
+    {
+        var outCounts = new Dictionary<char, int>();
+        foreach (var character in number.ToString(CultureInfo.InvariantCulture))
+        {
+            outCounts[character] = (outCounts.TryGetValue(character, out var n) ? n : 0) + 1;
+        }
+        return outCounts;
     }
 
     /// 第二层：**原文里每一个多位数，都得原封不动地在润色里出现过**。
     /// 用"包含"而不是"相等"：润色会在数字周围加单位、改标点、接小数
     /// （「十二块五」→「12.5元」里 token 12 是 12.5 的一截），而「1.2万」在比之前已摊成 12000。
     /// 包含只可能过于宽松，绝不会冤枉一次忠实的改写。
-    private static List<string> MissingNumberTokens(
-        (Dictionary<char, int> Digits, Dictionary<char, int> Wildcards, List<string> Tokens, string Text) r,
-        (Dictionary<char, int> Digits, Dictionary<char, int> Wildcards, List<string> Tokens, string Text) p)
+    private static List<string> MissingNumberTokens(NumberFingerprint r, NumberFingerprint p)
     {
         return r.Tokens.Where(token => !p.Text.Contains(token, StringComparison.Ordinal)).ToList();
+    }
+
+    /// 失败原因后面挂的几面小旗子：**只有个数与真假，没有一个字来自用户**。
+    /// includeCounts：「number rewritten …」那行本来就带 missing=，再来一个会把 key 搞重。
+    public static string NumericFailureFlags(NumberFingerprint r, NumberFingerprint p,
+                                             bool includeCounts = true)
+    {
+        var result = "";
+        if (includeCounts)
+        {
+            var missing = Subtracting(r.Digits, p.Digits).Values.Sum();
+            var extra = Subtracting(p.Digits, r.Digits).Values.Sum();
+            result += $" extra={extra} missing={missing}";
+        }
+        return result + $" listMarkers={r.ListMarkers + p.ListMarkers}"
+             + $" rawTimeWords={r.HasTimeWords} rawEnglishNumbers={r.HasEnglishNumbers}";
+    }
+
+    /// 两个多重集相加（软数字并进 wildcard 池时用）
+    private static Dictionary<char, int> Merging(Dictionary<char, int> a, Dictionary<char, int> b)
+    {
+        var outCounts = new Dictionary<char, int>(a);
+        foreach (var (key, count) in b)
+        {
+            outCounts[key] = (outCounts.TryGetValue(key, out var have) ? have : 0) + count;
+        }
+        return outCounts;
     }
 
     /// 夹在**两个数字之间**的千分位 / 连字符 / 各种空格：1,000 = 1000、
@@ -430,6 +495,91 @@ public static partial class TextPostProcessor
     private static string StrippedOfGroupSeparators(string text)
     {
         return GroupSeparatorRegex().Replace(text, "");
+    }
+
+    /// 摘掉编号列表的序号，返回摘干净的文本 + 摘掉几个。
+    ///
+    /// 为什么必须摘：提示词第 8 条**要求**润色把多个要点整理成编号列表，于是成品里
+    /// 凭空多出「1. 2. 3.」——原文里一个都没有（「首先…然后…最后」不含数字），
+    /// 保真校验只能判它"凭空多出数字"。长口述正是最需要润色的场景。
+    ///
+    /// **只有序号连成 1,2,…,n（n ≥ 2）才摘**：孤零零一个「1.」或「3. 5.」是数据不是列表。
+    /// 这条是安全底线——否则「1. 预算50万 2. 延期」这种假列表就能偷渡一个凭空冒出的数。
+    /// 与 Mac 端 strippedOfListMarkers 逐条同源。
+    public static (string Text, int Markers) StrippedOfListMarkers(string text)
+    {
+        var matches = ListMarkerRegex().Matches(text);
+        var ranges = new List<(int Start, int Length)>();
+        var numbers = new List<int>();
+        foreach (Match match in matches)
+        {
+            if (!int.TryParse(match.Groups[2].Value, out var value) || value < 1 || value > 30) continue;
+            ranges.Add((match.Groups[2].Index, match.Groups[2].Length + match.Groups[3].Length));
+            numbers.Add(value);
+        }
+        if (numbers.Count < 2) return (text, 0);
+        for (var i = 0; i < numbers.Count; i++)
+        {
+            if (numbers[i] != i + 1) return (text, 0);
+        }
+        var result = text;
+        for (var i = ranges.Count - 1; i >= 0; i--)
+        {
+            result = result.Remove(ranges[i].Start, ranges[i].Length).Insert(ranges[i].Start, " ");
+        }
+        return (result, numbers.Count);
+    }
+
+    /// 说了这些词，「三点」就是 15 点——模型写成 15:00 是对的，不能判它凭空造数
+    private static readonly string[] AfternoonMarkers =
+        { "下午", "晚上", "傍晚", "今晚", "夜里", "晚间" };
+
+    /// 时间说法带来的**软数字**（可以解释多出来的位，但从不要求出现）：
+    ///   • 点半 → 30、点一刻 → 15、点三刻 → 45；
+    ///   • 下午/晚上…N 点（N ≤ 11）→ N+12。
+    /// 刻意开的口子：它让「三点半」→「3:30」「15:30」都能过。与 Mac 端 softDigits 同源。
+    public static Dictionary<char, int> SoftDigits(string text)
+    {
+        var soft = new Dictionary<char, int>();
+        void Add(long number)
+        {
+            foreach (var character in number.ToString(CultureInfo.InvariantCulture))
+            {
+                soft[character] = (soft.TryGetValue(character, out var n) ? n : 0) + 1;
+            }
+        }
+        foreach (Match match in ClockFractionRegex().Matches(text))
+        {
+            switch (match.Groups[1].Value)
+            {
+                case "半": Add(30); break;
+                case "一刻": Add(15); break;
+                default: Add(45); break;
+            }
+        }
+        foreach (Match match in ClockHourRegex().Matches(text))
+        {
+            var hour = HourValue(match.Groups[1].Value);
+            if (hour is null || hour < 1 || hour > 11) continue;
+            // 往前看 6 个字：口语里「下午」「晚上」总在钟点前面不远处
+            var start = Math.Max(0, match.Index - 6);
+            var context = text.Substring(start, match.Index - start);
+            if (!AfternoonMarkers.Any(marker => context.Contains(marker, StringComparison.Ordinal))) continue;
+            Add(hour.Value + 12);
+        }
+        return soft;
+    }
+
+    private static long? HourValue(string text)
+    {
+        if (long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)) return value;
+        return PositionalValue(text);
+    }
+
+    /// 这段话里有没有时间说法——**只给日志当旗子**，不参与任何判断
+    public static bool ContainsTimeWords(string text)
+    {
+        return TimeWordRegex().IsMatch(text);
     }
 
     /// a ∖ b（多重集差），负数不留
@@ -490,7 +640,10 @@ public static partial class TextPostProcessor
         }
         result = VeryMuchIdiomRegex().Replace(result, " ");
         result = MustIdiomRegex().Replace(result, " ");
-        result = ABitIdiomRegex().Replace(result, " ");
+        // 4.2.1 删掉了「一点」那一条（原 ABitIdiomRegex）：它把「下午一点开会」里的钟点
+        // 整个吃掉，于是润色写出来的「1点」成了没人认领的多余数字。
+        // 现在「一」照常当没有单位的单个数字（wildcard），wildcard 消失不算错，
+        // 所以「有一点累」→「有点累」仍然放行。与 Mac 端同源。
         result = WeekdayRegex().Replace(result, " ");
         return result;
     }
@@ -595,6 +748,181 @@ public static partial class TextPostProcessor
     private static string SpreadDigits(string run)
     {
         return new string(run.Select(c => (char)('0' + (ChineseDigitValues.TryGetValue(c, out var v) ? v : 0))).ToArray());
+    }
+
+    // MARK: 英文数字词（与 Mac 端 expandedEnglishNumerals 逐条同源）
+    //
+    // 为什么英文也得认：gpt-5.6-luna 不管提示词怎么写，都会自己把 "twenty five dollars"
+    // 写成 "$25"、"March third" 写成 "March 3"——那正是用户要的成品。而这道校验以前
+    // 只认汉字数字，于是每一句带英文数字词的听写都回退原文。
+
+    private static readonly Dictionary<string, long> EnglishSmallWords = new(StringComparer.Ordinal)
+    {
+        ["zero"] = 0, ["one"] = 1, ["two"] = 2, ["three"] = 3, ["four"] = 4, ["five"] = 5,
+        ["six"] = 6, ["seven"] = 7, ["eight"] = 8, ["nine"] = 9, ["ten"] = 10, ["eleven"] = 11,
+        ["twelve"] = 12, ["thirteen"] = 13, ["fourteen"] = 14, ["fifteen"] = 15,
+        ["sixteen"] = 16, ["seventeen"] = 17, ["eighteen"] = 18, ["nineteen"] = 19,
+        // 序数：日期里最常见（March third / the first）
+        ["first"] = 1, ["second"] = 2, ["third"] = 3, ["fourth"] = 4, ["fifth"] = 5,
+        ["sixth"] = 6, ["seventh"] = 7, ["eighth"] = 8, ["ninth"] = 9, ["tenth"] = 10,
+        ["eleventh"] = 11, ["twelfth"] = 12, ["thirteenth"] = 13, ["fourteenth"] = 14,
+        ["fifteenth"] = 15, ["sixteenth"] = 16, ["seventeenth"] = 17, ["eighteenth"] = 18,
+        ["nineteenth"] = 19,
+    };
+
+    private static readonly Dictionary<string, long> EnglishTensWords = new(StringComparer.Ordinal)
+    {
+        ["twenty"] = 20, ["thirty"] = 30, ["forty"] = 40, ["fifty"] = 50,
+        ["sixty"] = 60, ["seventy"] = 70, ["eighty"] = 80, ["ninety"] = 90,
+        ["twentieth"] = 20, ["thirtieth"] = 30,
+    };
+
+    /// 复数（hundreds of / thousands of）**故意不收**：那是约数，不是数
+    private static readonly Dictionary<string, long> EnglishScaleWords = new(StringComparer.Ordinal)
+    {
+        ["hundred"] = 100, ["thousand"] = 1_000, ["million"] = 1_000_000, ["billion"] = 1_000_000_000,
+    };
+
+    /// 把每一串连着的英文数字词换成阿拉伯数字。分词用 [A-Za-z]+，所以
+    /// none / someone / often / tension 这些"里面含数字词"的普通词一个都不会被认出来。
+    private static string ExpandedEnglishNumerals(string text, Dictionary<char, int> wildcards,
+                                                  ref bool found)
+    {
+        var matches = EnglishWordRegex().Matches(text);
+        if (matches.Count == 0) return text;
+        var words = matches.Select(m => m.Value.ToLowerInvariant()).ToList();
+
+        bool IsNumberWord(int index)
+        {
+            var word = words[index];
+            return EnglishSmallWords.ContainsKey(word) || EnglishTensWords.ContainsKey(word)
+                || EnglishScaleWords.ContainsKey(word);
+        }
+        // 「a hundred」里的 a 才算数；别处的 a 就是个冠词
+        bool IsArticleBeforeScale(int index)
+        {
+            return words[index] == "a" && index + 1 < words.Count
+                && EnglishScaleWords.ContainsKey(words[index + 1]);
+        }
+        // 两个词之间只隔着空格 / 连字符才算同一串（逗号、句号一律断开）
+        bool Joinable(int left, int right)
+        {
+            var gapStart = matches[left].Index + matches[left].Length;
+            var gap = text.Substring(gapStart, matches[right].Index - gapStart);
+            return gap.All(c => c is ' ' or '\t' or '-' or '‑');
+        }
+
+        var replacements = new List<(int Start, int Length, string Text)>();
+        var index = 0;
+        while (index < words.Count)
+        {
+            if (!IsNumberWord(index) && !IsArticleBeforeScale(index)) { index++; continue; }
+            var end = index;
+            while (end + 1 < words.Count && Joinable(end, end + 1))
+            {
+                if (IsNumberWord(end + 1) || IsArticleBeforeScale(end + 1)) { end++; continue; }
+                // and 只在两个数字中间才被吸收（a hundred and one）
+                if (words[end + 1] == "and" && end + 2 < words.Count && Joinable(end + 1, end + 2)
+                    && IsNumberWord(end + 2))
+                {
+                    end++;
+                    continue;
+                }
+                break;
+            }
+            found = true;
+            var digits = new List<string>();
+            foreach (var number in ParseEnglishNumbers(words.GetRange(index, end - index + 1)))
+            {
+                if (number.Words == 1 && number.Value >= 0 && number.Value <= 9)
+                {
+                    // 单独一个 one / three / third：是不是数只有上下文知道 → 只当 wildcard
+                    var key = (char)('0' + number.Value);
+                    wildcards[key] = (wildcards.TryGetValue(key, out var n) ? n : 0) + 1;
+                }
+                else
+                {
+                    digits.Add(number.Value.ToString(CultureInfo.InvariantCulture));
+                }
+            }
+            var start = matches[index].Index;
+            replacements.Add((start, matches[end].Index + matches[end].Length - start,
+                              " " + string.Join(" ", digits) + " "));
+            index = end + 1;
+        }
+        var result = text;
+        for (var i = replacements.Count - 1; i >= 0; i--)
+        {
+            result = result.Remove(replacements[i].Start, replacements[i].Length)
+                           .Insert(replacements[i].Start, replacements[i].Text);
+        }
+        return result;
+    }
+
+    /// 一串英文数字词 → 若干个数（每个带"用了几个词"，单个小词才算 wildcard）。
+    /// **贪心且会断开**：读到一个接不上的词就把手里的数交出去，再起一个新的——
+    /// "twenty twenty six" 因此断成 20 和 26（位数与 2026 相同，且都是它的子串）。
+    /// 溢出直接放弃整串，两边一视同仁。
+    private static List<(long Value, int Words)> ParseEnglishNumbers(List<string> words)
+    {
+        var outNumbers = new List<(long Value, int Words)>();
+        long total = 0, current = 0;
+        var wordCount = 0;
+        var hasUnits = false;
+        var hasTens = false;
+
+        void Flush()
+        {
+            if (wordCount == 0) return;
+            outNumbers.Add((total + current, wordCount));
+            total = 0; current = 0; wordCount = 0; hasUnits = false; hasTens = false;
+        }
+
+        try
+        {
+            checked
+            {
+                foreach (var word in words)
+                {
+                    if (word == "and") continue;
+                    if (word == "a") { current = 1; wordCount++; continue; }
+                    if (EnglishScaleWords.TryGetValue(word, out var scale))
+                    {
+                        if (scale == 100) current = (current == 0 ? 1 : current) * 100;
+                        else
+                        {
+                            total += (current == 0 ? 1 : current) * scale;
+                            current = 0;
+                        }
+                        hasUnits = false;
+                        hasTens = false;
+                        wordCount++;
+                        continue;
+                    }
+                    if (EnglishTensWords.TryGetValue(word, out var tens))
+                    {
+                        if (hasTens || hasUnits) Flush();
+                        current += tens;
+                        hasTens = true;
+                        wordCount++;
+                        continue;
+                    }
+                    if (!EnglishSmallWords.TryGetValue(word, out var small)) continue;
+                    // 个位后面又来个位、十几后面又来十几 → 这是两个数
+                    if (hasUnits || (small >= 10 && hasTens)) Flush();
+                    current += small;
+                    hasUnits = true;
+                    if (small >= 10) hasTens = true;
+                    wordCount++;
+                }
+                Flush();
+            }
+        }
+        catch (OverflowException)
+        {
+            return new List<(long Value, int Words)>();
+        }
+        return outNumbers;
     }
 
     /// 汉字数字的位值解析。返回 null = 这串算不出来（溢出 / 怪组合），调用方退回逐字摊开。
@@ -822,19 +1150,17 @@ public static partial class TextPostProcessor
     [GeneratedRegex("\\b(not|no|never)\\b|n['’]t", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex NegationWordRegex();
 
-    /// 数字指纹用的四条"要看上下文才算不算数"（与 Mac 端 contextualNumberIdioms 逐条同源）：
-    ///   • 「十分」= 非常，除非后面跟「钟」（十分钟 = 10 分钟）或「之」（十分之一）；
+    /// 数字指纹用的三条"要看上下文才算不算数"（与 Mac 端 contextualNumberIdioms 逐条同源）：
+    ///   • 「十分」= 非常（十分重要），但**紧挨着前面是「点」或一个数字**时它是 10
+    ///     （三点十分 = 3:10、四十分钟）；后面跟「钟」「之」的老例外照旧；
     ///   • 「千万」= 务必，除非**紧挨着前面**就是一个数字（三千万 / 3千万 是数）；
-    ///   • 「一点」= 一些 / 一点钟，除非后面跟数字、钟、半、多；
     ///   • 星期 / 周 / 礼拜 + 一二三四五六日天 = 日期名，不是数量。
-    [GeneratedRegex("十分(?![钟之])")]
+    /// （4.2.1 删掉了「一点」那一条，见 StrippedOfNumberIdioms 里的注释。）
+    [GeneratedRegex("(?<![点點零〇一二三四五六七八九十两幺0-9])十分(?![钟之])")]
     private static partial Regex VeryMuchIdiomRegex();
 
     [GeneratedRegex("(?<![零〇一二三四五六七八九两幺0-9])千万")]
     private static partial Regex MustIdiomRegex();
-
-    [GeneratedRegex("一点(?![零〇一二三四五六七八九两幺0-9钟半多])")]
-    private static partial Regex ABitIdiomRegex();
 
     [GeneratedRegex("(星期|周|礼拜)[一二三四五六日天]")]
     private static partial Regex WeekdayRegex();
@@ -851,9 +1177,54 @@ public static partial class TextPostProcessor
     [GeneratedRegex("(?<=[0-9])[,，\\u00A0\\u2009\\u202F \\-](?=[0-9])")]
     private static partial Regex GroupSeparatorRegex();
 
+    /// 可能是列表序号的位置：1–30 的数字 + 点/顿号/右括号，前面只能是行首 / 空白 / 句读 / 左括号
+    /// （所以绝不会咬住 4.1.6、1.5元、12.5 里的数字），后面不能再跟数字
+    [GeneratedRegex("(^|[\\n\\r \\t：:；;，,。(（])(\\d{1,2})([.．、)）])(?!\\d)")]
+    private static partial Regex ListMarkerRegex();
+
+    /// 「点半 / 点一刻 / 点三刻」——分钟数是说法自带的，原文里没有对应的数字
+    [GeneratedRegex("[点點](半|一刻|三刻)")]
+    private static partial Regex ClockFractionRegex();
+
+    /// 「N 点」里的 N（阿拉伯数字或汉字）
+    [GeneratedRegex("([0-9]{1,2}|[零〇一二三四五六七八九十两]{1,3})[点點]")]
+    private static partial Regex ClockHourRegex();
+
+    /// 有没有时间说法——只给日志当旗子
+    [GeneratedRegex("[点點]|o'?clock|[0-9]\\s*:\\s*[0-9]|[上下]午|晚上", RegexOptions.IgnoreCase)]
+    private static partial Regex TimeWordRegex();
+
+    /// 英文分词：只认纯字母串，所以 none / someone / often / tension 都整体成词
+    [GeneratedRegex("[A-Za-z]+")]
+    private static partial Regex EnglishWordRegex();
+
     /// A 不 A 疑问句：能不能 / 是不是 / 对不对 / 好不好 / 要不要 / 会不会 / 行不行…，
     /// 连「有没有」一起认（所以中间那个字是 不 或 没）。整体是一个**疑问**，不是否定——
     /// 「你能不能帮我」→「你能帮我吗」是最常见的正常润色。与 Mac 端 aNotAQuestion 同源。
     [GeneratedRegex("(.)[不没]\\1")]
     private static partial Regex ANotAQuestionRegex();
 }
+
+/// 一段文字里的数字指纹（与 Mac 端 TextPostProcessor.NumericFingerprint 结构逐项同源）。
+///
+/// • Digits：归一化之后所有阿拉伯数字字符的多重集；
+/// • Wildcards：孤零零一个数字词 / 汉字数字（「三点五」的三、"one of…" 的 one）——
+///   它到底是不是一个数只有上下文知道，只用来解释对面多出来的位，自己消失了不算错；
+/// • Tokens / Text：第二层判据（原文里每个多位数都得原封不动出现在润色里）；
+/// • SoftDigits：时间说法自带的那几位（点半 → 30、下午三点 → 15），**只解释、不要求**；
+/// • ListCountDigits：列表条数（1…n 的 n）。润色在引出句里写「目前主要有3个问题：」时，
+///   那个 3 是它数出来的结构信息，不是说话人说的事实——同样只解释、不要求、不产生 token；
+/// • ListMarkers / HasTimeWords / HasEnglishNumbers：只给日志当旗子，不参与判断。
+///
+/// 写成 namespace 级的 record 而不是嵌套类型：C# 里嵌套类型不能和外层的方法同名，
+/// 而方法名 NumericFingerprint 是两端对齐的一部分。
+public sealed record NumberFingerprint(
+    Dictionary<char, int> Digits,
+    Dictionary<char, int> Wildcards,
+    List<string> Tokens,
+    string Text,
+    Dictionary<char, int> SoftDigits,
+    int ListMarkers,
+    Dictionary<char, int> ListCountDigits,
+    bool HasTimeWords,
+    bool HasEnglishNumbers);
