@@ -149,6 +149,136 @@ final class TextPostProcessorTests: XCTestCase {
         XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "今天开会", polished: "   "))
     }
 
+    // MARK: 保真校验：否定词计数的清洗（4.1.5 误报，TODO 待修 bug 4）
+    //
+    // 4.1.5 的口径是逐字数「不没无别未」，两类东西被当成了否定：
+    //   ① 口头自我纠正（「不不」「不对」独立成句）——删掉它们正是润色的本职；
+    //   ② 压根不是否定的常用词（「识别」「特别」「未来」…）——这位用户几乎每句话都在说「识别」。
+    // 日志里的形状：`negation drift raw=4 polished=0`，而那句话一个否定都没被吞。
+
+    /// 用户那一句的形状：「我说错了……不不，云端的识别就是……」——
+    /// 润色把口头的「不不」删掉、把「云端的识别」收紧成「云端识别」，两样都做对了
+    func testDriftCheckAcceptsSpokenSelfCorrection() {
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(
+            raw: "我说错了，不不，云端的识别就是转写加润色",
+            polished: "我说错了，云端识别就是转写加润色。"))
+    }
+
+    /// 「不对」「没有没有」这类独立成句的纠正同理。
+    /// 刻意**不拿数字举例**：自我修正掉的如果是个数字（「十点，不对，十一点」），
+    /// 4.1.6 的数字指纹会因为"少了一个数"而拦下来——那是数字那条零容差规则的既定代价，
+    /// 单独记在 NumericFingerprintTests.testSelfCorrectedNumberFallsBackToTheRawText 里
+    func testDriftCheckAcceptsCorrectionInterjections() {
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(
+            raw: "明天上午开会，不对，是下午开会", polished: "明天下午开会。"))
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(
+            raw: "没有没有，这件事我来办", polished: "这件事我来办。"))
+    }
+
+    /// 英文口头禅同理（「no no, I mean…」/「no, no, …」两种写法都要认）
+    func testDriftCheckAcceptsEnglishFillerNo() {
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(
+            raw: "no no, I mean the cloud engine", polished: "I mean the cloud engine."))
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(
+            raw: "no, no, I mean tomorrow", polished: "I mean tomorrow."))
+    }
+
+    /// 含「不没无别未」却不是否定的常用词：润色动了其中一个（合并、改写、删重复）
+    /// 不该让整段回退
+    func testDriftCheckAcceptsPolishTouchingNonNegationWords() {
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(
+            raw: "这个识别特别准，未来的识别会更好", polished: "识别特别准，未来会更好。"))
+    }
+
+    /// 清洗表**不许**吃掉真的否定：这两句的计数必须还是 1 和 0
+    /// （拦不拦得住是下面那条阈值的事，和口径无关）
+    func testNegationCountStillSeesRealNegations() {
+        XCTAssertEqual(TextPostProcessor.negationCount("我不去"), 1)
+        XCTAssertEqual(TextPostProcessor.negationCount("我去"), 0)
+        XCTAssertEqual(TextPostProcessor.negationCount("don't send it"), 1)
+        XCTAssertEqual(TextPostProcessor.negationCount("send it"), 0)
+        XCTAssertEqual(TextPostProcessor.negationCount("这个方案不行，我们别做了"), 2)
+        XCTAssertEqual(TextPostProcessor.negationCount("这个方案行，我们做吧"), 0)
+        // 只有**整段独占**句读之间才算口头禅：句子内部的否定一个都不摘
+        XCTAssertEqual(TextPostProcessor.negationCount("没有问题"), 1)
+        XCTAssertEqual(TextPostProcessor.negationCount("there is no way"), 1)
+        XCTAssertEqual(TextPostProcessor.negationCount("我不是不想去"), 2)
+    }
+
+    /// 非否定词表的口径：整词摘掉，一个否定都不记
+    func testNegationCountIgnoresCommonNonNegationWords() {
+        XCTAssertEqual(TextPostProcessor.negationCount("识别特别准，未来无论如何都要做"), 0)
+        XCTAssertEqual(TextPostProcessor.negationCount("差不多了，对不起，不好意思，了不起"), 0)
+        XCTAssertEqual(TextPostProcessor.negationCount("不得不做"), 0)   // 「不得不」= 必须，是肯定
+        XCTAssertEqual(TextPostProcessor.negationCount("区别、级别、性别、别人、别的"), 0)
+    }
+
+    /// 摘掉口头禅之后两段**不能粘成新词**：「…说不。」+「过来吧」若被接成「不过」，
+    /// 就会被非否定词表整词摘掉——等于凭空吞掉一个真否定
+    func testScrubDoesNotWeldNewWordsAcrossSentences() {
+        XCTAssertEqual(TextPostProcessor.negationCount("他说不。过来吧"), 1)
+    }
+
+    /// 清洗之后照样拦得住"否定被吞"——这才是这道校验的本职
+    func testDriftCheckStillRejectsFlippedNegations() {
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(
+            raw: "这个方案不行，我们别做了", polished: "这个方案行，我们做吧。"))
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(
+            raw: "don't send it, I never agreed", polished: "send it, I agreed."))
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(
+            raw: "我不去，识别这件事也别做了", polished: "我去，识别这件事也做吧。"))
+    }
+
+    /// **一字翻转必须拦**（2a）：原有容差 `> max(1, raw/3)` 恰好漏掉"只有一个否定、
+    /// 而它被吞了"这一种，而那正是代价最高的一种错。raw ≥ 2 → 0 原本就拦得住。
+    func testSingleLostNegationIsRejected() {
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "我不去", polished: "我去"))
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "don't send it", polished: "send it"))
+        // 失败原因里只有计数，没有用户说的话
+        let reason = TextPostProcessor.polishDriftCheck(raw: "我不去", polished: "我去")
+        XCTAssertEqual(reason, "negation lost raw=1 polished=0")
+    }
+
+    /// **刻意不做对称的那一条**：识别偶尔吞掉一个「不」，润色把它补回来是帮了忙——
+    /// 0 → 1 拦下来等于把一次正确的修复丢进垃圾桶
+    func testRestoredNegationIsNotRejected() {
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(raw: "他说他去", polished: "他说他不去。"))
+    }
+
+    /// A 不 A 疑问句是**疑问**不是否定：「你能不能帮我」→「你能帮我吗」是最常见的正常润色。
+    /// 2a 收紧之后这一类不摘掉就会天天误报
+    func testDriftCheckAcceptsANotAQuestions() {
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(
+            raw: "你能不能帮我看一下", polished: "你能帮我看一下吗"))
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(
+            raw: "是不是明天开会，对不对", polished: "是明天开会吗？"))
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(
+            raw: "有没有人知道这件事", polished: "有人知道这件事吗？"))
+    }
+
+    /// 「要不然 / 不然 / 要不」= 否则、要么，提的是另一个选择，没否定任何一句话
+    func testDriftCheckAcceptsOtherwiseWords() {
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(
+            raw: "要不然我们明天再说", polished: "我们明天再说吧。"))
+    }
+
+    /// 真的还剩着否定的句子照样放行（2a 只在"一个不剩"时开火）
+    func testDriftCheckAcceptsPolishThatKeepsTheNegation() {
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(
+            raw: "嗯我今天不想去开会那个", polished: "我今天不想去开会。"))
+    }
+
+    /// A 不 A 与词表的**顺序**：A 不 A 必须先跑，否则「要不要」会先被词表里的「要不」
+    /// 吃掉半截，剩下的「要」+ 漏下的那个不 被当成一个真否定记上
+    func testANotAIsScrubbedBeforeTheWordTable() {
+        XCTAssertEqual(TextPostProcessor.negationCount("你要不要来"), 0)
+        XCTAssertEqual(TextPostProcessor.negationCount("有没有问题"), 0)
+        XCTAssertEqual(TextPostProcessor.negationCount("行不行，好不好，会不会"), 0)
+        // 但句子内部真正的否定一个都不许被它带走
+        XCTAssertEqual(TextPostProcessor.negationCount("我不是不想去"), 2)
+        XCTAssertEqual(TextPostProcessor.negationCount("这个方案不行，我们别做了"), 2)
+    }
+
     // MARK: 空音频复读（3.2.2）
 
     /// 默认口径要命中 ≥3 个词表词：正常音量那条路上不能因为一句话里出现一个词表词就丢掉

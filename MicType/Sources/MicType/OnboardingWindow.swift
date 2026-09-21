@@ -248,9 +248,11 @@ enum OnboardingCopy {
            "The menu-bar mic icon holds your history, polish mode and settings.")
     }
 
+    /// 4.1.6 起词汇表住在「输入 → 写作偏好」（和自定义规则一段），指路也跟着改——
+    /// 指着一个已经没有那个框的页面，用户会以为功能没了
     static var vocabularyTip: String {
-        tr("人名、术语老是听错？在 设置 → 本地识别 的词汇表里填「错写=正写」，一次搞定。",
-           "Names or jargon misheard? Add \"wrong=right\" to the vocabulary in Settings → On-device recognition.")
+        tr("人名、术语老是听错？在 设置 → 输入 → 写作偏好 的词汇表里填「错写=正写」，一次搞定。",
+           "Names or jargon misheard? Add \"wrong=right\" to the vocabulary in Settings → Input → Writing preferences.")
     }
 
     static var reopenGuide: String {

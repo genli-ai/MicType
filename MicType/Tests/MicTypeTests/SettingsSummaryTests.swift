@@ -35,23 +35,65 @@ final class SettingsSummaryTests: XCTestCase {
         L10n.shared.language = .zh
         let line = SettingsSummary.inputSummary(overlayPosition: .bottomCenter,
                                                 sounds: true,
-                                                launchAtLogin: false)
+                                                launchAtLogin: false,
+                                                vocabCount: 0,
+                                                hasCustomRules: false)
         // 键名一律全名（R⌥ 这种缩写没人看得懂），而且排在最前面
         XCTAssertTrue(line.hasPrefix("右 Option"), line)
         XCTAssertTrue(line.contains("底部"), line)
         XCTAssertTrue(line.contains("提示音开"), line)
         // 开机自启关着就不占一格：那是出厂默认，说出来等于用一格讲一件没发生的事
         XCTAssertFalse(line.contains("自启"), line)
+        // 写作偏好空着同理：一个"0 条词汇表"帮不了任何人
+        XCTAssertFalse(line.contains("词汇表"), line)
+        XCTAssertFalse(line.contains("自定义规则"), line)
     }
 
     func testInputSummaryMentionsLaunchAtLoginOnlyWhenOn() {
         L10n.shared.language = .zh
         let on = SettingsSummary.inputSummary(overlayPosition: .nearCursor,
                                               sounds: false,
-                                              launchAtLogin: true)
+                                              launchAtLogin: true,
+                                              vocabCount: 0,
+                                              hasCustomRules: false)
         XCTAssertTrue(on.contains("开机自启"), on)
         XCTAssertTrue(on.contains("提示音关"), on)
         XCTAssertTrue(on.contains("跟随鼠标"), on)
+    }
+
+    /// 4.1.6：词汇表与自定义规则搬到了「输入」页，这张卡要把它们报出来——
+    /// 而且**紧跟在键名后面**，和页内的段序一致（点进去才不用再找一遍）
+    func testInputSummaryCarriesWritingPreferencesRightAfterTheHotkey() {
+        L10n.shared.language = .zh
+        let line = SettingsSummary.inputSummary(overlayPosition: .bottomCenter,
+                                                sounds: true,
+                                                launchAtLogin: false,
+                                                vocabCount: 11,
+                                                hasCustomRules: true)
+        XCTAssertTrue(line.contains("词汇表 11 条"), line)
+        XCTAssertTrue(line.contains("有自定义规则"), line)
+        let parts = line.components(separatedBy: " · ")
+        XCTAssertEqual(parts.count, 5, line)
+        XCTAssertEqual(parts[1], "词汇表 11 条", line)
+        XCTAssertEqual(parts[2], "有自定义规则", line)
+        // 规则的**内容**永不上卡片：概览只说"有没有"
+        XCTAssertFalse(line.contains("署名"), line)
+    }
+
+    /// 两项各自独立：只填了词汇表的人不该在卡上读到"有自定义规则"
+    func testInputSummaryReportsEachWritingPreferenceOnItsOwn() {
+        L10n.shared.language = .zh
+        let vocabOnly = SettingsSummary.inputSummary(overlayPosition: .bottomCenter,
+                                                     sounds: true, launchAtLogin: false,
+                                                     vocabCount: 3, hasCustomRules: false)
+        XCTAssertTrue(vocabOnly.contains("词汇表 3 条"), vocabOnly)
+        XCTAssertFalse(vocabOnly.contains("自定义规则"), vocabOnly)
+
+        let rulesOnly = SettingsSummary.inputSummary(overlayPosition: .bottomCenter,
+                                                     sounds: true, launchAtLogin: false,
+                                                     vocabCount: 0, hasCustomRules: true)
+        XCTAssertFalse(rulesOnly.contains("词汇表"), rulesOnly)
+        XCTAssertTrue(rulesOnly.contains("有自定义规则"), rulesOnly)
     }
 
     func testInputSummaryIsCleanInEnglish() {
@@ -59,9 +101,13 @@ final class SettingsSummaryTests: XCTestCase {
         for position in OverlayPosition.allCases {
             let line = SettingsSummary.inputSummary(overlayPosition: position,
                                                     sounds: true,
-                                                    launchAtLogin: true)
+                                                    launchAtLogin: true,
+                                                    vocabCount: 4,
+                                                    hasCustomRules: true)
             XCTAssertFalse(containsCJKOrFullWidth(line), line)
             XCTAssertTrue(line.contains("Right Option"), line)
+            XCTAssertTrue(line.contains("4 vocabulary terms"), line)
+            XCTAssertTrue(line.contains("Custom rules set"), line)
         }
     }
 
@@ -70,18 +116,17 @@ final class SettingsSummaryTests: XCTestCase {
     func testRecognitionSummaryReadsLikeTheExample() {
         L10n.shared.language = .zh
         let card = SettingsSummary.recognitionSummary(language: RecognitionLanguages.autoCode,
-                                                      vocabCount: 12,
                                                       modelState: .ready(name: "0.6B"),
                                                       micName: "")
-        XCTAssertEqual(card.sentence, "自动检测语言 · 词汇表 12 条 · 模型 0.6B 已就绪")
+        // 4.1.6 起这张卡不再提词汇表（那个框搬去了「输入 → 写作偏好」）
+        XCTAssertEqual(card.sentence, "自动检测语言 · 模型 0.6B 已就绪")
         // 没事可做就没有徽章：常驻的橙色标记两天之内就会被眼睛滤掉
         XCTAssertNil(card.badge)
     }
 
-    func testRecognitionSummaryDropsEmptyVocabularyAndDefaultMicrophone() {
+    func testRecognitionSummaryDropsTheDefaultMicrophoneAndNeverMentionsVocabulary() {
         L10n.shared.language = .zh
         let card = SettingsSummary.recognitionSummary(language: "zh",
-                                                      vocabCount: 0,
                                                       modelState: .ready(name: "0.6B"),
                                                       micName: "  ")
         XCTAssertFalse(card.sentence.contains("词汇表"), card.sentence)
@@ -92,7 +137,6 @@ final class SettingsSummaryTests: XCTestCase {
     func testRecognitionSummaryNamesTheChosenMicrophone() {
         L10n.shared.language = .zh
         let card = SettingsSummary.recognitionSummary(language: "ar",
-                                                      vocabCount: 3,
                                                       modelState: .ready(name: "0.6B"),
                                                       micName: "AirPods Pro")
         XCTAssertTrue(card.sentence.contains("麦克风 AirPods Pro"), card.sentence)
@@ -103,7 +147,6 @@ final class SettingsSummaryTests: XCTestCase {
     func testUnknownLanguageCodeFallsBackToAutomatic() {
         L10n.shared.language = .zh
         let card = SettingsSummary.recognitionSummary(language: "klingon",
-                                                      vocabCount: 0,
                                                       modelState: .ready(name: "0.6B"),
                                                       micName: "")
         XCTAssertTrue(card.sentence.hasPrefix("自动检测语言"), card.sentence)
@@ -113,7 +156,6 @@ final class SettingsSummaryTests: XCTestCase {
         L10n.shared.language = .zh
         func badge(_ state: SettingsSummary.ModelState) -> String? {
             SettingsSummary.recognitionSummary(language: RecognitionLanguages.autoCode,
-                                               vocabCount: 0,
                                                modelState: state,
                                                micName: "").badge
         }
@@ -127,7 +169,6 @@ final class SettingsSummaryTests: XCTestCase {
     func testUpgradeAvailableStillReadsAsReady() {
         L10n.shared.language = .zh
         let card = SettingsSummary.recognitionSummary(language: RecognitionLanguages.autoCode,
-                                                      vocabCount: 0,
                                                       modelState: .upgradeAvailable(name: "0.6B"),
                                                       micName: "")
         XCTAssertTrue(card.sentence.contains("已就绪"), card.sentence)
@@ -141,7 +182,6 @@ final class SettingsSummaryTests: XCTestCase {
                                                     .upgradeAvailable(name: "1.7B")]
         for state in states {
             let card = SettingsSummary.recognitionSummary(language: "ar",
-                                                          vocabCount: 5,
                                                           modelState: state,
                                                           micName: "MacBook Pro Microphone")
             XCTAssertFalse(containsCJKOrFullWidth(card.sentence), card.sentence)

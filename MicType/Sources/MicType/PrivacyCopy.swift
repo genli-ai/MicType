@@ -80,14 +80,31 @@ enum PrivacyCopy {
         tr("联网搜索：", "Web search: ") + LLMCatalog.webSearchPriceNote
     }
 
+    /// Fast 档：4.1.6 起 OpenAI 官方接口的每一次请求都带 `service_tier:"fast"`，
+    /// 界面上没有开关（用户 2026-09-21 拍板）。**多花的钱必须有一处写着**——就是这一句。
+    ///
+    /// 三件事刻意这么写：
+    ///   • **单价不在这里写**：出处只有 LLMCatalog.fastTierPriceNote 一个（引用，不复述），
+    ///     和 webSearchBilled 同一条做法；
+    ///   • **点名"官方接口"**：把 OpenAI 档的 Base URL 指向第三方网关时一个字都不发
+    ///     （判据见 LLMClient.asksForFastTier），写成无条件的"OpenAI 的请求"就是假话；
+    ///   • **不按当前服务商分支**：这一句陈述的是 App 的行为（"OpenAI 走哪一档"），
+    ///     不是"你这台机器这会儿在花什么钱"——retention 那句才是按生效档现算的。
+    static var fastTier: String {
+        tr("OpenAI 官方接口的请求一律走 Fast 档：", "Requests to the official OpenAI API always use the Fast tier: ")
+            + LLMCatalog.fastTierPriceNote
+    }
+
     /// 数据流向那两句：讲"东西去了哪里"，引导第一屏用
     static var dataFlowLines: [String] { [audioStaysLocal, onlyTextLeaves] }
 
-    /// Key 与费用那四句：讲"谁收你的钱、Key 放在哪"（关于页用）。
+    /// Key 与费用那五句：讲"谁收你的钱、Key 放在哪"（关于页用）。
     /// 第一句按当前生效的服务商现算（见 retention），不是一句放之四海的承诺。
-    static var keyAndCostLines: [String] { [retentionLine, keyInKeychain, youPayProvider, webSearchBilled] }
+    static var keyAndCostLines: [String] {
+        [retentionLine, keyInKeychain, youPayProvider, webSearchBilled, fastTier]
+    }
 
-    /// 完整六句，顺序固定（关于页用）。顺序本身是文案的一部分：先说数据去哪，再说钱谁收
+    /// 完整七句，顺序固定（关于页用）。顺序本身是文案的一部分：先说数据去哪，再说钱谁收
     static var allLines: [String] { dataFlowLines + keyAndCostLines }
 
     // MARK: - 云端识别的代价在哪儿说

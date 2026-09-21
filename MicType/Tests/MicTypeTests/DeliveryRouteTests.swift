@@ -12,10 +12,10 @@ import XCTest
 /// 那一步过去只活在私有的 deliver() 里，写成 return 把字丢掉也没有一个测试会红。
 final class DeliveryRouteTests: XCTestCase {
 
-    private func route(sinkReady: Bool, sinkRegistered: Bool,
-                       targetIsSelf: Bool) -> DictationController.DeliveryRoute {
+    private func route(sinkReady: Bool, sinkRegistered: Bool, targetIsSelf: Bool,
+                       targetIsKnown: Bool = true) -> DictationController.DeliveryRoute {
         DictationController.deliveryRoute(sinkReady: sinkReady, sinkRegistered: sinkRegistered,
-                                          targetIsSelf: targetIsSelf)
+                                          targetIsSelf: targetIsSelf, targetIsKnown: targetIsKnown)
     }
 
     override func tearDown() {
@@ -29,7 +29,28 @@ final class DeliveryRouteTests: XCTestCase {
     /// 引导窗停在「试一下」那一页、而且人就在这扇窗里开的录 → 直接落字
     func testSinkOnlyWhenOnboardingSitsOnTheTryItPage() {
         XCTAssertEqual(route(sinkReady: true, sinkRegistered: true, targetIsSelf: true), .sink)
-        XCTAssertEqual(route(sinkReady: false, sinkRegistered: false, targetIsSelf: true), .inserter)
+        // 引导没开，人还在自家窗口里 → 走自家输入框那条路（4.1.5 之前是 .inserter，见下）
+        XCTAssertEqual(route(sinkReady: false, sinkRegistered: false, targetIsSelf: true), .ownWindow)
+    }
+
+    /// **4.1.5 bug**：人在 MicType 自己的设置窗口里（引导压根没开）轻点说一句，
+    /// 走的是 .inserter → 合成一下 ⌘V。而 ⌘V 在 Cocoa 里只是 Edit 菜单 Paste 那一项的
+    /// key equivalent，MicType（LSUIElement + .accessory）从没装过带 Edit 的主菜单，
+    /// 这一下按键**没有接收者**——日志写着 `path=fast outcome=pasted`，框里一个字都没有。
+    /// 自家窗口只能直接写 first responder，绝不许再挑 .inserter。
+    func testOwnWindowInsteadOfSyntheticCommandV() {
+        XCTAssertEqual(route(sinkReady: false, sinkRegistered: false, targetIsSelf: true), .ownWindow)
+        XCTAssertNotEqual(route(sinkReady: false, sinkRegistered: false, targetIsSelf: true), .inserter)
+    }
+
+    /// 认不出前台应用（targetBundleID 为空）那一档继续走老路：那一刻 key window 多半是 nil，
+    /// 人也未必在我们的窗口里，往当前焦点盲粘一下仍然是最合理的猜测
+    func testUnknownTargetKeepsPastingIntoWhateverHasFocus() {
+        XCTAssertEqual(route(sinkReady: false, sinkRegistered: false,
+                             targetIsSelf: true, targetIsKnown: false), .inserter)
+        // 但「试一下」那一页照样优先（引导窗的行为一个字都没动）
+        XCTAssertEqual(route(sinkReady: true, sinkRegistered: true,
+                             targetIsSelf: true, targetIsKnown: false), .sink)
     }
 
     /// **开录时人在别的应用里 → 字必须落回那个应用**，哪怕引导正好开着、正好停在「试一下」。
@@ -55,15 +76,17 @@ final class DeliveryRouteTests: XCTestCase {
     /// 路由名会进日志（排障时"到底走了哪条"全靠它），别随手改
     func testRouteNamesAreStableForLogs() {
         XCTAssertEqual(DictationController.DeliveryRoute.sink.rawValue, "sink")
+        XCTAssertEqual(DictationController.DeliveryRoute.ownWindow.rawValue, "own-window")
         XCTAssertEqual(DictationController.DeliveryRoute.clipboard.rawValue, "clipboard")
         XCTAssertEqual(DictationController.DeliveryRoute.inserter.rawValue, "inserter")
     }
 
     // MARK: - 问过输入框之后，字真正落在哪儿
 
-    private func outcome(_ route: DictationController.DeliveryRoute,
-                         accepted: Bool) -> DictationController.DeliveryOutcome {
-        DictationController.deliveryOutcome(route: route, sinkAccepted: accepted)
+    private func outcome(_ route: DictationController.DeliveryRoute, accepted: Bool,
+                         ownWindowInserted: Bool = false) -> DictationController.DeliveryOutcome {
+        DictationController.deliveryOutcome(route: route, sinkAccepted: accepted,
+                                            ownWindowInserted: ownWindowInserted)
     }
 
     /// 挑中「直接落字」而框也真接住了：就落在框里，不碰剪贴板、不发 ⌘V
@@ -88,6 +111,26 @@ final class DeliveryRouteTests: XCTestCase {
         }
     }
 
+    /// 自家窗口那条路：**回读确认写进去了**才算落字
+    func testOwnWindowOnlyCountsWhenTheTextReallyLanded() {
+        XCTAssertEqual(outcome(.ownWindow, accepted: false, ownWindowInserted: true), .ownWindow)
+    }
+
+    /// 写不进去（没有可写的框 / 是密码框 / 写了没生效）→ 退到剪贴板，
+    /// 绝不退成 .inserter：那条路会再发一下没人接的 ⌘V，然后**照样报成功**——
+    /// 「报了 pasted 其实没落字」正是 4.1.5 那个 bug 的形状
+    func testOwnWindowWithNoTextFieldFallsBackToTheClipboard() {
+        XCTAssertEqual(outcome(.ownWindow, accepted: false, ownWindowInserted: false), .clipboard)
+        XCTAssertNotEqual(outcome(.ownWindow, accepted: false, ownWindowInserted: false), .inserter)
+    }
+
+    /// 别的路上根本没往自家窗口写过，这一位是什么都不该改变落点
+    func testOwnWindowFlagIsIgnoredOnTheOtherRoutes() {
+        XCTAssertEqual(outcome(.inserter, accepted: false, ownWindowInserted: true), .inserter)
+        XCTAssertEqual(outcome(.clipboard, accepted: false, ownWindowInserted: true), .clipboard)
+        XCTAssertEqual(outcome(.sink, accepted: true, ownWindowInserted: false), .sink)
+    }
+
     /// 前台是别的应用时，无论引导窗说什么，字都必须走常规粘贴回那个应用
     func testTargetInAnotherAppAlwaysEndsUpPasted() {
         let chosen = route(sinkReady: true, sinkRegistered: true, targetIsSelf: false)
@@ -97,14 +140,16 @@ final class DeliveryRouteTests: XCTestCase {
     /// 落点名同样会进日志（`path=` 那一段），别随手改
     func testOutcomeNamesAreStableForLogs() {
         XCTAssertEqual(DictationController.DeliveryOutcome.sink.rawValue, "sink")
+        XCTAssertEqual(DictationController.DeliveryOutcome.ownWindow.rawValue, "own-window")
         XCTAssertEqual(DictationController.DeliveryOutcome.clipboard.rawValue, "clipboard")
         XCTAssertEqual(DictationController.DeliveryOutcome.inserter.rawValue, "inserter")
     }
 
     // MARK: - 通道的默认态
 
-    /// 没人注册时必须**完全隐形**：isReady 恒 false、accept 恒 false，
-    /// 于是交付路径和 4.0.1 之前逐字一致（这是这条新链路唯一可接受的默认行为）
+    /// 没人注册时必须**完全隐形**：isReady 恒 false、accept 恒 false。
+    /// 人在别的应用里那条主路和从前逐字一致（.inserter）；人在自家窗口里则走 .ownWindow
+    /// ——那是 4.1.5 修掉的那条路，和 TranscriptSink 无关
     func testUnregisteredSinkIsInert() {
         TranscriptSink.unregister()
         XCTAssertFalse(TranscriptSink.isReady())
@@ -112,7 +157,10 @@ final class DeliveryRouteTests: XCTestCase {
         XCTAssertFalse(TranscriptSink.accept("hello"))
         XCTAssertEqual(route(sinkReady: TranscriptSink.isReady(),
                              sinkRegistered: TranscriptSink.isRegistered,
-                             targetIsSelf: true), .inserter)
+                             targetIsSelf: false), .inserter)
+        XCTAssertEqual(route(sinkReady: TranscriptSink.isReady(),
+                             sinkRegistered: TranscriptSink.isRegistered,
+                             targetIsSelf: true), .ownWindow)
     }
 
     /// 注册之后：问得到"接不接得住"，也真的把文字交过去

@@ -189,14 +189,20 @@ final class SettingsCopyBudgetTests: XCTestCase {
         XCTAssertFalse(en.contains("both boxes"), en)
     }
 
-    /// 「优先处理」整段只在 OpenAI 档渲染（AISetup.showsPriorityToggle），所以那颗 ⓘ 里
-    /// **不该再说一遍"只有 OpenAI 有"**——读到它的人用的就是 OpenAI
-    func testPriorityInfoDoesNotRepeatWhoHasThatTier() {
-        L10n.shared.language = .zh
-        XCTAssertFalse(SettingsCopy.priorityInfo.contains("只有 OpenAI"), SettingsCopy.priorityInfo)
-        L10n.shared.language = .en
-        XCTAssertFalse(SettingsCopy.priorityInfo.lowercased().contains("only openai"),
-                       SettingsCopy.priorityInfo)
+    /// 4.1.6：「自定义规则」和「词汇表」搬去了「输入」页，那两颗 ⓘ 也跟着记在那一页头上。
+    /// 说明**必须和控件在同一页**——留在旧页的预算表里，那一页就能在没人察觉的情况下
+    /// 再长出两段字来，而这条预算量的正是"一页一共说了多少"。
+    func testMovedCopyIsBudgetedOnThePageThatShowsIt() {
+        XCTAssertTrue(SettingsCopy.inputInfos.contains(SettingsCopy.vocabularyInfo))
+        XCTAssertTrue(SettingsCopy.inputInfos.contains(SettingsCopy.customRulesInfo))
+        XCTAssertFalse(SettingsCopy.recognitionInfos.contains(SettingsCopy.vocabularyInfo))
+        XCTAssertFalse(SettingsCopy.cloudInfos.contains(SettingsCopy.customRulesInfo))
+
+        XCTAssertTrue(SettingsCopy.inputCaptions.contains(SettingsCopy.vocabularyArabicTip))
+        XCTAssertTrue(SettingsCopy.inputCaptions.contains(SettingsCopy.customRulesPlaceholder))
+        XCTAssertTrue(SettingsCopy.inputCaptions.contains(SettingsCopy.rulesNeedAI))
+        XCTAssertFalse(SettingsCopy.recognitionCaptions.contains(SettingsCopy.vocabularyArabicTip))
+        XCTAssertFalse(SettingsCopy.cloudCaptions.contains(SettingsCopy.customRulesPlaceholder))
     }
 
     /// 「模型」那颗 ⓘ 只许指屏幕上**真有**的控件：三家官方档的「高级」里只剩「测试模型」，
@@ -373,13 +379,14 @@ final class SettingsCopyBudgetTests: XCTestCase {
             """)
     }
 
-    /// 关于页仍然逐句摆着那六句——这条是上面那条的反面：收口不能收成"哪儿都不说了"
-    func testAboutPanelStillRendersAllSixLines() throws {
+    /// 关于页仍然逐句摆着那几句——这条是上面那条的反面：收口不能收成"哪儿都不说了"。
+    /// 4.1.6 起是七句（多了 Fast 档那一条：界面上已经没有那个开关，多花的钱只剩这一处写着）
+    func testAboutPanelStillRendersEveryPrivacyLine() throws {
         let source = try String(contentsOf: Self.sourcesDirectory.appendingPathComponent("SettingsEditors.swift"),
                                 encoding: .utf8)
         XCTAssertTrue(Self.stripComments(source).contains("PrivacyCopy.allLines"),
-                      "关于页必须仍然把六句隐私文案逐句摆出来")
-        XCTAssertEqual(PrivacyCopy.allLines.count, 6)
+                      "关于页必须仍然把隐私文案逐句摆出来")
+        XCTAssertEqual(PrivacyCopy.allLines.count, 7)
     }
 
     // MARK: - 工具

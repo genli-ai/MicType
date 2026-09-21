@@ -15,9 +15,9 @@ import Combine
 enum SettingsRoute: String, Hashable, CaseIterable {
     /// 三张状态卡 + 权限横幅 + 脚注三个链接
     case overview
-    /// 原「通用」：快捷键、悬浮窗、录音、行为、语言与备份
+    /// 原「通用」：快捷键、写作偏好（词汇表 + 自定义规则）、悬浮窗、录音、行为、语言与备份
     case input
-    /// 麦克风、识别语言、词汇表、本机模型
+    /// 麦克风、识别语言、本机模型、性能
     case recognition
     /// 服务商、Key、模型、（阿里云的）云端识别开关
     case cloud
@@ -33,6 +33,115 @@ enum SettingsRoute: String, Hashable, CaseIterable {
         case .cloud: return tr("云端 AI", "Cloud AI")
         case .about: return tr("关于 MicType", "About MicType")
         }
+    }
+}
+
+// MARK: - 窗口尺寸的算术（纯函数）
+
+/// 设置窗口高度**跟着当前这一页的内容走**（用户 2026-09-21 拍板：窗口比里面的东西大太多）。
+///
+/// 4.1.5 之前这扇窗硬写着 560 × 520：概览只有三张卡加一行脚注，下面空着小半屏；
+/// 短一点的编辑页同样空一大块。而 520 又不够高——「云端 AI」页照样要滚。
+/// 一个既太大又不够大的数字，是因为它跟内容毫无关系。
+///
+/// 算术收在这里、写成纯函数，是因为它有三条互相打架的约束（最小、最大、不许伸出屏幕），
+/// 而"改一次高度顺手把某一条挪没了"这种事在视图代码里看不出来。
+enum SettingsWindowSizing {
+    /// 宽度不变。整套文案与控件的换行都是按这个宽度调出来的
+    static let width: CGFloat = 560
+
+    /// 下限：概览（三张卡 + 脚注）正好装得下。编辑页再短也不比首页矮——
+    /// 一扇会缩成半张卡高的窗口，点进点出时像在抽搐
+    static let minContentHeight: CGFloat = 300
+
+    /// 上限：再高也不该占满整块屏。超过就让这一页自己滚。
+    /// 760 而不是 680：「云端 AI」页在阿里云档实测 747 高，680 会把最后一段「联网搜索」
+    /// 的标题留在屏内、内容折到屏外——一页只差 67 点就得滚，是最糟的那种滚动。
+    /// 13 寸 MacBook Air 的可见高度 868 − 余量 120 = 748，仍然装得下这一页。
+    static let maxContentHeight: CGFloat = 760
+
+    /// 离屏幕可见区域上下各留出来的余量：窗口顶到菜单栏、底到程序坞边上，既难拖也难看
+    static let screenMargin: CGFloat = 120
+
+    /// 这一页的自然高度 → 窗口的内容高度。
+    /// - natural: 页面内容量出来的高度（0 = 还没量到，按下限给）
+    /// - visibleScreenHeight: 这块屏幕的 visibleFrame 高度（已经扣掉菜单栏与程序坞）
+    static func contentHeight(natural: CGFloat, visibleScreenHeight: CGFloat) -> CGFloat {
+        // 屏幕很矮（外接小屏、分屏）时，上限跟着屏幕降——但绝不降到下限以下：
+        // 那样窗口会矮到连三张卡都摆不开，而下面那条"不许伸出屏幕"还会把它往上推
+        let ceiling = max(minContentHeight, min(maxContentHeight, visibleScreenHeight - screenMargin))
+        guard natural.isFinite, natural > 0 else { return minContentHeight }
+        return min(max(natural.rounded(.up), minContentHeight), ceiling)
+    }
+
+    /// 新的窗口 frame。**顶边不动**（origin.y 跟着高度差走）：AppKit 的坐标原点在左下角，
+    /// 直接改 size 的话窗口是往下长的，标题栏会在每次翻页时跳一下——那是这次改动里
+    /// 最容易被忽略、也最显眼的一个毛病。
+    /// - frameHeight: 含标题栏的整窗高度（内容高度由 frameRect(forContentRect:) 换算）
+    /// - visible: 这块屏幕的 visibleFrame
+    static func frame(current: CGRect, frameHeight: CGFloat, visible: CGRect) -> CGRect {
+        var next = current
+        next.size.width = width
+        next.size.height = frameHeight
+        next.origin.y = current.maxY - frameHeight
+        // 长高之后不许伸到可见区域下面去（底边被程序坞压住 = 那几行永远读不到）
+        if next.minY < visible.minY { next.origin.y = visible.minY }
+        // 上面那一推可能把顶边顶出屏幕（窗口比可见区域还高时）：再压回来。
+        // 顺序不能反——伸出屏幕底部是"内容看不见"，伸出顶部是"标题栏抓不到"，后者更糟
+        if next.maxY > visible.maxY { next.origin.y = visible.maxY - frameHeight }
+        return next
+    }
+}
+
+/// 这一页有多高。**带着路由一起报**：滑动期间新旧两页同时活在 ZStack 里，各报各的高度，
+/// 而窗口要按**目的页**定尺寸——只按"最大的那个"来的话，从长页退回概览时窗口会卡在长页的高度上。
+struct SettingsPageHeightKey: PreferenceKey {
+    static var defaultValue: [SettingsRoute: CGFloat] = [:]
+
+    static func reduce(value: inout [SettingsRoute: CGFloat],
+                       nextValue: () -> [SettingsRoute: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
+    }
+}
+
+/// 顶栏（返回 + 页名 + 分隔线）有多高。概览没有顶栏，所以它是一条单独的量
+struct SettingsChromeHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+extension View {
+    /// 把这块内容的自然高度报给窗口
+    func measuresSettingsPage(_ route: SettingsRoute) -> some View {
+        background(GeometryReader { geo in
+            Color.clear.preference(key: SettingsPageHeightKey.self,
+                                   value: [route: geo.size.height])
+        })
+    }
+}
+
+/// 编辑页的外壳：**一个**滚动容器 + 一次高度测量。
+///
+/// 为什么不能直接量 Form：`Form(.grouped)` 自己带着一层滚动，而滚动容器永远把给它的高度
+/// 占满——问它"你多高"，答案恒等于窗口那么高，量了等于没量。所以先把它 `fixedSize` 成
+/// 内容高度（它那层滚动从此没有东西可滚），再套一个我们自己的滚动容器。
+/// 整页真会滚的仍然只有一个。
+struct MeasuredFormPage<Content: View>: View {
+    let route: SettingsRoute
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        ScrollView {
+            content()
+                .frame(width: SettingsWindowSizing.width)
+                .fixedSize(horizontal: false, vertical: true)
+                .measuresSettingsPage(route)
+        }
+        // 内容装得下时不要橡皮筋：一扇刚好合身的窗口还能上下拽动，看着就是没做好
+        .scrollBounceBehavior(.basedOnSize)
     }
 }
 
@@ -100,8 +209,59 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, ObservableObje
 
     private var window: NSWindow?
     private var langObserver: AnyCancellable?
+    /// 最近一次量到的内容高度（顶栏 + 当前页）。nil = 还没量到过
+    private var pendingContentHeight: CGFloat?
+    /// 防抖：一次翻页会连着报好几个高度（旧页退场、新页登场、状态行冒出来），
+    /// 每一条都跑一次动画的话，窗口会在半秒里抖三下
+    private var resizeWork: DispatchWorkItem?
+    /// 这扇窗还没按内容摆过位置：第一次量到高度时居中一次，之后一律保住顶边
+    private var needsInitialPlacement = true
 
     private override init() { super.init() }
+
+    // MARK: 高度跟着内容走
+
+    /// 当前这一页量出来的高度。视图层每次变化都会叫这里，具体改不改窗口由防抖那一跳决定。
+    func fitContentHeight(_ natural: CGFloat) {
+        guard natural > 0 else { return }
+        pendingContentHeight = natural
+        resizeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.applyPendingHeight() }
+        resizeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+    }
+
+    /// 真正改窗口的那一下。**顶边不动**（算术在 SettingsWindowSizing.frame 里，单测钉死）。
+    private func applyPendingHeight() {
+        guard let window = window, let natural = pendingContentHeight else { return }
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? window.frame
+        let content = SettingsWindowSizing.contentHeight(natural: natural,
+                                                         visibleScreenHeight: visible.height)
+        // 内容高度 → 整窗高度：标题栏的厚度由 AppKit 说了算，别在代码里猜一个数字
+        let frameHeight = window.frameRect(forContentRect:
+            NSRect(x: 0, y: 0, width: SettingsWindowSizing.width, height: content)).height
+        guard needsInitialPlacement == false else {
+            // 头一回：先定尺寸再居中——按 520 居中完再长高，窗口会明显偏上
+            window.setContentSize(NSSize(width: SettingsWindowSizing.width, height: content))
+            window.center()
+            needsInitialPlacement = false
+            return
+        }
+        let target = SettingsWindowSizing.frame(current: window.frame, frameHeight: frameHeight,
+                                                visible: visible)
+        // 半个点的差别不值一次动画（浮点测量每帧都会抖一点点）
+        guard abs(target.height - window.frame.height) > 0.5
+                || abs(target.origin.y - window.frame.origin.y) > 0.5 else { return }
+        guard !SettingsNavigator.reduceMotion else {
+            window.setFrame(target, display: true)
+            return
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.2
+            context.allowsImplicitAnimation = true
+            window.animator().setFrame(target, display: true)
+        }
+    }
 
     /// - tab: 深链要停在哪一页；nil = 回概览。
     ///   为什么 nil 不再是"保持上次的位置"：概览就是这个窗口的首页，打开设置的人第一眼
@@ -110,12 +270,18 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, ObservableObje
         SettingsNavigator.shared.go(to: tab ?? .overview)
         if window == nil {
             let hosting = NSHostingController(rootView: SettingsView())
+            // 高度由我们自己按内容算（见 fitContentHeight）。放着不管的话，
+            // NSHostingController 会用 preferredContentSize 自己去改窗口大小——
+            // 那条路是**从左下角**长的，标题栏每翻一页跳一次
+            hosting.sizingOptions = []
             let w = NSWindow(contentViewController: hosting)
             w.styleMask = [.titled, .closable, .miniaturizable]
             w.isReleasedWhenClosed = false
             // 关窗要有人知道：里面那一页不会跟着消失，得由这里告诉它停手
             w.delegate = self
-            w.setContentSize(NSSize(width: 560, height: 520))
+            // 先按下限开着，量到真实高度立刻跟上（第一次测量会顺手居中一次）
+            w.setContentSize(NSSize(width: SettingsWindowSizing.width,
+                                    height: SettingsWindowSizing.minContentHeight))
             w.center()
             window = w
             // 窗口开着时切换语言，标题也要跟着换
@@ -141,6 +307,14 @@ struct SettingsView: View {
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var nav = SettingsNavigator.shared
 
+    /// 每一页最近报上来的自然高度。翻页时新旧两页都在报，所以按路由存
+    @State private var pageHeights: [SettingsRoute: CGFloat] = [:]
+    /// 顶栏 + 分隔线这一条的高度（概览没有顶栏，它是 0）
+    @State private var chromeHeight: CGFloat = 0
+    /// 这扇窗归不归我们管尺寸。快照测试直接把某一页塞进自己的 NSWindow 里渲染，
+    /// 那时候没有设置窗口可改——**绝不能**让它去动一扇不属于这次渲染的窗口
+    var resizesWindow: Bool = true
+
     var body: some View {
         VStack(spacing: 0) {
             if let title = nav.route.editorTitle {
@@ -153,9 +327,29 @@ struct SettingsView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 560, height: 520)
+        // 高度**不再写死**（4.1.5 之前是 520，和里面装了什么毫无关系）：
+        // 窗口按当前这一页量出来的高度伸缩，见 SettingsWindowSizing
+        .frame(width: SettingsWindowSizing.width)
         // 滑动时别把半页画到窗口外面
         .clipped()
+        .onPreferenceChange(SettingsPageHeightKey.self) { heights in
+            pageHeights = heights
+            pushHeightToWindow()
+        }
+        .onPreferenceChange(SettingsChromeHeightKey.self) { height in
+            chromeHeight = height
+            pushHeightToWindow()
+        }
+        // 翻页这一下本身也要改窗口：目的页的高度可能早就量好了（它上一次来过）
+        .onChange(of: nav.route) { _, _ in pushHeightToWindow() }
+    }
+
+    /// 窗口该有多高 = 顶栏 + **目的页**的自然高度。
+    /// 按 nav.route 取而不是取最大值：滑动期间两页并存，取最大的话从长页退回概览时，
+    /// 窗口会卡在长页那个高度上不下来。
+    private func pushHeightToWindow() {
+        guard resizesWindow, let page = pageHeights[nav.route], page > 0 else { return }
+        SettingsWindowController.shared.fitContentHeight(chromeHeight + page)
     }
 
     @ViewBuilder
@@ -199,6 +393,12 @@ struct SettingsView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+        // 顶栏的高度进窗口那笔账：它不是常数（字号跟着系统走），猜一个数字迟早会差出一行
+        .background(GeometryReader { geo in
+            Color.clear.preference(key: SettingsChromeHeightKey.self,
+                                   // +1：下面那条 Divider
+                                   value: geo.size.height + 1)
+        })
     }
 }
 

@@ -13,12 +13,13 @@ import ServiceManagement
 struct SettingsOverview: View {
     @ObservedObject private var l10n = L10n.shared
 
-    // 输入
+    // 输入（4.1.6 起含「写作偏好」：词汇表与自定义规则都搬到了这一页）
     @AppStorage(SettingsKeys.overlayPosition) private var overlayPosition = OverlayPosition.bottomCenter.rawValue
     @AppStorage(SettingsKeys.playSounds) private var playSounds = true
+    @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
+    @AppStorage(SettingsKeys.customPolishRules) private var customRules = ""
     // 本地识别
     @AppStorage(SettingsKeys.recognitionLanguage) private var recognitionLanguage = RecognitionLanguages.autoCode
-    @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
     @AppStorage(SettingsKeys.qwenModelRepo) private var qwenRepo = QwenModels.defaultRepo
     @AppStorage(SettingsKeys.inputDeviceUID) private var inputDeviceUID = ""
     // 云端 AI
@@ -64,9 +65,13 @@ struct SettingsOverview: View {
 
                 OverviewCard(title: tr("输入", "Input"),
                              card: SettingsSummary.Card(
-                                sentence: SettingsSummary.inputSummary(overlayPosition: selectedOverlay,
-                                                                       sounds: playSounds,
-                                                                       launchAtLogin: launchAtLogin),
+                                sentence: SettingsSummary.inputSummary(
+                                    overlayPosition: selectedOverlay,
+                                    sounds: playSounds,
+                                    launchAtLogin: launchAtLogin,
+                                    vocabCount: Settings.parseVocabulary(vocabulary).terms.count,
+                                    hasCustomRules: !customRules.trimmingCharacters(
+                                        in: .whitespacesAndNewlines).isEmpty),
                                 badge: nil)) {
                     SettingsNavigator.shared.go(to: .input)
                 }
@@ -85,6 +90,9 @@ struct SettingsOverview: View {
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // 窗口高度跟着这一页走（概览本来就是 ScrollView，量里面那一叠就够，
+            // 不必像三个编辑页那样再套一层——见 MeasuredFormPage 的注释）
+            .measuresSettingsPage(.overview)
         }
         .onAppear {
             refreshLiveState()
@@ -137,7 +145,6 @@ struct SettingsOverview: View {
 
     private var recognitionCard: SettingsSummary.Card {
         SettingsSummary.recognitionSummary(language: recognitionLanguage,
-                                           vocabCount: Settings.parseVocabulary(vocabulary).terms.count,
                                            modelState: modelState,
                                            micName: micName)
     }

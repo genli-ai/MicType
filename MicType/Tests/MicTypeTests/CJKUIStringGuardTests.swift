@@ -55,6 +55,24 @@ final class CJKUIStringGuardTests: XCTestCase {
         "Support.swift:builtInFillerWords",
         "Support.swift:removeFillerWords",
         "Support.swift:negationCount",
+        // 保真校验的否定词清洗表：拿去和识别原文比对的词，同样不显示给任何人看。
+        // 中文那几条恒为中文正是它们的用途——翻成英文就一个都对不上了
+        "Support.swift:nonNegationWords",
+        "Support.swift:selfCorrectionFillers",
+        "Support.swift:fillerBreaks",
+        "Support.swift:aNotAQuestion",
+        "Support.swift:negationScrubbed",
+        // 数字指纹的归一化表：成语词表、单位词、汉字数字——同样是拿去和文本比对的东西，
+        // 不显示给任何人看。翻成英文就一个数都认不出来了
+        "NumericFingerprint.swift:numberIdioms",
+        "NumericFingerprint.swift:contextualNumberIdioms",
+        "NumericFingerprint.swift:arabicUnitRegex",
+        "NumericFingerprint.swift:arabicAbbreviatedRegex",
+        "NumericFingerprint.swift:groupSeparatorRegex",
+        "NumericFingerprint.swift:unitValues",
+        "NumericFingerprint.swift:chineseDigitValues",
+        "NumericFingerprint.swift:chineseUnitValues",
+        "NumericFingerprint.swift:converted",
         "Support.swift:isVocabEcho",
         "Support.swift:fixMixedPunctuation",
         "Support.swift:isTrailingPunctuationScalar",   // 拼接时"标点前不加空格"的判据字符集

@@ -471,11 +471,14 @@ enum LLMCatalog {
         }
     }
 
-    /// 优先处理档同样要把代价写在开关旁：token 单价翻倍。
-    /// **单价只写这一处**——4.1.0 之前开关标题里还硬写着一个「2 倍」，改价就会有两个数字打架。
-    /// 「实际档位由服务商决定」是解释不是代价，收进「高级」那颗 ⓘ（advancedInfo）。
-    static var fastTierPriceNote: String { tr("延迟更低更稳，token 单价约 2 倍，默认关闭。",
-                                      "Lower, steadier latency at about 2x the token price. Off by default.") }
+    /// Fast 档的代价：token 单价翻倍。**单价只写这一处**——4.1.0 之前开关标题里还硬写着
+    /// 一个「2 倍」，改价就会有两个数字打架。
+    ///
+    /// 4.1.6 起没有「优先处理」这个开关了（用户 2026-09-21 拍板：OpenAI 官方接口一律走 Fast），
+    /// 所以这句话不再说"默认关闭"，而且它现在只被 PrivacyCopy.fastTier 引用——写成能接在
+    /// 「…一律走 Fast 档：」后面的半句（英文首字母小写），免得拼出来中间冒出一个大写字母。
+    static var fastTierPriceNote: String { tr("延迟更低更稳，token 单价约 2 倍。",
+                                      "lower, steadier latency at about 2x the token price.") }
 
     /// 服务商回传的 service_tier 原值算不算"真的跑在优先档上"。
     /// OpenAI 回 "fast"，别的兼容端点习惯叫 "priority"——后者也得算数，
@@ -487,6 +490,11 @@ enum LLMCatalog {
 
     /// service_tier 原值 → 界面说法。认不出的档位**原样显示**：硬翻成"普通档"是在编，
     /// 原值摆出来用户至少能拿去问服务商。纯函数。
+    ///
+    /// 4.1.6 起界面上**暂时没有地方**摆它：「优先处理」那一段连同"上一次跑在哪一档"一起
+    /// 删了（OpenAI 官方接口恒走 Fast，用户不再被问这个问题），而诊断信息是要整段贴给别人的，
+    /// 必须是固定英文、报原值。留着它是因为"回传的档位怎么念"只该有一个说法——
+    /// 下一次要在界面上说这件事时，别再现造一套词（单测仍然逐档钉着它）。
     static func serviceTierName(_ raw: String) -> String {
         switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "fast", "priority": return tr("优先档", "the priority tier")

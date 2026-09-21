@@ -343,7 +343,78 @@ final class LLMClientTests: XCTestCase {
 
     // MARK: - Fast 档与联网搜索（B7 / B8 / B11）
 
-    /// 勾了 Fast 才发 service_tier；没勾一个字都不发（默认就是不花这笔钱）
+    /// 这一趟该不该问 Fast 档。4.1.6 起它不是一条设置，是一条规则——**规则就得有测试**，
+    /// 否则"哪些请求会贵一倍"这件事在代码里没有任何一处说得死。
+    func testFastTierGoesOnlyToTheOfficialOpenAIEndpoint() {
+        // 官方域名 + OpenAI 档：发
+        XCTAssertTrue(LLMClient.asksForFastTier(provider: .openai,
+                                                baseURL: "https://api.openai.com/v1",
+                                                model: "gpt-5.6-sol", refusedModels: []))
+        // 同一档但地址指向第三方网关：**一个字都不发**。发了的结果是每句话先白挨一个 400，
+        // 再摘掉参数重发——UAE 这条链路上那就是每句话多等半秒到一秒五
+        XCTAssertFalse(LLMClient.asksForFastTier(provider: .openai,
+                                                 baseURL: "https://gateway.example.com/v1",
+                                                 model: "gpt-5.6-sol", refusedModels: []))
+        // 别家一律不发（service_tier 是 OpenAI 的字段）
+        for provider in [LLMProvider.deepseek, .qwen, .custom, .local] {
+            XCTAssertFalse(LLMClient.asksForFastTier(provider: provider,
+                                                     baseURL: "https://api.openai.com/v1",
+                                                     model: "m", refusedModels: []),
+                           provider.rawValue)
+        }
+        // 判据必须和"走不走 Responses"是同一条：两处分家的那天，这条断言会先红
+        for url in ["https://api.openai.com/v1", "https://gateway.example.com/v1",
+                    "http://localhost:11434/v1", ""] {
+            XCTAssertEqual(LLMClient.asksForFastTier(provider: .openai, baseURL: url,
+                                                     model: "gpt-5.6-sol", refusedModels: []),
+                           LLMClient.usesResponsesAPI(baseURL: url), url)
+        }
+    }
+
+    /// 这一轮拒过的型号不再问。大小写与空白不该算成两个型号
+    func testFastTierIsNotAskedAgainForARefusedModel() {
+        XCTAssertFalse(LLMClient.asksForFastTier(provider: .openai,
+                                                 baseURL: "https://api.openai.com/v1",
+                                                 model: "gpt-5.6-sol",
+                                                 refusedModels: ["gpt-5.6-sol"]))
+        XCTAssertFalse(LLMClient.asksForFastTier(provider: .openai,
+                                                 baseURL: "https://api.openai.com/v1",
+                                                 model: "  GPT-5.6-Sol ",
+                                                 refusedModels: ["gpt-5.6-sol"]))
+        // 拒的是那一个型号，不是整档：换个型号照常问
+        XCTAssertTrue(LLMClient.asksForFastTier(provider: .openai,
+                                                baseURL: "https://api.openai.com/v1",
+                                                model: "gpt-5.6-luna",
+                                                refusedModels: ["gpt-5.6-sol"]))
+    }
+
+    /// 400 点名的参数是不是"这个型号不吃 Fast 档"。点路径式的写法只认最后那一段
+    func testRefusalIsRecognizedFromTheStrippedParameterName() {
+        XCTAssertTrue(LLMClient.refusesFastTier(parameter: "service_tier"))
+        XCTAssertTrue(LLMClient.refusesFastTier(parameter: " SERVICE_TIER "))
+        XCTAssertTrue(LLMClient.refusesFastTier(parameter: "body.service_tier"))
+        for other in ["temperature", "text.verbosity", "reasoning.effort", "enable_search", ""] {
+            XCTAssertFalse(LLMClient.refusesFastTier(parameter: other), other)
+        }
+    }
+
+    /// 记忆本身：只记一次（调用方靠返回值决定记不记日志），空型号名不占位置
+    func testFastTierMemoryRemembersEachModelOnce() {
+        let memory = FastTierMemory.shared
+        memory.forgetAll()
+        defer { memory.forgetAll() }
+        XCTAssertTrue(memory.remember(model: "gpt-5.6-sol"))
+        XCTAssertFalse(memory.remember(model: "gpt-5.6-sol"))
+        XCTAssertFalse(memory.remember(model: " GPT-5.6-SOL "))
+        XCTAssertFalse(memory.remember(model: "   "))
+        XCTAssertEqual(memory.models, ["gpt-5.6-sol"])
+        XCTAssertFalse(LLMClient.asksForFastTier(provider: .openai,
+                                                 baseURL: "https://api.openai.com/v1",
+                                                 model: "gpt-5.6-sol",
+                                                 refusedModels: memory.models))
+    }
+
+    /// 传 true 才发 service_tier（请求体这一层的形状没变，变的是谁来决定那个 true）
     func testFastTierIsOptInOnly() {
         let plain = LLMClient.responsesBody(model: "gpt-5.6-luna", system: "S", user: "U",
                                             purpose: .polish, temperature: nil, maxOutputTokens: 2048)

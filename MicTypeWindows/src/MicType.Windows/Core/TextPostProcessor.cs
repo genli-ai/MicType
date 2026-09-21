@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace MicType.Win.Core;
@@ -265,23 +266,48 @@ public static partial class TextPostProcessor
         if (r.Length == 0) return null;
         if (p.Length == 0) return "polished text is empty";
 
-        // 1) 数字多重集：只看数字字符本身，所以 1,000 / 1000 / 1 000 视为一致；全角数字先折半角。
-        var rawDigits = DigitMultiset(r);
-        var polDigits = DigitMultiset(p);
-        if (!DigitsEqual(rawDigits, polDigits))
+        // 1) 数字指纹：把两边的数字都**归一化成阿拉伯数字**之后比多重集，所以
+        //    1,000 / 1000 / 1 000 视为一致，「一百零一」和「101」、「1.2万」和「一万二千」
+        //    也视为一致（4.1.6：润色从这一版起要把汉字数字改写成阿拉伯数字，见提示词第 7 条；
+        //    不这么比的话每一次正确的改写都会被判成"数字被改"）。与 Mac 端逐条同源。
+        var rawFingerprint = NumericFingerprint(r);
+        var polFingerprint = NumericFingerprint(p);
+        var rawDigits = rawFingerprint.Digits;
+        var polDigits = polFingerprint.Digits;
+        // 第一层：数字字符的多重集。
+        // **只报个数，绝不报数字本身**：这句话会被 DictationController 原样 Log.Warn 写进
+        // %LOCALAPPDATA%\MicType\logs\mictype-yyyyMMdd.log（明文、保留 7 天，报故障时会被
+        // 整包发出去）。带上数字等于把用户刚说的验证码 / 电话 / 金额漏出去——四位数按多重集
+        // 也就 24 种排列，等于没脱敏。Mac 端（Support.swift polishDriftCheck）同源。
+        if (!DigitsPreserved(rawFingerprint, polFingerprint))
         {
-            // **只报个数，绝不报数字本身**：这句话会被 DictationController 原样 Log.Warn 写进
-            // %LOCALAPPDATA%\MicType\logs\mictype-yyyyMMdd.log（明文、保留 7 天，报故障时会被
-            // 整包发出去）。带上数字等于把用户刚说的验证码 / 电话 / 金额漏出去——四位数按多重集
-            // 也就 24 种排列，等于没脱敏。Mac 端（Support.swift polishDriftCheck）同源。
             return $"digits changed rawCount={rawDigits.Values.Sum()}"
                  + $" polishedCount={polDigits.Values.Sum()}"
                  + $" distinct={rawDigits.Count}/{polDigits.Count}";
         }
+        // 第二层：原文里每一个多位数都得原封不动地出现在润色里。零的位置错了 / 数位调了个儿
+        // （一万零二百 → 12000、一百零一 → 110）在第一层看不出来——两边多重集一模一样。同样只报个数。
+        var missingTokens = MissingNumberTokens(rawFingerprint, polFingerprint);
+        if (missingTokens.Count > 0)
+        {
+            return $"number rewritten tokens={rawFingerprint.Tokens.Count}"
+                 + $" missing={missingTokens.Count}";
+        }
 
-        // 2) 否定词计数：允许少量增减（删口头重复、句式改写会动一两个），差太多说明语义被翻转
+        // 2) 否定词计数：允许少量增减（删口头重复、句式改写会动一两个），差太多说明语义被翻转。
+        //    两边都先清洗过（NegationCount 里摘掉 A 不 A 疑问句、「识别 / 特别 / 未来」这类
+        //    非否定词，和独立成句的「不不 / 不对」这类口头自我纠正），否则润色做对了事反而被判跑飞。
         var rawNeg = NegationCount(r);
         var polNeg = NegationCount(p);
+        //    2a) 否定被吞光：原文有否定、润色一个不剩。容差 > max(1, raw/3) 恰恰漏掉这一种——
+        //    只有一个否定的句子把它丢了（「我不去」→「我去」、"don't send it"→"send it"），
+        //    而那正是这道校验最该拦的、代价最高的一种错（raw >= 2 → 0 本来就拦得住）。
+        //    **刻意不做对称的那一条（0 → >=1）**：识别偶尔会吞掉一个「不」，润色把它补回来是
+        //    帮了忙，拦下来等于把一次正确的修复丢进垃圾桶。与 Mac 端逐条同源。
+        if (rawNeg >= 1 && polNeg == 0)
+        {
+            return $"negation lost raw={rawNeg} polished=0";
+        }
         if (Math.Abs(rawNeg - polNeg) > Math.Max(1, rawNeg / 3))
         {
             return $"negation drift raw={rawNeg} polished={polNeg}";
@@ -313,16 +339,6 @@ public static partial class TextPostProcessor
         return counts;
     }
 
-    private static bool DigitsEqual(Dictionary<char, int> a, Dictionary<char, int> b)
-    {
-        if (a.Count != b.Count) return false;
-        foreach (var (key, value) in a)
-        {
-            if (!b.TryGetValue(key, out var other) || other != value) return false;
-        }
-        return true;
-    }
-
     /// 数字多重集摊成字符串，**只给单测用**：它带着用户说过的数字本身，永远不许进日志
     /// （日志是明文落盘、保留 7 天，用户报故障时会整包带走）。
     public static string DigitSummary(Dictionary<char, int> counts)
@@ -330,11 +346,401 @@ public static partial class TextPostProcessor
         return string.Concat(counts.Keys.OrderBy(k => k).Select(k => new string(k, counts[k])));
     }
 
-    private static int NegationCount(string text)
+    // MARK: 数字指纹（4.1.6，与 Mac 端 NumericFingerprint.swift 逐条同源）
+    //
+    // 为什么非做不可：润色从 4.1.6 起要把汉字数字改写成阿拉伯数字（提示词第 7 条），
+    // 而 4.1.5 的保真校验比的是**数字字符的多重集**——汉字数字里一个阿拉伯数字都没有，
+    // 于是每一次正确的改写都会被判成 digits changed、整段回退。提示词和这道校验必须一起改。
+    //
+    // **已知性质**：比较是"无序 + 字符级"的，同一个数内部重排（101 → 110）、
+    // 两个数之间互换数位（214/315 → 314/215）都抓不住；抓得住的是"多一位、少一位、改一位"。
+
+    /// 一段文字里的数字指纹。
+    /// Wildcards = 孤零零一个汉字数字、还没有单位的那种（「三点五」的三和五、「第一次」的一）：
+    /// 它到底是不是一个数只有上下文知道，所以单独记一桶，只用来**解释对面多出来的那一位**，
+    /// 自己消失了不算错。
+    /// Tokens = 归一化之后连续 ≥ 2 位的数字串（去重）；Text = 归一化 + 去分隔符之后的整段文字。
+    /// 第二层判据就靠这两样：汉字转阿拉伯数字最典型的错是**零的位置错了 / 数位调了个儿**
+    /// （一万零二百 = 10200 写成 12000、一百零一 = 101 写成 110），这几对的数字字符多重集
+    /// 一模一样，只有"这个数原封不动出现过吗"看得出来。
+    public static (Dictionary<char, int> Digits, Dictionary<char, int> Wildcards,
+                   List<string> Tokens, string Text) NumericFingerprint(string text)
     {
-        var count = text.Count(c => "不没无别未".Contains(c, StringComparison.Ordinal));
-        count += NegationWordRegex().Matches(text).Count;
+        var work = FoldedDigits(text);            // a) 全角 / 阿拉伯-印度数字折半角
+        work = StrippedOfNumberIdioms(work);      // b) 含数字字却不表数量的固定说法
+        work = ExpandedArabicUnits(work);         // c) 1万2 → 12000、1.2万 → 12000
+        var wildcards = new Dictionary<char, int>();
+        work = ExpandedChineseNumerals(work, wildcards);  // d) 汉字数字 → 阿拉伯数字
+        work = StrippedOfGroupSeparators(work);   // f) 1,000 = 1000、138-0013-8000 = 13800138000
+        return (DigitMultiset(work), wildcards, NumberTokens(work), work);  // e)
+    }
+
+    /// 归一化之后连续 ≥ 2 位的数字串，去重。**只收 ≥ 2 位**：单个数字由多重集 + wildcard
+    /// 那一层管（版本号 4.1.6 因此一个 token 都不产生，不会被这一层误伤）。
+    public static List<string> NumberTokens(string normalized)
+    {
+        var tokens = new List<string>();
+        var run = "";
+        foreach (var character in normalized)
+        {
+            if (character >= '0' && character <= '9')
+            {
+                run += character;
+                continue;
+            }
+            if (run.Length >= 2 && !tokens.Contains(run)) tokens.Add(run);
+            run = "";
+        }
+        if (run.Length >= 2 && !tokens.Contains(run)) tokens.Add(run);
+        return tokens;
+    }
+
+    /// 两段文字里的数字是不是同一批。false = 这次润色动了数值，必须回退原文。两层都得过。
+    public static bool NumbersPreserved(string raw, string polished)
+    {
+        var r = NumericFingerprint(raw);
+        var p = NumericFingerprint(polished);
+        return DigitsPreserved(r, p) && MissingNumberTokens(r, p).Count == 0;
+    }
+
+    /// 第一层：数字字符的多重集 + wildcard 兜底（对称地走两遍）
+    private static bool DigitsPreserved(
+        (Dictionary<char, int> Digits, Dictionary<char, int> Wildcards, List<string> Tokens, string Text) r,
+        (Dictionary<char, int> Digits, Dictionary<char, int> Wildcards, List<string> Tokens, string Text) p)
+    {
+        var missing = Subtracting(r.Digits, p.Digits);
+        var extra = Subtracting(p.Digits, r.Digits);
+        return Covered(missing, Subtracting(p.Wildcards, r.Wildcards))
+            && Covered(extra, Subtracting(r.Wildcards, p.Wildcards));
+    }
+
+    /// 第二层：**原文里每一个多位数，都得原封不动地在润色里出现过**。
+    /// 用"包含"而不是"相等"：润色会在数字周围加单位、改标点、接小数
+    /// （「十二块五」→「12.5元」里 token 12 是 12.5 的一截），而「1.2万」在比之前已摊成 12000。
+    /// 包含只可能过于宽松，绝不会冤枉一次忠实的改写。
+    private static List<string> MissingNumberTokens(
+        (Dictionary<char, int> Digits, Dictionary<char, int> Wildcards, List<string> Tokens, string Text) r,
+        (Dictionary<char, int> Digits, Dictionary<char, int> Wildcards, List<string> Tokens, string Text) p)
+    {
+        return r.Tokens.Where(token => !p.Text.Contains(token, StringComparison.Ordinal)).ToList();
+    }
+
+    /// 夹在**两个数字之间**的千分位 / 连字符 / 各种空格：1,000 = 1000、
+    /// 138-0013-8000 = 13800138000。只在两边都是数字时删，句子里正常的逗号空格不受影响。
+    private static string StrippedOfGroupSeparators(string text)
+    {
+        return GroupSeparatorRegex().Replace(text, "");
+    }
+
+    /// a ∖ b（多重集差），负数不留
+    private static Dictionary<char, int> Subtracting(Dictionary<char, int> a, Dictionary<char, int> b)
+    {
+        var outCounts = new Dictionary<char, int>();
+        foreach (var (key, count) in a)
+        {
+            var left = count - (b.TryGetValue(key, out var other) ? other : 0);
+            if (left > 0) outCounts[key] = left;
+        }
+        return outCounts;
+    }
+
+    /// needed 里每一位都被 pool 里的 wildcard 兜住了吗
+    private static bool Covered(Dictionary<char, int> needed, Dictionary<char, int> pool)
+    {
+        foreach (var (key, count) in needed)
+        {
+            if ((pool.TryGetValue(key, out var have) ? have : 0) < count) return false;
+        }
+        return true;
+    }
+
+    /// 全角（１２３）与阿拉伯-印度数字折成 ASCII。与 DigitMultiset 的折算表逐位一致
+    private static string FoldedDigits(string text)
+    {
+        var chars = text.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            var c = chars[i];
+            if (c >= '０' && c <= '９') chars[i] = (char)(c - '０' + '0');
+            else if (c >= '٠' && c <= '٩') chars[i] = (char)(c - '٠' + '0');
+            else if (c >= '۰' && c <= '۹') chars[i] = (char)(c - '۰' + '0');
+        }
+        return new string(chars);
+    }
+
+    /// 含数字字、却**根本不表数量**的固定说法：比数之前整个摘掉，两边一视同仁。
+    /// 只收明确安全的条目：摘不干净只是多回退一次润色，摘错一条等于在那个词上把校验挖穿。
+    /// 与 Mac 端 numberIdioms 逐条同源；「百分之 / 百分点」是单位词，不摘掉那个「百」会被当成 100。
+    private static readonly string[] NumberIdioms = new[]
+    {
+        "一旦", "统一", "唯一", "一些", "一下", "一起", "一样", "一直", "一定", "一般",
+        "一边", "一切", "一共", "一会儿", "一方面", "不一样", "一点点", "有一点", "万一",
+        "三心二意", "一心一意", "乱七八糟", "七上八下", "五花八门", "四面八方",
+        "十全十美", "一模一样", "独一无二", "接二连三", "千方百计", "百分百",
+        "万分", "百般", "百分之", "百分点",
+    }.OrderByDescending(w => w.Length).ToArray();
+
+    private static string StrippedOfNumberIdioms(string text)
+    {
+        var result = text;
+        // 长的先摘：短词先动手会把长词咬掉一半（「一点点」被「一点」咬成「点」）
+        foreach (var idiom in NumberIdioms)
+        {
+            result = result.Replace(idiom, " ", StringComparison.Ordinal);
+        }
+        result = VeryMuchIdiomRegex().Replace(result, " ");
+        result = MustIdiomRegex().Replace(result, " ");
+        result = ABitIdiomRegex().Replace(result, " ");
+        result = WeekdayRegex().Replace(result, " ");
+        return result;
+    }
+
+    private static readonly Dictionary<string, decimal> UnitValues = new(StringComparer.Ordinal)
+    {
+        ["亿"] = 100_000_000m, ["千万"] = 10_000_000m, ["百万"] = 1_000_000m,
+        ["十万"] = 100_000m, ["万"] = 10_000m, ["千"] = 1_000m, ["百"] = 100m,
+    };
+
+    /// 「1.2万」「3500万」：润色最爱写的形式，摊平成整数才比得了。
+    /// 用 decimal 而不是 double：1.2 * 10000 在二进制浮点里是 12000.000000000002。
+    /// G29 是为了去掉 decimal 乘法留下的尾零（1.2m * 10000m = 12000.0）。
+    private static string ExpandedArabicUnits(string text)
+    {
+        // 省略尾数那一形状要**先摊**：不然 1万2 会被下面的规则吃成 10000 + 一个孤零零的 2
+        text = ExpandedArabicAbbreviations(text);
+        return ArabicUnitRegex().Replace(text, match =>
+        {
+            if (!decimal.TryParse(match.Groups[1].Value, NumberStyles.Number,
+                                  CultureInfo.InvariantCulture, out var value)) return match.Value;
+            if (!UnitValues.TryGetValue(match.Groups[2].Value, out var scale)) return match.Value;
+            return " " + (value * scale).ToString("G29", CultureInfo.InvariantCulture) + " ";
+        });
+    }
+
+    /// 口语式的省略尾数，阿拉伯数字版：1万2 = 12000、3千5 = 3500、2百5 = 250。
+    /// 尾数跟的是这个单位的下一档，和汉字那边 PositionalValue 的规则同源。
+    private static string ExpandedArabicAbbreviations(string text)
+    {
+        return ArabicAbbreviatedRegex().Replace(text, match =>
+        {
+            if (!decimal.TryParse(match.Groups[1].Value, NumberStyles.Number,
+                                  CultureInfo.InvariantCulture, out var head)) return match.Value;
+            if (!decimal.TryParse(match.Groups[3].Value, NumberStyles.Number,
+                                  CultureInfo.InvariantCulture, out var tail)) return match.Value;
+            if (!UnitValues.TryGetValue(match.Groups[2].Value, out var scale)) return match.Value;
+            var value = head * scale + tail * scale / 10m;
+            return " " + value.ToString("G29", CultureInfo.InvariantCulture) + " ";
+        });
+    }
+
+    /// 「两」= 2、「幺」= 1（报电话号码时的读法）；「零」「〇」都是 0
+    private static readonly Dictionary<char, int> ChineseDigitValues = new()
+    {
+        ['零'] = 0, ['〇'] = 0, ['一'] = 1, ['二'] = 2, ['三'] = 3, ['四'] = 4, ['五'] = 5,
+        ['六'] = 6, ['七'] = 7, ['八'] = 8, ['九'] = 9, ['两'] = 2, ['幺'] = 1,
+    };
+
+    private static readonly Dictionary<char, long> ChineseUnitValues = new()
+    {
+        ['十'] = 10L, ['百'] = 100L, ['千'] = 1_000L, ['万'] = 10_000L, ['亿'] = 100_000_000L,
+    };
+
+    /// 把每一段连续的汉字数字换成阿拉伯数字（三种情形见 Converted）
+    private static string ExpandedChineseNumerals(string text, Dictionary<char, int> wildcards)
+    {
+        var result = "";
+        var run = "";
+        foreach (var character in text)
+        {
+            if (ChineseDigitValues.ContainsKey(character) || ChineseUnitValues.ContainsKey(character))
+            {
+                run += character;
+                continue;
+            }
+            if (run.Length > 0)
+            {
+                result += " " + Converted(run, wildcards) + " ";
+                run = "";
+            }
+            result += character;
+        }
+        if (run.Length > 0) result += " " + Converted(run, wildcards) + " ";
+        return result;
+    }
+
+    private static string Converted(string run, Dictionary<char, int> wildcards)
+    {
+        var hasUnit = run.Any(c => ChineseUnitValues.ContainsKey(c));
+        if (hasUnit)
+        {
+            // 光秃秃一个单位字（上万人、成千、过百）是约数不是数——唯一的例外是「十」= 10
+            if (run.Length == 1 && run != "十") return "";
+            var value = PositionalValue(run);
+            if (value.HasValue) return value.Value.ToString(CultureInfo.InvariantCulture);
+            return SpreadDigits(run);
+        }
+        if (run.Length >= 2)
+        {
+            // 没单位的多字串：当成一串数位念（二零一一 → 2011、幺三八零零 → 13800）
+            return SpreadDigits(run);
+        }
+        if (ChineseDigitValues.TryGetValue(run[0], out var single))
+        {
+            var key = (char)('0' + single);
+            wildcards[key] = (wildcards.TryGetValue(key, out var n) ? n : 0) + 1;
+        }
+        return "";
+    }
+
+    private static string SpreadDigits(string run)
+    {
+        return new string(run.Select(c => (char)('0' + (ChineseDigitValues.TryGetValue(c, out var v) ? v : 0))).ToArray());
+    }
+
+    /// 汉字数字的位值解析。返回 null = 这串算不出来（溢出 / 怪组合），调用方退回逐字摊开。
+    /// 三档累加（亿 / 万 / 个）才算得对「一亿二千万」；两个口语细节：
+    ///   • 打头的十：十二 = 12；
+    ///   • 省略的尾数：两千五 = 2500、一万二 = 12000，但中间念了「零」就是实打实的个位
+    ///     （一百零一 = 101，绝不是 110）。
+    private static long? PositionalValue(string run)
+    {
+        try
+        {
+            checked
+            {
+                long total = 0;      // 亿 及以上
+                long section = 0;    // 万 档
+                long current = 0;    // 个 档
+                long number = 0;     // 还没落位的那个数字
+                long lastUnit = 0;   // 最近用过的单位，给"省略的尾数"用
+                var sawZero = false; // 上一个单位之后念过「零」吗
+
+                foreach (var character in run)
+                {
+                    if (ChineseDigitValues.TryGetValue(character, out var digit))
+                    {
+                        if (digit == 0) sawZero = true;
+                        else number = digit;
+                        continue;
+                    }
+                    if (!ChineseUnitValues.TryGetValue(character, out var unit)) return null;
+                    if (unit == 10_000L || unit == 100_000_000L)
+                    {
+                        // 万只抬"万以下那一段"、亿那一档原样留着，「一亿二千万」才算得对
+                        var head = section + current + number;
+                        if (unit == 10_000L)
+                        {
+                            section = head * unit;
+                        }
+                        else
+                        {
+                            total = (total + head) * unit;
+                            section = 0;
+                        }
+                        current = 0;
+                        number = 0;
+                    }
+                    else
+                    {
+                        if (number == 0 && !sawZero && unit == 10L) number = 1;  // 打头的十
+                        current += number * unit;
+                        number = 0;
+                    }
+                    lastUnit = unit;
+                    sawZero = false;
+                }
+
+                if (number != 0)
+                {
+                    var scale = (!sawZero && lastUnit >= 100L) ? lastUnit / 10L : 1L;
+                    current += number * scale;
+                }
+                return total + section + current;
+            }
+        }
+        catch (OverflowException)
+        {
+            return null;
+        }
+    }
+
+    /// 否定词计数。**public 只为可单测**：阈值那条规则在 PolishDriftCheck 里，
+    /// 而这里的口径（哪些字算否定、哪些不算）才是 4.1.5 误报的根因，值得单独钉住。
+    ///
+    /// 先清洗再数：光逐字数「不没无别未」会把「识别」「特别」「未来」这些常用词、
+    /// 以及「不不」「不对」这类口头自我纠正全算成否定。前者用户几乎每句话都在说，
+    /// 后者正是润色**该删**的东西——两边随便哪一类在润色里被动过，计数就凭空掉几格，
+    /// 整段润色被判成"否定被吞"丢回原文（Mac 4.1.5 日志：raw=4 polished=0，一个否定都没丢）。
+    /// 与 Mac 端 Support.swift 的 negationCount 逐条同源。
+    public static int NegationCount(string text)
+    {
+        var scrubbed = NegationScrubbed(text);
+        var count = scrubbed.Count(c => "不没无别未".Contains(c, StringComparison.Ordinal));
+        count += NegationWordRegex().Matches(scrubbed).Count;
         return count;
+    }
+
+    /// 含「不没无别未」却**整体不表否定**的常用词：计数前整词摘掉。
+    /// 收词的唯一标准是"这个词整体与否定无关"（「不得不」= 必须，是肯定）。
+    /// 拿不准的一律不收：漏收一个词最多多回退一次润色，收错一个词等于在那个词上
+    /// 把保真校验挖穿。已知代价：「不过来/不过去」会被「不过」整体摘掉——
+    /// 为了「不过（然而）」这个高频口头转折词，这一处认了。
+    /// 按字数从长到短删，免得短词先吃掉长词的一半。与 Mac 端 nonNegationWords 逐条同源。
+    private static readonly string[] NonNegationWords = new[]
+    {
+        // 「别」：区分 / 类属 / 他者，都不是「别做」的那个别。用户几乎每句话都在说「识别」
+        "识别", "特别", "区别", "分别", "个别", "级别", "类别", "性别", "告别", "差别", "辨别",
+        "别人", "别的",
+        // 「不」：转折、递进、范围、客套——整体都不表否定
+        "不过", "不仅", "不但", "不管", "差不多", "对不起", "不好意思", "了不起", "不得不",
+        // 「要不然 / 不然 / 要不」= 否则、要么，提的是另一个选择，没否定任何一句话。
+        // 已知代价：「只要不下雨就去」里的「要不」也会被摘掉（少数派，且只会漏判、不会误报）
+        "要不然", "不然", "要不",
+        // 「没」「无」「未」
+        "没关系", "无论", "无线", "未来",
+    }.OrderByDescending(w => w.Length).ToArray();
+
+    /// 独立成句的口头自我纠正 / 应答词：润色删掉它们**正是它的本职**
+    /// （「我说错了……不不，云端的识别就是……」里的「不不」）。
+    /// 只在它**整段独占**两个句读之间时才摘，句子内部的否定一个都不动——
+    /// 「没有问题」「我不去」照样逐字计数。与 Mac 端 selfCorrectionFillers 逐条同源。
+    private static readonly HashSet<string> SelfCorrectionFillers = new(StringComparer.Ordinal)
+    {
+        "不", "不不", "不不不", "不是", "不是不是", "不对", "不对不对",
+        "没有", "没有没有", "不行不行",
+        "no", "no no", "no no no",
+    };
+
+    /// 切"句"的字符：句读、括号、引号。**故意不含空格和撇号**——
+    /// 切空格的话「no way」会裂成两段，其中一段正好是 "no"，整句的否定就被当成口头禅摘掉了；
+    /// 切撇号的话「don't」会裂成 don + t，n['’]t 从此再也匹配不上。
+    private static readonly char[] FillerBreaks =
+        "。．.，,、！!？?；;：:…～~—\n\r()（）【】《》「」“”\"".ToCharArray();
+
+    /// 计数前的清洗（三道，**顺序是有讲究的**）。纯函数，**绝不进日志**——它带着用户说的原话。
+    /// 与 Mac 端 negationScrubbed 逐条同源。
+    private static string NegationScrubbed(string text)
+    {
+        // ① 独立成句的口头纠正：按句读切开，整段等于表里的词才丢
+        var kept = new List<string>();
+        foreach (var piece in text.Split(FillerBreaks))
+        {
+            var trimmed = piece.Trim().ToLowerInvariant();
+            if (trimmed.Length > 0 && SelfCorrectionFillers.Contains(trimmed)) continue;
+            kept.Add(piece);
+        }
+        // 用空格拼回去：两段的首尾字绝不能粘成一个新词（「…说不」+「过…」凑出一个「不过」
+        // 被下面整词摘掉，那就等于凭空吞掉一个真否定）
+        var result = string.Join(" ", kept);
+        // ② A 不 A 疑问句——**必须排在词表前面**：否则「要不要」会先被词表里的「要不」
+        //    吃掉半截，剩下的「要」+ 漏下的那个不 会被当成一个真否定记上
+        result = ANotAQuestionRegex().Replace(result, " ");
+        // ③ 含否定字却不表否定的常用词：整词删掉
+        foreach (var word in NonNegationWords)
+        {
+            result = result.Replace(word, " ", StringComparison.Ordinal);
+        }
+        return result;
     }
 
     public static bool IsVocabEcho(string text, IReadOnlyList<string> terms)
@@ -415,4 +821,39 @@ public static partial class TextPostProcessor
 
     [GeneratedRegex("\\b(not|no|never)\\b|n['’]t", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex NegationWordRegex();
+
+    /// 数字指纹用的四条"要看上下文才算不算数"（与 Mac 端 contextualNumberIdioms 逐条同源）：
+    ///   • 「十分」= 非常，除非后面跟「钟」（十分钟 = 10 分钟）或「之」（十分之一）；
+    ///   • 「千万」= 务必，除非**紧挨着前面**就是一个数字（三千万 / 3千万 是数）；
+    ///   • 「一点」= 一些 / 一点钟，除非后面跟数字、钟、半、多；
+    ///   • 星期 / 周 / 礼拜 + 一二三四五六日天 = 日期名，不是数量。
+    [GeneratedRegex("十分(?![钟之])")]
+    private static partial Regex VeryMuchIdiomRegex();
+
+    [GeneratedRegex("(?<![零〇一二三四五六七八九两幺0-9])千万")]
+    private static partial Regex MustIdiomRegex();
+
+    [GeneratedRegex("一点(?![零〇一二三四五六七八九两幺0-9钟半多])")]
+    private static partial Regex ABitIdiomRegex();
+
+    [GeneratedRegex("(星期|周|礼拜)[一二三四五六日天]")]
+    private static partial Regex WeekdayRegex();
+
+    /// 阿拉伯数字 + 汉字单位（1.2万 / 3500万 / 2亿）
+    [GeneratedRegex("(\\d+(?:\\.\\d+)?)(千万|百万|十万|万|亿|千|百)")]
+    private static partial Regex ArabicUnitRegex();
+
+    /// 口语式的省略尾数（1万2 / 3千5 / 2百5）：后面再跟数字或单位就不是这个形状
+    [GeneratedRegex("(\\d+)(万|千|百)(\\d)(?![0-9万亿千百十])")]
+    private static partial Regex ArabicAbbreviatedRegex();
+
+    /// 夹在两个数字之间的千分位 / 连字符 / 各种空格
+    [GeneratedRegex("(?<=[0-9])[,，\\u00A0\\u2009\\u202F \\-](?=[0-9])")]
+    private static partial Regex GroupSeparatorRegex();
+
+    /// A 不 A 疑问句：能不能 / 是不是 / 对不对 / 好不好 / 要不要 / 会不会 / 行不行…，
+    /// 连「有没有」一起认（所以中间那个字是 不 或 没）。整体是一个**疑问**，不是否定——
+    /// 「你能不能帮我」→「你能帮我吗」是最常见的正常润色。与 Mac 端 aNotAQuestion 同源。
+    [GeneratedRegex("(.)[不没]\\1")]
+    private static partial Regex ANotAQuestionRegex();
 }

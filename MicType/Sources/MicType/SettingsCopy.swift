@@ -85,14 +85,24 @@ enum SettingsCopy {
            "Exports one JSON file: vocabulary, custom rules, model names, recognition engine and language, and the interface language. Import merges, and a file from someone else can switch recognition to a cloud engine (the summary says so). API keys are never exported or imported.")
     }
 
-    /// 「输入」页在屏幕上摆着的说明（录音上限那一行由 DictationController 现算，一并计入预算）
-    static var inputCaptions: [String] {
-        [hotkeyGestures, autoStopOff, draftNeedsLocalModel, draftOverlayOnly,
-         DictationController.recordingLimitShort]
+    /// 「只用本地」这一档下，自定义规则一个字都不会被发出去。框照样能填能存，
+    /// 但这一刻它不生效——不说的话，用户会以为自己写的规则正在起作用。
+    static var rulesNeedAI: String {
+        tr("开启 AI 后生效", "Takes effect once AI is on")
     }
 
+    /// 「输入」页在屏幕上摆着的说明（录音上限那一行由 DictationController 现算，一并计入预算）。
+    /// 4.1.6 起多了「写作偏好」那一段的三行（词汇表两句二选一 + 自定义规则的灰字 + 这一条）。
+    static var inputCaptions: [String] {
+        [hotkeyGestures, autoStopOff, draftNeedsLocalModel, draftOverlayOnly,
+         DictationController.recordingLimitShort,
+         vocabularyArabicTip, vocabularyHardReplace, customRulesPlaceholder, rulesNeedAI]
+    }
+
+    /// 词汇表与自定义规则那两颗 ⓘ 4.1.6 起算在这一页头上（控件搬来了，说明跟着搬）
     static var inputInfos: [String] {
-        [hotkeyInfo, overlayInfo, recordingInfo, behaviourInfo, backupInfo]
+        [hotkeyInfo, vocabularyInfo, customRulesInfo,
+         overlayInfo, recordingInfo, behaviourInfo, backupInfo]
     }
 
     // MARK: - 本地识别
@@ -154,13 +164,13 @@ enum SettingsCopy {
            "Recognition and insertion run on this Mac; the Model figure is the network round trip to your model endpoint, and the number in brackets is how many rounds went through it. Only timings are stored — never any transcribed text.")
     }
 
+    /// 4.1.6 起词汇表那两句不在这一页（控件搬去了「输入 → 写作偏好」）
     static var recognitionCaptions: [String] {
-        [languageAutoIsFine, cloudTakesNoHint, localModelStillUsed,
-         vocabularyArabicTip, vocabularyHardReplace, performanceCloudRoundTrip]
+        [languageAutoIsFine, cloudTakesNoHint, localModelStillUsed, performanceCloudRoundTrip]
     }
 
     static var recognitionInfos: [String] {
-        [micCheckInfo, languageInfo, modelInfo, vocabularyInfo, performanceInfo]
+        [micCheckInfo, languageInfo, modelInfo, performanceInfo]
     }
 
     // MARK: - 云端 AI
@@ -335,29 +345,23 @@ enum SettingsCopy {
         tr("此服务商不支持联网搜索", "Web search is not available on this provider")
     }
 
-    /// 优先处理那颗 ⓘ。这一段只在 OpenAI 档出现（AISetup.showsPriorityToggle），
-    /// 所以不必再说一遍"只有 OpenAI 有"。
-    static var priorityInfo: String {
-        tr("付更高的 token 单价换更低、更稳的延迟。服务商仍可能把这次请求降回普通档，真降了下面会写出来。",
-           "Pays a higher token price for lower, steadier latency. The provider can still serve the request on the standard tier, and the line below says so when it does.")
-    }
+    // 「优先处理」那颗 ⓘ（priorityInfo）与「上一次请求实际跑在：」（lastServiceTier）
+    // 4.1.6 一起删了：那一段整个不存在了（用户 2026-09-21 拍板，OpenAI 官方接口恒走 Fast），
+    // 而屏幕上没有那个开关之后，这两句话一句也没有落脚的地方。代价改在 关于 → 隐私 说一次
+    //（PrivacyCopy.fastTier）；服务商实际给了哪一档照常进 Metrics 与诊断信息。
 
-    /// 一次性状态快照（"上一次那趟实际跑在哪一档"），不是控件说明——所以不进 captions，
-    /// 但仍然只写一处，免得和 LLMCatalog.serviceTierName 拼出两种说法
-    static var lastServiceTier: String {
-        tr("上一次请求实际跑在：", "Last request actually ran at: ")
-    }
-
+    /// 4.1.6 起自定义规则那行灰字不在这一页（控件搬去了「输入 → 写作偏好」）
     static var cloudCaptions: [String] {
         [usageLocalOnly, usageWithAI, usageWithCloudRecognition,
-         providerNotSetUp(current: "OpenAI"), modelNameInAdvanced, modelUsedForBoth, customRulesPlaceholder,
+         providerNotSetUp(current: "OpenAI"), modelNameInAdvanced, modelUsedForBoth,
          localModelNeedsNoKey, cloudRecognitionCost, cloudRecognitionOff,
          webSearchUnsupported]
     }
 
+    /// 4.1.6 少了两颗：customRulesInfo 跟着控件搬去「输入」页，priorityInfo 连同整段一起删了
     static var cloudInfos: [String] {
         [usageInfo, providerInfo, keyInfo(cloudASRProbe: false), keyInfo(cloudASRProbe: true),
-         cloudRecognitionInfo, customRulesInfo, webSearchInfo, priorityInfo, advancedInfo]
+         cloudRecognitionInfo, webSearchInfo, advancedInfo]
             + LLMProvider.allCases.map { cloudModelInfo(provider: $0) }
     }
 

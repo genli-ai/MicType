@@ -1794,6 +1794,11 @@ final class DictationController {
     enum DeliveryRoute: String {
         /// 直接写进我们自己的输入框（TranscriptSink）
         case sink
+        /// 直接写进自家 key window 的 first responder（OwnWindowInserter）：
+        /// 开录时人就在 MicType 自己的窗口里，而引导窗根本没开（设置窗口的「自定义规则」
+        /// 「词汇表」这些框）。**这条路不能走 ⌘V**——MicType 从没装过带 Edit 的主菜单，
+        /// Edit → Paste 这个 key equivalent 没有接收者，那一下按键谁都不接（4.1.5 bug）。
+        case ownWindow = "own-window"
         /// 只写剪贴板，**不**模拟 ⌘V：开录时人就在 MicType 自己的窗口里，而这段字接不住
         /// （引导开着但停在别的页）。⌘V 永远打向"此刻的键盘焦点"，那一刻的焦点是我们自己的
         /// 控件——粘进去比不粘进去糟得多。
@@ -1805,15 +1810,23 @@ final class DictationController {
     /// - sinkReady: 引导窗开着、且正停在「试一下」那一页
     /// - sinkRegistered: 引导窗开着（停在哪一页都算）
     /// - targetIsSelf: 开录那一刻的前台应用就是 MicType 自己（认不出来也算，行为与从前一致）
+    /// - targetIsKnown: 那一刻真的读到了前台应用的 bundle id
     ///
     /// 第一条判据是**开录时人在哪个应用**，不是引导窗开没开：引导留在后台、人在备忘录里
     /// 轻点的那一段，字必须落在备忘录的光标处——4.1.0 之前只看 isReady()，那一段会被
     /// 悄悄追加进后面那扇引导窗的框里，备忘录一个字都没有，还没有剪贴板可退。
+    ///
+    /// 人在自家窗口、引导又没开时走 `.ownWindow`（4.1.5 之前是 `.inserter`）：那条路会
+    /// 发一下合成 ⌘V，而 ⌘V 在 MicType 自己的窗口里从来就没有接收者——用户在设置的
+    /// 「自定义规则」里说了一句，日志写着 `outcome=pasted`，框里一个字都没有。
     static func deliveryRoute(sinkReady: Bool, sinkRegistered: Bool,
-                              targetIsSelf: Bool) -> DeliveryRoute {
+                              targetIsSelf: Bool, targetIsKnown: Bool = true) -> DeliveryRoute {
         guard targetIsSelf else { return .inserter }
         if sinkReady { return .sink }
-        return sinkRegistered ? .clipboard : .inserter
+        if sinkRegistered { return .clipboard }
+        // 认不出前台应用那一档（targetBundleID 为空）继续走老路：那一刻 key window 多半是 nil，
+        // 人也未必在我们的窗口里，往当前焦点盲粘一下仍然是最合理的猜测
+        return targetIsKnown ? .ownWindow : .inserter
     }
 
     /// 这段字最后**落在哪儿**。路由是"打算走哪条"，这一层是"问过输入框之后真正走成了哪条"。
@@ -1826,6 +1839,8 @@ final class DictationController {
     enum DeliveryOutcome: String {
         /// 直接落进了「试一下」那个框
         case sink
+        /// 直接落进了自家窗口里那个输入框
+        case ownWindow = "own-window"
         /// 只留在剪贴板上，等用户自己按 ⌘V
         case clipboard
         /// 常规：剪贴板 + 模拟 ⌘V 打到光标处
@@ -1833,9 +1848,17 @@ final class DictationController {
     }
 
     /// - sinkAccepted: 这一刻真的问过 TranscriptSink，它说接住了（route != .sink 时恒为 false）
-    static func deliveryOutcome(route: DeliveryRoute, sinkAccepted: Bool) -> DeliveryOutcome {
+    /// - ownWindowInserted: 这一刻真的往自家输入框写过，而且**回读确认**写进去了
+    ///   （route != .ownWindow 时恒为 false）
+    ///
+    /// 两条"自家"路的失败都退到剪贴板，绝不退成 ⌘V：这两条路的前提就是开录时人在
+    /// MicType 自己的窗口里，那一下 ⌘V 要么打进我们自己的控件、要么（多数时候）
+    /// 根本没人接——两种结果都比留在剪贴板糟。
+    static func deliveryOutcome(route: DeliveryRoute, sinkAccepted: Bool,
+                                ownWindowInserted: Bool = false) -> DeliveryOutcome {
         switch route {
         case .sink: return sinkAccepted ? .sink : .clipboard
+        case .ownWindow: return ownWindowInserted ? .ownWindow : .clipboard
         case .clipboard: return .clipboard
         case .inserter: return .inserter
         }
@@ -1874,7 +1897,8 @@ final class DictationController {
         let targetIsSelf = target.isEmpty || target == (Bundle.main.bundleIdentifier ?? "")
         let route = Self.deliveryRoute(sinkReady: TranscriptSink.isReady(),
                                        sinkRegistered: TranscriptSink.isRegistered,
-                                       targetIsSelf: targetIsSelf)
+                                       targetIsSelf: targetIsSelf,
+                                       targetIsKnown: !target.isEmpty)
         Log.info("Deliver start chars=\(finalText.count) target=\(logTarget) route=\(route.rawValue)")
         // 插入这一段也计时：它包含切前台（最长 1.2s）+ 粘贴时序，是用户真实等待的一部分。
         // 草稿在这里定格成局部变量——回调最长要等一秒多，那时 pendingMetric 可能已经是下一轮的了。
@@ -1889,7 +1913,12 @@ final class DictationController {
             // 一下 ⌘V 只会打进我们自己的控件
             Log.warn("Deliver sink declined the text - leaving it on the clipboard")
         }
-        switch Self.deliveryOutcome(route: route, sinkAccepted: accepted) {
+        // 自家窗口那条路同理：问过才算数。写不进去（没有可写的框 / 是密码框）就照实说，
+        // 绝不像 4.1.5 那样报一次 pasted 了事
+        let ownWindow = route == .ownWindow ? OwnWindowInserter.insert(finalText)
+                                            : OwnWindowInserter.Outcome.noTarget
+        switch Self.deliveryOutcome(route: route, sinkAccepted: accepted,
+                                    ownWindowInserted: ownWindow == .inserted) {
         case .sink:
             let insertMs = Log.ms(since: tInsert)
             Log.info("Deliver done target=\(logTarget) path=sink outcome=accepted insert=\(insertMs)ms")
@@ -1905,15 +1934,47 @@ final class DictationController {
             }
             Sounds.playSuccess()
             return
+        case .ownWindow:
+            let insertMs = Log.ms(since: tInsert)
+            Log.info("Deliver done target=\(logTarget) path=own-window outcome=inserted"
+                     + " insert=\(insertMs)ms")
+            if let metric = metric { Metrics.shared.record(metric.finished(insertMs: insertMs)) }
+            // 和 .sink 同理，这条路也**不**开放「换回识别原文」：撤销是对目标应用发一次 ⌘Z，
+            // 而 ⌘Z 和 ⌘V 一样在我们自己的窗口里没有接收者。用户就在那个框里，
+            // 要改自己改就是了（insertText 走的是标准编辑通道，框自己的 ⌘Z 照样能撤）。
+            if warning {
+                overlay.flashError(note)
+            } else {
+                overlay.flashSuccess(note)
+            }
+            Sounds.playSuccess()
+            return
         case .clipboard:
             let insertMs = Log.ms(since: tInsert)
             TextInserter.copyForManualPaste(finalText)
-            Log.info("Deliver done target=\(logTarget) path=clipboard outcome=copied"
-                     + " insert=\(insertMs)ms")
+            if route == .ownWindow {
+                Log.warn("Deliver done target=\(logTarget) path=own-window"
+                         + " outcome=\(ownWindow.rawValue) insert=\(insertMs)ms"
+                         + " - text left on the clipboard")
+            } else {
+                Log.info("Deliver done target=\(logTarget) path=clipboard outcome=copied"
+                         + " insert=\(insertMs)ms")
+            }
             if let metric = metric { Metrics.shared.record(metric.finished(insertMs: insertMs)) }
-            // 绝不打绿勾：这段字**没有**落到任何输入框里，用户得知道还差他按一下 ⌘V
-            overlay.flashError(tr("MicType 自己的窗口在前台——文字已复制到剪贴板，按 ⌘V 粘贴",
-                                  "MicType's own window is frontmost - text copied to clipboard, press ⌘V to paste"))
+            // 绝不打绿勾：这段字**没有**落到任何输入框里。三种情形三句话——
+            // 「这里没框可输入」那句尤其不能写成"按 ⌘V"：⌘V 在我们自己的窗口里没人接，
+            // 让用户在这儿按一辈子也没用（这正是 4.1.5 那个 bug 的根因）
+            switch (route, ownWindow) {
+            case (.ownWindow, .secureField):
+                overlay.flashError(tr("密码框里不能听写——文字已复制到剪贴板",
+                                      "Can't dictate into a password field — text copied to clipboard"))
+            case (.ownWindow, _):
+                overlay.flashError(tr("这里没有可以输入文字的框——文字已复制到剪贴板",
+                                      "No text field to type into here — text copied to clipboard"))
+            default:
+                overlay.flashError(tr("MicType 自己的窗口在前台——文字已复制到剪贴板，按 ⌘V 粘贴",
+                                      "MicType's own window is frontmost - text copied to clipboard, press ⌘V to paste"))
+            }
             Sounds.playError()
             return
         case .inserter:

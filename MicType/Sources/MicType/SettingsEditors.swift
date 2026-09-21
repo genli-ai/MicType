@@ -12,8 +12,13 @@ import ServiceManagement
 ///
 /// Plan C 拿掉了「权限」这一段：缺权限是"现在用不了"，不是一条设置——它归概览顶上那条
 /// 只在缺项时出现的横幅管。
+///
+/// 4.1.6 加进「写作偏好」（词汇表 + 自定义规则），紧跟在快捷键后面（用户 2026-09-21 拍板）：
+/// 这两个框讲的都是**我的话该怎么被写出来**，既不是"这台 Mac 怎么听"（本地识别页），
+/// 也不是服务商配置（云端 AI 页）。排在第二位是因为除了快捷键，这一页就数它们改得最多。
 enum InputSectionOrder: Int, CaseIterable {
     case hotkey
+    case writingPreferences
     case overlay
     case recording
     case behaviour
@@ -28,6 +33,13 @@ struct InputEditor: View {
     @AppStorage(SettingsKeys.livePreview) private var livePreview = true
     @AppStorage(SettingsKeys.overlayPosition) private var overlayPosition = OverlayPosition.bottomCenter.rawValue
     @AppStorage(SettingsKeys.keepHistory) private var keepHistory = true
+    // 写作偏好（4.1.6 起住在这一页）：词汇表从「本地识别」搬来，自定义规则从「云端 AI」搬来
+    @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
+    @AppStorage(SettingsKeys.customPolishRules) private var customRules = ""
+    @AppStorage(SettingsKeys.recognitionLanguage) private var recognitionLanguage = RecognitionLanguages.autoCode
+    /// 只读：自定义规则在「只用本地」这一档下一个字都不会发出去，要当面说一句
+    @AppStorage(SettingsKeys.polishLevel) private var polishLevel = PolishLevel.smart.rawValue
+    @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
     @State private var launchAtLogin = (SMAppService.mainApp.status == .enabled)
     /// 上一次开关登录项被系统拒了。开关自己弹回去是这一刻唯一的反馈，等于没有反馈
     @State private var launchAtLoginRefused = false
@@ -40,16 +52,33 @@ struct InputEditor: View {
                 set: { autoStopSilence = $0 ? 2 : 0 })
     }
 
+    /// 选了阿语：给一条**词汇表**提示（判据与文案都跟着词汇表一起从「本地识别」搬过来）。
+    /// 2026-09-19 的实测说明为什么——同一段阿英混说的素材，默认 0.6B 无上下文 CER 12.5%，
+    /// 把英文专名加进词汇表（热词）之后降到 4.0%；而 1.7B 基本不吃热词，反而是 16.8%。
+    /// 所以对用户最有用的动作是填词表，不是换模型。
+    private var showsArabicVocabularyTip: Bool {
+        recognitionLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ar"
+    }
+
+    /// 这一刻 AI 开着没有（自定义规则只有开着 AI 才会被发出去）。判据与「云端 AI」页同一个纯函数
+    private var usageMode: AIUsageMode {
+        AISetup.mode(polishLevel: PolishLevel(rawValue: polishLevel) ?? .smart,
+                     engine: RecognitionEngineChoice.parse(recognitionEngine))
+    }
+
     var body: some View {
-        Form {
-            ForEach(InputSectionOrder.allCases, id: \.self) { section in
-                sectionView(section)
+        // MeasuredFormPage：窗口高度跟着这一页的内容走（见 SettingsWindowSizing）
+        MeasuredFormPage(route: .input) {
+            Form {
+                ForEach(InputSectionOrder.allCases, id: \.self) { section in
+                    sectionView(section)
+                }
             }
-        }
-        .formStyle(.grouped)
-        // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言
-        .onChange(of: l10n.language) { _, _ in
-            backupStatus = ""
+            .formStyle(.grouped)
+            // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言
+            .onChange(of: l10n.language) { _, _ in
+                backupStatus = ""
+            }
         }
     }
 
@@ -57,6 +86,7 @@ struct InputEditor: View {
     private func sectionView(_ section: InputSectionOrder) -> some View {
         switch section {
         case .hotkey: hotkeySection
+        case .writingPreferences: writingPreferencesSection
         case .overlay: overlaySection
         case .recording: recordingSection
         case .behaviour: behaviourSection
@@ -88,7 +118,67 @@ struct InputEditor: View {
     }
 
 
-    // MARK: ② 悬浮窗
+    // MARK: ② 写作偏好（词汇表 + 自定义规则）
+
+    /// 两个框，一段。**都是"我的话该怎么被写出来"**，所以它们属于这一页而不是另外两页：
+    ///   • 词汇表原来在「本地识别」页——可它对云端识别同样作为热词生效，摆在那一页
+    ///     等于说"这是本机模型的事"；
+    ///   • 自定义规则原来在「云端 AI」页的服务商那一段下面——于是挨个点三家看看的人
+    ///     会以为每家各有一份要填（用户 2026-09-21 原话：「现在似乎每个地方都有 Customer Rules」）。
+    ///
+    /// 段头那颗 ⓘ 不摆：两个框各有各的细则（vocabularyInfo / customRulesInfo），
+    /// 挂在各自的标题上——一颗把两件事混着讲的 ⓘ 谁也读不完。
+    private var writingPreferencesSection: some View {
+        Section {
+            // ——— 词汇表（标题连同"逗号或换行分隔"这句格式说明一起搬过来；
+            // 原来末尾那个冒号去掉了：它现在和「自定义规则」是并排的两个小标题，
+            // 一个带冒号一个不带，看着就像其中一个写漏了）
+            SectionHeader(title: tr("专有词汇表（逗号或换行分隔）",
+                                    "Custom vocabulary (comma or newline separated)"),
+                          info: SettingsCopy.vocabularyInfo)
+            TextEditor(text: $vocabulary)
+                .font(.system(size: 12))
+                .frame(height: 76)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
+            // 这条提示就摆在词汇表这一段里：它要用户做的动作正是"往上面这个框里填词"。
+            // 与引擎无关——词汇表对云端同样作为热词生效。
+            if showsArabicVocabularyTip {
+                Caption(SettingsCopy.vocabularyArabicTip)
+            } else {
+                Caption(SettingsCopy.vocabularyHardReplace)
+            }
+
+            // ——— 自定义规则（4.1.1 起「关于我」也在这一个框里）
+            SectionHeader(title: tr("自定义规则", "Custom rules"),
+                          info: SettingsCopy.customRulesInfo)
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $customRules)
+                    .font(.system(size: 12))
+                    .frame(height: 76)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
+                // 空框里的灰字：这个框最大的门槛不是不会打字，是不知道该往里写什么。
+                // allowsHitTesting(false) 让点击穿过去落到编辑器上
+                if customRules.isEmpty {
+                    Text(SettingsCopy.customRulesPlaceholder)
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 8)
+                        .allowsHitTesting(false)
+                }
+            }
+            // 「只用本地」这一档下这个框一个字都不会被发出去。**框照样能填、能存**——
+            // 先写规则再开 AI 是完全正常的顺序，禁用它只会让人以为坏了（判据见 AISetup）
+            if AISetup.showsRulesNeedAINote(mode: usageMode) {
+                Caption(SettingsCopy.rulesNeedAI)
+            }
+        } header: {
+            SectionHeader(title: tr("写作偏好", "Writing preferences"))
+        }
+    }
+
+
+    // MARK: ③ 悬浮窗
 
     private var overlaySection: some View {
         Section {
@@ -103,7 +193,7 @@ struct InputEditor: View {
     }
 
 
-    // MARK: ③ 录音
+    // MARK: ④ 录音
 
     private var recordingSection: some View {
         Section {
@@ -136,7 +226,7 @@ struct InputEditor: View {
     }
 
 
-    // MARK: ④ 行为
+    // MARK: ⑤ 行为
 
     private var behaviourSection: some View {
         // 英文拼写统一用美式
@@ -177,7 +267,7 @@ struct InputEditor: View {
     }
 
 
-    // MARK: ⑤ 语言与备份
+    // MARK: ⑥ 语言与备份
 
     private var languageAndBackupSection: some View {
         Section {
@@ -208,7 +298,7 @@ struct InputEditor: View {
 
 }
 
-// MARK: - 本地识别（麦克风 / 语言 / 词汇表 / 本机模型）
+// MARK: - 本地识别（麦克风 / 语言 / 本机模型 / 性能）
 
 /// 这一页只管一件事：说出来的话怎么在**这台 Mac 上**变成字。
 /// 识别引擎、云端的那把 Key、接入地址全部在「云端 AI」页——
@@ -218,7 +308,6 @@ struct RecognitionEditor: View {
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKeys.qwenModelRepo) private var qwenRepo = QwenModels.defaultRepo
     @AppStorage(SettingsKeys.recognitionLanguage) private var recognitionLanguage = RecognitionLanguages.autoCode
-    @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
     /// 只读：云端识别的开关在「云端 AI」页。这里读它只为把几句话说对
     @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
     @ObservedObject private var downloader = QwenModelDownloader.shared
@@ -234,13 +323,6 @@ struct RecognitionEditor: View {
         _ = refreshTick
         // 下到一半的目录不算"已就绪"（QwenModels.isFullyDownloaded 认 .incomplete 标记）
         return QwenModels.isFullyDownloaded(repo: qwenRepo)
-    }
-
-    /// 选了阿语：给一条**词汇表**提示。2026-09-19 的实测说明为什么——同一段阿英混说的素材，
-    /// 默认 0.6B 无上下文 CER 12.5%，把英文专名加进词汇表（热词）之后降到 4.0%；
-    /// 而 1.7B 基本不吃热词，反而是 16.8%。所以对用户最有用的动作是填词表，不是换模型。
-    private var showsArabicVocabularyTip: Bool {
-        recognitionLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ar"
     }
 
     /// 当前选中模型的语言能力说明（来自模型目录；没写就不占一行）。
@@ -264,53 +346,54 @@ struct RecognitionEditor: View {
     private var engineChoice: RecognitionEngineChoice { RecognitionEngineChoice.parse(recognitionEngine) }
 
     var body: some View {
-        Form {
-            // 麦克风选择 + 电平自检：与引导第二屏共用同一个组件（MicCheck.swift）
-            Section {
-                MicCheckPanel()
-            } header: {
-                SectionHeader(title: tr("麦克风", "Microphone"), info: SettingsCopy.micCheckInfo)
-            }
+        // MeasuredFormPage：窗口高度跟着这一页的内容走（见 SettingsWindowSizing）
+        MeasuredFormPage(route: .recognition) {
+            Form {
+                // 麦克风选择 + 电平自检：与引导第二屏共用同一个组件（MicCheck.swift）
+                Section {
+                    MicCheckPanel()
+                } header: {
+                    SectionHeader(title: tr("麦克风", "Microphone"), info: SettingsCopy.micCheckInfo)
+                }
 
-            Section {
-                languageSection
-            } header: {
-                SectionHeader(title: tr("识别语言", "Recognition language"), info: SettingsCopy.languageInfo)
-            }
+                Section {
+                    languageSection
+                } header: {
+                    SectionHeader(title: tr("识别语言", "Recognition language"), info: SettingsCopy.languageInfo)
+                }
 
-            Section {
-                localModelSection
-            } header: {
-                SectionHeader(title: tr("识别模型", "Speech model"), info: SettingsCopy.modelInfo)
-            }
+                Section {
+                    localModelSection
+                } header: {
+                    SectionHeader(title: tr("识别模型", "Speech model"), info: SettingsCopy.modelInfo)
+                }
 
-            Section {
-                vocabularySection
-            } header: {
-                SectionHeader(title: tr("词汇表", "Vocabulary"), info: SettingsCopy.vocabularyInfo)
-            }
+                // 「词汇表」4.1.6 起不在这一页（用户 2026-09-21 拍板）：它是"我的话该怎么写"，
+                // 对云端识别同样作为热词生效——摆在这一页等于说"这是本机模型的事"。
+                // 现在和自定义规则并成一段，住在 设置 → 输入 → 写作偏好。
 
-            // 性能：只是照镜子，不提供任何"自动优化"开关——快慢的原因摆出来，怎么调由用户决定
-            Section {
-                performanceSection
-            } header: {
-                SectionHeader(title: tr("性能", "Performance"), info: SettingsCopy.performanceInfo)
+                // 性能：只是照镜子，不提供任何"自动优化"开关——快慢的原因摆出来，怎么调由用户决定
+                Section {
+                    performanceSection
+                } header: {
+                    SectionHeader(title: tr("性能", "Performance"), info: SettingsCopy.performanceInfo)
+                }
             }
-        }
-        .formStyle(.grouped)
-        .onReceive(downloader.$isDownloading) { _ in
-            refreshTick += 1
-        }
-        .onChange(of: qwenRepo) { _, _ in
-            updateMessage = ""
-            QwenEngine.shared.unloadModel()
-            refreshTick += 1
-        }
-        // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言。
-        // 下载状态不在其列：它现在存的是语言中性的 phase，文字由 tr() 现场渲染，下载中也跟着切
-        .onChange(of: l10n.language) { _, _ in
-            updateMessage = ""
-            if !upgrader.isBusy { upgrader.clearStatus() }
+            .formStyle(.grouped)
+            .onReceive(downloader.$isDownloading) { _ in
+                refreshTick += 1
+            }
+            .onChange(of: qwenRepo) { _, _ in
+                updateMessage = ""
+                QwenEngine.shared.unloadModel()
+                refreshTick += 1
+            }
+            // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言。
+            // 下载状态不在其列：它现在存的是语言中性的 phase，文字由 tr() 现场渲染，下载中也跟着切
+            .onChange(of: l10n.language) { _, _ in
+                updateMessage = ""
+                if !upgrader.isBusy { upgrader.clearStatus() }
+            }
         }
     }
 
@@ -480,28 +563,6 @@ struct RecognitionEditor: View {
         .cornerRadius(8)
     }
 
-    // MARK: 词汇表（与引擎无关，两档都生效）
-
-    @ViewBuilder
-    private var vocabularySection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(tr("专有词汇表（逗号或换行分隔）：",
-                    "Custom vocabulary (comma or newline separated):"))
-            TextEditor(text: $vocabulary)
-                .font(.system(size: 12))
-                .frame(height: 90)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
-            // 这条提示就摆在词汇表这一段里：它要用户做的动作正是"往上面这个框里填词"。
-            // 与引擎无关——词汇表对云端同样作为热词生效。
-            if showsArabicVocabularyTip {
-                Caption(SettingsCopy.vocabularyArabicTip)
-            } else {
-                Caption(SettingsCopy.vocabularyHardReplace)
-            }
-        }
-    }
-
-
     // MARK: 性能
 
     @ViewBuilder
@@ -527,9 +588,16 @@ struct RecognitionEditor: View {
 /// 这一页的形状：**整页只有一个决定**开路。
 /// ① 使用方式：只用本地 / 本地 + AI；② 选了 AI 再选一个服务商、贴一把 Key；
 /// ③ 一个「模型」下拉（润色和指令都用它）；④ 只有阿里云多一个「识别也用云端」开关；
-/// ⑤ 自定义规则；⑥ 联网搜索（支持的服务商默认开）；⑦ 优先处理（只有 OpenAI 有这一档）；
-/// 「高级」整段只剩没有内置清单那两档（其他兼容服务 / 本机模型）的型号名输入框、
-/// 「刷新模型列表」与「测试模型」——三家官方档连这一段都不渲染。
+/// ⑤ 联网搜索（支持的服务商默认开）。**到此为止**。
+/// 「高级」整段只剩没有内置清单那两档（其他兼容服务 / 本机模型）的型号名输入框与
+/// 「刷新模型列表」——三家官方档连这一段都不渲染。
+///
+/// 4.1.6 又收掉两样（用户 2026-09-21 拍板），两样都是"摆错了地方"而不是"写长了"：
+///   • **「自定义规则」**——它讲的是"我的话该怎么写"，不是服务商配置。摆在服务商那一段
+///     下面的结果是：挨个点三家看看的人以为每家各有一份规则要填（用户原话：「现在似乎
+///     每个地方都有 Customer Rules」）。现在它和词汇表一起住在「输入 → 写作偏好」。
+///   • **「优先处理」**——OpenAI 官方接口现在一律走 Fast 档（LLMClient.asksForFastTier），
+///     用户不再被问这个问题；代价（token 单价约 2 倍）在 关于 → 隐私 里说一次。
 ///
 /// 4.1.4 又收掉三样（用户 2026-09-20 实测后拍板：「一个测试，不是三个」）：
 ///   • **「测试模型」**——三家官方档的型号来自下拉、Key 在上面粘的时候就验过了，
@@ -552,7 +620,6 @@ struct RecognitionEditor: View {
 ///     准备的高级动作，用「导入设置…」配置即可。已经在用的人一切照旧。
 struct CloudEditor: View {
     @ObservedObject private var l10n = L10n.shared
-    @ObservedObject private var metrics = Metrics.shared
     @AppStorage(SettingsKeys.polishLevel) private var polishLevel = PolishLevel.smart.rawValue
     @AppStorage(SettingsKeys.llmProvider) private var provider = LLMProvider.openai.rawValue
     @AppStorage(SettingsKeys.openaiBaseURL) private var baseURL = "https://api.openai.com/v1"
@@ -571,9 +638,7 @@ struct CloudEditor: View {
     @AppStorage(SettingsKeys.localRuntime) private var localRuntime = LLMCatalog.LocalRuntime.ollama.rawValue
     @AppStorage(SettingsKeys.localModel) private var localModel = ""
     @AppStorage(SettingsKeys.localCommandModel) private var localCommandModel = ""
-    @AppStorage(SettingsKeys.fastTier) private var fastTier = false
     @AppStorage(SettingsKeys.webSearchEnabled) private var webSearch = true
-    @AppStorage(SettingsKeys.customPolishRules) private var customRules = ""
     /// 识别引擎：云端识别的开关就在这一页（阿里云那一档下面），「本地识别」页只读它。
     /// 同一个账号、同一把 Key、同一台主机只在这里选一次。
     @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
@@ -666,63 +731,64 @@ struct CloudEditor: View {
     }
 
     var body: some View {
-        Form {
-            // 使用方式 → 服务商 → Key → 模型 →（阿里云的）云端识别开关：
-            // 与引导第三屏**同一个视图**（CloudSetupCore），顺序、标题、说明、ⓘ 全都只写一处。
-            // 4.1.1 起连语义也一样了：两处都是"看着的那一档，验证通过才采纳"，
-            // 各自只剩 Binding 的 setter 不同（这里换一档要清掉本页那几条快照）。
-            CloudSetupCore(style: .settings,
-                           selected: selected,
-                           inUse: inUseProvider,
-                           engine: engineChoice,
-                           usageMode: usageModeBinding,
-                           provider: providerBinding,
-                           offered: offeredProviders,
-                           polishModel: polishModelBinding,
-                           commandModel: commandModelBinding,
-                           customModelChosen: $customModelChosen,
-                           keyProbe: keyProbe,
-                           keyProbeModel: polishModelBinding.wrappedValue,
-                           showsModel: true,
-                           showsNotSetUpHint: !hasStoredKey,
-                           onKeyStatus: { _ in
-                               // 钥匙串不是 @AppStorage：验证通过之后这一页要自己重算，
-                               // 并且立刻把这一档采纳为生效服务商（那正是"验证通过才换过去"）
-                               keychainTick &+= 1
-                               adoptIfUsable(selected)
-                           }) {
-                usageNotices
-            } providerNotices: {
-                providerNotices
-            }
-            if usageMode == .withAI {
-                Section {
-                    customRulesField
-                } header: {
-                    SectionHeader(title: tr("自定义规则", "Custom rules"),
-                                  info: SettingsCopy.customRulesInfo)
+        // MeasuredFormPage：窗口高度跟着这一页的内容走（见 SettingsWindowSizing）
+        MeasuredFormPage(route: .cloud) {
+            Form {
+                // 使用方式 → 服务商 → Key → 模型 →（阿里云的）云端识别开关：
+                // 与引导第三屏**同一个视图**（CloudSetupCore），顺序、标题、说明、ⓘ 全都只写一处。
+                // 4.1.1 起连语义也一样了：两处都是"看着的那一档，验证通过才采纳"，
+                // 各自只剩 Binding 的 setter 不同（这里换一档要清掉本页那几条快照）。
+                CloudSetupCore(style: .settings,
+                               selected: selected,
+                               inUse: inUseProvider,
+                               engine: engineChoice,
+                               usageMode: usageModeBinding,
+                               provider: providerBinding,
+                               offered: offeredProviders,
+                               polishModel: polishModelBinding,
+                               commandModel: commandModelBinding,
+                               customModelChosen: $customModelChosen,
+                               keyProbe: keyProbe,
+                               keyProbeModel: polishModelBinding.wrappedValue,
+                               showsModel: true,
+                               showsNotSetUpHint: !hasStoredKey,
+                               onKeyStatus: { _ in
+                                   // 钥匙串不是 @AppStorage：验证通过之后这一页要自己重算，
+                                   // 并且立刻把这一档采纳为生效服务商（那正是"验证通过才换过去"）
+                                   keychainTick &+= 1
+                                   adoptIfUsable(selected)
+                               }) {
+                    usageNotices
+                } providerNotices: {
+                    providerNotices
                 }
-                webSearchSection
-                if AISetup.showsPriorityToggle(inUse: inUseProvider) { prioritySection }
-                // 「高级」整段只留给**没有内置型号清单**的那两档（其他 OpenAI 兼容服务 / 本机模型）：
-                // 4.1.4 拿掉「测试模型」之后，三家官方档的这一段里一个控件都不剩，
-                // 而一个空的折叠段只会让人以为界面坏了（用户 2026-09-20：一个测试，不是三个）。
-                if !hasModelMenu {
-                    Section {
-                        modelMaintenance
-                    } header: {
-                        SectionHeader(title: tr("高级", "Advanced"), info: SettingsCopy.advancedInfo)
+                if usageMode == .withAI {
+                    // 「自定义规则」4.1.6 起不在这一页（用户 2026-09-21 拍板）：它说的是
+                    // **我的话该怎么写**，不是服务商配置。摆在服务商那一段下面的后果是——
+                    // 挨个点 OpenAI / DeepSeek / 阿里云看看的人，会以为每家各有一份规则要填
+                    //（用户原话：「现在似乎每个地方都有 Customer Rules」）。现在它和词汇表一起
+                    // 住在 设置 → 输入 → 写作偏好，整个 App 里只有那一处。
+                    webSearchSection
+                    // 「高级」整段只留给**没有内置型号清单**的那两档（其他 OpenAI 兼容服务 / 本机模型）：
+                    // 4.1.4 拿掉「测试模型」之后，三家官方档的这一段里一个控件都不剩，
+                    // 而一个空的折叠段只会让人以为界面坏了（用户 2026-09-20：一个测试，不是三个）。
+                    if !hasModelMenu {
+                        Section {
+                            modelMaintenance
+                        } header: {
+                            SectionHeader(title: tr("高级", "Advanced"), info: SettingsCopy.advancedInfo)
+                        }
                     }
                 }
             }
-        }
-        .formStyle(.grouped)
-        // 回到这一页时选择器要停在**正在用**的那一档上（上一次可能只是预览到一半就走了）
-        .onAppear { pendingProvider = inUseProvider }
-        // 测试结果与刷新结果都是快照，切换语言后清掉，避免残留旧语言
-        .onChange(of: l10n.language) { _, _ in
-            testResult = ""
-            refreshStatus = ""
+            .formStyle(.grouped)
+            // 回到这一页时选择器要停在**正在用**的那一档上（上一次可能只是预览到一半就走了）
+            .onAppear { pendingProvider = inUseProvider }
+            // 测试结果与刷新结果都是快照，切换语言后清掉，避免残留旧语言
+            .onChange(of: l10n.language) { _, _ in
+                testResult = ""
+                refreshStatus = ""
+            }
         }
     }
 
@@ -894,32 +960,7 @@ struct CloudEditor: View {
 
 
 
-    // MARK: 段 5 自定义规则（4.1.1 起「关于我」也在这一个框里）
-
-    /// 一个多行框，整页只出现这一次——不再每个服务商下面各摆一遍，也不再分成
-    /// 「关于我」+「自定义规则」两个（谁也说不清哪句话该写在哪个框里，而它们最后
-    /// 都被拼进同一段提示词）。老用户那段「关于我」由启动迁移并进来（AISetup.mergedRules）。
-    @ViewBuilder
-    private var customRulesField: some View {
-        ZStack(alignment: .topLeading) {
-            TextEditor(text: $customRules)
-                .font(.system(size: 12))
-                .frame(height: 76)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
-            // 空框里的灰字：这个框最大的门槛不是不会打字，是不知道该往里写什么。
-            // allowsHitTesting(false) 让点击穿过去落到编辑器上
-            if customRules.isEmpty {
-                Text(SettingsCopy.customRulesPlaceholder)
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 8)
-                    .allowsHitTesting(false)
-            }
-        }
-    }
-
-    // MARK: 段 6 联网搜索（支持的服务商默认开）
+    // MARK: 段 5 联网搜索（支持的服务商默认开）
 
     /// 不支持的服务商**连开关都不摆**：一个点了没反应的灰开关加一行"这家没有"，
     /// 是用两行讲一件与这位用户无关的事。
@@ -938,28 +979,12 @@ struct CloudEditor: View {
         }
     }
 
-    // MARK: 段 7 优先处理（整段只在 OpenAI 档出现）
-
-    @ViewBuilder
-    private var prioritySection: some View {
-        Section {
-            // 标题里**不写单价**：单价只有 LLMCatalog.fastTierPriceNote 一个出处（就在下面那一行），
-            // 两处各写一个数字的结果是改一次价就有两个数字打架（4.1.0 之前标题里硬写着「2 倍」）
-            Toggle(tr("优先处理", "Priority processing"), isOn: $fastTier)
-            Caption(LLMCatalog.fastTierPriceNote)
-            // 这一行的用途是揭发"勾了优先处理却被服务商降回普通档"。开关关着的时候它无事可揭
-            if fastTier, let tier = lastServiceTier {
-                let ranFast = LLMCatalog.servedPriorityTier(tier)
-                Caption(SettingsCopy.lastServiceTier + LLMCatalog.serviceTierName(tier),
-                        warning: !ranFast)
-            }
-        } header: {
-            SectionHeader(title: tr("优先处理", "Priority processing"), info: SettingsCopy.priorityInfo)
-        }
-    }
-
-
-    // MARK: 段 8 高级（整段只剩型号维护）
+    // MARK: 段 7 高级（整段只剩型号维护）
+    //
+    // 4.1.6 这里原本是「优先处理」那一段（一个开关 + 一行单价 + 一行"上一次跑在哪一档"）。
+    // 整段删掉：OpenAI 官方接口现在一律走 Fast（LLMClient.asksForFastTier），
+    // 用户不再被问这个问题，代价在 关于 → 隐私 里说一次。服务商回传的 service_tier
+    // 照常解析、照常进 Metrics 与诊断信息（Diagnostics 的 lastServedTier）。
 
     /// 这一档有没有内置型号清单。没有（其他 OpenAI 兼容服务 / 本机模型）的那两档，
     /// 型号名只有用户自己知道——「高级」里那个输入框和「刷新」都是为他们留的。
@@ -1002,12 +1027,6 @@ struct CloudEditor: View {
                     polishModelBinding.wrappedValue = newValue
                     commandModelBinding.wrappedValue = newValue
                 })
-    }
-
-    /// 最近一轮拿到过 service_tier 的记录。勾了优先处理却写着 default = 被服务商降级了，
-    /// 这件事必须看得见——不然用户以为多付的钱买到了低延迟。
-    private var lastServiceTier: String? {
-        metrics.items.compactMap(\.serviceTier).first
     }
 
     // MARK: 动作
@@ -1156,6 +1175,8 @@ struct AboutPanel: View {
                         .id(Self.privacyAnchor)
                 }
                 .padding(20)
+                // 窗口高度跟着这一页走（关于页本来就是 ScrollView，量里面那一叠就够）
+                .measuresSettingsPage(.about)
             }
             .onAppear { runIntent(proxy: proxy) }
             .onChange(of: nav.visitCount) { _, _ in runIntent(proxy: proxy) }

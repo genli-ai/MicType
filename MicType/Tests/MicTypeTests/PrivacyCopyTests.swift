@@ -19,12 +19,36 @@ final class PrivacyCopyTests: XCTestCase {
         super.tearDown()
     }
 
-    func testSixSentencesInFixedOrder() {
-        XCTAssertEqual(PrivacyCopy.allLines.count, 6)
+    func testSevenSentencesInFixedOrder() {
+        // 4.1.6 多了一句：OpenAI 官方接口恒走 Fast 档（token 单价约 2 倍）。
+        // 界面上已经没有那个开关了，多花的钱只剩这一处写着
+        XCTAssertEqual(PrivacyCopy.allLines.count, 7)
         // 顺序是文案的一部分：先说数据去了哪，再说钱谁收
         XCTAssertEqual(PrivacyCopy.allLines, PrivacyCopy.dataFlowLines + PrivacyCopy.keyAndCostLines)
         XCTAssertEqual(PrivacyCopy.dataFlowLines.count, 2)
-        XCTAssertEqual(PrivacyCopy.keyAndCostLines.count, 4)
+        XCTAssertEqual(PrivacyCopy.keyAndCostLines.count, 5)
+    }
+
+    /// Fast 档那一句：单价只有 LLMCatalog 一个出处（引用，不复述），而且必须点名
+    /// "官方接口"——OpenAI 档的 Base URL 指向第三方网关时一个字段都不发
+    /// （判据就是 LLMClient.asksForFastTier 用的那一条）
+    func testFastTierSentenceQuotesTheSinglePriceSourceAndNamesTheOfficialAPI() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            XCTAssertTrue(PrivacyCopy.fastTier.contains(LLMCatalog.fastTierPriceNote),
+                          PrivacyCopy.fastTier)
+            XCTAssertTrue(PrivacyCopy.allLines.contains(PrivacyCopy.fastTier))
+        }
+        L10n.shared.language = .zh
+        XCTAssertTrue(PrivacyCopy.fastTier.contains("官方"), PrivacyCopy.fastTier)
+        // 开关早就没了：这句话不许再写成"默认关闭"那一套
+        XCTAssertFalse(PrivacyCopy.fastTier.contains("默认关"), PrivacyCopy.fastTier)
+        L10n.shared.language = .en
+        XCTAssertTrue(PrivacyCopy.fastTier.lowercased().contains("official openai api"),
+                      PrivacyCopy.fastTier)
+        XCTAssertFalse(PrivacyCopy.fastTier.lowercased().contains("off by default"),
+                       PrivacyCopy.fastTier)
+        XCTAssertFalse(CJKSourceScanner.containsFlagged(PrivacyCopy.fastTier), PrivacyCopy.fastTier)
     }
 
     /// 联网搜索的单价只有一个出处：隐私那句必须原样引用 LLMCatalog 的那一句。
@@ -194,19 +218,27 @@ final class InputSectionOrderTests: XCTestCase {
 
     func testOrderIsHotkeyFirstAndLanguageLast() {
         XCTAssertEqual(InputSectionOrder.allCases,
-                       [.hotkey, .overlay, .recording, .behaviour, .languageAndBackup])
+                       [.hotkey, .writingPreferences, .overlay, .recording,
+                        .behaviour, .languageAndBackup])
         XCTAssertEqual(InputSectionOrder.allCases.first, .hotkey)
         XCTAssertEqual(InputSectionOrder.allCases.last, .languageAndBackup)
+    }
+
+    /// 4.1.6：「写作偏好」（词汇表 + 自定义规则）紧跟在快捷键后面。
+    /// 钉住位置而不只是"存在"：除了快捷键，这一页就数这两个框改得最多——
+    /// 一旦被顺手挪到最底下，它就和以前藏在别的页里一样找不着了。
+    func testWritingPreferencesSitRightAfterTheHotkey() {
+        XCTAssertEqual(InputSectionOrder.allCases[1], .writingPreferences)
     }
 
     /// 权限不再是这一页的一段：缺权限是"现在用不了"，归概览顶上那条横幅管。
     /// 钉住它是因为"顺手把权限搬回设置页"正是最容易发生的那次回退。
     func testPermissionsAreNotASectionOfThisPage() {
-        XCTAssertEqual(InputSectionOrder.allCases.count, 5)
+        XCTAssertEqual(InputSectionOrder.allCases.count, 6)
     }
 
     func testRawValuesAreContiguousFromZero() {
         // ForEach(id: \.self) 靠 rawValue 稳定排序；插新段落必须显式排到位置上
-        XCTAssertEqual(InputSectionOrder.allCases.map(\.rawValue), Array(0..<5))
+        XCTAssertEqual(InputSectionOrder.allCases.map(\.rawValue), Array(0..<6))
     }
 }

@@ -85,7 +85,7 @@ If the hotkey still does not work after Accessibility appears enabled, remove Mi
 
 ## Recognition Engines
 
-**On-device Qwen3-ASR is the default**, and it is the whole of Settings → **On-device recognition**: microphone, recognition language, the speech model, vocabulary and performance. Filler words (um, uh, 嗯, يعني…) are removed from every on-device transcript by a conservative built-in list — there is nothing to configure. Recognition runs on your Mac through MLX/Metal and your audio never leaves the machine. The model updates itself: when a better or newer one is published you get a single non-modal hint, one click downloads and verifies it, and the old weights are removed only after the new model has actually worked and you have restarted once.
+**On-device Qwen3-ASR is the default**, and it is the whole of Settings → **On-device recognition**: microphone, recognition language, the speech model and performance. Filler words (um, uh, 嗯, يعني…) are removed from every on-device transcript by a conservative built-in list — there is nothing to configure. Recognition runs on your Mac through MLX/Metal and your audio never leaves the machine. The model updates itself: when a better or newer one is published you get a single non-modal hint, one click downloads and verifies it, and the old weights are removed only after the new model has actually worked and you have restarted once.
 
 **Cloud recognition is one switch**, and it lives with the rest of your AI setup: Settings → **Cloud AI** → pick **Alibaba Cloud** → *Also recognize speech in the cloud*. It is off by default. Useful when this Mac is slow, the takes are long, or you need a language the local model handles poorly. Two things are stated right next to the switch: **your audio is uploaded to that provider**, and **that provider bills you by the second of audio** — with the price, the one-time enabling step and the provider's retention statement in the ⓘ beside the section title.
 
@@ -96,7 +96,7 @@ If the hotkey still does not work after Accessibility appears enabled, remove Mi
 
 **Recognition language** is set under Settings → On-device recognition. Leave it on Auto, or pick a language — with a language chosen, every segment of a long dictation is locked to it, which prevents the model from drifting to another language mid-recording.
 
-**Arabic** is supported: Modern Standard Arabic works well. Gulf, Egyptian and other dialects are *not* promised — the setting says so rather than pretending. One tip that measurably matters: English brand and product names spoken inside Arabic come back written in Arabic letters, so **add them to your custom vocabulary** (`Microsoft Excel`, `Power BI`) — vocabulary entries go to the model as hotwords and fix exactly this. Arabic punctuation is mostly supplied by AI polish.
+**Arabic** is supported: Modern Standard Arabic works well. Gulf, Egyptian and other dialects are *not* promised — the setting says so rather than pretending. One tip that measurably matters: English brand and product names spoken inside Arabic come back written in Arabic letters, so **add them to your custom vocabulary** under Settings → Input → Writing preferences (`Microsoft Excel`, `Power BI`) — vocabulary entries go to the model as hotwords and fix exactly this. Arabic punctuation is mostly supplied by AI polish.
 
 ## Long Dictation
 
@@ -112,11 +112,13 @@ With AI, three decisions and no more:
 - **One key**, verified as you paste it (Checking… / Connected ✓ / Failed, with the reason and what to do). A key that does not verify is never written to the Keychain. There is no second key field anywhere in the app.
 - **One Model dropdown** — polish and commands always run the same model, so this is the only model decision there is (the split fields are gone, and an older split pair is pulled back together once at launch). Defaults: `gpt-5.6-luna`, `deepseek-flash`, `qwen3.8-flash` — each provider's balanced, fast tier, because polish runs on every single sentence and a model that thinks for ten seconds is a worse default than one that answers in two. The flagship tiers are one click away in the same list, labelled as such. Pick *Custom…* to type any model name.
 
-**Custom rules** is one multi-line box under those three: long-standing preferences for the AI (*sign as Gen*, *keep English jargon untranslated*), carried by every polish and every voice command. It is the only box of its kind on this page.
+**Custom rules** is not on this page: it says how *your words* should be written, not which provider to call, so it lives with your vocabulary under Settings → **Input** → **Writing preferences**. One multi-line box, once in the whole app: long-standing preferences for the AI (*sign as Gen*, *keep English jargon untranslated*), carried by every polish and every voice command. With **Local only** it stays editable and says so in one line — *Takes effect once AI is on*.
 
-**Web search** is on by default wherever the provider offers it, with the price beside the switch (about $0.01 per search on OpenAI; billed at your provider's own rates on Alibaba Cloud). It applies only to hold-to-command — the polish behind tap-to-dictate never searches — and where a provider has no web search there is no switch, just one line saying so. **Priority processing** (a higher token price for steadier latency) is shown only under OpenAI, the only provider that offers it.
+**Web search** is on by default wherever the provider offers it, with the price beside the switch (about $0.01 per search on OpenAI; billed at your provider's own rates on Alibaba Cloud). It applies only to hold-to-command — the polish behind tap-to-dictate never searches — and where a provider has no web search there is no switch, just one line saying so.
 
-*Advanced* exists only for the two providers with no built-in model list (other OpenAI-compatible services and local models): the model-name field, **Refresh model list** and a one-request **model test**. For OpenAI, DeepSeek and Alibaba Cloud the model comes from the dropdown and the key was verified when you pasted it, so the section is not shown at all.
+**The Fast tier is always on for OpenAI**, and there is no switch for it: every request to the official OpenAI API is sent with `service_tier: "fast"` — lower, steadier latency at about twice the token price, stated once under About → Privacy. An OpenAI base URL pointing at a third-party gateway never gets the field, and a model that rejects the tier is remembered for the rest of the run so it is asked only once.
+
+*Advanced* exists only for the two providers with no built-in model list (other OpenAI-compatible services and local models): the model-name field and **Refresh model list**. For OpenAI, DeepSeek and Alibaba Cloud the model comes from the dropdown and the key was verified when you pasted it, so the section is not shown at all.
 
 Polish modes:
 
@@ -127,7 +129,7 @@ Voice commands use the same provider and key.
 
 Two kinds of vocabulary, not to confuse:
 
-- **Custom vocabulary**: hotwords you enter in Settings → On-device recognition — stored locally, effective on the next transcription (and sent as hotwords to a cloud engine, if you picked one).
+- **Custom vocabulary**: hotwords you enter in Settings → Input → Writing preferences — stored locally, effective on the next transcription (and sent as hotwords to a cloud engine, if you picked one).
 - **Model tokenizer/vocab**: shipped with the Qwen model. If upstream updates it, run `scripts/Generate Qwen Tokenizer.command` again and reinstall.
 
 ## Privacy
@@ -143,7 +145,7 @@ Two kinds of vocabulary, not to confuse:
 
 **Hotkey does not respond?** Check System Settings → Privacy & Security → Accessibility. If you build from source (ad-hoc signing), macOS usually requires removing the old permission entry and adding the app again after each rebuild; official notarized releases keep a stable identity, so upgrades don't need this.
 
-**Custom names or terms are wrong?** Add names, brands, products, and technical terms to Settings → On-device recognition → Custom Vocabulary. They are used as hotwords by the speech engine (local or cloud) and as hints for AI polish. This is also the fix for English brand names spoken inside Arabic.
+**Custom names or terms are wrong?** Add names, brands, products, and technical terms to Settings → Input → Writing preferences → Custom vocabulary. They are used as hotwords by the speech engine (local or cloud) and as hints for AI polish. This is also the fix for English brand names spoken inside Arabic.
 
 **Model download is slow?** MicType tries `hf-mirror.com` first and falls back to `huggingface.co`. Successfully downloaded files are kept, so retrying resumes by file.
 
@@ -300,7 +302,7 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 
 ## 识别引擎
 
-**本地 Qwen3-ASR 是默认**，也是 设置 → **本地识别** 这一页的全部内容：麦克风、识别语言、本机模型、专有词汇表与性能。口水词（嗯 / 呃 / um / uh / يعني…）由一张保守的内置表在本机删掉，**没有任何开关要配**。识别通过 MLX/Metal 跑在你的 Mac 上，录音不出机。模型自己会升级：出现更好或更新的模型时只给**一条**非模态提示，点一下完成下载与校验；旧模型要等新模型真正成功识别过一次、并且你重启过一次之后才会被删掉。
+**本地 Qwen3-ASR 是默认**，也是 设置 → **本地识别** 这一页的全部内容：麦克风、识别语言、本机模型与性能。口水词（嗯 / 呃 / um / uh / يعني…）由一张保守的内置表在本机删掉，**没有任何开关要配**。识别通过 MLX/Metal 跑在你的 Mac 上，录音不出机。模型自己会升级：出现更好或更新的模型时只给**一条**非模态提示，点一下完成下载与校验；旧模型要等新模型真正成功识别过一次、并且你重启过一次之后才会被删掉。
 
 **云端识别是一个开关**，而且和你的 AI 配置放在一起：设置 → **云端 AI** → 选「阿里云百炼」→「识别也用云端」。默认关着。这台 Mac 慢、录音长、或者要识别本地模型不擅长的语言时才值得开。开关旁边就写着两件事：**你的音频会上传到该服务商**、**该服务商按音频秒数向你计费**；单价、先开通模型那一步、留存口径与出错回落本机，都在这一段标题旁边那颗 ⓘ 里。
 
@@ -311,7 +313,7 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 
 **识别语言**在 设置 → 本地识别 里设置。保持「自动」即可；一旦指定语言，长录音的每一段都会锁住这个语言，杜绝录到一半漂到别的语言。
 
-**阿拉伯语**可用：标准阿语（MSA）表现不错；海湾、埃及等**方言不做承诺**——界面上就这么写，不粉饰。有一条实测有效的用法：阿语口述里夹的英文品牌 / 产品名会被写成阿拉伯字母，**请把它们加进专有词汇表**（如 `Microsoft Excel`、`Power BI`）——词汇表会作为热词直接送进模型，正好治这个。阿语的标点主要由 AI 润色补齐。
+**阿拉伯语**可用：标准阿语（MSA）表现不错；海湾、埃及等**方言不做承诺**——界面上就这么写，不粉饰。有一条实测有效的用法：阿语口述里夹的英文品牌 / 产品名会被写成阿拉伯字母，**请把它们加进专有词汇表**（设置 → 输入 → 写作偏好，如 `Microsoft Excel`、`Power BI`）——词汇表会作为热词直接送进模型，正好治这个。阿语的标点主要由 AI 润色补齐。
 
 ## 长录音
 
@@ -327,7 +329,7 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 - **一把 Key**，在粘贴的当下就会被验证（正在验证… / 已连通 ✓ / 连不上 + 原因与下一步）；验证不过的 Key 不会被写进钥匙串。全 App 没有第二个 Key 输入框。
 - **一个「模型」下拉**——润色和指令永远用同一个型号，所以模型这件事只有这一个决定（分开设的入口已经没有了，老配置里不一致的那一对会在启动时拉回一致）。默认分别是 `gpt-5.6-luna`、`deepseek-flash`、`qwen3.8-flash`——每家均衡偏快的那一档：润色是每句话都要跑一次的东西，一个想十秒才答的模型不是更好的默认值。想要旗舰就在同一个下拉里，那几项标着「旗舰」。选「自定义…」可以手填任意型号名。
 
-**「自定义规则」**是这三个控件下面的一个多行框：写给 AI 的长期偏好（「署名用 Gen」「英文术语保留原文」），每次润色和每条语音指令都会带上它。整页只有这一个框。
+**「自定义规则」**不在这一页：它讲的是**你的话该怎么被写出来**，不是「调用哪家」，所以和专有词汇表一起住在 设置 → **输入** → **写作偏好**。一个多行框，整个 App 里只有这一处：写给 AI 的长期偏好（「署名用 Gen」「英文术语保留原文」），每次润色和每条语音指令都会带上它。选「只用本地」时它照样能填能存，框下面会写一句「开启 AI 后生效」。
 
 **联网搜索默认开**（服务商支持的话），单价就写在开关旁边（OpenAI 每次约 $0.01；阿里云按服务商自己的价目计费）。它**只在按住说指令时**才可能联网——轻点听写的润色永远不联网；不支持的服务商连开关都不摆，只留一行说明。**「优先处理」**（多付 token 单价换更稳的延迟）**只在 OpenAI 档出现**，因为只有它有这个档位。
 
@@ -342,7 +344,7 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 
 两类「词汇」要区分：
 
-- **专有词汇表**：你在设置里填的热词，保存在本机，下次识别立即生效（选了云端引擎时也会作为热词发过去）
+- **专有词汇表**：你在 设置 → 输入 → 写作偏好 里填的热词，保存在本机，下次识别立即生效（选了云端引擎时也会作为热词发过去）
 - **模型 tokenizer/vocab**：Qwen 模型自带的分词词表，上游更新后需重新运行 `scripts/Generate Qwen Tokenizer.command` 并重新安装
 
 ## 隐私
@@ -358,7 +360,7 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 
 **按快捷键没反应？** 检查 系统设置 → 隐私与安全性 → 辅助功能。从源码自行编译（ad-hoc 签名）每次重装后通常需要删除旧授权条目再重新添加；官方公证版签名身份稳定，升级不需要这一步。
 
-**识别专有名词不准？** 把常用人名、品牌、产品、术语写进 设置 → 本地识别 → 专有词汇表。它会作为识别引擎（本地或云端）的热词，也参与 AI 润色纠错。阿语口述里夹的英文品牌名同样靠它。
+**识别专有名词不准？** 把常用人名、品牌、产品、术语写进 设置 → 输入 → 写作偏好 → 专有词汇表。它会作为识别引擎（本地或云端）的热词，也参与 AI 润色纠错。阿语口述里夹的英文品牌名同样靠它。
 
 **模型下载慢？** 默认先走 hf-mirror.com，失败后回退 huggingface.co；已下载成功的文件会保留，重试可按文件续传。
 

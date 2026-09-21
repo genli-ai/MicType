@@ -64,6 +64,52 @@ struct Citation: Codable, Equatable, Identifiable {
     }
 }
 
+/// 这一轮里拒过 Fast 档的型号（`service_tier: "fast"` 被 400 掉过的那几个）。
+///
+/// 为什么非要记住：4.1.6 起 OpenAI 官方接口**每一句话**都带这个字段（没有开关了）。
+/// 某个型号不支持这一档时，每一次润色都是"发出去 → 400 → 摘掉参数重发"——
+/// 一个白白多花的往返，而 UAE 这条链路上一个往返就是半秒到一秒五。记住一次就够了。
+///
+/// **只活在内存里**：支持与否是服务商那边的事，随时可能变；落盘的话，某天 OpenAI 给这个
+/// 型号开了 Fast 档，用户这台机器却因为半年前的一次 400 永远不再问。重启 App 就重新试一次。
+final class FastTierMemory {
+    static let shared = FastTierMemory()
+
+    private let lock = NSLock()
+    private var refused: Set<String> = []
+
+    private init() {}
+
+    /// 型号名归一化（大小写与空白不该算成两个型号）
+    static func normalize(_ model: String) -> String {
+        model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    var models: Set<String> {
+        lock.lock()
+        defer { lock.unlock() }
+        return refused
+    }
+
+    /// 记住这一档。返回 true = 这一轮第一次记它——调用方据此**只记一行日志**
+    ///（每次润色都记一行的话，日志里全是同一句话，真正的故障反而被冲走）
+    @discardableResult
+    func remember(model: String) -> Bool {
+        let key = Self.normalize(model)
+        guard !key.isEmpty else { return false }
+        lock.lock()
+        defer { lock.unlock() }
+        return refused.insert(key).inserted
+    }
+
+    /// 只给单测用：全局单例在同一个进程里跨用例活着
+    func forgetAll() {
+        lock.lock()
+        defer { lock.unlock() }
+        refused.removeAll()
+    }
+}
+
 enum LLMClient {
 
     /// 这一趟调用是干什么用的。决定 Responses 的 reasoning.effort / text.verbosity、
@@ -158,6 +204,42 @@ enum LLMClient {
         return host == "openai.com" || host.hasSuffix(".openai.com")
     }
 
+    // MARK: - Fast 档（OpenAI 官方接口恒开，界面上没有开关）
+
+    /// 这一趟要不要带 `service_tier: "fast"`。**纯函数**，单测钉死。
+    ///
+    /// 4.1.6 起「优先处理」不再是一个开关（用户 2026-09-21 拍板）：延迟是语音输入的全部体验，
+    /// 而"要不要多付一倍 token 钱换低延迟"不是一个该摆到用户面前的问题——代价在
+    /// 关于 → 隐私 里说一次（PrivacyCopy.fastTier）。
+    ///
+    /// 三个条件缺一不可：
+    ///   • **provider == .openai**——`service_tier` 是 OpenAI 的字段，别家收到只多一个
+    ///     它不认识的键（有的直接 400）；
+    ///   • **端点是 OpenAI 自己的域名**——判据与"走不走 Responses"是同一条
+    ///     （usesResponsesAPI）。OpenAI 档那个 Base URL 很多人拿来指第三方网关，那些网关不认
+    ///     这个字段：不判的话每句话都要先白花一个往返被 400，再摘掉参数重发；
+    ///   • **这个型号这一轮还没拒过**——拒过一次就不再问（见 FastTierMemory）。
+    static func asksForFastTier(provider: LLMProvider, baseURL: String, model: String,
+                                refusedModels: Set<String>) -> Bool {
+        guard provider == .openai, usesResponsesAPI(baseURL: baseURL) else { return false }
+        return !refusedModels.contains(FastTierMemory.normalize(model))
+    }
+
+    /// 这一刻真实配置下的那次判断（界面与诊断用的一句话版本）
+    static func asksForFastTier(model: String,
+                                provider: LLMProvider = Settings.shared.llmProvider) -> Bool {
+        asksForFastTier(provider: provider, baseURL: Settings.shared.baseURL(for: provider),
+                        model: model, refusedModels: FastTierMemory.shared.models)
+    }
+
+    /// 400 里被点名摘掉的这个参数，说明"这个型号不吃 Fast 档"吗。纯函数。
+    /// 名字点到的可能是 `service_tier`，也可能是端点自己拼的路径式写法——只认最后那一段。
+    static func refusesFastTier(parameter: String) -> Bool {
+        let last = parameter.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased().split(separator: ".").last.map(String.init)
+        return last == "service_tier"
+    }
+
     /// POST `{base}/responses`（OpenAI）。system → `instructions`，user → `input`。
     /// completion 在主线程回调：(结果, 失败原因)。返回的句柄可中途取消整次调用（含尚未发起的重试）。
     @discardableResult
@@ -170,7 +252,7 @@ enum LLMClient {
                         completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle {
         let body = responsesBody(model: model, system: system, user: user, purpose: purpose,
                                  temperature: temperature, maxOutputTokens: maxOutputTokens,
-                                 fastTier: Settings.shared.fastTier,
+                                 fastTier: asksForFastTier(model: model, provider: provider),
                                  searchStyle: searchStyle(for: purpose, provider: provider))
         dispatch(path: "/responses", body: body, endpoint: .responses, timeout: timeout,
                  purpose: purpose, provider: provider, handle: handle, apiKeyOverride: apiKeyOverride,
@@ -198,7 +280,9 @@ enum LLMClient {
         let body = chatBody(model: model, messages: messages, temperature: temperature,
                             purpose: purpose, provider: provider,
                             maxOutputTokens: maxOutputTokens,
-                            fastTier: Settings.shared.fastTier,
+                            // OpenAI 档 + 官方端点才发（这条路上其实发不出去：官方端点走的是
+                            // Responses。留着同一条判据是为了"谁都不会各判各的"）
+                            fastTier: asksForFastTier(model: model, provider: provider),
                             searchStyle: purpose.map { searchStyle(for: $0, provider: provider) }
                                 ?? .unsupported)
         dispatch(path: "/chat/completions", body: body, endpoint: .chat, timeout: timeout,
@@ -348,7 +432,8 @@ enum LLMClient {
 
     /// Responses 请求体。字段顺序有意义：不变的指令块进 `instructions`，每次都变的转写进 `input`——
     /// prompt caching 只认**共享前缀**，把变的东西放后面才有命中的可能（GPT-5.6+ 要 ≥1024 token 才起算）。
-    /// - fastTier: `service_tier:"fast"`（约 2 倍 token 单价换低延迟，默认关）
+    /// - fastTier: `service_tier:"fast"`（约 2 倍 token 单价换低延迟）。调用方一律传
+    ///   `asksForFastTier(...)` 的结论，别再自己判——4.1.6 起它不是设置，是一条规则
     /// - searchStyle: 联网写法。`.openaiResponsesTool` 时才挂 web_search 工具；润色路径调用方已置 .unsupported
     /// - userLocation: `user_location`（approximate）。默认参数在调用时求值，单测可以注入固定值
     static func responsesBody(model: String, system: String, user: String, purpose: Purpose,
@@ -887,6 +972,14 @@ enum LLMClient {
                 if http.statusCode == 400, stripAttemptsLeft > 0 {
                     if let param = unsupportedParameterName(in: message ?? ""),
                        let stripped = stripping(parameter: param, from: body) {
+                        // 被摘掉的是 Fast 档 → 这一轮不再对这个型号发它。不记住的话，
+                        // 每一句话都要白花一个往返才发现同一件事（见 FastTierMemory）
+                        if refusesFastTier(parameter: param),
+                           let rejected = body["model"] as? String,
+                           FastTierMemory.shared.remember(model: rejected) {
+                            Log.warn("Fast tier refused by model=\(rejected)"
+                                     + " — not asking for it again this run")
+                        }
                         Log.warn("LLM 400 rejected parameter \(param) — retrying without it")
                         resend(stripped)
                         return

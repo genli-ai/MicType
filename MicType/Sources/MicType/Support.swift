@@ -365,21 +365,48 @@ enum TextPostProcessor {
         // 0) 去掉标点与空白之后一模一样 → 这次润色只动了标点，不可能是跑飞
         if strippedOfPunctuation(r) == strippedOfPunctuation(p) { return nil }
 
-        // 1) 数字多重集：只看数字字符本身，所以 1,000 / 1000 / 1 000 视为一致；全角数字先折半角。
-        //    金额、日期、房号改错一位就是事故，这里不留容差（阿语 ITN 那条容差见下）。
-        let rawDigits = digitMultiset(r)
-        let polDigits = digitMultiset(p)
-        if rawDigits != polDigits, !(isMostlyArabic(r) && digitsOnlyAdded(raw: rawDigits, polished: polDigits)) {
+        // 1) 数字指纹：把两边的数字都**归一化成阿拉伯数字**之后比多重集，所以
+        //    1,000 / 1000 / 1 000 视为一致，「一百零一」和「101」、「1.2万」和「一万二千」
+        //    也视为一致（4.1.6：润色从这一版起要把汉字数字改写成阿拉伯数字，见提示词第 7 条；
+        //    不这么比的话每一次正确的改写都会被判成"数字被改"）。
+        //    金额、日期、房号改错一位就是事故，这里照旧不留容差（阿语 ITN 那条容差见下）。
+        let rawFingerprint = numericFingerprint(r)
+        let polFingerprint = numericFingerprint(p)
+        let rawDigits = rawFingerprint.digits
+        let polDigits = polFingerprint.digits
+        // 阿语那条容差照旧：整段跳过数字这一关（口述里的数字是词，ITN 只能由润色做）
+        if !(isMostlyArabic(r) && digitsOnlyAdded(raw: rawDigits, polished: polDigits)) {
+            // 第一层：数字字符的多重集。
             // **只报个数，绝不报数字本身**：这句话会被 Log.warn 写进日志，而「复制诊断信息」
             // 把今天日志的尾巴整段放进剪贴板，用户会把它贴进 issue。原样带上数字等于把他刚说的
             // 验证码 / 电话 / 金额漏出去（四位数按多重集也就 24 种排列）。
-            return "digits changed rawCount=\(rawDigits.values.reduce(0, +))"
-                + " polishedCount=\(polDigits.values.reduce(0, +))"
-                + " distinct=\(rawDigits.count)/\(polDigits.count)"
+            if !digitsPreserved(rawFingerprint, polFingerprint) {
+                return "digits changed rawCount=\(rawDigits.values.reduce(0, +))"
+                    + " polishedCount=\(polDigits.values.reduce(0, +))"
+                    + " distinct=\(rawDigits.count)/\(polDigits.count)"
+            }
+            // 第二层：原文里每一个多位数都得原封不动地出现在润色里。
+            // 零的位置错了 / 数位调了个儿（一万零二百 → 12000、一百零一 → 110）在第一层
+            // 是看不出来的——两边的数字字符多重集一模一样。同样只报个数。
+            let missing = missingNumberTokens(rawFingerprint, polFingerprint)
+            if !missing.isEmpty {
+                return "number rewritten tokens=\(rawFingerprint.tokens.count)"
+                    + " missing=\(missing.count)"
+            }
         }
-        // 2) 否定词计数：允许少量增减（删口头重复、句式改写会动一两个），差太多说明语义被翻转
+        // 2) 否定词计数：允许少量增减（删口头重复、句式改写会动一两个），差太多说明语义被翻转。
+        //    两边都先清洗过（negationCount 里摘掉 A 不 A 疑问句、「识别 / 特别 / 未来」这类
+        //    非否定词，和独立成句的「不不 / 不对」这类口头自我纠正），否则润色做对了事反而被判跑飞。
         let rawNeg = negationCount(r)
         let polNeg = negationCount(p)
+        //    2a) 否定被吞光：原文有否定、润色一个不剩。容差 `> max(1, raw/3)` 恰恰漏掉这一种——
+        //    只有一个否定的句子把它丢了（「我不去」→「我去」、"don't send it"→"send it"），
+        //    而那正是这道校验最该拦的、代价最高的一种错（raw ≥ 2 → 0 本来就拦得住）。
+        //    **刻意不做对称的那一条（0 → ≥1）**：识别偶尔会吞掉一个「不」，润色把它补回来是
+        //    帮了忙，拦下来等于把一次正确的修复丢进垃圾桶。
+        if rawNeg >= 1, polNeg == 0 {
+            return "negation lost raw=\(rawNeg) polished=0"
+        }
         if abs(rawNeg - polNeg) > max(1, rawNeg / 3) {
             return "negation drift raw=\(rawNeg) polished=\(polNeg)"
         }
@@ -429,7 +456,9 @@ enum TextPostProcessor {
         return true
     }
 
-    private static func digitMultiset(_ text: String) -> [Character: Int] {
+    /// internal（不是 private）是因为 NumericFingerprint.swift 里的归一化要用它收尾——
+    /// 两处的折半角表必须逐位一致
+    static func digitMultiset(_ text: String) -> [Character: Int] {
         var counts: [Character: Int] = [:]
         for scalar in text.unicodeScalars {
             var value = scalar.value
@@ -452,13 +481,91 @@ enum TextPostProcessor {
             .joined()
     }
 
-    private static func negationCount(_ text: String) -> Int {
-        var count = text.reduce(0) { $0 + ("不没无别未".contains($1) ? 1 : 0) }
+    /// 否定词计数。**internal 只为可单测**：阈值那条规则在 polishDriftCheck 里，
+    /// 而这里的口径（哪些字算否定、哪些不算）才是 4.1.5 误报的根因，值得单独钉住。
+    ///
+    /// 先清洗再数：光逐字数「不没无别未」会把「识别」「特别」「未来」这些常用词、
+    /// 以及「不不」「不对」这类口头自我纠正全算成否定。前者用户几乎每句话都在说，
+    /// 后者正是润色**该删**的东西——两边随便哪一类在润色里被动过，计数就凭空掉几格，
+    /// 整段润色被判成"否定被吞"丢回原文（4.1.5 日志：raw=4 polished=0，一个否定都没丢）。
+    static func negationCount(_ text: String) -> Int {
+        let scrubbed = negationScrubbed(text)
+        var count = scrubbed.reduce(0) { $0 + ("不没无别未".contains($1) ? 1 : 0) }
         if let regex = try? NSRegularExpression(pattern: "\\b(not|no|never)\\b|n['’]t",
                                                 options: [.caseInsensitive]) {
-            count += regex.numberOfMatches(in: text, range: NSRange(text.startIndex..., in: text))
+            count += regex.numberOfMatches(in: scrubbed,
+                                           range: NSRange(scrubbed.startIndex..., in: scrubbed))
         }
         return count
+    }
+
+    /// 含「不没无别未」却**整体不表否定**的常用词：计数前整词摘掉。
+    /// 收词的唯一标准是"这个词整体与否定无关"（「不得不」= 必须，是肯定）。
+    /// 拿不准的一律不收：漏收一个词最多多回退一次润色，收错一个词等于在那个词上
+    /// 把保真校验挖穿。已知代价：「不过来/不过去」会被「不过」整体摘掉——
+    /// 为了「不过（然而）」这个高频口头转折词，这一处认了。
+    /// 按字数从长到短删，免得短词先吃掉长词的一半。
+    private static let nonNegationWords: [String] = [
+        // 「别」：区分 / 类属 / 他者，都不是「别做」的那个别。这位用户几乎每句话都在说「识别」
+        "识别", "特别", "区别", "分别", "个别", "级别", "类别", "性别", "告别", "差别", "辨别",
+        "别人", "别的",
+        // 「不」：转折、递进、范围、客套——整体都不表否定
+        "不过", "不仅", "不但", "不管", "差不多", "对不起", "不好意思", "了不起", "不得不",
+        // 「要不然 / 不然 / 要不」= 否则、要么，提的是另一个选择，没否定任何一句话。
+        // 已知代价：「只要不下雨就去」里的「要不」也会被摘掉（少数派，且只会漏判、不会误报）
+        "要不然", "不然", "要不",
+        // 「没」「无」「未」
+        "没关系", "无论", "无线", "未来",
+    ].sorted { $0.count > $1.count }
+
+    /// 独立成句的口头自我纠正 / 应答词：润色删掉它们**正是它的本职**
+    /// （「我说错了……不不，云端的识别就是……」里的「不不」）。
+    /// 只在它**整段独占**两个句读之间时才摘，句子内部的否定一个都不动——
+    /// 「没有问题」「我不去」照样逐字计数。代价是"一个字的应答句"被翻转（「去吗？不。」→
+    /// 「去吗？去。」）两边都数不到，这种一个字的句子本来也过不了长度/内容这几关。
+    private static let selfCorrectionFillers: Set<String> = [
+        "不", "不不", "不不不", "不是", "不是不是", "不对", "不对不对",
+        "没有", "没有没有", "不行不行",
+        "no", "no no", "no no no",
+    ]
+
+    /// 切"句"的字符：句读、括号、引号。**故意不含空格和撇号**——
+    /// 切空格的话「no way」会裂成两段，其中一段正好是 "no"，整句的否定就被当成口头禅摘掉了；
+    /// 切撇号的话「don't」会裂成 don + t，`n['’]t` 从此再也匹配不上。
+    private static let fillerBreaks =
+        CharacterSet(charactersIn: "。．.，,、！!？?；;：:…～~—\n\r()（）【】《》「」“”\"")
+
+    /// A 不 A 疑问句：能不能 / 是不是 / 对不对 / 好不好 / 要不要 / 会不会 / 行不行…，
+    /// 连「有没有」一起认（所以中间那个字是 不 或 没）。整体是一个**疑问**，不是否定——
+    /// 「你能不能帮我」→「你能帮我吗」是最常见的正常润色，不是吞掉了一个否定。
+    /// 2a 那条「否定被吞光」收紧之后，不摘掉它们就会天天误报。
+    private static let aNotAQuestion = try? NSRegularExpression(pattern: "(.)[不没]\\1")
+
+    /// 计数前的清洗（三道，**顺序是有讲究的**）。纯函数，**绝不进日志**——
+    /// 它带着用户说的原话（与 strippedOfPunctuation 同一条纪律）。
+    private static func negationScrubbed(_ text: String) -> String {
+        // ① 独立成句的口头纠正：按句读切开，整段等于表里的词才丢
+        var kept: [String] = []
+        for piece in text.components(separatedBy: fillerBreaks) {
+            let trimmed = piece.trimmingCharacters(in: .whitespaces).lowercased()
+            if !trimmed.isEmpty, selfCorrectionFillers.contains(trimmed) { continue }
+            kept.append(piece)
+        }
+        // 用空格拼回去：两段的首尾字绝不能粘成一个新词（「…说不」+「过…」凑出一个「不过」
+        // 被下面整词摘掉，那就等于凭空吞掉一个真否定）
+        var out = kept.joined(separator: " ")
+        // ② A 不 A 疑问句——**必须排在词表前面**：否则「要不要」会先被词表里的「要不」
+        //    吃掉半截，剩下的「要」+ 漏下的那个不 会被当成一个真否定记上
+        if let regex = aNotAQuestion {
+            out = regex.stringByReplacingMatches(in: out,
+                                                 range: NSRange(out.startIndex..., in: out),
+                                                 withTemplate: " ")
+        }
+        // ③ 含否定字却不表否定的常用词：整词删掉
+        for word in nonNegationWords {
+            out = out.replacingOccurrences(of: word, with: " ")
+        }
+        return out
     }
 
     // MARK: 空音频复读

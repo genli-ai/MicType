@@ -180,6 +180,317 @@ public sealed class TextPostProcessorTests
         Assert.Null(TextPostProcessor.PolishDriftCheck("嗯嗯嗯就是说那个好的", "好的。"));
     }
 
+    // 否定词计数的清洗：与 Mac 端 TextPostProcessorTests.swift 的同名用例一一对应
+    // （Mac 4.1.5 日志 `negation drift raw=4 polished=0`——那句话一个否定都没被吞，
+    // 掉的是口头的「不不」和被数进去的「识别」）
+
+    /// 口头自我纠正被润色删掉 = 润色做对了事，不该判成"否定被吞"
+    [Fact]
+    public void DriftCheckAcceptsSpokenSelfCorrection()
+    {
+        Assert.Null(TextPostProcessor.PolishDriftCheck(
+            "我说错了，不不，云端的识别就是转写加润色", "我说错了，云端识别就是转写加润色。"));
+        // 刻意**不拿数字举例**：自我修正掉的如果是个数字，4.1.6 的数字指纹会因为
+        // "少了一个数"而拦下来（见 SelfCorrectedNumberFallsBackToTheRawText）
+        Assert.Null(TextPostProcessor.PolishDriftCheck(
+            "明天上午开会，不对，是下午开会", "明天下午开会。"));
+    }
+
+    /// 英文口头禅同理（「no no, I mean…」/「no, no, …」两种写法都要认）
+    [Fact]
+    public void DriftCheckAcceptsEnglishFillerNo()
+    {
+        Assert.Null(TextPostProcessor.PolishDriftCheck(
+            "no no, I mean the cloud engine", "I mean the cloud engine."));
+        Assert.Null(TextPostProcessor.PolishDriftCheck("no, no, I mean tomorrow", "I mean tomorrow."));
+    }
+
+    /// 含「不没无别未」却不是否定的常用词：润色动了其中一个不该让整段回退
+    [Fact]
+    public void DriftCheckAcceptsPolishTouchingNonNegationWords()
+    {
+        Assert.Null(TextPostProcessor.PolishDriftCheck(
+            "这个识别特别准，未来的识别会更好", "识别特别准，未来会更好。"));
+    }
+
+    /// 清洗表**不许**吃掉真的否定
+    [Fact]
+    public void NegationCountStillSeesRealNegations()
+    {
+        Assert.Equal(1, TextPostProcessor.NegationCount("我不去"));
+        Assert.Equal(0, TextPostProcessor.NegationCount("我去"));
+        Assert.Equal(1, TextPostProcessor.NegationCount("don't send it"));
+        Assert.Equal(2, TextPostProcessor.NegationCount("这个方案不行，我们别做了"));
+        // 只有**整段独占**句读之间才算口头禅：句子内部的否定一个都不摘
+        Assert.Equal(1, TextPostProcessor.NegationCount("没有问题"));
+        Assert.Equal(1, TextPostProcessor.NegationCount("there is no way"));
+        Assert.Equal(2, TextPostProcessor.NegationCount("我不是不想去"));
+    }
+
+    /// 非否定词表的口径：整词摘掉，一个否定都不记
+    [Fact]
+    public void NegationCountIgnoresCommonNonNegationWords()
+    {
+        Assert.Equal(0, TextPostProcessor.NegationCount("识别特别准，未来无论如何都要做"));
+        Assert.Equal(0, TextPostProcessor.NegationCount("差不多了，对不起，不好意思，了不起"));
+        Assert.Equal(0, TextPostProcessor.NegationCount("不得不做"));   // 「不得不」= 必须，是肯定
+    }
+
+    /// 摘掉口头禅之后两段**不能粘成新词**：「…说不。」+「过来吧」若被接成「不过」，
+    /// 就会被非否定词表整词摘掉——等于凭空吞掉一个真否定
+    [Fact]
+    public void ScrubDoesNotWeldNewWordsAcrossSentences()
+    {
+        Assert.Equal(1, TextPostProcessor.NegationCount("他说不。过来吧"));
+    }
+
+    /// 清洗之后照样拦得住"否定被吞"——这才是这道校验的本职
+    [Fact]
+    public void DriftCheckStillRejectsFlippedNegations()
+    {
+        Assert.NotNull(TextPostProcessor.PolishDriftCheck("这个方案不行，我们别做了", "这个方案行，我们做吧。"));
+        Assert.NotNull(TextPostProcessor.PolishDriftCheck("don't send it, I never agreed", "send it, I agreed."));
+        Assert.NotNull(TextPostProcessor.PolishDriftCheck("我不去，识别这件事也别做了", "我去，识别这件事也做吧。"));
+    }
+
+    /// **一字翻转必须拦**（2a）：原有容差 > max(1, raw/3) 恰好漏掉"只有一个否定、
+    /// 而它被吞了"这一种，而那正是代价最高的一种错。Mac 端同源。
+    [Fact]
+    public void SingleLostNegationIsRejected()
+    {
+        Assert.NotNull(TextPostProcessor.PolishDriftCheck("我不去", "我去"));
+        Assert.NotNull(TextPostProcessor.PolishDriftCheck("don't send it", "send it"));
+        // 失败原因里只有计数，没有用户说的话
+        Assert.Equal("negation lost raw=1 polished=0", TextPostProcessor.PolishDriftCheck("我不去", "我去"));
+    }
+
+    /// **刻意不做对称的那一条**：识别偶尔吞掉一个「不」，润色把它补回来是帮了忙
+    [Fact]
+    public void RestoredNegationIsNotRejected()
+    {
+        Assert.Null(TextPostProcessor.PolishDriftCheck("他说他去", "他说他不去。"));
+    }
+
+    /// A 不 A 疑问句是**疑问**不是否定：「你能不能帮我」→「你能帮我吗」是正常润色
+    [Fact]
+    public void DriftCheckAcceptsANotAQuestions()
+    {
+        Assert.Null(TextPostProcessor.PolishDriftCheck("你能不能帮我看一下", "你能帮我看一下吗"));
+        Assert.Null(TextPostProcessor.PolishDriftCheck("是不是明天开会，对不对", "是明天开会吗？"));
+        Assert.Null(TextPostProcessor.PolishDriftCheck("有没有人知道这件事", "有人知道这件事吗？"));
+    }
+
+    /// 「要不然 / 不然 / 要不」= 否则、要么，没否定任何一句话
+    [Fact]
+    public void DriftCheckAcceptsOtherwiseWords()
+    {
+        Assert.Null(TextPostProcessor.PolishDriftCheck("要不然我们明天再说", "我们明天再说吧。"));
+    }
+
+    /// 真的还剩着否定的句子照样放行（2a 只在"一个不剩"时开火）
+    [Fact]
+    public void DriftCheckAcceptsPolishThatKeepsTheNegation()
+    {
+        Assert.Null(TextPostProcessor.PolishDriftCheck("嗯我今天不想去开会那个", "我今天不想去开会。"));
+    }
+
+    /// A 不 A 与词表的**顺序**：A 不 A 必须先跑，否则「要不要」会先被「要不」吃掉半截
+    [Fact]
+    public void ANotAIsScrubbedBeforeTheWordTable()
+    {
+        Assert.Equal(0, TextPostProcessor.NegationCount("你要不要来"));
+        Assert.Equal(0, TextPostProcessor.NegationCount("有没有问题"));
+        Assert.Equal(0, TextPostProcessor.NegationCount("行不行，好不好，会不会"));
+        // 但句子内部真正的否定一个都不许被它带走
+        Assert.Equal(2, TextPostProcessor.NegationCount("我不是不想去"));
+        Assert.Equal(2, TextPostProcessor.NegationCount("这个方案不行，我们别做了"));
+    }
+
+    // 数字指纹（4.1.6）：与 Mac 端 NumericFingerprintTests.swift 的同名用例一一对应。
+    // 润色从这一版起要把汉字数字改写成阿拉伯数字（提示词第 7 条），保真校验必须看懂
+    // 「一百零一」和「101」是同一个数——否则每一次正确的改写都会被判成 digits changed。
+
+    private static (string Digits, string Wildcards) Fingerprint(string text)
+    {
+        var fp = TextPostProcessor.NumericFingerprint(text);
+        return (TextPostProcessor.DigitSummary(fp.Digits), TextPostProcessor.DigitSummary(fp.Wildcards));
+    }
+
+    [Theory]
+    [InlineData("十", "01")]                      // 10
+    [InlineData("十二", "12")]                    // 打头的十是 1
+    [InlineData("二十", "02")]
+    [InlineData("一百零一", "011")]                // 101：念了「零」，尾数就是个位
+    [InlineData("一百一十", "011")]                // 110
+    [InlineData("一千零五十", "0015")]
+    [InlineData("七百三十二", "237")]
+    [InlineData("一万二千", "00012")]
+    [InlineData("三千五百万", "00000035")]
+    [InlineData("十万", "000001")]
+    [InlineData("一亿二千万", "000000012")]
+    [InlineData("两千五", "0025")]                 // 省略的尾数：2500，不是 2005
+    [InlineData("三百五", "035")]
+    [InlineData("一万二", "00012")]
+    [InlineData("二零一一", "0112")]               // 没单位的多字串 = 一串数位
+    [InlineData("二零一八", "0128")]
+    [InlineData("幺三八零零幺三八零零零", "00000113388")]
+    [InlineData("两三", "23")]
+    [InlineData("1.2万", "00012")]                // 阿拉伯数字 + 汉字单位
+    [InlineData("3500万", "00000035")]
+    [InlineData("2亿", "000000002")]
+    [InlineData("1.25万", "00125")]
+    [InlineData("3000万", "00000003")]
+    [InlineData("百分之二十", "02")]
+    [InlineData("百分之三十五", "35")]
+    [InlineData("20%", "02")]
+    [InlineData("12,000", "00012")]
+    [InlineData("１２３", "123")]                  // 全角折半角
+    [InlineData("十分钟", "01")]                   // 十分钟 = 10 分钟
+    [InlineData("三千万", "00000003")]             // 前面挨着数字就是数
+    [InlineData("万一", "")]                       // 成语：不是数
+    [InlineData("十分重要", "")]
+    [InlineData("千万别迟到", "")]
+    [InlineData("星期三", "")]
+    [InlineData("上万人", "")]                     // 光秃秃一个单位字是约数
+    public void NumericFingerprintNormalizesTheWayNumbersAreWritten(string text, string digits)
+    {
+        Assert.Equal(digits, Fingerprint(text).Digits);
+    }
+
+    /// 单个汉字数字、没有单位 → 不算数，只记通配
+    [Theory]
+    [InlineData("三个人", "", "3")]
+    [InlineData("一点五", "", "15")]               // 1.5
+    [InlineData("四点一点六", "", "146")]           // 版本号 4.1.6
+    [InlineData("第一次", "", "1")]
+    [InlineData("十二块五", "12", "5")]
+    [InlineData("三点半", "", "3")]
+    public void BareNumeralsBecomeWildcards(string text, string digits, string wildcards)
+    {
+        var fp = Fingerprint(text);
+        Assert.Equal(digits, fp.Digits);
+        Assert.Equal(wildcards, fp.Wildcards);
+    }
+
+    /// 2026-09-21 在 qwen3.8-flash 上实测的七句：每一句在 4.1.5 都会被判成 digits changed
+    [Theory]
+    [InlineData("一共是一百零一人民币然后运费另外算十二块五", "一共是101人民币，运费另外算12块5。")]
+    [InlineData("我是二零一一年毕业的然后二零一九年三月十五号来的", "我是2011年毕业的，2019年3月15日来的。")]
+    [InlineData("下午三点半开会大概两三个人参加十分重要你们千万别迟到", "下午3点半开会，大概两三个人参加，十分重要，你们千万别迟到。")]
+    [InlineData("增长了百分之二十左右大概有一万二千个用户其中三分之一是付费的", "增长了20%左右，大概有1.2万个用户，其中三分之一是付费的。")]
+    [InlineData("电话是幺三八零零幺三八零零零房间号是二零一八", "电话是13800138000，房间号是2018。")]
+    [InlineData("第一次来万一迟到了你先等我一下我们一起走", "第一次来，万一迟到了你先等我一下，我们一起走。")]
+    [InlineData("版本四点一点六修了三个问题跑了七百三十二个测试", "版本4.1.6修了3个问题，跑了732个测试。")]
+    [InlineData("等十分钟", "等10分钟")]
+    [InlineData("涨了三千万", "涨了3000万")]
+    [InlineData("来了三个人", "来了3个人")]
+    [InlineData("这件事十分重要", "这件事非常重要")]
+    [InlineData("万一他不来呢", "如果他不来呢")]
+    [InlineData("预算是一千块", "预算是1000块")]
+    [InlineData("走了三点五公里", "走了3.5公里")]
+    [InlineData("大概有一万二", "大概有1.2万")]
+    [InlineData("百分之二十的人", "20%的人")]
+    public void RewritingHowANumberIsWrittenPasses(string raw, string polished)
+    {
+        Assert.True(TextPostProcessor.NumbersPreserved(raw, polished));
+        Assert.Null(TextPostProcessor.PolishDriftCheck(raw, polished));
+    }
+
+    /// 数值真的变了 → 照样拦
+    [Theory]
+    [InlineData("一共一百零一块", "一共102块")]
+    [InlineData("我是二零一一年毕业的", "我是2012年毕业的")]
+    [InlineData("运费十二块五", "运费12块8")]
+    [InlineData("增长了百分之二十", "增长了30%")]
+    [InlineData("来了三个人", "来了5个人")]
+    [InlineData("大概有一万二千个用户", "大概有1.3万个用户")]
+    [InlineData("一共是一百零一块运费另外十二块", "一共是101块")]
+    [InlineData("今天开会讨论了方案", "今天开会讨论了50个方案")]
+    [InlineData("电话是幺三八零零幺三八零零零", "电话是1380013800")]
+    public void ChangedNumbersAreRejected(string raw, string polished)
+    {
+        Assert.NotNull(TextPostProcessor.PolishDriftCheck(raw, polished));
+    }
+
+    /// **4.1.6 的既定代价**：说话人口头改了一个数字，润色把说错的那个删掉——
+    /// 从数字指纹看就是"少了一个数"，而数字这条是零容差的，于是回退原文（方向是安全的）
+    [Fact]
+    public void SelfCorrectedNumberFallsBackToTheRawText()
+    {
+        Assert.NotNull(TextPostProcessor.PolishDriftCheck("明天上午十点，不对，是十一点", "明天上午11点。"));
+        Assert.Null(TextPostProcessor.PolishDriftCheck("明天上午开会，不对，是下午开会", "明天下午开会。"));
+    }
+
+    /// 第二层：零的位置错了 / 数位调了个儿——这几对的数字字符多重集**一模一样**，
+    /// 第一层一个都拦不住
+    [Theory]
+    [InlineData("一共一百零一块", "一共110块")]
+    [InlineData("一共一万零二百块", "一共12000块")]
+    [InlineData("一共一万二千块", "一共10200块")]
+    [InlineData("预算一千零五十", "预算1500")]
+    [InlineData("我是二零一九年来的", "我是2091年来的")]
+    [InlineData("一共十二个", "一共21个")]
+    [InlineData("电话是幺三八零零幺三八零零零", "电话是13008138000")]
+    public void ZeroPlacementAndTranspositionAreRejected(string raw, string polished)
+    {
+        Assert.False(TextPostProcessor.NumbersPreserved(raw, polished));
+        Assert.NotNull(TextPostProcessor.PolishDriftCheck(raw, polished));
+    }
+
+    /// 先钉住"第一层确实看不出来"，免得以后有人以为上面那几条是多余的
+    [Fact]
+    public void TheDigitMultisetAloneCannotSeeZeroPlacement()
+    {
+        Assert.Equal(Fingerprint("一百零一").Digits, Fingerprint("110").Digits);
+        Assert.Equal(Fingerprint("一万零二百").Digits, Fingerprint("12000").Digits);
+        Assert.Equal(Fingerprint("一千零五十").Digits, Fingerprint("1500").Digits);
+    }
+
+    /// 同一个数换了写法、加了单位、接了小数、改了标点——第二层一律放行（"包含"不是"相等"）
+    [Theory]
+    [InlineData("运费十二块五", "运费12.5元")]
+    [InlineData("大概有一万二千个用户", "大概有1.2万个用户")]
+    [InlineData("大概有一万二千个用户", "大概有12000个用户")]
+    [InlineData("大概有一万二千个用户", "大概有12,000个用户")]
+    [InlineData("电话是幺三八零零幺三八零零零", "电话是138-0013-8000")]
+    [InlineData("电话是幺三八零零幺三八零零零", "电话是138 0013 8000")]
+    [InlineData("涨了三千五百万", "涨了3500万")]
+    [InlineData("12,000 users", "12000 users")]
+    [InlineData("版本四点一点六", "版本4.1.6")]
+    [InlineData("我是二零一一年毕业的", "我是2011年毕业的。")]
+    public void TheSameNumberWrittenDifferentlyStillPasses(string raw, string polished)
+    {
+        Assert.True(TextPostProcessor.NumbersPreserved(raw, polished));
+        Assert.Null(TextPostProcessor.PolishDriftCheck(raw, polished));
+    }
+
+    /// token 只收 ≥ 2 位：单个数字归第一层的多重集 + wildcard 管
+    [Fact]
+    public void NumberTokensOnlyCoverMultiDigitNumbers()
+    {
+        Assert.Equal(new[] { "101", "12000" }, TextPostProcessor.NumberTokens("101 和 12000"));
+        Assert.Empty(TextPostProcessor.NumberTokens("4.1.6"));
+        Assert.Empty(TextPostProcessor.NumberTokens("3 个人 5 点到"));
+        Assert.Equal(new[] { "2011" }, TextPostProcessor.NumberTokens("2011 和 2011"));
+    }
+
+    /// 口语式的省略尾数，阿拉伯数字版
+    [Theory]
+    [InlineData("1万2", "00012")]      // 12000
+    [InlineData("3千5", "0035")]       // 3500
+    [InlineData("2百5", "025")]        // 250
+    public void ArabicAbbreviatedTail(string text, string digits)
+    {
+        Assert.Equal(digits, Fingerprint(text).Digits);
+    }
+
+    /// **仍然抓不住的那一种（诚实记在这里）**：两个各自只有一位的数互相换了位置
+    [Fact]
+    public void StillNotCaughtTwoSingleDigitNumbersSwapping()
+    {
+        Assert.Null(TextPostProcessor.PolishDriftCheck("三个人五点到", "5个人3点到"));
+    }
+
     // 阿拉伯语安全：与 Mac 端 TextPostProcessorTests.swift 的同名用例一一对应
 
     /// 阿语句读 ، ؟ ؛ 一律保持原样：换成 ASCII 就是改写用户说的话

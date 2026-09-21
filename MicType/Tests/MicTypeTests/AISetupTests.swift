@@ -555,12 +555,13 @@ final class AISetupTests: XCTestCase {
                                              polishModel: "llama3.1:8b"))
     }
 
-    /// 「优先处理」只有 OpenAI 有这个档位：**其余档整行不渲染**，不是灰着摆在那里
-    func testPriorityToggleOnlyExistsUnderOpenAI() {
-        XCTAssertTrue(AISetup.showsPriorityToggle(inUse: .openai))
-        for provider in [LLMProvider.deepseek, .qwen, .custom, .local] {
-            XCTAssertFalse(AISetup.showsPriorityToggle(inUse: provider), provider.rawValue)
-        }
+    /// 4.1.6：「自定义规则」搬到了「输入 → 写作偏好」，而「只用本地」那一档下它一个字
+    /// 都不会被发出去——框照样能填，但要当面说一句。
+    /// （「优先处理」那一段连同 showsPriorityToggle 一起删了：OpenAI 官方接口恒走 Fast，
+    /// 见 LLMClientFastTierTests。）
+    func testRulesNeedAINoteOnlyUnderLocalOnly() {
+        XCTAssertTrue(AISetup.showsRulesNeedAINote(mode: .localOnly))
+        XCTAssertFalse(AISetup.showsRulesNeedAINote(mode: .withAI))
     }
 
     /// 「只用本地」只关润色、只把识别改回本机——**钥匙串里那把 Key 一个字节都不动**，

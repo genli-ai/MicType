@@ -37,22 +37,38 @@ enum SettingsSummary {
 
     // MARK: - 输入
 
-    /// 「右 Option (⌥) · 悬浮窗在屏幕底部 · 提示音开」
+    /// 「右 Option (⌥) · 词汇表 11 条 · 有自定义规则 · 悬浮窗在屏幕底部 · 提示音开」
     ///
     /// 键名仍然排在最前面，哪怕它只有一个值（见 Settings.hotkey）：这张卡回答的第一个问题
     /// 就是"按哪个键"，把它省掉，用户要按的那颗键在设置窗口首页上就一个字都没有了。
+    ///
+    /// 4.1.6 起「写作偏好」（词汇表 + 自定义规则）也归这张卡（控件搬到了「输入」页）。
+    /// 紧跟在键名后面、排在悬浮窗与提示音之前，和页内的段序一致——**两处顺序对不上时，
+    /// 点进去的人会先在屏幕上找一遍自己刚读到的那一格**。
+    /// 两项都遵守同一条纪律：**空着就不占格子**（和开机自启一样，出厂默认不值一格）。
     ///
     /// 没有徽章：这张卡里的每一项都是用户自己选的，没有"坏掉"的状态。
     /// 权限缺失不在这里说——那是整页顶上那条横幅的事（缺了就没法用，不只是输入不对劲）。
     static func inputSummary(overlayPosition: OverlayPosition,
                              sounds: Bool,
-                             launchAtLogin: Bool) -> String {
-        var parts = [HotkeyChoice.rightOption.displayName,
-                     overlayPhrase(overlayPosition),
-                     sounds ? tr("提示音开", "Sounds on") : tr("提示音关", "Sounds off")]
+                             launchAtLogin: Bool,
+                             vocabCount: Int,
+                             hasCustomRules: Bool) -> String {
+        var parts = [HotkeyChoice.rightOption.displayName]
+        if vocabCount > 0 { parts.append(vocabularyPhrase(vocabCount)) }
+        // 规则的**内容**永远不上卡片（那是他写给 AI 的私人偏好，概览只说"有没有"）
+        if hasCustomRules { parts.append(tr("有自定义规则", "Custom rules set")) }
+        parts.append(overlayPhrase(overlayPosition))
+        parts.append(sounds ? tr("提示音开", "Sounds on") : tr("提示音关", "Sounds off"))
         // 开机自启只在开着时占位置：关着是出厂默认，说出来等于用一格讲一件没发生的事
         if launchAtLogin { parts.append(tr("开机自启", "Starts at login")) }
         return parts.joined(separator: dot)
+    }
+
+    /// 词汇表那一格。**只有一个出处**：4.1.6 之前它长在「本地识别」卡上，搬过来时连同措辞
+    /// 一起搬——两张卡先后写过同一件事，最怕的就是留下两种说法
+    private static func vocabularyPhrase(_ count: Int) -> String {
+        tr("词汇表 \(count) 条", "\(count) vocabulary terms")
     }
 
     private static func overlayPhrase(_ position: OverlayPosition) -> String {
@@ -76,16 +92,15 @@ enum SettingsSummary {
         case upgradeAvailable(name: String)
     }
 
-    /// 「自动检测语言 · 词汇表 12 条 · 模型 0.6B 已就绪」
+    /// 「自动检测语言 · 模型 0.6B 已就绪 · 麦克风 AirPods Pro」
+    ///
+    /// 4.1.6 起**这张卡不再提词汇表**：那个框搬去了「输入 → 写作偏好」，卡上还写着条数的话，
+    /// 用户会点「更改」进到一页里根本没有词汇表的编辑器。它现在长在「输入」卡上。
     /// - micName: 用户指定的麦克风名；空串 = 跟随系统默认，那就不占一格
     static func recognitionSummary(language: String,
-                                   vocabCount: Int,
                                    modelState: ModelState,
                                    micName: String) -> Card {
         var parts = [languagePhrase(language)]
-        if vocabCount > 0 {
-            parts.append(tr("词汇表 \(vocabCount) 条", "\(vocabCount) vocabulary terms"))
-        }
         parts.append(modelPhrase(modelState))
         let mic = micName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !mic.isEmpty { parts.append(tr("麦克风 \(mic)", "Microphone \(mic)")) }

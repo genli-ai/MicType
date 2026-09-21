@@ -49,7 +49,18 @@ enum Diagnostics {
                      + " apiKey=\(KeychainHelper.loadAPIKey() == nil ? "absent" : "configured")"
                      + " callable=\(LLMClient.isConfigured)"
                      + " host=\(URL(string: s.currentBaseURL)?.host ?? "unset")")
-        lines.append("Extras: fastTier=\(s.fastTier) webSearch=\(s.webSearchEnabled)"
+        // Fast 档 4.1.6 起不是设置，是一条规则（OpenAI 官方接口恒开）——所以这里报的是
+        // **这一刻真会发生什么**：下一趟润色带不带 service_tier、上一趟服务商实际给了哪一档、
+        // 这一轮有几个型号拒过它。报一条早就没人读的设置，等于把排障往错的方向指一整轮。
+        // 回传的档位**原样报**（这份文字要能贴给任何人，不跟界面语言走），后面缀一句
+        // "被降级了"——那正是回传值唯一有用的地方：请求问了 Fast，服务商给的是普通档
+        let servedTier = Metrics.shared.items.compactMap(\.serviceTier).first
+            .map { $0 + (LLMCatalog.servedPriorityTier($0) ? "" : " (downgraded)") }
+            ?? "none reported"
+        lines.append("Extras: fastTier=\(LLMClient.asksForFastTier(model: s.currentPolishModel))"
+                     + " lastServedTier=\(servedTier)"
+                     + " fastTierRefused=\(FastTierMemory.shared.models.count)"
+                     + " webSearch=\(s.webSearchEnabled)"
                      + " searchStyle=\(s.webSearchStyle)")
         lines.append("Overlay: position=\(s.overlayPosition.rawValue) livePreview=\(s.livePreview)")
 

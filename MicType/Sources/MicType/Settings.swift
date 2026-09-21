@@ -335,10 +335,20 @@ enum AISetup {
         return !polishModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// 「优先处理」这一行摆不摆。只有 OpenAI 有这个档位——**没有就整行不渲染**，
-    /// 不是灰着摆在那里（4.1.1 之前是灰的 + 一行"只有 OpenAI 有"，等于用两行讲一件
-    /// 与这位用户无关的事）。判据是**正在使用**的那一档，不是选择器上预览的那一档。
-    static func showsPriorityToggle(inUse: LLMProvider) -> Bool { inUse == .openai }
+    // 「优先处理」那一行 4.1.6 起不存在了（用户 2026-09-21 拍板）：showsPriorityToggle 一并删掉。
+    // 延迟是语音输入的全部体验，而"要不要多付一倍 token 钱换低延迟"根本不是一个该摆到用户
+    // 面前的问题——OpenAI 官方接口一律走 Fast（LLMClient.asksForFastTier），代价在
+    // 关于 → 隐私 里说一次（PrivacyCopy.fastTier）。
+
+    // MARK: - 4.1.6：自定义规则搬去「输入 → 写作偏好」
+
+    /// 「自定义规则」这个框下面要不要挂一句「开启 AI 后生效」。
+    ///
+    /// 为什么值一个纯函数：这个框 4.1.6 起住在「输入」页（它讲的是"我的话该怎么写"，
+    /// 不是服务商配置），而「只用本地」那一档下它一个字都不会被发出去——框照样能填、能存，
+    /// 但这一刻不生效。不说的话，用户会以为自己写的规则在起作用。
+    /// **不禁用这个框**：配置的顺序由用户定，先写规则再开 AI 是完全正常的一条路。
+    static func showsRulesNeedAINote(mode: AIUsageMode) -> Bool { mode == .localOnly }
 }
 
 // MARK: - 设置键
@@ -402,7 +412,9 @@ enum SettingsKeys {
     static let localRuntime = "localRuntime"                // ollama / lmstudio（端口固定）
     static let localModel = "localModel"
     static let localCommandModel = "localCommandModel"
-    static let fastTier = "fastTier"                        // service_tier:"fast"（贵一倍换低延迟，默认关）
+    // 4.1.6 删掉了 "fastTier"：Fast 档不再是一条设置（OpenAI 官方接口恒开，见
+    // LLMClient.asksForFastTier）。键名也不留——SettingsBackup 的 Key.all 里本来就没有它，
+    // 导入的文件里带一条 fastTier 会被当成未知键忽略并计数，**绝不会**把 Fast 关掉。
     static let webSearchEnabled = "webSearchEnabled"        // 指令模式联网搜索（按次计费，4.1.1 起默认开）
     static let onboardingCompleted = "onboardingCompleted"  // 首启动引导是否走过（老用户按"已配置好"自动置真）
     static let onboardingSkippedEssentials = "onboardingSkippedEssentials"  // 他点过「先跳过」：引导不再每次启动拦他，但概览上的徽章照常挂着
@@ -470,8 +482,6 @@ final class Settings {
             SettingsKeys.localRuntime: LLMCatalog.LocalRuntime.ollama.rawValue,
             SettingsKeys.localModel: "",
             SettingsKeys.localCommandModel: "",
-            // 优先处理默认关：token 单价翻倍这种事必须是用户自己点下去的
-            SettingsKeys.fastTier: false,
             // 联网搜索默认**开**（用户 2026-09-20 拍板）：它只在按住说指令那条路上生效，
             // 而指令里"查一下…""最新的…"是常态——默认关的结果是模型一本正经地编，
             // 用户既看不出它没联网，也不知道有这么个开关。不支持的服务商压根不摆这个开关。
@@ -1035,14 +1045,11 @@ final class Settings {
         set { d.set(newValue, forKey: SettingsKeys.localCommandModel) }
     }
 
-    // MARK: 花钱的两个开关（优先处理默认关；联网搜索 4.1.1 起默认开）
-
-    /// `service_tier:"fast"`：延迟更低更稳，token 单价约 2 倍。只有 OpenAI 认这个字段。
-    /// 默认关——多花的钱必须是用户自己点下去的。
-    var fastTier: Bool {
-        get { d.bool(forKey: SettingsKeys.fastTier) }
-        set { d.set(newValue, forKey: SettingsKeys.fastTier) }
-    }
+    // MARK: 花钱的那一个开关（联网搜索，4.1.1 起默认开）
+    //
+    // 4.1.6 起这里只剩一个：「优先处理」连同 fastTier 这条设置一起没了（用户 2026-09-21 拍板）。
+    // OpenAI 官方接口一律走 Fast 档，判据是 LLMClient.asksForFastTier 那个纯函数，不读设置；
+    // 代价（token 单价约 2 倍）在 关于 → 隐私 里说一次（PrivacyCopy.fastTier）。
 
     /// 指令模式（按住）允许模型联网搜索。**只作用于指令**：润色是"改写我说的话"，
     /// 联网既没用又要花钱，那条路一个搜索参数都不发。
