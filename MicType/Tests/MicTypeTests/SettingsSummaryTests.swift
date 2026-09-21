@@ -229,19 +229,28 @@ final class SettingsSummaryTests: XCTestCase {
         XCTAssertNil(card.badge)
     }
 
-    /// 4.0.0 留下的 `cloudOpenAI` 仍然是一档活的引擎（界面上早已没有这个选项）。
-    /// 概览 4.0.2 只认 `engine == .cloudAlibaba`，于是这些人读到的是一句「已连通 ✓」，
-    /// 而他每段录音都在上传——卡上没有徽章，他根本不会点进编辑页去看那行横幅。
-    func testLegacyOpenAICloudRecognitionIsNamedOnTheCard() {
+    /// `cloudOpenAI` 4.2.2 起是一档**正常配置**（OpenAI 的实时转写端点），不再是 4.0.0 的遗留。
+    /// 服务商就是 OpenAI 时卡上不该有任何"出事了"的徽章——那是用户自己刚打开的开关；
+    /// 只有服务商换走之后它才变成"停在旧档"（那时候界面上已经没有关掉它的控件）。
+    func testOpenAICloudRecognitionIsNormalUntilTheProviderMovesOn() {
         L10n.shared.language = .zh
-        let card = SettingsSummary.cloudSummary(provider: .openai,
-                                                model: "gpt-5.6-luna",
-                                                keyState: .ready,
-                                                polishLevel: .smart,
-                                                engine: .cloudOpenAI)
-        XCTAssertTrue(card.sentence.contains("录音上传给OpenAI"), card.sentence)
-        XCTAssertFalse(card.sentence.contains("已连通"), card.sentence)
-        XCTAssertEqual(card.badge, "云端识别停在旧档")
+        let normal = SettingsSummary.cloudSummary(provider: .openai,
+                                                  model: "gpt-5.6-luna",
+                                                  keyState: .ready,
+                                                  polishLevel: .smart,
+                                                  engine: .cloudOpenAI)
+        XCTAssertTrue(normal.sentence.contains("云端识别开"), normal.sentence)
+        XCTAssertNil(normal.badge, "用户自己打开的开关，卡上不该有徽章")
+
+        // 服务商换成别家：音频还在往 OpenAI 传，而那个开关已经不渲染了
+        let stranded = SettingsSummary.cloudSummary(provider: .deepseek,
+                                                    model: "deepseek-flash",
+                                                    keyState: .ready,
+                                                    polishLevel: .smart,
+                                                    engine: .cloudOpenAI)
+        XCTAssertTrue(stranded.sentence.contains("录音上传给OpenAI"), stranded.sentence)
+        XCTAssertFalse(stranded.sentence.contains("已连通"), stranded.sentence)
+        XCTAssertEqual(stranded.badge, "云端识别停在旧档")
     }
 
     /// 识别停在阿里云、服务商却换走了：那个开关只在阿里云档渲染，界面上关不掉它。

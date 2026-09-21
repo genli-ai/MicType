@@ -245,18 +245,30 @@ enum AISetup {
 
     /// 服务商 + 「识别也用云端」那个开关 → 识别引擎该是哪一档。
     ///
-    /// 云端识别只剩阿里云这一档（OpenAI 的转写端点 4.0.1 起不再摆出来）。
-    /// 换到别的服务商就回本机：不然用户换完服务商，音频还在往阿里云传，而界面上
-    /// 已经没有那个开关可以关了。
+    /// 4.2.2 起**两家都有**（OpenAI 的实时转写端点实测可用，而且它认词汇表热词）：
+    /// 阿里云 → cloudAlibaba，OpenAI → cloudOpenAI，其余（DeepSeek / 网关 / 本机模型）
+    /// 没有识别接口，一律回本机。
+    /// 换到没有这条路的服务商就回本机：不然用户换完服务商，音频还在往老那家传，
+    /// 而界面上已经没有那个开关可以关了。
     static func engine(provider: LLMProvider, cloudRecognition: Bool) -> RecognitionEngineChoice {
-        (provider == .qwen && cloudRecognition) ? .cloudAlibaba : .local
+        guard cloudRecognition else { return .local }
+        switch provider {
+        case .qwen: return .cloudAlibaba
+        case .openai: return .cloudOpenAI
+        case .deepseek, .custom, .local: return .local
+        }
     }
 
-    /// 这台 Mac 还停在 4.0.0 的「云端 · OpenAI」识别上吗。
-    /// 界面上已经没有这一档了，但设置里可能还存着——必须当面告诉他，并给一颗回本机的按钮，
-    /// 绝不替他改（音频出不出这台 Mac 永远由用户自己点）。
-    static func showsLegacyOpenAICloudNotice(engine: RecognitionEngineChoice) -> Bool {
-        engine == .cloudOpenAI
+    /// 云端识别停在 OpenAI、服务商却不是 OpenAI——与下面阿里云那一条同一件事：
+    /// 那个开关只在"看着的和生效的都是这一家"时才渲染，于是音频一直在上传、
+    /// 界面上却没有关掉它的控件。当面说 + 给一颗回本机的按钮，**绝不替他改**。
+    ///
+    /// 4.2.2 之前这里判的是「engine == .cloudOpenAI」本身（那时候界面上没有 OpenAI 这一档，
+    /// 所以它必然是 4.0.0 的遗留）。现在它是一档正常配置，再那么判就会在用户刚把开关
+    /// 打开的那一秒当面劝他关掉。
+    static func showsStrandedOpenAICloudNotice(engine: RecognitionEngineChoice,
+                                               provider: LLMProvider) -> Bool {
+        engine == .cloudOpenAI && provider != .openai
     }
 
     /// 云端识别停在阿里云、服务商却不是阿里云——这一状态下 AI 页上那个开关**根本不渲染**
@@ -274,10 +286,14 @@ enum AISetup {
     ///
     /// 设置页与引导页各有一处换服务商的入口，两处必须做同一件事——4.0.1 里只有设置页做了，
     /// 于是从引导里换走服务商的人，音频还在往阿里云传，而 AI 页上已经没有那个开关了。
+    ///
+    /// **4.2.2 起：只要云端识别开着，换生效服务商就一律关掉它**（用户 2026-09-21 拍板），
+    /// 哪怕换过去的那一家也支持云端识别。理由是钱：阿里云约 $0.13/小时、OpenAI 约 $1/小时，
+    /// 差了近八倍——"我同意把音频传给 A 并按 A 的价钱付费"不等于"我同意传给 B 并按 B 的价钱付费"。
+    /// 让他在新服务商下自己再拨一次，那一下旁边就写着新的单价。
     static func engineAfterProviderChange(current: RecognitionEngineChoice,
                                           next: LLMProvider) -> RecognitionEngineChoice? {
-        guard current == .cloudAlibaba,
-              engine(provider: next, cloudRecognition: true) != .cloudAlibaba else { return nil }
+        guard current.isCloud else { return nil }
         return .local
     }
 

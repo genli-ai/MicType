@@ -279,21 +279,48 @@ final class SettingsCopyBudgetTests: XCTestCase {
     // MARK: - 云端识别的代价说全了没有
 
     /// 这颗 ⓘ 是用户点下「识别也用云端」之前唯一能读到的代价说明。
-    /// 四件事一件都不能少：音频会上传、按秒计费、要先开通模型、出错会回落本机。
+    /// 每一家都要说全：音频会上传、怎么计费、出错会回落本机。
     func testCloudRecognitionInfoStatesEveryCost() {
         L10n.shared.language = .zh
-        let zh = SettingsCopy.cloudRecognitionInfo
-        XCTAssertTrue(zh.contains("上传"), zh)
-        XCTAssertTrue(zh.contains("计费"), zh)
-        XCTAssertTrue(zh.contains("开通"), zh)
-        XCTAssertTrue(zh.contains("本机"), zh)
+        for provider in CloudASRProvider.allCases {
+            let zh = SettingsCopy.cloudRecognitionInfo(provider: provider)
+            XCTAssertTrue(zh.contains("传给"), zh)
+            XCTAssertTrue(zh.contains("计费"), zh)
+            XCTAssertTrue(zh.contains("本机"), zh)
+        }
+        // 阿里云那一档还要提醒"先去控制台开通一次模型"
+        XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .alibaba).contains("开通"))
+        // OpenAI 那一档必须点名它贵得多——两家差着近八倍，这是选择的一部分
+        XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .openai).contains("数倍"))
 
         L10n.shared.language = .en
-        let en = SettingsCopy.cloudRecognitionInfo.lowercased()
-        XCTAssertTrue(en.contains("uploaded"), en)
-        XCTAssertTrue(en.contains("billed by the second"), en)
-        XCTAssertTrue(en.contains("enable the model"), en)
-        XCTAssertTrue(en.contains("on this mac"), en)
+        for provider in CloudASRProvider.allCases {
+            let en = SettingsCopy.cloudRecognitionInfo(provider: provider).lowercased()
+            XCTAssertTrue(en.contains("streams to"), en)
+            XCTAssertTrue(en.contains("billed"), en)
+            XCTAssertTrue(en.contains("on this mac"), en)
+        }
+        XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .alibaba)
+            .lowercased().contains("enable the model"))
+        XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .openai)
+            .lowercased().contains("several times"))
+    }
+
+    /// 云端识别的单价**只有一个出处**（LLMCatalog.cloudASRPriceNote），而且必须摆在
+    /// 开关旁边而不是 ⓘ 里：两家差着近八倍，那是选择本身的一部分
+    func testCloudASRPriceHasASingleSource() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            for provider in CloudASRProvider.allCases {
+                let note = LLMCatalog.cloudASRPriceNote(provider: provider)
+                XCTAssertFalse(note.isEmpty)
+                XCTAssertTrue(note.contains("$"), note)
+                XCTAssertFalse(CJKSourceScanner.containsFlagged(
+                    LLMCatalog.cloudASRPriceNote(provider: provider)) && language == .en, note)
+            }
+            XCTAssertNotEqual(LLMCatalog.cloudASRPriceNote(provider: .alibaba),
+                              LLMCatalog.cloudASRPriceNote(provider: .openai))
+        }
     }
 
     /// Key 那颗 ⓘ 必须逐字引用 LLMCatalog 的存储说明（全 App 唯一出处），

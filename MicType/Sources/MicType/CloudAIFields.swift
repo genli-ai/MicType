@@ -126,10 +126,15 @@ struct ModelPickerField: View {
     }
 }
 
-/// 阿里云那一档的「识别也用云端」开关 + 一行代价 + 一行结论。**整段只有这三行。**
+/// 「识别也用云端」开关 + 一行代价 + 一行结论。**整段只有这三行。**
 ///
-/// 只有阿里云有这一档：OpenAI 的转写端点 4.0.1 起不再提供，DeepSeek 没有识别接口。
+/// 4.2.2 起**阿里云与 OpenAI 两家都有**（OpenAI 的实时转写端点实测可用，而且它认词汇表
+/// 热词）；DeepSeek 没有识别接口，把 Base URL 指向第三方网关的 OpenAI 档也没有
+/// （实时地址是写死的官方域名，见 CloudASRSettings.openAIUsesOfficialEndpoint）。
 /// 开关本身只写一条设置（识别引擎），判据走 AISetup.engine（纯函数，单测钉死）。
+///
+/// 两家的代价差着近八倍（阿里云约 $0.13/小时、OpenAI 约 $1/小时），所以单价必须写在
+/// 开关旁边——出处只有 LLMCatalog.cloudASRPriceNote 一个。
 ///
 /// 4.1.4 把这一段上的**所有**接入地址与测试控件都收掉了（用户 2026-09-20 实测后拍板：
 /// 「三个东西要测，太复杂」「永远别让用户去碰接入地址」）：
@@ -146,6 +151,9 @@ struct CloudRecognitionFields: View {
     var keyVerifiedTick: Int = 0
     /// 开关动过之后调用方要做的事（引导页据此重算"AI 现在跑不跑得起来"）
     var onEngineChange: (() -> Void)? = nil
+    /// 这一段属于哪一家。**由调用方传**：它同时是"看着的"和"生效的"那一档
+    /// （showsCloudRecognition 已经保证两者相同），这里不再自己去读设置。
+    var provider: LLMProvider = .qwen
 
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKeys.recognitionEngine) private var recognitionEngine = RecognitionEngineChoice.local.rawValue
@@ -158,14 +166,22 @@ struct CloudRecognitionFields: View {
     /// 把开关拨回去、换一把 Key——回来的那条旧结论绝不能落在新配置下面。
     @State private var checkGeneration = 0
 
-    private var isOn: Bool { RecognitionEngineChoice.parse(recognitionEngine) == .cloudAlibaba }
+    /// 这一家开着的时候，识别引擎该是哪一档
+    private var engineWhenOn: RecognitionEngineChoice {
+        AISetup.engine(provider: provider, cloudRecognition: true)
+    }
+
+    /// 这一家的云端识别供应商（摆得出这个开关就一定有；理论上取不到时按阿里云算）
+    private var asrProvider: CloudASRProvider { engineWhenOn.cloudProvider ?? .alibaba }
+
+    private var isOn: Bool { RecognitionEngineChoice.parse(recognitionEngine) == engineWhenOn }
 
     /// 开关 ←→ 识别引擎。哪一档由 AISetup.engine 说了算，界面这边不自己拼 rawValue。
     /// 拨开就当场测一次（见 runCheck）；拨回去只是关掉，不必测什么。
     private var engineBinding: Binding<Bool> {
         Binding(get: { isOn },
                 set: { on in
-                    let next = AISetup.engine(provider: .qwen, cloudRecognition: on)
+                    let next = AISetup.engine(provider: provider, cloudRecognition: on)
                     recognitionEngine = next.rawValue
                     Log.info("Cloud recognition engine=\(next.rawValue)")
                     onEngineChange?()
@@ -193,14 +209,19 @@ struct CloudRecognitionFields: View {
                 }
                 // 结论是一次性快照，切语言要清掉（见 CLAUDE.md「i18n 快照字符串」）
                 .onChange(of: l10n.language) { _, _ in invalidateCheck() }
-            // 开关旁边只留一行：开着说代价（边说边传 + 按秒计费），关着说默认（不出这台 Mac）。
-            // 单价、留存、先开通模型、出错回落全部收进段头那颗 ⓘ（SettingsCopy.cloudRecognitionInfo）。
+            // 开关旁边只留一行：开着说型号 + 代价 + 单价，关着说默认（不出这台 Mac）+ 打开后的单价。
+            // 留存、先开通模型、出错回落收进段头那颗 ⓘ（SettingsCopy.cloudRecognitionInfo）。
             //
-            // 型号名写的是**实时那个**（AlibabaRealtimeClient.model），不是设置里存的
-            // cloudAlibabaModel：4.1.7 起这一档默认走实时接口，存着的那个只是实时用不了时
-            // 接手的整段上传档。屏幕上该写"按下去会发生什么"，而不是"设置里存着什么"。
-            Caption(isOn ? AlibabaRealtimeClient.model + " · " + SettingsCopy.cloudRecognitionCost
-                         : SettingsCopy.cloudRecognitionOff)
+            // 型号名写的是**实时那个**，不是设置里存的 cloudAlibabaModel：这一档默认走实时
+            // 接口，存着的那个只是实时用不了时接手的整段上传档。屏幕上该写"按下去会发生什么"，
+            // 而不是"设置里存着什么"。单价摆在这里而不是 ⓘ 里：两家差着近八倍，
+            // 那是**选择的一部分**，不该藏在一颗要点开的气泡后面。
+            Caption(isOn ? CloudStreamingSession.streamModel(for: asrProvider)
+                            + " · " + SettingsCopy.cloudRecognitionCost
+                            + " · " + LLMCatalog.cloudASRPriceNote(provider: asrProvider)
+                         : SettingsCopy.cloudRecognitionOff + " · "
+                            + SettingsCopy.cloudRecognitionPriceWhenOn(
+                                LLMCatalog.cloudASRPriceNote(provider: asrProvider)))
             checkRow
         }
     }
@@ -384,11 +405,20 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
 
     private var usingAI: Bool { usageMode.wrappedValue == .withAI }
 
-    /// 阿里云那一段（云端识别开关 + 接入地址）摆不摆。
-    /// **看着的和生效的都得是阿里云**：只是点着预览的那一档，不该有一个能把音频送上云端的开关
-    /// ——按下去就成了「识别停在旧档」那条边界状态（AISetup.showsStrandedAlibabaCloudNotice）。
+    /// 云端识别那一段摆不摆。
+    /// **看着的和生效的必须是同一家**：只是点着预览的那一档，不该有一个能把音频送上云端的开关
+    /// ——按下去就成了「识别停在旧档」那条边界状态（AISetup.showsStranded…CloudNotice）。
+    ///
+    /// 4.2.2 起阿里云与 OpenAI 两家都摆；OpenAI 还要求**是官方接口**
+    /// （把 Base URL 指向第三方网关的人没有这条路：实时地址是写死的官方域名，
+    /// 音频会绕过他自己的网关，见 CloudASRSettings.openAIUsesOfficialEndpoint）。
     private var showsCloudRecognition: Bool {
-        selected == .qwen && inUse == .qwen && showsModel
+        guard selected == inUse, showsModel else { return false }
+        switch selected {
+        case .qwen: return true
+        case .openai: return CloudASRSettings.openAIUsesOfficialEndpoint
+        case .deepseek, .custom, .local: return false
+        }
     }
 
     var body: some View {
@@ -436,9 +466,10 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
             if showsCloudRecognition {
                 Section {
                     CloudRecognitionFields(keyVerifiedTick: keyVerifiedTick,
-                                           onEngineChange: onEngineChange)
+                                           onEngineChange: onEngineChange,
+                                           provider: selected)
                 } header: {
-                    SectionHeader(title: cloudRecognitionTitle, info: SettingsCopy.cloudRecognitionInfo)
+                    SectionHeader(title: cloudRecognitionTitle, info: cloudRecognitionInfo)
                 }
             }
         }
@@ -461,9 +492,10 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
                 modelField
             }
             if showsCloudRecognition {
-                SectionHeader(title: cloudRecognitionTitle, info: SettingsCopy.cloudRecognitionInfo)
+                SectionHeader(title: cloudRecognitionTitle, info: cloudRecognitionInfo)
                 CloudRecognitionFields(keyVerifiedTick: keyVerifiedTick,
-                                       onEngineChange: onEngineChange)
+                                       onEngineChange: onEngineChange,
+                                       provider: selected)
             }
         }
     }
@@ -503,6 +535,13 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
                          polishModel: polishModel,
                          commandModel: commandModel,
                          customChosen: customModelChosen)
+    }
+
+    /// 这一段那颗 ⓘ 按家给：两家的单价、留存口径、认不认词汇表都不一样
+    private var cloudRecognitionInfo: String {
+        SettingsCopy.cloudRecognitionInfo(
+            provider: AISetup.engine(provider: selected, cloudRecognition: true).cloudProvider
+                ?? .alibaba)
     }
 
     // 段名只写一处：引导页指路「设置 → 云端 AI → …」时，用户要在那边认得出同一个名字

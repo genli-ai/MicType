@@ -335,17 +335,24 @@ final class AISetupTests: XCTestCase {
     /// **换走服务商就必须回本机**：不然用户换到 OpenAI 之后，音频还在往阿里云传，
     /// 而界面上已经没有那个开关可以关了
     func testSwitchingProviderAwayFromAlibabaGoesBackToLocal() {
-        for provider in [LLMProvider.openai, .deepseek, .custom, .local] {
+        // 4.2.2 起 OpenAI 也有这条路（实时转写端点，而且它认词汇表热词）
+        XCTAssertEqual(AISetup.engine(provider: .openai, cloudRecognition: true), .cloudOpenAI)
+        XCTAssertEqual(AISetup.engine(provider: .openai, cloudRecognition: false), .local)
+        // 其余几档没有识别接口
+        for provider in [LLMProvider.deepseek, .custom, .local] {
             XCTAssertEqual(AISetup.engine(provider: provider, cloudRecognition: true), .local,
                            provider.rawValue)
         }
     }
 
-    /// 4.0.0 的「云端 · OpenAI」识别：界面上没有这一档了，但设置里可能还存着 —— 必须当面说
-    func testLegacyOpenAICloudRecognitionIsSurfaced() {
-        XCTAssertTrue(AISetup.showsLegacyOpenAICloudNotice(engine: .cloudOpenAI))
-        XCTAssertFalse(AISetup.showsLegacyOpenAICloudNotice(engine: .cloudAlibaba))
-        XCTAssertFalse(AISetup.showsLegacyOpenAICloudNotice(engine: .local))
+    /// 识别停在 OpenAI、服务商却不是它：那个开关不渲染，界面上关不掉 —— 必须当面说。
+    /// **服务商就是 OpenAI 时一个字都不许说**：那是用户刚刚自己打开的开关（4.2.2）
+    func testStrandedOpenAICloudRecognitionIsSurfaced() {
+        XCTAssertTrue(AISetup.showsStrandedOpenAICloudNotice(engine: .cloudOpenAI, provider: .qwen))
+        XCTAssertTrue(AISetup.showsStrandedOpenAICloudNotice(engine: .cloudOpenAI, provider: .local))
+        XCTAssertFalse(AISetup.showsStrandedOpenAICloudNotice(engine: .cloudOpenAI, provider: .openai))
+        XCTAssertFalse(AISetup.showsStrandedOpenAICloudNotice(engine: .cloudAlibaba, provider: .qwen))
+        XCTAssertFalse(AISetup.showsStrandedOpenAICloudNotice(engine: .local, provider: .openai))
     }
 
     // MARK: - AI 配齐了没有
@@ -475,15 +482,21 @@ final class AISetupTests: XCTestCase {
         XCTAssertFalse(AISetup.showsStrandedAlibabaCloudNotice(engine: .cloudOpenAI, provider: .openai))
     }
 
-    /// 换服务商时识别引擎跟不跟着回本机——设置页与引导页共用这一条，两处不许各写一份
+    /// 换服务商时识别引擎跟不跟着回本机——设置页与引导页共用这一条，两处不许各写一份。
+    ///
+    /// **4.2.2 起：只要云端识别开着，换生效服务商就一律关掉它**（用户拍板），哪怕换过去的
+    /// 那一家也支持。理由是钱：阿里云约 $0.13/小时、OpenAI 约 $1/小时，差了近八倍——
+    /// "我同意传给 A 并按 A 的价钱付费"不等于"我同意传给 B 并按 B 的价钱付费"。
     func testEngineAfterProviderChange() {
         XCTAssertEqual(AISetup.engineAfterProviderChange(current: .cloudAlibaba, next: .openai), .local)
         XCTAssertEqual(AISetup.engineAfterProviderChange(current: .cloudAlibaba, next: .local), .local)
-        // 还在阿里云：那个开关照常在，不动它
-        XCTAssertNil(AISetup.engineAfterProviderChange(current: .cloudAlibaba, next: .qwen))
-        // 本来就没在用阿里云识别：换谁都与识别无关（cloudOpenAI 由那条 legacy 提示管）
+        XCTAssertEqual(AISetup.engineAfterProviderChange(current: .cloudOpenAI, next: .qwen), .local)
+        XCTAssertEqual(AISetup.engineAfterProviderChange(current: .cloudOpenAI, next: .deepseek), .local)
+        // 换过去的那一家也支持云端识别，照样关掉：价钱差着近八倍，必须重新同意一次
+        XCTAssertEqual(AISetup.engineAfterProviderChange(current: .cloudAlibaba, next: .qwen), .local)
+        // 本来就在本机识别：换谁都与识别无关
         XCTAssertNil(AISetup.engineAfterProviderChange(current: .local, next: .openai))
-        XCTAssertNil(AISetup.engineAfterProviderChange(current: .cloudOpenAI, next: .openai))
+        XCTAssertNil(AISetup.engineAfterProviderChange(current: .local, next: .qwen))
     }
 
     // MARK: - 4.1.1：「关于我」并进「自定义规则」

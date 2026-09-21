@@ -826,13 +826,14 @@ struct CloudEditor: View {
                 }
             }
         }
-        // 4.0.0 的「云端 · OpenAI」识别：界面上已经没有这一档了，但设置里可能还存着。
+        // 云端识别停在 OpenAI、服务商却不是 OpenAI：与下面阿里云那一条同一件事——
+        // 那个开关只在"看着的和生效的都是这一家"时渲染，于是音频一直在上传、界面上却关不掉它。
         // 绝不替他改（音频出不出这台 Mac 只由用户点），但必须当面说，并给一颗回本机的按钮。
-        if AISetup.showsLegacyOpenAICloudNotice(engine: engineChoice) {
-            BoundaryRow(text: SettingsCopy.legacyOpenAICloudRecognition) {
+        if AISetup.showsStrandedOpenAICloudNotice(engine: engineChoice, provider: inUseProvider) {
+            BoundaryRow(text: SettingsCopy.strandedOpenAIRecognition) {
                 Button(tr("改回本机识别", "Back to on-device")) {
                     recognitionEngine = RecognitionEngineChoice.local.rawValue
-                    Log.info("Legacy cloudOpenAI recognition switched back to local")
+                    Log.info("Stranded cloudOpenAI recognition switched back to local")
                 }
             }
         }

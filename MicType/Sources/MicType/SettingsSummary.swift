@@ -204,12 +204,12 @@ enum SettingsSummary {
 
     /// 音频正在往**用户选中的那一档之外**传吗；是的话返回真正的收信人。
     ///
-    /// 两种来路，和「云端 AI」页里那两行横幅同源（AISetup.showsLegacyOpenAICloudNotice /
-    /// showsStrandedAlibabaCloudNotice）：4.0.0 的「云端 · OpenAI」识别档（界面上早已没有
-    /// 这个选项），以及换走服务商之后留在阿里云的识别档（那个开关只在阿里云档渲染，关不掉）。
+    /// 两种来路，和「云端 AI」页里那两行横幅同源（AISetup.showsStrandedOpenAICloudNotice /
+    /// showsStrandedAlibabaCloudNotice）：换走服务商之后留在 OpenAI、或者留在阿里云的识别档
+    /// ——那个开关只在"看着的和生效的都是这一家"时才渲染，于是界面上关不掉它。
     private static func strandedCloudTarget(engine: RecognitionEngineChoice,
                                             provider: LLMProvider) -> String? {
-        if AISetup.showsLegacyOpenAICloudNotice(engine: engine) {
+        if AISetup.showsStrandedOpenAICloudNotice(engine: engine, provider: provider) {
             return LLMProvider.openai.segmentName
         }
         if AISetup.showsStrandedAlibabaCloudNotice(engine: engine, provider: provider) {

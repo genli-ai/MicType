@@ -133,16 +133,37 @@ final class PolishNumberLiveTests: XCTestCase {
 
     // MARK: - 验收
 
+    /// 这条验收要钉的是**校验与模型的配合**，不是"模型每次都听话"。
+    ///
+    /// 4.2.2 之前它把两件事混成一条：期望的数字串没出现就算失败，然后**不管有没有出现**
+    /// 都要求校验放行——于是模型真的把数改错的那一次（2026-09-21：luna 把 13800138000
+    /// 写成 138013800，校验按 missing=2 拦下）被判成红灯，而那恰恰是校验**做对了**的一次。
+    /// 那是真阳性，不是回归。
+    ///
+    /// 所以改成按实际产出分两支：
+    ///   • 数字照做了 → 校验**必须放行**（不许误伤听话的模型）；
+    ///   • 数字没照做 → 校验**必须拦下**（改了数就不能放进输入框）。
+    /// 两支都红不了，才说明这条链路是对的。
     private func check(_ label: String, polish: (String) throws -> String) rethrows {
         for (raw, expect) in Self.cases {
             let polished = try polish(raw)
-            print("live polish [\(label)]:\n  raw      = \(raw)\n  polished = \(polished)")
-            if let expect = expect {
-                XCTAssertTrue(polished.contains(expect), "成品里应该出现「\(expect)」：\(polished)")
+            let drift = TextPostProcessor.polishDriftCheck(raw: raw, polished: polished)
+            print("live polish [\(label)]:\n  raw      = \(raw)\n  polished = \(polished)"
+                  + "\n  guard    = \(drift ?? "passed")")
+            guard let expect = expect else {
+                // 没有期望数字串的用例（纯文字那几条）：校验照样不该拦
+                XCTAssertNil(drift, "保真校验不该拦这一句：\(polished)")
+                continue
             }
-            // 这才是重点：模型照做之后，保真校验必须放行
-            XCTAssertNil(TextPostProcessor.polishDriftCheck(raw: raw, polished: polished),
-                         "保真校验不该拦这一句：\(polished)")
+            if polished.contains(expect) {
+                XCTAssertNil(drift, "模型照做了，保真校验不该拦这一句：\(polished)")
+            } else {
+                XCTAssertNotNil(drift, """
+                    模型没有写出「\(expect)」，而保真校验放行了——**这才是真正的故障**：
+                    一句数字被改过的稿子会就这么进用户的输入框。
+                    成品：\(polished)
+                    """)
+            }
         }
     }
 

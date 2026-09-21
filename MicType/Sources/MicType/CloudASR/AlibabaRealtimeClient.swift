@@ -15,27 +15,6 @@ import Foundation
 // 协议事实全部来自那次实测（docs/阿里云实时识别-协议实测_260921.md），
 // 每一条不显然的都在下面写了为什么。
 
-// MARK: - socket 抽象
-
-protocol RealtimeSocketDelegate: AnyObject {
-    /// 握手成功（HTTP 101）
-    func realtimeSocketDidOpen()
-    /// 收到一条文本帧
-    func realtimeSocketDidReceive(_ text: String)
-    /// 这条连接结束了（握手失败 / 中途断线 / 正常关闭 / 发送失败）。
-    /// - status: 握手拿到的 HTTP 状态码（101 之外才有意义；拿不到就是 nil）
-    /// - closeCode: WebSocket 关闭码
-    /// - detail: 网络层错误的一句话（只给日志，**不含任何用户内容**）
-    func realtimeSocketDidClose(status: Int?, closeCode: Int?, detail: String?)
-}
-
-protocol RealtimeSocket: AnyObject {
-    func resume(delegate: RealtimeSocketDelegate)
-    func send(_ text: String)
-    /// 立刻断开。断开之后一条回调都不许再来（Esc 那条路指望的就是这一点）。
-    func cancel()
-}
-
 // MARK: - 事件
 
 /// 服务端事件。**解码是纯函数**，单测直接喂字符串。
@@ -95,7 +74,7 @@ enum RealtimeEvent: Equatable {
 
 // MARK: - 客户端
 
-final class AlibabaRealtimeClient: RealtimeSocketDelegate {
+final class AlibabaRealtimeClient: RealtimeTranscriptionClient, RealtimeSocketDelegate {
 
     // MARK: 常量
 
@@ -141,54 +120,12 @@ final class AlibabaRealtimeClient: RealtimeSocketDelegate {
         }
     }
 
-    // MARK: 失败
+    // MARK: 失败与终稿（两家共用，见 RealtimeTransport.swift）
 
-    /// 两类失败**行为完全不同**（用户 2026-09-21 拍板）：
-    ///   • disablesStreaming = 这台主机 / 这把 Key 压根不支持实时 → 记住它，
-    ///     本句和之后的句子一律走现有的整段上传，行为与 4.1.6 完全一致，不打扰用户；
-    ///   • 其余 = 偶发 → 本句按现有「云端识别失败 → 回落本机引擎」那条路走。
-    enum Failure: Error, Equatable {
-        /// 握手被拒（拿得到 HTTP 状态码：401 = 这把 Key，403 = 这台主机）
-        case handshakeRejected(status: Int)
-        /// `session.created` 回显的模型不是我们点的那个——继续下去就是在用更贵的模型
-        case modelMismatch(reported: String?)
-        /// close 1011：这台主机上没有这个模型
-        case modelUnavailable
-        /// 连不上 / 中途断线 / 超时 / 发送失败（只记一句话，不含用户内容）
-        case transport(String)
-        /// 服务端的 error 事件。`COMMON_ERROR` 这一档**不断连也不会有终稿**，收到即判失败
-        case serverError(code: String?, message: String?)
-        /// finish 发出去了，终稿没来
-        case finalTimeout
-
-        /// 这一次失败值不值得把「这台主机的实时」整个关掉（纯函数，单测钉死）
-        var disablesStreaming: Bool {
-            switch self {
-            case .handshakeRejected, .modelMismatch, .modelUnavailable: return true
-            case .transport, .serverError, .finalTimeout: return false
-            }
-        }
-
-        /// 写进日志的那一句。**只有状态码 / 关闭码 / 服务端错误码**，一个字用户内容都没有。
-        var logReason: String {
-            switch self {
-            case .handshakeRejected(let status): return "handshake status=\(status)"
-            case .modelMismatch(let reported): return "model echoed=\(reported ?? "-")"
-            case .modelUnavailable: return "close=1011"
-            case .transport(let detail): return "transport=\(detail)"
-            case .serverError(let code, _): return "event error code=\(code ?? "-")"
-            case .finalTimeout: return "final timeout"
-            }
-        }
-    }
-
-    /// 一次会话的终稿
-    struct Transcript: Equatable {
-        var text: String
-        /// 整条会话的计费秒数（最后一条 completed 的 usage.duration）
-        var billedSeconds: Double?
-        var language: String?
-    }
+    /// 失败分类搬去了共享层：两个客户端对上层必须是同一套判据，
+    /// 否则「这条链路不支持实时」这件事在两家会有两种含义。老调用点照常用 `Failure`。
+    typealias Failure = RealtimeFailure
+    typealias Transcript = RealtimeTranscript
 
     // MARK: 状态机
 
@@ -308,50 +245,9 @@ final class AlibabaRealtimeClient: RealtimeSocketDelegate {
         return text
     }
 
-    /// Float32 → PCM16 小端。截断而不是溢出：越界的采样翻成反相的噪声比削顶难听得多。
-    static func pcm16LE(_ samples: [Float]) -> Data {
-        var out = Data(capacity: samples.count * 2)
-        for sample in samples {
-            let clamped = sample.isFinite ? min(max(sample, -1), 1) : 0
-            let value = Int16(clamped * 32_767)
-            out.append(UInt8(truncatingIfNeeded: value))
-            out.append(UInt8(truncatingIfNeeded: value >> 8))
-        }
-        return out
-    }
-
     /// 灰字草稿：稳定前缀 + 未定尾巴。开头六七秒里 text 是空的、内容全在 stash 里，
     /// 所以两段必须拼起来看，只显示 text 的话前几秒屏幕上什么都没有。
     static func draft(text: String, stash: String) -> String { text + stash }
-
-    /// 到现在为止还能发多少字节（令牌桶，纯函数）。
-    ///
-    /// 为什么非有不可：服务端输入限速 2560 KB/s（约 80× 实时），超了直接 1007 断连——
-    /// 而握手那 0.3 秒里攒下的音频、以及边录边发追不上时的积压，都是要补发的。
-    /// 桶的容量是 burstSeconds 秒音频，按 maxSpeed × 实时补充。
-    static func sendableBytes(elapsed: TimeInterval, sentBytes: Int,
-                              bytesPerSecond: Double, maxSpeed: Double,
-                              burstSeconds: Double) -> Int {
-        let allowance = (max(0, elapsed) * maxSpeed + burstSeconds) * bytesPerSecond
-        return max(0, Int(allowance) - sentBytes)
-    }
-
-    /// finish 之后等终稿多久。实测恒为 0.23–0.28 秒与时长无关，但长录音的尾巴服务端要多收一会儿，
-    /// 所以超过 longTakeSeconds 放宽一档——宁可多等两秒，也不要把一段十分钟的口述判成失败。
-    static func finalTimeout(audioSeconds: Double, short: TimeInterval, long: TimeInterval,
-                             longTakeSeconds: Double) -> TimeInterval {
-        audioSeconds >= longTakeSeconds ? long : short
-    }
-
-    /// 松手这一刻**还没连上**时，还肯为建连等多久（纯函数）。
-    ///
-    /// 为什么不能原样花完 setupTimeout：那 8 秒是"用户还在说话"时的预算，他什么都没在等；
-    /// 松手之后他盯着悬浮窗，8 秒的空白之后再回落本机，是这条路上最糟的一种体验。
-    /// 取"剩下的建连预算"与这条宽限值里更短的那个——两头都不超。
-    static func remainingSetupBudget(elapsed: TimeInterval, setupTimeout: TimeInterval,
-                                     releaseGrace: TimeInterval) -> TimeInterval {
-        max(0, min(setupTimeout - max(0, elapsed), max(0, releaseGrace)))
-    }
 
     // MARK: - 对外动作
 
@@ -389,7 +285,7 @@ final class AlibabaRealtimeClient: RealtimeSocketDelegate {
         queue.async { [weak self] in
             guard let self = self, !self.cancelled else { return }
             guard self.state != .done, self.state != .failed else { return }
-            self.pending.append(Self.pcm16LE(samples))
+            self.pending.append(RealtimeAudio.pcm16LE(samples))
             self.pump()
         }
     }
@@ -407,7 +303,7 @@ final class AlibabaRealtimeClient: RealtimeSocketDelegate {
             // releaseSetupGrace 以内。到点还没进 streaming 就按偶发失败收口，
             // 让上层早点去走本机那条路——用户此刻是在干等
             if self.state == .connecting || self.state == .awaitingSession {
-                let remaining = Self.remainingSetupBudget(
+                let remaining = RealtimeAudio.remainingSetupBudget(
                     elapsed: Date().timeIntervalSince(self.startedAt),
                     setupTimeout: self.config.setupTimeout,
                     releaseGrace: self.config.releaseSetupGrace)
@@ -447,7 +343,7 @@ final class AlibabaRealtimeClient: RealtimeSocketDelegate {
         let now = Date()
         if streamClock == nil { streamClock = now }
         let elapsed = now.timeIntervalSince(streamClock ?? now)
-        let allowed = Self.sendableBytes(elapsed: elapsed, sentBytes: sentBytes,
+        let allowed = RealtimeAudio.sendableBytes(elapsed: elapsed, sentBytes: sentBytes,
                                          bytesPerSecond: bytesPerSecond,
                                          maxSpeed: config.maxSpeed,
                                          burstSeconds: config.burstSeconds)
@@ -490,7 +386,7 @@ final class AlibabaRealtimeClient: RealtimeSocketDelegate {
         finishSentAt = Date()
         socket?.send(Self.finishMessage())
         log("finish sent audioSeconds=\(String(format: "%.1f", audioSecondsSent))")
-        let timeout = Self.finalTimeout(audioSeconds: audioSecondsSent,
+        let timeout = RealtimeAudio.finalTimeout(audioSeconds: audioSecondsSent,
                                         short: config.finalTimeout,
                                         long: config.longFinalTimeout,
                                         longTakeSeconds: config.longTakeSeconds)
@@ -616,111 +512,5 @@ final class AlibabaRealtimeClient: RealtimeSocketDelegate {
         case .ignored:
             break
         }
-    }
-}
-
-// MARK: - 真实现（URLSessionWebSocketTask）
-
-/// 两处坑（2026-09-21 实测）：
-///   • 握手失败时 URLSession 只给 `NSURLErrorDomain -1011`，**状态码要从
-///     `task.response as? HTTPURLResponse` 取**（401 = 这把 Key，403 = 这台主机），错误体拿不到；
-///   • URLSession 会强引用 delegate 直到 invalidate——所以 cancel() 必须 invalidateAndCancel()，
-///     否则每次听写都漏一个 session 和一条连接。
-final class URLSessionRealtimeSocket: NSObject, RealtimeSocket, URLSessionWebSocketDelegate {
-
-    private let request: URLRequest
-    private var session: URLSession?
-    private var task: URLSessionWebSocketTask?
-    private weak var delegate: RealtimeSocketDelegate?
-    private let lock = NSLock()
-    private var finished = false
-
-    init(url: URL, headers: [String: String]) {
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 30
-        for (field, value) in headers { request.setValue(value, forHTTPHeaderField: field) }
-        self.request = request
-        super.init()
-    }
-
-    func resume(delegate: RealtimeSocketDelegate) {
-        self.delegate = delegate
-        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
-        self.session = session
-        let task = session.webSocketTask(with: request)
-        self.task = task
-        task.resume()
-        receive()
-    }
-
-    func send(_ text: String) {
-        task?.send(.string(text)) { [weak self] error in
-            guard let self = self, let error = error else { return }
-            let nsError = error as NSError
-            guard nsError.code != NSURLErrorCancelled else { return }
-            self.close(status: nil, closeCode: nil, detail: "send failed \(nsError.code)")
-        }
-    }
-
-    func cancel() {
-        lock.lock()
-        finished = true
-        lock.unlock()
-        delegate = nil
-        task?.cancel(with: .normalClosure, reason: nil)
-        task = nil
-        session?.invalidateAndCancel()
-        session = nil
-    }
-
-    private func receive() {
-        task?.receive { [weak self] result in
-            guard let self = self else { return }
-            switch result {
-            case .success(let message):
-                if case .string(let text) = message {
-                    self.delegate?.realtimeSocketDidReceive(text)
-                }
-                self.receive()
-            case .failure(let error):
-                let nsError = error as NSError
-                guard nsError.code != NSURLErrorCancelled else { return }
-                self.close(status: (self.task?.response as? HTTPURLResponse)?.statusCode,
-                           closeCode: self.task?.closeCode.rawValue,
-                           detail: "\(nsError.domain) \(nsError.code)")
-            }
-        }
-    }
-
-    /// 收口只允许一次：didClose 与 didComplete 完全可能前后脚各来一遍
-    private func close(status: Int?, closeCode: Int?, detail: String?) {
-        lock.lock()
-        let already = finished
-        finished = true
-        lock.unlock()
-        guard !already else { return }
-        let code = (closeCode == 0) ? nil : closeCode
-        delegate?.realtimeSocketDidClose(status: status, closeCode: code, detail: detail)
-    }
-
-    // MARK: URLSessionWebSocketDelegate
-
-    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
-                    didOpenWithProtocol protocol: String?) {
-        delegate?.realtimeSocketDidOpen()
-    }
-
-    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
-                    didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        close(status: (webSocketTask.response as? HTTPURLResponse)?.statusCode,
-              closeCode: closeCode.rawValue, detail: nil)
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        let nsError = error as NSError?
-        if let nsError = nsError, nsError.code == NSURLErrorCancelled { return }
-        close(status: (task.response as? HTTPURLResponse)?.statusCode,
-              closeCode: (task as? URLSessionWebSocketTask)?.closeCode.rawValue,
-              detail: nsError.map { "\($0.domain) \($0.code)" })
     }
 }

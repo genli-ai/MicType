@@ -112,9 +112,14 @@ final class RecordingClockTests: XCTestCase {
         CloudStreamingAvailability.resetForTesting()
         Settings.shared.recognitionEngine = .local
         XCTAssertEqual(DictationController.currentRecordingFlow(), .progressiveLocal)
+        // 4.2.2 起 OpenAI 官方接口也有实时这条路
         Settings.shared.recognitionEngine = .cloudOpenAI
-        XCTAssertEqual(DictationController.currentRecordingFlow(), .cloudUpload,
-                       "OpenAI 那一档没有实时接口")
+        XCTAssertEqual(DictationController.currentRecordingFlow(), .cloudStreaming)
+        CloudStreamingAvailability.markUnsupported(provider: .openai, host: "api.openai.com",
+                                                   reason: "test")
+        XCTAssertEqual(DictationController.currentRecordingFlow(), .cloudUpload)
+        CloudStreamingAvailability.resetForTesting()
+        Settings.shared.recognitionEngine = .cloudAlibaba
         Settings.shared.recognitionEngine = .cloudAlibaba
         XCTAssertEqual(DictationController.currentRecordingFlow(), .cloudStreaming)
         // 这台主机这次运行里被判过"实时用不了"：那句话得换回整段上传那一版
@@ -124,7 +129,7 @@ final class RecordingClockTests: XCTestCase {
                                                 workspace: s.qwenWorkspaceID,
                                                 legacyRegionSlug: s.qwenRegion.regionSlug,
                                                 apiKey: "")
-        CloudStreamingAvailability.markUnsupported(host: host, reason: "test")
+        CloudStreamingAvailability.markUnsupported(provider: .alibaba, host: host, reason: "test")
         XCTAssertEqual(DictationController.currentRecordingFlow(), .cloudUpload)
     }
 

@@ -477,6 +477,18 @@ enum LLMCatalog {
     /// 4.1.6 起没有「优先处理」这个开关了（用户 2026-09-21 拍板：OpenAI 官方接口一律走 Fast），
     /// 所以这句话不再说"默认关闭"，而且它现在只被 PrivacyCopy.fastTier 引用——写成能接在
     /// 「…一律走 Fast 档：」后面的半句（英文首字母小写），免得拼出来中间冒出一个大写字母。
+    /// 云端识别的单价（**全 App 唯一出处**）。查证日期 2026-09-21，来自两家的官方价目页。
+    ///
+    /// 为什么它必须摆在开关旁边而不是收进 ⓘ：两家差着近八倍（阿里云约 $0.13/小时、
+    /// OpenAI 约 $1.02/小时），这不是"解释"，是**选择本身的一部分**——藏在一颗要点开的
+    /// 气泡后面，等于让用户在不知道价钱的情况下按下那个开关。
+    static func cloudASRPriceNote(provider: CloudASRProvider) -> String {
+        switch provider {
+        case .alibaba: return tr("约 $0.13/小时", "about $0.13/hour")
+        case .openai: return tr("约 $0.017/分钟", "about $0.017/min")
+        }
+    }
+
     static var fastTierPriceNote: String { tr("延迟更低更稳，token 单价约 2 倍。",
                                       "lower, steadier latency at about 2x the token price.") }
 

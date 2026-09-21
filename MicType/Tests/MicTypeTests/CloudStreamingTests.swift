@@ -43,6 +43,9 @@ final class CloudStreamingTests: XCTestCase {
         var appends: [String] { sent.filter { $0.contains("input_audio_buffer.append") } }
         var updates: [String] { sent.filter { $0.contains("\"session.update\"") } }
         var finishes: [String] { sent.filter { $0.contains("\"session.finish\"") } }
+        /// OpenAI 那边的收尾（那边没有 session.finish）
+        var commits: [String] { sent.filter { $0.contains("input_audio_buffer.commit") } }
+        var clears: [String] { sent.filter { $0.contains("input_audio_buffer.clear") } }
 
         func resume(delegate: RealtimeSocketDelegate) { self.delegate = delegate }
 
@@ -152,7 +155,7 @@ final class CloudStreamingTests: XCTestCase {
     }
 
     func testPCM16IsLittleEndianAndClamps() {
-        let data = AlibabaRealtimeClient.pcm16LE([0, 1.0, -1.0, 9.0, .nan])
+        let data = RealtimeAudio.pcm16LE([0, 1.0, -1.0, 9.0, .nan])
         XCTAssertEqual(data.count, 10)
         XCTAssertEqual(Array(data[0..<2]), [0, 0])
         XCTAssertEqual(Array(data[2..<4]), [0xFF, 0x7F], "1.0 → 32767，小端")
@@ -187,7 +190,7 @@ final class CloudStreamingTests: XCTestCase {
         let burst = 3.0
         for tick in 0...100 {
             let elapsed = Double(tick) / 10.0
-            let allowed = AlibabaRealtimeClient.sendableBytes(elapsed: elapsed, sentBytes: 0,
+            let allowed = RealtimeAudio.sendableBytes(elapsed: elapsed, sentBytes: 0,
                                                               bytesPerSecond: bytesPerSecond,
                                                               maxSpeed: maxSpeed,
                                                               burstSeconds: burst)
@@ -196,12 +199,12 @@ final class CloudStreamingTests: XCTestCase {
                                      "t=\(elapsed)s 时允许发 \(audioSeconds)s 音频，超了 20× + 桶")
         }
         // 一秒窗口最多 (20 + 3) × 32000 = 736 KB，只有服务端硬限 2560 KB/s 的三成
-        let oneSecond = AlibabaRealtimeClient.sendableBytes(elapsed: 1, sentBytes: 0,
+        let oneSecond = RealtimeAudio.sendableBytes(elapsed: 1, sentBytes: 0,
                                                             bytesPerSecond: bytesPerSecond,
                                                             maxSpeed: maxSpeed, burstSeconds: burst)
         XCTAssertLessThan(oneSecond, 2_560 * 1024)
         // 发过的字节数照扣
-        XCTAssertEqual(AlibabaRealtimeClient.sendableBytes(elapsed: 1, sentBytes: oneSecond,
+        XCTAssertEqual(RealtimeAudio.sendableBytes(elapsed: 1, sentBytes: oneSecond,
                                                            bytesPerSecond: bytesPerSecond,
                                                            maxSpeed: maxSpeed, burstSeconds: burst), 0)
     }
@@ -209,14 +212,14 @@ final class CloudStreamingTests: XCTestCase {
     /// 松手时还没连上：**不能把 8 秒的建连预算原样花完**——那一刻用户盯着悬浮窗干等
     func testRemainingSetupBudgetIsCappedAfterRelease() {
         // 刚按下就松手：只肯再等宽限值那么久，而不是整整 8 秒
-        XCTAssertEqual(AlibabaRealtimeClient.remainingSetupBudget(elapsed: 0.2, setupTimeout: 8,
+        XCTAssertEqual(RealtimeAudio.remainingSetupBudget(elapsed: 0.2, setupTimeout: 8,
                                                                   releaseGrace: 2.5), 2.5)
         // 已经等了 7 秒：剩下的建连预算更短，就按它
-        XCTAssertEqual(AlibabaRealtimeClient.remainingSetupBudget(elapsed: 7, setupTimeout: 8,
+        XCTAssertEqual(RealtimeAudio.remainingSetupBudget(elapsed: 7, setupTimeout: 8,
                                                                   releaseGrace: 2.5), 1,
                        accuracy: 0.001)
         // 预算早就花完了：一秒都不再等
-        XCTAssertEqual(AlibabaRealtimeClient.remainingSetupBudget(elapsed: 9, setupTimeout: 8,
+        XCTAssertEqual(RealtimeAudio.remainingSetupBudget(elapsed: 9, setupTimeout: 8,
                                                                   releaseGrace: 2.5), 0)
     }
 
@@ -245,9 +248,9 @@ final class CloudStreamingTests: XCTestCase {
 
     /// 终稿超时按录音长度分两档：长录音的尾巴服务端要多收一会儿
     func testFinalTimeoutRelaxesForLongTakes() {
-        XCTAssertEqual(AlibabaRealtimeClient.finalTimeout(audioSeconds: 10, short: 3, long: 5,
+        XCTAssertEqual(RealtimeAudio.finalTimeout(audioSeconds: 10, short: 3, long: 5,
                                                           longTakeSeconds: 60), 3)
-        XCTAssertEqual(AlibabaRealtimeClient.finalTimeout(audioSeconds: 120, short: 3, long: 5,
+        XCTAssertEqual(RealtimeAudio.finalTimeout(audioSeconds: 120, short: 3, long: 5,
                                                           longTakeSeconds: 60), 5)
     }
 
@@ -287,7 +290,7 @@ final class CloudStreamingTests: XCTestCase {
         // 日志那一句只有状态码 / 关闭码 / 错误码，一个字用户内容都没有
         XCTAssertEqual(AlibabaRealtimeClient.Failure.handshakeRejected(status: 403).logReason,
                        "handshake status=403")
-        XCTAssertEqual(AlibabaRealtimeClient.Failure.modelUnavailable.logReason, "close=1011")
+        XCTAssertEqual(AlibabaRealtimeClient.Failure.modelUnavailable.logReason, "model unavailable")
     }
 
     // MARK: - 状态机（假 socket）
@@ -573,26 +576,29 @@ final class CloudStreamingTests: XCTestCase {
     func testUnsupportedMemoryIsPerHost() {
         let denied = "denied.example.com"
         let other = "other.example.com"
-        CloudStreamingAvailability.markUnsupported(host: denied, reason: "handshake status=403")
-        XCTAssertTrue(CloudStreamingAvailability.isUnsupported(host: denied))
-        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(host: other))
+        CloudStreamingAvailability.markUnsupported(provider: .alibaba, host: denied,
+                                                   reason: "handshake status=403")
+        XCTAssertTrue(CloudStreamingAvailability.isUnsupported(provider: .alibaba, host: denied))
+        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(provider: .alibaba, host: other))
         XCTAssertNil(CloudStreamingSession.make(config: streamingConfig(host: denied),
                                                 fallback: stubFallback()))
         XCTAssertNotNil(CloudStreamingSession.make(config: streamingConfig(host: other),
                                                    fallback: stubFallback()))
         // 真跑通过一次就把记忆清掉（把开关拨开那一下的探针会调它）
-        CloudStreamingAvailability.markAvailable(host: denied)
-        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(host: denied))
+        CloudStreamingAvailability.markAvailable(provider: .alibaba, host: denied)
+        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(provider: .alibaba, host: denied))
     }
 
-    /// 别家云端、没有 Key、拼不出主机名：一律不开实时，照常整段上传
-    func testStreamingOnlyStartsForAlibabaWithAKey() {
-        XCTAssertNil(CloudStreamingSession.make(
-            config: CloudASRConfig(provider: .openai, apiKey: "sk-x"), fallback: stubFallback()))
+    /// 没有 Key、拼不出主机名、OpenAI 指着第三方网关：一律不开实时，照常整段上传。
+    /// （4.2.2 起 OpenAI 官方接口**有**这条路，见 OpenAIRealtimeTests）
+    func testStreamingDoesNotStartWithoutAUsableLink() {
         XCTAssertNil(CloudStreamingSession.make(
             config: CloudASRConfig(provider: .alibaba, apiKey: "  "), fallback: stubFallback()))
         XCTAssertNil(CloudStreamingSession.make(
             config: streamingConfig(host: "不是主机名"), fallback: stubFallback()))
+        XCTAssertNil(CloudStreamingSession.make(
+            config: CloudASRConfig(provider: .openai, apiKey: "sk-x"),
+            fallback: stubFallback(), officialOpenAI: false))
     }
 
     /// 松手时发到的采样数必须**恰好等于**同步那条路会拿去识别的那一段，不多不少
@@ -683,7 +689,8 @@ final class CloudStreamingTests: XCTestCase {
         socket.close(status: 403, code: nil, detail: nil)
         wait(for: [lost], timeout: 2)
         XCTAssertFalse(session.isLive)
-        XCTAssertTrue(CloudStreamingAvailability.isUnsupported(host: "dashscope-intl.aliyuncs.com"))
+        XCTAssertTrue(CloudStreamingAvailability.isUnsupported(provider: .alibaba,
+                                                 host: "dashscope-intl.aliyuncs.com"))
 
         let done = expectation(description: "outcome")
         var outcome: TranscriptionOutcome?
@@ -714,7 +721,8 @@ final class CloudStreamingTests: XCTestCase {
         // 录到一半网断了（没有 HTTP 状态码 = 偶发，不是"这台主机不支持"）
         socket.close(status: nil, code: 1006, detail: "NSURLErrorDomain -1005")
         wait(for: [lost], timeout: 2)
-        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(host: "dashscope-intl.aliyuncs.com"),
+        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(provider: .alibaba,
+                                                 host: "dashscope-intl.aliyuncs.com"),
                        "一次断网不该把这台主机的实时判死")
 
         let done = expectation(description: "outcome")
@@ -781,6 +789,7 @@ final class CloudStreamingTests: XCTestCase {
         XCTAssertEqual(outcome?.cancelled, false)
         XCTAssertEqual(outcome?.text, "")
         // 一次超时不该把这台主机的实时判死
-        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(host: "dashscope-intl.aliyuncs.com"))
+        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(provider: .alibaba,
+                                                 host: "dashscope-intl.aliyuncs.com"))
     }
 }

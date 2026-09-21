@@ -277,6 +277,7 @@ final class CloudStreamingLiveTests: XCTestCase {
               + "ms=\(Int(Date().timeIntervalSince(startedAt) * 1000))")
         XCTAssertEqual(outcome, .live)
         XCTAssertFalse(CloudStreamingAvailability
-                        .isUnsupported(host: AlibabaEndpoint.sharedInternationalHost))
+                        .isUnsupported(provider: .alibaba,
+                                       host: AlibabaEndpoint.sharedInternationalHost))
     }
 }

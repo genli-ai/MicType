@@ -264,6 +264,17 @@ enum CloudASRSettings {
                       apiKey: apiKey)
     }
 
+    /// OpenAI 这一档现在指着的是**官方接口**吗。
+    ///
+    /// 为什么实时那条路非要这道闸：OpenAI 档的 Base URL 很多人拿来指第三方网关，
+    /// 而 `wss://api.openai.com/v1/realtime` 是写死的官方地址——网关用户打开那个开关，
+    /// 音频会绕过他自己的网关直接去 OpenAI，这既不是他要的，也可能根本没有额度。
+    /// 判据与「请求带 store:false」那句隐私文案同源（LLMClient.usesResponsesAPI），
+    /// 同一个事实只判一处。
+    static var openAIUsesOfficialEndpoint: Bool {
+        LLMClient.usesResponsesAPI(baseURL: Settings.shared.baseURL(for: .openai))
+    }
+
     /// 这一档的 Key 在钥匙串里吗（本地档没有 Key 的概念，返回 true）
     static func hasKey(for choice: RecognitionEngineChoice) -> Bool {
         guard let provider = choice.cloudProvider else { return true }

@@ -716,18 +716,26 @@ final class DictationController {
     }
 
     /// 当前设置下走哪条路。**不读钥匙串**——这句话每次渲染设置页都要算一遍，
-    /// 而主机名按存着的那几项就拼得出来，够用来问"这台主机这次运行里被判过实时不可用吗"。
+    /// 而地址按存着的那几项就拼得出来，够用来问"这条链路这次运行里被判过实时不可用吗"。
     static func currentRecordingFlow() -> RecordingFlow {
         let s = Settings.shared
-        guard s.recognitionEngine == .cloudAlibaba else {
-            return s.recognitionEngine.isCloud ? .cloudUpload : .progressiveLocal
-        }
-        let host = CloudASRSettings.alibabaHost(pastedHost: s.qwenAPIHost,
+        let engine = s.recognitionEngine
+        guard let provider = engine.cloudProvider else { return .progressiveLocal }
+        // OpenAI 档指着第三方网关时没有实时这条路（实时地址是写死的官方域名）
+        if provider == .openai, !CloudASRSettings.openAIUsesOfficialEndpoint { return .cloudUpload }
+        let host: String
+        switch provider {
+        case .alibaba:
+            host = CloudASRSettings.alibabaHost(pastedHost: s.qwenAPIHost,
                                                 resolvedHost: s.qwenResolvedHost,
                                                 workspace: s.qwenWorkspaceID,
                                                 legacyRegionSlug: s.qwenRegion.regionSlug,
                                                 apiKey: "")
-        return CloudStreamingAvailability.isUnsupported(host: host) ? .cloudUpload : .cloudStreaming
+        case .openai:
+            host = "api.openai.com"
+        }
+        return CloudStreamingAvailability.isUnsupported(provider: provider, host: host)
+            ? .cloudUpload : .cloudStreaming
     }
 
     /// 设置 → 录音 里那句说明。**数字全部来自常量**：上限、预警提前量、分段长度改了，
