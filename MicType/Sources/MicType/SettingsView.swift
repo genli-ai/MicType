@@ -290,9 +290,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, ObservableObje
             }
         }
         window?.title = tr("MicType 设置", "MicType Settings")
-        // 先进 Dock 再激活：从 .accessory 切成 .regular 的那一下 App 不会自己跑到最前面，
-        // 顺序反了窗口会开在别人后面（见 WindowPresence）
-        WindowPresence.shared.enter(.settings)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
         isOpen = true
@@ -301,7 +298,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, ObservableObje
     func windowWillClose(_ notification: Notification) {
         guard (notification.object as? NSWindow) === window else { return }
         isOpen = false
-        WindowPresence.shared.leave(.settings)
     }
 }
 

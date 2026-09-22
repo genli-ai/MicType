@@ -17,10 +17,11 @@ import ServiceManagement
 /// 可这两件事都不需要用户盯着——模型可以后台下，AI 只是"要不要 + 哪一家 + 一把 Key"。
 ///
 /// **4.3.4 加回第五屏「它在哪」**（用户 2026-09-22 拍板，推翻 09-19「引导最多四屏」那条）：
-/// 新用户的原话是"走完引导之后不知道它去哪了、也不知道接下来干什么"——一个纯菜单栏应用
+/// 新用户的原话是"走完引导之后不知道它去哪了、也不知道接下来干什么"——当时是个纯菜单栏应用，
 /// 关掉最后一扇窗之后屏幕上什么都不剩，而前四屏没有任何一屏回答过"它在哪"。
-/// 这一屏把菜单栏那枚图标画出来指给他看，并且把「登录时自动启动」摆在当面（默认开）——
+/// 这一屏把那枚图标画出来指给他看，并且把「登录时自动启动」摆在当面（默认开）——
 /// 否则第二天开机 App 根本没在跑，"它在哪"会原样再来一遍。
+/// （4.3.5 起 MicType 常驻 Dock，这一屏因此同时指 Dock 和菜单栏两处。）
 ///
 /// 四条硬要求（都是过去踩过的坑）：
 ///   • 权限授予后自己变绿、自己往下走，绝不要求重启或"请再按一次"；
@@ -293,13 +294,16 @@ enum OnboardingCopy {
 
     // MARK: 第五屏「它在哪」
 
+    /// 4.3.5 起 MicType 是普通应用：Dock 图标和菜单栏图标两个都一直在
+    ///（用户 2026-09-22 拍板，和 Wispr Flow 一样），所以这一屏得把两个都指出来——
+    /// 只说菜单栏的话，Dock 里那枚图标点下去会是个惊喜
     static var menuBarHome: String {
-        tr("它住在菜单栏", "It lives in the menu bar")
+        tr("它在 Dock 和菜单栏里", "It lives in the Dock and the menu bar")
     }
 
     static var menuBarHolds: String {
-        tr("点这个图标：历史记录 · 润色档位 · 设置。",
-           "Click this icon for history, polish mode and settings.")
+        tr("点 Dock 图标打开设置；菜单栏图标里有历史记录、润色档位和设置。",
+           "Click the Dock icon to open Settings; the menu bar icon holds history, polish mode and settings.")
     }
 
     /// 这一屏真正要讲的那句：平时**不用**去找那枚图标
@@ -483,9 +487,6 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
         // 挂着期间 DictationController 交付前会先问一句 isOnTryItPage，
         // 所以停在别的页、或窗口没显示时行为和从前完全一样。
         registerTranscriptSink()
-        // 先进 Dock 再激活（见 WindowPresence）：第一次打开 MicType 的人最需要的就是
-        // "被别的窗口盖住之后还找得回来"
-        WindowPresence.shared.enter(.onboarding)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
         isOpen = true
@@ -567,7 +568,6 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
         TranscriptSink.unregister()
         // 里面那几页不会跟着消失，得由这里告诉它们停手
         isOpen = false
-        WindowPresence.shared.leave(.onboarding)
         Log.info("Onboarding closed at page=\(model.page.rawValue) "
                  + "completed=\(Settings.shared.onboardingCompleted)")
         // 引导一关，屏幕上就一扇窗都不剩了——这正是"它去哪了"的那一刻。
@@ -1504,9 +1504,10 @@ private struct TryItPage: View {
 /// 4.3.4 之前这份引导关掉之后，屏幕上一扇窗都不剩、Dock 里没有图标、菜单栏那枚图标
 /// 和别的录音工具长得一样——用户（2026-09-22 的原话）"不知道它在哪，也不知道接下来干什么"。
 ///
-/// 所以这一屏只做三件事：把菜单栏那枚图标**画出来**给他看、说清平时压根不用去找它、
-/// 以及当面把「登录时自动启动」打开（默认开，就在这一屏可以关掉）——
-/// 不开的话第二天开机 MicType 根本没在跑，同一个问题会原样再来一遍。
+/// 所以这一屏只做三件事：把那枚图标**画出来**给他看（4.3.5 起 Dock 和菜单栏各有一枚，
+/// 两处都要指到）、说清平时压根不用去找它、以及当面把「登录时自动启动」打开
+///（默认开，就在这一屏可以关掉）——不开的话第二天开机 MicType 根本没在跑，
+/// 同一个问题会原样再来一遍。
 private struct DonePage: View {
     @ObservedObject var model: OnboardingModel
     @ObservedObject private var l10n = L10n.shared

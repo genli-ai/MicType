@@ -264,12 +264,16 @@ final class OnboardingCopyTests: XCTestCase {
         }
     }
 
-    /// 最后一屏那两句：一句说菜单栏那枚图标里有什么，一句说**平时不用去找它**。
-    /// 后面这句是这一屏真正的意思，漏了的话这一屏就成了"请记住去菜单栏点图标"
+    /// 最后一屏那两句：一句说**它在哪两处**、那两枚图标各管什么，一句说**平时不用去找它**。
+    /// 后面这句是这一屏真正的意思，漏了的话这一屏就成了"请记住去点那枚图标"。
+    /// 4.3.5 起 Dock 和菜单栏各有一枚图标（用户 2026-09-22 拍板常驻 Dock），
+    /// **两处都得点名**：只说其中一处，另一处那枚点下去就成了惊喜
     func testLastPageSaysWhereItLivesAndThatYouRarelyNeedIt() {
         L10n.shared.language = .zh
         XCTAssertTrue(OnboardingCopy.menuBarHome.contains("菜单栏"), OnboardingCopy.menuBarHome)
+        XCTAssertTrue(OnboardingCopy.menuBarHome.contains("Dock"), OnboardingCopy.menuBarHome)
         XCTAssertTrue(OnboardingCopy.menuBarHolds.contains("历史记录"), OnboardingCopy.menuBarHolds)
+        XCTAssertTrue(OnboardingCopy.menuBarHolds.contains("Dock"), OnboardingCopy.menuBarHolds)
         let zh = OnboardingCopy.rarelyNeeded(hotkey: "右 Option")
         XCTAssertTrue(zh.contains("轻点") && zh.contains("按住"), zh)
         XCTAssertTrue(zh.contains("右 Option"), zh)
@@ -277,6 +281,8 @@ final class OnboardingCopyTests: XCTestCase {
         L10n.shared.language = .en
         XCTAssertTrue(OnboardingCopy.menuBarHome.lowercased().contains("menu bar"),
                       OnboardingCopy.menuBarHome)
+        XCTAssertTrue(OnboardingCopy.menuBarHome.contains("Dock"), OnboardingCopy.menuBarHome)
+        XCTAssertTrue(OnboardingCopy.menuBarHolds.contains("Dock"), OnboardingCopy.menuBarHolds)
         let en = OnboardingCopy.rarelyNeeded(hotkey: "Right Option")
         XCTAssertTrue(en.contains("tap Right Option"), en)
         XCTAssertTrue(en.contains("hold Right Option"), en)

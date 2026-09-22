@@ -10,9 +10,11 @@ import AppKit
 ///
 ///   • ⌘V 在 Cocoa 里只是 **Edit 菜单里 Paste 那一项的 key equivalent**——
 ///     NSTextView / 字段编辑器自己不认 ⌘V，是菜单把它翻译成 `paste:` 发给响应链的；
-///   • 而 MicType 是菜单栏应用（Info.plist `LSUIElement` + `setActivationPolicy(.accessory)`），
-///     全工程只建过状态栏那一个 NSMenu，**从没装过带 Edit 的主菜单**，
-///     也就没有 Paste 这一项：这一下 ⌘V 谁都不接，被直接丢掉；
+///   • 而当时 MicType 是菜单栏应用（`LSUIElement` + `.accessory`），全工程只建过状态栏
+///     那一个 NSMenu，**从没装过带 Edit 的主菜单**，也就没有 Paste 这一项：
+///     这一下 ⌘V 谁都不接，被直接丢掉；
+///     （4.3.4 把主菜单补上了、4.3.5 又成了普通应用，但这条路**照旧不用 ⌘V**：
+///     直接 insertText + 回读确认比"合成一次按键再指望菜单接住"可靠得多。）
 ///   • 实测（同样没装 Edit 菜单的进程里，把 ⌘V 按正常路径派发给 key window）：
 ///     SwiftUI 的 TextEditor 一个字都不粘；**只往主菜单里加一项 Edit → Paste，立刻就粘进去了**。
 ///   • 于是 `TextInserter` 那条路打向自家窗口时必然无效，而它又是无条件

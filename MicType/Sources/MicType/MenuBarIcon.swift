@@ -3,8 +3,9 @@ import AppKit
 // MARK: - 菜单栏图标（MicType 自己的标志）
 
 /// 4.3.4 之前菜单栏挂的是系统通用的 `mic` 符号。2026-09-22 的新用户反馈里有一条是
-/// "打开之后什么都没出现、不知道它在哪"——纯菜单栏应用本来就只有那一枚图标能被认出来，
+/// "打开之后什么都没出现、不知道它在哪"——那时 MicType 只以那一枚图标存在（不在 Dock 里），
 /// 而那枚图标和别的十几个录音类工具长得一模一样，刘海屏挤满时还会被藏掉。
+/// （4.3.5 起 Dock 里也一直有它，但菜单栏这枚仍然是最常被看到的那个。）
 ///
 /// 所以这里**在代码里把 AppIcon 上那枚白色剪影重画一遍**（胶囊话筒 + 下方半圆托架 +
 /// 立柱 + 底座，左右各两道声波弧），而不是去缩放 `AppIcon.png`：
@@ -58,10 +59,13 @@ enum MenuBarIcon {
         return image
     }()
 
-    /// 录音态：同一枚剪影，填红。**不是模板图**——模板图会被系统重新上色，红色就没了
+    /// 录音态：**同一枚模板剪影，不变色**（4.3.4 首版填了红，用户当天问"讲话时变红、
+    /// 右上角系统的话筒又是橙色，这样合适吗"——不合适：系统那个橙点已经在说"麦克风在用"，
+    /// 底部悬浮窗也在说"正在听"，菜单栏再红一次是第三个信号说同一件事。一件事只由一个信号说。）
+    /// 单独缓存一张只为旁白文字不同：`idleImage` 的旁白是 "MicType"，这张是「录音中」。
     private static let recordingImage: NSImage = {
-        let image = mark(size: menuBarSize, color: .systemRed)
-        image.isTemplate = false
+        let image = mark(size: menuBarSize, color: .black)
+        image.isTemplate = true
         return image
     }()
 

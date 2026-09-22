@@ -7,9 +7,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let dictation = DictationController()
     private let hotkeys = HotkeyManager()
     private let menu = NSMenu()
-    /// 主菜单跟着界面语言重建。4.3.4 之前主菜单根本不存在、也从来不会被显示，
-    /// 现在不一样了：自家窗口开着时 App 是 .regular（见 WindowPresence），
-    /// 那一刻屏幕顶上摆着的就是这份菜单——它必须和窗口里的语言一致
+    /// 主菜单跟着界面语言重建。4.3.4 之前主菜单根本不存在、也从来不会被显示；
+    /// 4.3.5 起 MicType 是普通应用（常驻 Dock），它成为前台时屏幕顶上摆着的就是这份菜单
+    /// ——它必须和窗口里的语言一致
     private var menuLanguageObserver: AnyCancellable?
 
     /// 给其它窗口借用的悬浮提示层。历史窗口把文字留在剪贴板时要提示「按 ⌘V」，
@@ -27,12 +27,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return dictation.isRecording || dictation.isProcessing
     }
 
+    /// **4.3.5 起 MicType 是一个普通应用**（用户 2026-09-22 拍板，推翻 09-19 的纯菜单栏定位
+    /// 和 4.3.4 那版「窗口开着才进 Dock」）：Dock 图标和菜单栏图标两个都一直在，和 Wispr Flow 一样。
+    /// 所以这里既不设 `.accessory`，Info.plist 里也不再有 `LSUIElement`——
+    /// "找不到它在哪"这条反馈的根子就是它从来不在 Dock 里。不给开关（用户点名不要）。
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
         Log.startup()
 
-        // 主菜单：菜单栏应用同样需要它，否则自家窗口里 ⌘C / ⌘V / ⌘A 全都无人接收
-        //（用户 2026-09-22 反馈"Key 框不能粘贴"的根因，见 AppMenu）
+        // 主菜单：⌘C / ⌘V / ⌘A 的来路（用户 2026-09-22 反馈"Key 框不能粘贴"的根因，见 AppMenu）
         NSApp.mainMenu = AppMenu.build()
         // 切语言时重建。**下一轮 runloop 再建**：@Published 是在 willSet 时发出的，
         // 此刻 L10n.shared.language 还是旧值，当场重建会得到一份旧语言的菜单
@@ -156,17 +158,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                            after: UpdateChecker.installedNoticeDelay)
     }
 
-    /// 双击 Dock 图标 / Finder 里再打开一次已经在跑的 MicType。
+    /// 点 Dock 图标 / 在 Finder 里再打开一次已经在跑的 MicType。
     ///
-    /// 4.3.4 之前这里什么都没实现：一个纯菜单栏应用被"再打开一次"时屏幕上毫无反应，
+    /// 4.3.4 之前这里什么都没实现：被"再打开一次"时屏幕上毫无反应，
     /// 于是用户会以为它没装上、再下一次（2026-09-22 的反馈就是这么来的）。
     /// 现在：引导没走完的接着走引导，走完了的打开设置概览——那三张卡片本身
-    /// 就是"我现在是什么状态"的答案。
+    /// 就是"我现在是什么状态"的答案。4.3.5 起 Dock 图标一直都在，这条路因此是**常用路径**。
     func applicationShouldHandleReopen(_ sender: NSApplication,
                                        hasVisibleWindows flag: Bool) -> Bool {
-        // 自家已经有窗口开着（Dock 计数说了算，比系统给的 flag 准：悬浮窗也是一扇窗，
-        // 正在听写时它会让 flag 变成真）：把它带到前台就够
-        guard WindowPresence.shared.open.isEmpty else {
+        // 自家已经有窗口开着：把它带到前台就够。
+        // **问三个窗口控制器，不看系统给的 flag**：悬浮窗也是一扇窗，正在听写时
+        // 它会让 flag 变成真，于是点 Dock 图标什么都不会发生
+        let anyWindowOpen = OnboardingWindowController.shared.isOpen
+            || SettingsWindowController.shared.isOpen
+            || HistoryWindowController.shared.isOpen
+        guard !anyWindowOpen else {
             NSApp.activate(ignoringOtherApps: true)
             // 收进程序坞的窗口要自己弹回来：不然"点了 Dock 图标什么都没发生"照样成立，
             // 而那正是这次改动要消灭的那种死路
@@ -449,7 +455,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let clearButton = alert.addButton(withTitle: tr("清空", "Clear"))
         clearButton.hasDestructiveAction = true
         alert.addButton(withTitle: tr("取消", "Cancel"))
-        // 菜单栏应用是 .accessory，不激活的话弹窗可能落在别的窗口后面
+        // 这条路是从菜单栏那份菜单点进来的，MicType 多半不在前台：不激活的话
+        // 弹窗可能落在别的窗口后面
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else {
             Log.info("Clear history cancelled by user")

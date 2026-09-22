@@ -2,8 +2,11 @@ import XCTest
 import AppKit
 @testable import MicType
 
-/// 4.3.4 那几样"App 外壳"的东西：主菜单（⌘C / ⌘V 的来路）、菜单栏图标、Dock 图标的计数、
-/// 启动时闪哪一句。它们的共同点是**出了错编译器一个字都不会说**，而用户第一眼就会撞上。
+/// 那几样"App 外壳"的东西：主菜单（⌘C / ⌘V 的来路）、菜单栏图标、启动时闪哪一句。
+/// 它们的共同点是**出了错编译器一个字都不会说**，而用户第一眼就会撞上。
+///
+/// 4.3.5 删掉了「Dock 图标的计数」那一组（WindowPresence）：MicType 从此是普通应用，
+/// Dock 图标一直都在，没有什么需要被计数了（用户 2026-09-22 拍板）。
 final class AppShellTests: XCTestCase {
 
     private var savedLanguage: AppLanguage!
@@ -15,7 +18,6 @@ final class AppShellTests: XCTestCase {
 
     override func tearDown() {
         L10n.shared.language = savedLanguage
-        WindowPresence.shared.resetForTesting()
         super.tearDown()
     }
 
@@ -109,8 +111,8 @@ final class AppShellTests: XCTestCase {
 
         let recording = MenuBarIcon.image(.recording)
         XCTAssertEqual(recording.size.width, MenuBarIcon.menuBarSize)
-        // 录音态自己带红色：模板图会被系统重新上色，红色就没了
-        XCTAssertFalse(recording.isTemplate)
+        // 录音态不变色（4.3.5）：同一枚模板剪影，只有旁白不同
+        XCTAssertTrue(recording.isTemplate, "录音态不变色：系统的橙点已经在说麦克风在用")
 
         let processing = MenuBarIcon.image(.processing)
         XCTAssertGreaterThan(processing.size.width, 0)
@@ -151,50 +153,10 @@ final class AppShellTests: XCTestCase {
         }
     }
 
-    // MARK: - Dock 图标的计数
-
-    /// 同一扇窗 show 两次不许加两次（深链、菜单点两下都会走到），
-    /// 否则关掉它之后计数停在 1，Dock 图标永远撤不下来
-    func testWindowPresenceCountsEachWindowOnce() {
-        var policies: [NSApplication.ActivationPolicy] = []
-        let presence = WindowPresence.shared
-        presence.resetForTesting()
-        presence.apply = { policies.append($0) }
-
-        presence.enter(.settings)
-        presence.enter(.settings)
-        XCTAssertEqual(policies, [.regular])
-        presence.leave(.settings)
-        XCTAssertEqual(policies, [.regular, .accessory])
-        XCTAssertTrue(presence.open.isEmpty)
-    }
-
-    /// 三扇窗可以同时开着：先关的那一扇不许把还开着的那两扇一起从 Dock 里抹掉
-    func testWindowPresenceKeepsDockWhileAnyWindowIsOpen() {
-        var policies: [NSApplication.ActivationPolicy] = []
-        let presence = WindowPresence.shared
-        presence.resetForTesting()
-        presence.apply = { policies.append($0) }
-
-        presence.enter(.onboarding)
-        presence.enter(.settings)
-        presence.enter(.history)
-        XCTAssertEqual(policies, [.regular])
-
-        presence.leave(.settings)
-        presence.leave(.history)
-        XCTAssertEqual(policies, [.regular], "还有一扇开着就不该退回菜单栏")
-        presence.leave(.onboarding)
-        XCTAssertEqual(policies, [.regular, .accessory])
-        // 没开过的窗关一次不许乱动策略
-        presence.leave(.history)
-        XCTAssertEqual(policies, [.regular, .accessory])
-    }
-
     // MARK: - 启动时闪哪一句
 
     /// 三种情况各一条：引导要弹 → 一个字都不闪（引导自己就是说明书）；
-    /// 刚升完级 → 版本号那一句；平常启动 → "它在菜单栏里"
+    /// 刚升完级 → 版本号那一句；平常启动 → "它已经在运行了"
     func testLaunchNoticePicksOneOfThreeOutcomes() {
         XCTAssertEqual(LaunchNotice.decide(updatedTo: nil, onboardingShowing: true), .none)
         XCTAssertEqual(LaunchNotice.decide(updatedTo: "4.3.4", onboardingShowing: true), .none)

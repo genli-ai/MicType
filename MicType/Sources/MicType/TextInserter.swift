@@ -175,8 +175,8 @@ enum TextInserter {
 
         // 目标是 MicType 自己：这条路在自家窗口上**必然无效**，而下面每条分支都会
         // 无条件报 pasted——4.1.5「日志 outcome=pasted、框里一个字都没有」就是这么来的。
-        // ⌘V 在 Cocoa 里只是 Edit 菜单 Paste 那一项的 key equivalent，而 MicType
-        // （LSUIElement + .accessory）从没装过带 Edit 的主菜单，这一下按键没有接收者。
+        // ⌘V 在 Cocoa 里只是 Edit 菜单 Paste 那一项的 key equivalent，而当时的 MicType
+        // （菜单栏应用）从没装过带 Edit 的主菜单，这一下按键没有接收者。
         // 真正该走的是 OwnWindowInserter（DictationController 的 .ownWindow 路由）；
         // 这里只兜住别的调用方（历史窗口的「重新插入」），如实报 clipboardOnly。
         guard targetBundleID != Bundle.main.bundleIdentifier else {

@@ -17,7 +17,7 @@ enum LaunchNotice {
     enum Kind: Equatable {
         /// 一个字都不闪
         case none
-        /// 平常那一句："它在菜单栏里，轻点这颗键开始听写"
+        /// 平常那一句："它已经在跑了，轻点这颗键开始听写"
         case running
         /// 刚升完级：版本号 + 同一句操作提示
         case updated(version: String)
@@ -42,7 +42,9 @@ enum LaunchNotice {
         case .none:
             return nil
         case .running:
-            return tr("MicType 已在菜单栏运行 · ", "MicType is running in the menu bar · ") + tapHint
+            // 4.3.5 起不再说"在菜单栏"：Dock 图标和菜单栏图标两个都一直在，
+            // 单点其中一个反而把人往一个地方引（用户 2026-09-22 拍板常驻 Dock）
+            return tr("MicType 已在运行 · ", "MicType is running · ") + tapHint
         case .updated(let version):
             // 升级那半句与「关于」页、与自更新提示同一处出处，不另写一份
             return UpdateChecker.installedNoticeCopy(version: version) + " · " + tapHint
