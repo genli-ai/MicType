@@ -350,15 +350,6 @@ enum AISetup {
         }
     }
 
-    /// 「只用本地」这一档里，钥匙串里还躺着一把能用的 Key：必须当面说一句。
-    ///
-    /// 这一档写回的只有"润色关掉 + 识别回本机"（见 localOnlyWrites），**指令路径不看档位**
-    /// ——按住说指令照样会把选区和这句话发给服务商并计费。不说的话，用户读到的是
-    /// 「不联网、不花钱」，而账单上是另一回事。
-    static func showsStoredKeyNotice(mode: AIUsageMode, hasCredential: Bool) -> Bool {
-        mode == .localOnly && hasCredential
-    }
-
     // MARK: - 4.1.1：合并「关于我」到「自定义规则」
 
     /// 把「关于我」并进「自定义规则」。返回合并后的规则；nil = 什么都不用改。
@@ -430,7 +421,7 @@ enum SettingsKeys {
     static let chatModel = "chatModel"                     // OpenAI 润色模型（快）
     static let openaiCommandModel = "openaiCommandModel"   // OpenAI 指令模型（强）
     static let deepseekCommandModel = "deepseekCommandModel"
-    static let polishTemperature = "polishTemperature"     // 润色温度（默认 0.5）
+    static let polishTemperature = "polishTemperature"     // 润色温度（默认 0.3，4.3.3 从 0.5 降下来）
     static let commandTemperature = "commandTemperature"   // 指令温度（默认 1.0 = 模型默认）
     static let aboutMe = "aboutMe"
     static let customPolishRules = "customPolishRules"
@@ -509,7 +500,7 @@ final class Settings {
             SettingsKeys.chatModel: LLMCatalog.defaultModel(for: .openai),
             SettingsKeys.openaiCommandModel: LLMCatalog.defaultModel(for: .openai),
             SettingsKeys.deepseekCommandModel: LLMCatalog.defaultModel(for: .deepseek),
-            SettingsKeys.polishTemperature: 0.5,
+            SettingsKeys.polishTemperature: Settings.defaultPolishTemperature,
             SettingsKeys.commandTemperature: 1.0,
             SettingsKeys.aboutMe: "",
             SettingsKeys.customPolishRules: "",
@@ -1146,9 +1137,16 @@ final class Settings {
         set { d.set(newValue, forKey: SettingsKeys.deepseekCommandModel) }
     }
 
+    /// 润色温度的默认值。**4.3.3 从 0.5 降到 0.3**：温度越低模型越少自由发挥（少无中生有的
+    /// 编号列表、少改写措辞），保真校验（polishDriftCheck）的误拦就跟着少——而误拦的代价是
+    /// 用户拿到一整段没润色过的识别原文。真 Key 实测 qwen3.8-flash：0.2 与 0.5 对满是语气词的
+    /// 口述都是 0 残留，清理质量没差别，0.2 还略快一点。界面上没有这一项（不要温度滑杆），
+    /// 只有导入设置文件能改；**已经存过值的用户不迁移**，那是他自己填进来的数。
+    static let defaultPolishTemperature: Double = 0.3
+
     /// 润色温度（低=稳定保真）；指令温度（1.0 = 模型默认，最自然）
     var polishTemperature: Double {
-        get { d.object(forKey: SettingsKeys.polishTemperature) as? Double ?? 0.5 }
+        get { d.object(forKey: SettingsKeys.polishTemperature) as? Double ?? Settings.defaultPolishTemperature }
         set { d.set(newValue, forKey: SettingsKeys.polishTemperature) }
     }
     var commandTemperature: Double {

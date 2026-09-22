@@ -621,12 +621,4 @@ final class AISetupTests: XCTestCase {
         XCTAssertFalse(AISetup.showsRulesNeedAINote(mode: .withAI))
     }
 
-    /// 「只用本地」只关润色、只把识别改回本机——**钥匙串里那把 Key 一个字节都不动**，
-    /// 而按住说指令并不看档位，照样会调用云端、照样计费。所以这一档里有 Key 就必须当面说
-    func testLocalOnlyStillWarnsAboutAStoredKey() {
-        XCTAssertTrue(AISetup.showsStoredKeyNotice(mode: .localOnly, hasCredential: true))
-        XCTAssertFalse(AISetup.showsStoredKeyNotice(mode: .localOnly, hasCredential: false))
-        // 「本地 + AI」这一档本来就该有 Key，没什么可提醒的
-        XCTAssertFalse(AISetup.showsStoredKeyNotice(mode: .withAI, hasCredential: true))
-    }
 }

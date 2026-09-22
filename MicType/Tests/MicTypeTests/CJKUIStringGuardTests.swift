@@ -97,11 +97,10 @@ final class CJKUIStringGuardTests: XCTestCase {
     /// 为什么按内容而不是行号：行号会随着上面任何一次插入漂走（v4.0 四条分支合流时就漂了
     /// 一百多行），漂走之后这张表既挡不住真的泄漏，又会莫名其妙放行另一行。内容跟着文案走，
     /// 文案改了就得重新过一遍脑子——这正是我们想要的。
-    private static let literalWhitelist: Set<String> = [
-        // 界面语言选择器故意双语（"Language / 界面语言:"）：它是切回母语的唯一入口，
-        // 界面已经是看不懂的那种语言时，用户也得认得出这一项。见 docs v4.0 调研 §4.3。
-        "SettingsEditors.swift:Language / 界面语言:",
-    ]
+    /// **空的，而且最好一直空着。** 4.3.3 之前这里有唯一一条：界面语言那个栏名
+    /// 故意写成双语（"Language / 界面语言:"）。现在不需要了——分段选择器里的两项
+    /// 本身就写着「中文」与「English」，界面是哪种语言都认得出该点哪一格。
+    private static let literalWhitelist: Set<String> = []
 
     // MARK: - 实际防线
 

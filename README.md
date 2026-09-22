@@ -111,7 +111,7 @@ Menu bar 🎤 → Settings → **Cloud AI**. The page is one decision: **Local o
 
 With AI, the page is two cards and nothing else — every row carries its own label, and only three ⓘ buttons survive (API Key, cloud recognition, web search). Three decisions:
 
-- **One provider**: OpenAI, DeepSeek or Alibaba Cloud (Model Studio). Other OpenAI-compatible endpoints and a **local model** on your own machine (Ollama / LM Studio — no key needed, nothing leaves your computer) are configured through an imported settings file rather than on-screen fields; whichever one you are actually using always stays visible in the picker, so you can always switch back. The live one is marked **In use ✓**; picking another only previews its key and model, and MicType switches over once that provider's key verifies.
+- **One provider**: OpenAI, DeepSeek or Alibaba Cloud (Model Studio). Other OpenAI-compatible endpoints and a **local model** on your own machine (Ollama / LM Studio — no key needed, nothing leaves your computer) are configured through an imported settings file (Settings → About → Export / Import) rather than on-screen fields — the same file also carries the few behaviour switches that have no on-screen control any more (overlay position, sounds, clipboard restore, live draft, auto-stop on silence: they default sensibly, and a value you set stays honoured); whichever one you are actually using always stays visible in the picker, so you can always switch back. The live one is marked **In use ✓**; picking another only previews its key and model, and MicType switches over once that provider's key verifies.
 - **One key**, verified as you paste it (Checking… / Connected ✓ / Failed, with the reason and what to do). A key that does not verify is never written to the Keychain. There is no second key field anywhere in the app. Under Alibaba Cloud one more row appears right below it — **API Host** — empty by default (MicType picks the endpoint itself) and pinned to exactly what you paste otherwise; changing it re-verifies the key against that host.
 - **One Model dropdown** — polish and commands always run the same model, so this is the only model decision there is (the split fields are gone, and an older split pair is pulled back together once at launch). Defaults: `gpt-5.6-luna`, `deepseek-flash`, `qwen3.8-flash` — each provider's balanced, fast tier, because polish runs on every single sentence and a model that thinks for ten seconds is a worse default than one that answers in two. The flagship tiers are one click away in the same list, labelled as such. Pick *Custom…* to type any model name.
 
@@ -132,7 +132,7 @@ Voice commands use the same provider and key.
 
 Two kinds of vocabulary, not to confuse:
 
-- **Custom vocabulary**: hotwords you enter in Settings → Input → Writing preferences — stored locally, effective on the next transcription (and sent as hotwords to a cloud engine, if you picked one).
+- **Custom vocabulary**: hotwords you enter in Settings → Input → Writing preferences — stored locally, effective on the next transcription. On-device recognition and OpenAI cloud recognition take it as hotwords; Alibaba Cloud's recognizer does not (proper nouns there are fixed by polish, which always gets the vocabulary).
 - **Model tokenizer/vocab**: shipped with the Qwen model. If upstream updates it, run `scripts/Generate Qwen Tokenizer.command` again and reinstall.
 
 ## Privacy
@@ -148,7 +148,7 @@ Two kinds of vocabulary, not to confuse:
 
 **Hotkey does not respond?** Check System Settings → Privacy & Security → Accessibility. If you build from source (ad-hoc signing), macOS usually requires removing the old permission entry and adding the app again after each rebuild; official notarized releases keep a stable identity, so upgrades don't need this.
 
-**Custom names or terms are wrong?** Add names, brands, products, and technical terms to Settings → Input → Writing preferences → Custom vocabulary. They are used as hotwords by the speech engine (local or cloud) and as hints for AI polish. This is also the fix for English brand names spoken inside Arabic.
+**Custom names or terms are wrong?** Add names, brands, products, and technical terms to Settings → Input → Writing preferences → Custom vocabulary. They are used as hotwords by on-device recognition and by OpenAI cloud recognition, and always as hints for AI polish (Alibaba Cloud's recognizer takes no hotwords, so there the polish step does the correcting). This is also the fix for English brand names spoken inside Arabic.
 
 **Model download is slow?** MicType tries `hf-mirror.com` first and falls back to `huggingface.co`. Successfully downloaded files are kept, so retrying resumes by file.
 
@@ -331,7 +331,7 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 
 选了 AI，整页就是**两张卡片**，再无其他——每一行自己带栏名，整页只剩三颗 ⓘ（API Key、云端识别、联网搜索）。三个决定：
 
-- **一家服务商**：OpenAI、DeepSeek 或阿里云百炼。其他 OpenAI 兼容接口、以及跑在你自己机器上的**本机模型**（Ollama / LM Studio——不用 Key，什么都不出本机）改由「导入设置…」配置，界面上不再摆地址与型号输入框；不过**你正在用的那一档永远摆在选择器上**，随时能切回去。生效的那一档旁边写着**「正在使用 ✓」**；点别的一档只是预览它的 Key 与模型，**验证通过才真的换过去**。
+- **一家服务商**：OpenAI、DeepSeek 或阿里云百炼。其他 OpenAI 兼容接口、以及跑在你自己机器上的**本机模型**（Ollama / LM Studio——不用 Key，什么都不出本机）改由「导入设置…」（设置 → 关于 → 导出 / 导入）配置，界面上不再摆地址与型号输入框；同一个文件也管那几个界面上已经不再摆的行为开关（悬浮窗位置、提示音、恢复剪贴板、实时草稿、静音自动停止：默认值就是合理的，你设过的值照旧生效）；不过**你正在用的那一档永远摆在选择器上**，随时能切回去。生效的那一档旁边写着**「正在使用 ✓」**；点别的一档只是预览它的 Key 与模型，**验证通过才真的换过去**。
 - **一把 Key**，在粘贴的当下就会被验证（正在验证… / 已连通 ✓ / 连不上 + 原因与下一步）；验证不过的 Key 不会被写进钥匙串。全 App 没有第二个 Key 输入框。阿里云这一档紧挨着它多一行 **API Host**：默认留空（地址由 MicType 自己挑），填了就只用你填的那一台；一改它就拿同一把 Key 对着新地址重验一次。
 - **一个「模型」下拉**——润色和指令永远用同一个型号，所以模型这件事只有这一个决定（分开设的入口已经没有了，老配置里不一致的那一对会在启动时拉回一致）。默认分别是 `gpt-5.6-luna`、`deepseek-flash`、`qwen3.8-flash`——每家均衡偏快的那一档：润色是每句话都要跑一次的东西，一个想十秒才答的模型不是更好的默认值。想要旗舰就在同一个下拉里，那几项标着「旗舰」。选「自定义…」可以手填任意型号名。
 
@@ -350,7 +350,7 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 
 两类「词汇」要区分：
 
-- **专有词汇表**：你在 设置 → 输入 → 写作偏好 里填的热词，保存在本机，下次识别立即生效（选了云端引擎时也会作为热词发过去）
+- **专有词汇表**：你在 设置 → 输入 → 写作偏好 里填的热词，保存在本机，下次识别立即生效。本地识别与 OpenAI 云端识别把它当热词；阿里云的识别器不认热词（那一档的专名由润色纠正，润色永远带着词汇表）
 - **模型 tokenizer/vocab**：Qwen 模型自带的分词词表，上游更新后需重新运行 `scripts/Generate Qwen Tokenizer.command` 并重新安装
 
 ## 隐私
@@ -366,7 +366,7 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 
 **按快捷键没反应？** 检查 系统设置 → 隐私与安全性 → 辅助功能。从源码自行编译（ad-hoc 签名）每次重装后通常需要删除旧授权条目再重新添加；官方公证版签名身份稳定，升级不需要这一步。
 
-**识别专有名词不准？** 把常用人名、品牌、产品、术语写进 设置 → 输入 → 写作偏好 → 专有词汇表。它会作为识别引擎（本地或云端）的热词，也参与 AI 润色纠错。阿语口述里夹的英文品牌名同样靠它。
+**识别专有名词不准？** 把常用人名、品牌、产品、术语写进 设置 → 输入 → 写作偏好 → 专有词汇表。它是本地识别与 OpenAI 云端识别的热词，并且永远参与 AI 润色纠错（阿里云的识别器不认热词，那一档靠润色这一步纠回来）。阿语口述里夹的英文品牌名同样靠它。
 
 **模型下载慢？** 默认先走 hf-mirror.com，失败后回退 huggingface.co；已下载成功的文件会保留，重试可按文件续传。
 

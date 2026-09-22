@@ -68,13 +68,14 @@ final class PolishNumberLiveTests: XCTestCase {
     // MARK: - 两条真实链路
 
     /// 阿里云：chat/completions。系统提示词取**线上那一份**，原文照样用定界块包住
-    private func polishWithQwen(_ raw: String, key: String) throws -> String {
+    private func polishWithQwen(_ raw: String, key: String,
+                                system: String = PolishService.systemPrompt(for: .smart)) throws -> String {
         let body: [String: Any] = [
             "model": Self.qwenModel,
             // qwen3.5–3.8 默认开思考，润色必须关掉（4.1.2 踩过）
             "enable_thinking": false,
             "messages": [
-                ["role": "system", "content": PolishService.systemPrompt(for: .smart)],
+                ["role": "system", "content": system],
                 ["role": "user", "content": "<<<原文>>>\n" + raw + "\n<<<结束>>>"],
             ],
         ]
@@ -173,6 +174,33 @@ final class PolishNumberLiveTests: XCTestCase {
             throw XCTSkip("需要 MICTYPE_QWEN_TEST_KEY 或 ~/.config/mictype/qwen_test_key")
         }
         try check("qwen") { try polishWithQwen($0, key: key) }
+    }
+
+    /// 轻清理那一趟（4.3.3）：**被保真校验拦下之后的最后一次机会**，所以两件事都得真跑一遍——
+    /// 语气词删干净了没有，以及这一稿会不会又被同一道校验拦下（那样这趟重试就白做了）。
+    /// 语料照抄用户 history.json 里被拦下、结果原样交付的那几句的长相。
+    func testLightPromptStripsFillersAndSurvivesTheGuard() throws {
+        try requireLiveRun()
+        guard let key = liveKey(env: "MICTYPE_QWEN_TEST_KEY", file: "qwen_test_key") else {
+            throw XCTSkip("需要 MICTYPE_QWEN_TEST_KEY 或 ~/.config/mictype/qwen_test_key")
+        }
+        let raws = [
+            "啊啊，这个接口，嗯，是是怎么回事啊，那个那个我昨天试了一下有点有点慢",
+            "嗯那个我们明天下午三点开会，就是说，人手有点不够，然后然后预算也超了一点",
+            "um, so, uh, I think we should ship it on March third, you know, maybe 25 people",
+        ]
+        // 内置口水词表里最没有歧义的那几个：轻清理之后一个都不该剩
+        let fillers = ["啊啊", "那个那个", "是是", "有点有点", "然后然后", "就是说", " um", " uh"]
+        for raw in raws {
+            let polished = try polishWithQwen(raw, key: key, system: PolishService.lightPrompt())
+            let drift = TextPostProcessor.polishDriftCheck(raw: raw, polished: polished)
+            print("live light polish:\n  raw      = \(raw)\n  polished = \(polished)"
+                  + "\n  guard    = \(drift ?? "passed")")
+            for filler in fillers {
+                XCTAssertFalse(polished.contains(filler), "轻清理之后还留着「\(filler)」：\(polished)")
+            }
+            XCTAssertNil(drift, "轻清理这一稿又被拦下的话，这趟重试就白做了：\(polished)")
+        }
     }
 
     /// 用户实际在用的那一档。没有 Key 就干净地跳过——这个文件现在还不存在

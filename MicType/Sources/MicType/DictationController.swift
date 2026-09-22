@@ -773,12 +773,6 @@ final class DictationController {
         return head + middle + tail
     }
 
-    /// 一行版：只报上限本身。设置页的「录音」段只给一行（Plan C 的文案预算），
-    /// 上面那句完整的（分段、预警、收尾）收进段头那颗 ⓘ 里。数字同样来自常量。
-    static var recordingLimitShort: String {
-        tr("单次录音上限 ", "A take is capped at ") + minutesLabel(maxRecordingSeconds)
-    }
-
     /// 「10 分钟」/「10 minutes」。不足整分钟的按秒说（常量以后改成 90 s 也不会读成 2 分钟）
     static func minutesLabel(_ seconds: Double) -> String {
         guard seconds >= 60, seconds.truncatingRemainder(dividingBy: 60) == 0 else {
@@ -1601,50 +1595,8 @@ final class DictationController {
                 let level = Settings.shared.polishLevel
                 if level != .off, LLMClient.isConfigured {
                     self.overlay.showProcessing(tr("润色中…", "Polishing…"))
-                    let tPolish = DispatchTime.now()
-                    self.inflightRequest = PolishService.polish(rawText, level: level) { [weak self] polished, failure in
-                        guard let self = self, self.isCurrent(generation) else { return }
-                        self.inflightRequest = nil
-                        let polishMs = Log.ms(since: tPolish)
-                        Log.info("Timing polish=\(polishMs)ms model=\(Settings.shared.currentPolishModel) ok=\(polished != nil)")
-                        // 润色失败那一次也要记：用户感觉到的等待是实打实的，
-                        // 只记成功的话中位数会漂亮得不像话，排障时反而看不出问题
-                        self.pendingMetric?.polishMs = polishMs
-                        // 缓存命中 / 实际档位（Responses 才报）：取走即清空，绝不把上一轮的数记到这一轮。
-                        // 润色永远不联网，所以这里不会有来源。
-                        self.pendingMetric?.absorb(LLMUsageSink.shared.take())
-                        if let raw = polished {
-                            // 词汇表硬替换在**每个产出点各做一次**（识别原文已在上面做过）。
-                            // 不能放到 deliver 里做：那样纯听写路径会对同一串文本替换两趟，
-                            // 「萍果=苹果」+「苹果=Apple」这种链式词表会被串起来（applyVocabReplacements
-                            // 承诺的"单趟扫描不串链"只在一次调用内成立）。
-                            let polished = TextPostProcessor.applyVocabReplacements(raw)
-                            // 保真校验：数字被改 / 否定被吞 / 内容被砍掉 → 当作润色失败，输出识别原文。
-                            // 纯机械比对，不花一次 LLM 往返；宁可少一次润色，也不让改错的稿子进输入框。
-                            // 走这条回退的结果本身就是识别原文，所以不开放「换回识别原文」（没得换）。
-                            if let reason = TextPostProcessor.polishDriftCheck(raw: rawText, polished: polished) {
-                                Log.warn("Polish drift rejected: \(reason)")
-                                self.deliver(raw: rawText, final: rawText,
-                                             note: tr("润色结果与原文出入过大，已输出原文",
-                                                      "Polished text drifted too far from the original — raw transcript inserted"),
-                                             warning: true,
-                                             coldStart: isColdStart)
-                                return
-                            }
-                            // 唯一开放「换回识别原文」的路径：纯听写 + 润色真的动了字
-                            self.deliver(raw: rawText, final: polished,
-                                         note: tr("已输入", "Inserted"),
-                                         coldStart: isColdStart,
-                                         revertible: true)
-                        } else {
-                            self.deliver(raw: rawText, final: rawText,
-                                         note: tr("润色失败（", "Polish failed (")
-                                             + (failure ?? tr("未知", "unknown"))
-                                             + tr("），已输出识别原文", ") — raw transcript inserted"),
-                                         warning: true,
-                                         coldStart: isColdStart)
-                        }
-                    }
+                    self.startPolish(rawText: rawText, level: level, light: false,
+                                     spentMs: 0, isColdStart: isColdStart, generation: generation)
                 } else {
                     self.deliver(raw: rawText, final: rawText,
                                  note: tr("已输入", "Inserted"),
@@ -1699,6 +1651,82 @@ final class DictationController {
                      "Part \(done + 1) failed to transcribe — parts 1-\(done) were inserted"))
         }
         return .success(text)
+    }
+
+    // MARK: - 润色（首趟 + 被拦下之后的轻清理重试）
+
+    /// 发一趟润色并收口。首趟走主提示词；被保真校验拦下时**自己再发一趟轻清理**，
+    /// 仍然不过才回到「已输出原文」。
+    ///
+    /// 为什么要这趟重试（4.3.3）：mini 2026-09-22 的日志里 39 次润色被 polishDriftCheck
+    /// 拦下 6 次，而拦下之后交付的是识别原文——用户看到的是「啊啊，这个接口……是是怎么回事啊」，
+    /// 以为润色根本没生效。轻清理只删口水词、补标点，几乎不可能再触发校验（真 Key 实测
+    /// qwen3.8-flash 对 5 段满是语气词的口述 ×6 次，残留 0、平均 1.6–2.2 s），
+    /// 比把带语气词的原文丢给用户强得多。
+    ///
+    /// - light: 这一趟用轻清理提示词（用户不可见，没有对应的设置项）
+    /// - spentMs: 上一趟已经花掉的毫秒。指标里两趟算**一次**等待——用户等的就是这么久。
+    private func startPolish(rawText: String, level: PolishLevel, light: Bool,
+                             spentMs: Int, isColdStart: Bool, generation: Int) {
+        let tPolish = DispatchTime.now()
+        // 重试与首趟走**同一条路**：同一个 purpose / 模型 / 超时公式 / 0 次网络重试。
+        // 句柄换成这一趟的，Esc（endSession）照样掐得断第二趟。
+        inflightRequest = PolishService.polish(rawText, level: level,
+                                               light: light) { [weak self] polished, failure in
+            guard let self = self, self.isCurrent(generation) else { return }
+            self.inflightRequest = nil
+            let polishMs = spentMs + Log.ms(since: tPolish)
+            Log.info("Timing polish=\(polishMs)ms model=\(Settings.shared.currentPolishModel)"
+                     + " ok=\(polished != nil)" + (light ? " retry=light" : ""))
+            // 润色失败那一次也要记：用户感觉到的等待是实打实的，
+            // 只记成功的话中位数会漂亮得不像话，排障时反而看不出问题
+            self.pendingMetric?.polishMs = polishMs
+            // 缓存命中 / 实际档位（Responses 才报）：取走即清空，绝不把上一轮的数记到这一轮。
+            // 润色永远不联网，所以这里不会有来源。
+            self.pendingMetric?.absorb(LLMUsageSink.shared.take())
+            guard let raw = polished else {
+                if light { Log.warn("Polish light retry failed") }
+                self.deliver(raw: rawText, final: rawText,
+                             note: tr("润色失败（", "Polish failed (")
+                                 + (failure ?? tr("未知", "unknown"))
+                                 + tr("），已输出识别原文", ") — raw transcript inserted"),
+                             warning: true,
+                             coldStart: isColdStart)
+                return
+            }
+            // 词汇表硬替换在**每个产出点各做一次**（识别原文已在上面做过）。
+            // 不能放到 deliver 里做：那样纯听写路径会对同一串文本替换两趟，
+            // 「萍果=苹果」+「苹果=Apple」这种链式词表会被串起来（applyVocabReplacements
+            // 承诺的"单趟扫描不串链"只在一次调用内成立）。
+            let polishedText = TextPostProcessor.applyVocabReplacements(raw)
+            // 保真校验：数字被改 / 否定被吞 / 内容被砍掉 → 这一稿不要。
+            // 纯机械比对，不花一次 LLM 往返；宁可少一次润色，也不让改错的稿子进输入框。
+            if let reason = TextPostProcessor.polishDriftCheck(raw: rawText, polished: polishedText) {
+                guard !light else {
+                    // 轻清理都能被拦，说明模型这一趟确实动了不该动的东西：交原文。
+                    // 走这条回退的结果本身就是识别原文，所以不开放「换回识别原文」（没得换）。
+                    Log.warn("Polish light retry rejected: \(reason)")
+                    self.deliver(raw: rawText, final: rawText,
+                                 note: tr("润色结果与原文出入过大，已输出原文",
+                                          "Polished text drifted too far from the original — raw transcript inserted"),
+                                 warning: true,
+                                 coldStart: isColdStart)
+                    return
+                }
+                Log.warn("Polish drift rejected: \(reason) -> light retry")
+                // 悬浮窗上仍是「润色中…」：这趟重试是 App 自己的事，用户不必知道有两趟
+                self.startPolish(rawText: rawText, level: level, light: true,
+                                 spentMs: polishMs, isColdStart: isColdStart,
+                                 generation: generation)
+                return
+            }
+            // 唯一开放「换回识别原文」的路径：纯听写 + 润色真的动了字
+            self.deliver(raw: rawText, final: polishedText,
+                         note: light ? tr("已输入（轻清理）", "Inserted (light cleanup)")
+                                     : tr("已输入", "Inserted"),
+                         coldStart: isColdStart,
+                         revertible: true)
+        }
     }
 
     // MARK: - V3 语音技能（仅指令模式进入）

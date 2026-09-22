@@ -631,6 +631,39 @@ final class CloudStreamingTests: XCTestCase {
         XCTAssertEqual(outcome?.isComplete, true)
     }
 
+    /// 云端识别的**终稿**也要过一遍本地清理（4.3.3），中间结果（悬浮窗灰字）不清。
+    ///
+    /// 4.3.3 之前云端这条路一个字都没清过：本机档默认删掉的「嗯 / 那个 / um」在云端档
+    /// 原样进输入框，润色再被保真校验拦下的话，用户看到的就是满屏语气词的识别原文
+    /// （mini 上 2026-09-22 的 history.json 里那条「啊啊，这个接口……是是怎么回事啊」）。
+    func testFinalTranscriptGetsTheSameLocalCleanupAsTheLocalEngine() {
+        let socket = FakeSocket()
+        let client = makeClient(socket)
+        let session = CloudStreamingSession(config: streamingConfig(),
+                                            fallback: stubFallback(), client: client)
+        var drafts: [String] = []
+        session.onDraft = { drafts.append($0) }
+        session.start()
+        bringUp(client, socket)
+        let take = tone(seconds: 1)
+        session.enqueue(take)
+        client.drainForTesting()
+
+        let done = expectation(description: "outcome")
+        var outcome: TranscriptionOutcome?
+        session.transcribe(samples: take, language: nil, previousText: "", onSegment: nil) {
+            outcome = $0
+            done.fulfill()
+        }
+        XCTAssertTrue(waitUntil(3) { socket.finishes.count == 1 })
+        socket.receive(#"{"type":"conversation.item.input_audio_transcription.text","text":"嗯，那个，我们明天","stash":"开会"}"#)
+        socket.receive(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"嗯，那个，我们明天开会。","usage":{"duration":1}}"#)
+        wait(for: [done], timeout: 3)
+        XCTAssertEqual(outcome?.text, "我们明天开会。", "口水词该在交付之前就删掉")
+        XCTAssertEqual(drafts.last, "嗯，那个，我们明天开会",
+                       "草稿不清：它每 100 ms 重画一次，边说边删只会让字在眼前跳")
+    }
+
     /// 静音门判「没说话」：不发 finish、直接掐掉，与今天的行为一致
     func testAbandonSendsNoFinish() {
         let socket = FakeSocket()

@@ -19,20 +19,18 @@ import ServiceManagement
 enum InputSectionOrder: Int, CaseIterable {
     case hotkey
     case writingPreferences
-    /// 4.3.2 起悬浮窗 / 录音 / 行为并成一张**没有段标题**的卡片：那三个段标题
-    /// 都只是几个开关的帽子（「录音 ⓘ」下面就是三个开关），而开关自己带着名字。
-    case controls
-    case languageAndBackup
+    /// 4.3.3 起这一页只剩三段（用户 2026-09-22：「input 里面杂七杂八的选项太多了，
+    /// 大部分都默认就行！！！大幅精简」）。这一段是最后那张没有标题的卡片：
+    /// 界面语言 + 开机自启——**整页只剩这两个还值得摆出来的开关**。
+    case general
 }
 
 struct InputEditor: View {
     @ObservedObject private var l10n = L10n.shared
-    @AppStorage(SettingsKeys.playSounds) private var playSounds = true
-    @AppStorage(SettingsKeys.restoreClipboard) private var restoreClipboard = true
-    @AppStorage(SettingsKeys.autoStopSilenceSeconds) private var autoStopSilence = 0.0
-    @AppStorage(SettingsKeys.livePreview) private var livePreview = true
-    @AppStorage(SettingsKeys.overlayPosition) private var overlayPosition = OverlayPosition.bottomCenter.rawValue
-    @AppStorage(SettingsKeys.keepHistory) private var keepHistory = true
+    // 4.3.3 起这一页不再摆 playSounds / restoreClipboard / autoStopSilenceSeconds /
+    // livePreview / overlayPosition 这几条（用户嫌杂），keepHistory 搬去了「关于 → 隐私」。
+    // **那几条设置本身照旧生效**：运行时读的是 Settings.shared.*，导入设置文件也照样能改，
+    // 这里只是不再声明一份界面用的投影。
     // 写作偏好（4.1.6 起住在这一页）：词汇表从「本地识别」搬来，自定义规则从「云端 AI」搬来
     @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
     @AppStorage(SettingsKeys.customPolishRules) private var customRules = ""
@@ -43,14 +41,6 @@ struct InputEditor: View {
     @State private var launchAtLogin = (SMAppService.mainApp.status == .enabled)
     /// 上一次开关登录项被系统拒了。开关自己弹回去是这一刻唯一的反馈，等于没有反馈
     @State private var launchAtLoginRefused = false
-    // 导入导出的结果文字是一次性快照，切语言时要清掉（见 CLAUDE.md「i18n 快照字符串」）
-    @State private var backupStatus = ""
-
-    /// 秒数 0 = 关；打开时给一个保守的默认 2 秒（够停顿想词，又不至于等太久）
-    private var autoStopEnabled: Binding<Bool> {
-        Binding(get: { autoStopSilence > 0 },
-                set: { autoStopSilence = $0 ? 2 : 0 })
-    }
 
     /// 选了阿语：给一条**词汇表**提示（判据与文案都跟着词汇表一起从「本地识别」搬过来）。
     /// 2026-09-19 的实测说明为什么——同一段阿英混说的素材，默认 0.6B 无上下文 CER 12.5%，
@@ -75,10 +65,6 @@ struct InputEditor: View {
                 }
             }
             .formStyle(.grouped)
-            // 已生成的状态文字是快照，切换语言后清掉，避免残留旧语言
-            .onChange(of: l10n.language) { _, _ in
-                backupStatus = ""
-            }
         }
     }
 
@@ -87,8 +73,7 @@ struct InputEditor: View {
         switch section {
         case .hotkey: hotkeySection
         case .writingPreferences: writingPreferencesSection
-        case .controls: controlsSection
-        case .languageAndBackup: languageAndBackupSection
+        case .general: generalSection
         }
     }
 
@@ -177,49 +162,34 @@ struct InputEditor: View {
     }
 
 
-    // MARK: ③ 悬浮窗 / 录音 / 行为（一张没有段标题的卡片）
+    // MARK: ③ 通用（界面语言 + 开机自启）
     //
-    // 4.3.2 把原来的三段并成一张（用户 2026-09-22：这一页太冗余）。那三个段标题
-    // ——「悬浮窗」「录音」「行为」——没有一个说出了下面那几个开关没说的事：
-    // 「悬浮窗 ⓘ」下面的栏名是「悬浮窗位置：」，另外两个只是开关的帽子。
-    // 三颗段 ⓘ 原样保留，各自挂到它真正在讲的那一行右端。
+    // 4.3.3 把这一页砍到只剩这两个开关（用户 2026-09-22：「大部分都默认就行！！！大幅精简」）。
+    // 从界面上拿掉的六样：悬浮窗位置、静音自动停止录音、录音时显示实时识别草稿、
+    // 单次录音上限那一行、开始/完成提示音、输入后恢复剪贴板。
+    //
+    // **设置键一个都没删**（SettingsKeys / SettingsBackup 原样）：用户上次选的仍然算数
+    //（2026-09-21 定的规矩：保留上次的选择，不重置），导入设置文件照样能设它们。
+    // 只是它们从此走出厂默认，不再占用户每天都要扫一遍的那块地方。
+    //
+    // 「导入 / 导出设置」与「保存听写历史」搬去了「关于」页：前者一年用一次，
+    // 后者是一条隐私开关，归隐私那一段（4.3.3）。
 
-    private var controlsSection: some View {
-        // 英文拼写统一用美式
+    private var generalSection: some View {
         Section {
-            SettingsFieldRow(label: tr("悬浮窗位置", "Overlay"),
-                             info: SettingsCopy.overlayInfo) {
-                Picker("", selection: $overlayPosition) {
-                    ForEach(OverlayPosition.allCases, id: \.rawValue) { position in
-                        Text(position.displayName).tag(position.rawValue)
+            // 栏名不再双语（4.3.3）：**分段选择器里那两项本身就写着「中文」和「English」**
+            //（AppLanguage.displayName），界面已经是看不懂的那一种语言时，用户照样认得出
+            // 自己要点哪一格——那才是这条规矩真正要保住的东西（v4.0 调研 §4.3）。
+            // 于是 CJKUIStringGuardTests 里那条唯一的按行白名单也跟着删了。
+            SettingsFieldRow(label: tr("界面语言", "Language")) {
+                Picker("", selection: $l10n.language) {
+                    ForEach(AppLanguage.allCases, id: \.self) { lang in
+                        Text(lang.displayName).tag(lang)
                     }
                 }
                 .labelsHidden()
+                .pickerStyle(.segmented)
             }
-            SettingsToggleRow(label: tr("静音自动停止录音", "Stop recording after silence"),
-                              isOn: autoStopEnabled, info: SettingsCopy.recordingInfo)
-            if autoStopSilence > 0 {
-                Stepper(value: $autoStopSilence, in: 1...5, step: 1) {
-                    Text(tr("静音 \(Int(autoStopSilence)) 秒后自动结束",
-                            "Stop after \(Int(autoStopSilence))s of silence"))
-                }
-            }
-            Toggle(tr("录音时显示实时识别草稿", "Show live transcript while recording"), isOn: $livePreview)
-            // 草稿是本机模型转的（云端档不会为了看草稿把每一秒都上传一遍）。只用云端、
-            // 从没下过本机模型的人打开这个开关什么也不会发生——与其让他录一遍再来报 bug，
-            // 不如当面说清这个开关这会儿没有用武之地。**只在缺模型时才出现**：
-            // 4.3.2 删掉了"草稿只出现在悬浮窗里"那一行常驻说明（草稿本来就只在那儿出现，
-            // 用一次就知道了），这一行现在是纯状态行。
-            if !QwenEngine.shared.isModelAvailable {
-                Caption(SettingsCopy.draftNeedsLocalModel, warning: true)
-            }
-            // 时长上限此前在界面上无处可查，用户第一次知道它存在就是被自动收尾那一刻。
-            // 数字由识别链路自己给（读的是上限那个常量），界面这边一个数字都不写死。
-            Caption(DictationController.recordingLimitShort)
-            Toggle(tr("开始 / 完成时播放提示音", "Play sounds on start / finish"), isOn: $playSounds)
-            Toggle(tr("输入后恢复原剪贴板内容", "Restore clipboard after inserting"), isOn: $restoreClipboard)
-            SettingsToggleRow(label: tr("保存听写历史", "Keep transcript history"),
-                              isOn: $keepHistory, info: SettingsCopy.behaviourInfo)
             Toggle(tr("登录时自动启动", "Launch at login"), isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { _, newValue in
                     do {
@@ -247,36 +217,6 @@ struct InputEditor: View {
                     }
                 }
             }
-        }
-    }
-
-
-    // MARK: ⑥ 语言与备份
-
-    private var languageAndBackupSection: some View {
-        Section {
-            // 故意双语（CJKUIStringGuardTests 里唯一的按行白名单）：语言选择器是切回
-            // 母语的唯一入口，界面已经是看不懂的那一种语言时，它必须还认得出来
-            Picker(tr("界面语言 / Language:", "Language / 界面语言:"), selection: $l10n.language) {
-                ForEach(AppLanguage.allCases, id: \.self) { lang in
-                    Text(lang.displayName).tag(lang)
-                }
-            }
-            .pickerStyle(.segmented)
-            HStack {
-                Button(tr("导出设置…", "Export Settings…")) {
-                    backupStatus = SettingsBackup.runExport()
-                }
-                Button(tr("导入设置…", "Import Settings…")) {
-                    backupStatus = SettingsBackup.runImport()
-                }
-                Spacer()
-            }
-            if !backupStatus.isEmpty {
-                Caption(backupStatus)
-            }
-        } header: {
-            SectionHeader(title: tr("语言与备份", "Language & Backup"), info: SettingsCopy.backupInfo)
         }
     }
 
@@ -661,12 +601,6 @@ struct CloudEditor: View {
         return KeychainHelper.loadAPIKey(account: selected.keychainAccount) != nil
     }
 
-    /// **生效那一档**的钥匙串里有没有 Key。"只用本地却还存着一把 Key"说的是真会被发出去的那把，
-    /// 所以按生效档算——预览别家时按 selected 算会漏报，也会指着预览档那把 Key 让人删。
-    private var hasStoredKeyInUse: Bool {
-        _ = keychainTick
-        return KeychainHelper.loadAPIKey(account: inUseProvider.keychainAccount) != nil
-    }
     private var usageMode: AIUsageMode {
         AISetup.mode(polishLevel: currentPolishLevel, engine: engineChoice)
     }
@@ -789,20 +723,13 @@ struct CloudEditor: View {
     /// 全都是"现在这台 Mac 处在一个说不通的状态"，所以一律一行结论 + 一颗按钮，**绝不替他改**
     @ViewBuilder
     private var usageNotices: some View {
-        // 「只用本地」只写回"润色关掉 + 识别回本机"两条，**钥匙串里那把 Key 不动**
-        // （删 Key 是破坏性动作，只能由用户自己点）。可指令路径不看档位：按住说指令照样
-        // 会把选区和这句话发给服务商、照样计费——不说的话他既看不到那把 Key，也不知道它还在花钱。
-        if usageMode == .localOnly,
-           AISetup.showsStoredKeyNotice(mode: usageMode, hasCredential: hasStoredKeyInUse) {
-            BoundaryRow(text: SettingsCopy.storedKeyWhileLocalOnly(provider: inUseProvider.segmentName)) {
-                Button(tr("删掉这把 Key", "Remove that key")) {
-                    KeychainHelper.deleteAPIKey(account: inUseProvider.keychainAccount)
-                    Log.info("API key removed provider=\(inUseProvider.rawValue) reason=local only")
-                    // 删完这一页要立刻不再显示上面那句：@AppStorage 管不着钥匙串，自己推一下
-                    keychainTick &+= 1
-                }
-            }
-        }
+        // 4.3.3 删掉了「只用本地时钥匙串里还存着一把 Key」那条横幅与「删掉这把 Key」按钮
+        //（用户 2026-09-22 原话：「on-device only 那里不需要总提示用户 remove that key，
+        // 不需要这个！！！」）。它是一条**催用户去清理**的话，而不是"现在有什么坏了"——
+        // 选了只用本地就不会再有润色去花钱，而按住说指令本来就是他自己按的。
+        // 删 Key 仍然有唯一一条路：把 Key 输入框清空再失焦（KeyEntryView）。
+        //
+        // 下面留着的三条都不一样：它们说的是**状态说不通、功能会失效**，不是让人做家务。
         // 4.0.1 的默认型号迁移可能悄悄把型号换贵了。分不出就当面说，并给一颗「知道了」。
         if let notice = LLMCatalog.modelChangeNotice(modelMigrationNotice) {
             BoundaryRow(text: notice) {
@@ -1149,6 +1076,11 @@ struct AboutPanel: View {
     @State private var installing = false
     /// 刚复制过诊断信息：按钮就地变成「已复制」两秒
     @State private var diagnosticsCopied = false
+    /// 导入导出的结果文字是一次性快照，切语言时要清掉（见 CLAUDE.md「i18n 快照字符串」）
+    @State private var backupStatus = ""
+    /// 「保存听写历史」4.3.3 从「输入」页搬到隐私那一段：它是一条**隐私**开关
+    /// （录下来的每一句话存不存在这台 Mac 上），而不是一条输入偏好
+    @AppStorage(SettingsKeys.keepHistory) private var keepHistory = true
 
     /// 脚注的「隐私」要滚到的锚点
     private static let privacyAnchor = "privacy"
@@ -1172,6 +1104,7 @@ struct AboutPanel: View {
                         .foregroundColor(.secondary)
                         .font(.callout)
                     updateRow
+                    backupRow
                     if let pending = pendingUpdate {
                         installRow(pending)
                     }
@@ -1201,7 +1134,9 @@ struct AboutPanel: View {
             .onChange(of: nav.visitCount) { _, _ in runIntent(proxy: proxy) }
         }
         .onChange(of: l10n.language) { _, _ in
-            updateStatus = ""  // 一次性状态文字是语言快照，切语言即清空
+            // 一次性状态文字是语言快照，切语言即清空
+            updateStatus = ""
+            backupStatus = ""
         }
     }
 
@@ -1221,6 +1156,38 @@ struct AboutPanel: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                     diagnosticsCopied = false
                 }
+            }
+        }
+    }
+
+    /// 设置备份（4.3.3 从「输入」页搬来）。
+    ///
+    /// 为什么归这里：导出 / 导入一年用不了一次，而它原来占着「输入」页最底下一整段——
+    /// 那一页是每天要扫的地方（用户 2026-09-22：「杂七杂八的选项太多了」）。
+    /// 这里本来就是"关于这台 Mac 上的 MicType"：版本、更新、诊断信息，备份是同一类事。
+    /// **SettingsBackup 的逻辑一行没改**，只是按钮换了个地方。
+    ///
+    /// 排版**跟着这一页走**：关于页从上到下每一样都是居中的，所以这是第二排居中按钮，
+    /// 紧跟在「检查更新 · 发布页 · 复制诊断信息」下面，样式与那一排相同——
+    /// 第一版把它做成了带栏名的左对齐一行，夹在两排居中的东西中间像贴上去的。
+    /// 栏名因此也不要了：两颗按钮自己写着「导出设置…」「导入设置…」，再加一个帽子是重复。
+    private var backupRow: some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 8) {
+                Button(tr("导出设置…", "Export Settings…")) {
+                    backupStatus = SettingsBackup.runExport()
+                }
+                Button(tr("导入设置…", "Import Settings…")) {
+                    backupStatus = SettingsBackup.runImport()
+                }
+                InfoButton(SettingsCopy.backupInfo)
+            }
+            // 一次性状态快照：只在真有话说时占地方，和上面那排的 updateStatus 同一种长相
+            if !backupStatus.isEmpty {
+                Text(backupStatus)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
             }
         }
     }
@@ -1250,10 +1217,16 @@ struct AboutPanel: View {
                 Text(line)
             }
             // 存哪儿、多少条、上不上传：出处只有 HistoryStore.storageNote 一个（条数就是那个常量）。
-            // 这里只补一句"去哪儿关、去哪儿清"
+            // 这里只补一句"去哪儿清"——「关掉」那件事 4.3.3 起就是下面那个开关本身
             Text(HistoryStore.storageNote
-                 + tr("可在 设置 → 输入 关掉记录，或在菜单栏「最近记录」里清空、逐条删除。",
-                      " Turn recording off in Settings → Input, or clear and delete them from Recent Transcripts in the menu bar."))
+                 + tr("在菜单栏「最近记录」里可以清空或逐条删除。",
+                      " Clear them or delete them one by one from Recent Transcripts in the menu bar."))
+            // 那个开关就摆在这几句话下面（4.3.3 从「输入」页搬来）：读完"存在哪儿、留多少条"
+            // 紧接着就是"要不要存"，这是它唯一该在的位置
+            SettingsToggleRow(label: tr("保存听写历史（仅本机）", "Keep transcript history (on this Mac)"),
+                              isOn: $keepHistory, info: SettingsCopy.behaviourInfo)
+                .font(.callout)
+                .foregroundColor(.primary)
             Text(tr("「复制诊断信息」只包含版本、系统、芯片、设置摘要、最近的耗时数字和今天的日志尾巴（日志里的路径和账户名已脱敏）——不含 API Key，也不含任何听写内容，可以放心贴给别人。",
                     "“Copy diagnostics” includes only the version, system, chip, a settings summary, recent timings and today's log tail (paths and your account name in it are redacted) — never your API key and never any transcribed text, so it is safe to paste to someone."))
         }

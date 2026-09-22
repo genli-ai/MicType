@@ -323,7 +323,11 @@ final class CloudStreamingSession: SpeechEngine {
             }
             switch result {
             case .success(let transcript):
-                deliver(TranscriptionOutcome(text: transcript.text, completedSegments: 1,
+                // 只清**终稿**：中间结果是悬浮窗上的灰字草稿，它每 100 ms 就重画一次，
+                // 边说边删口水词只会让草稿在眼前跳。清理的口径与本机引擎逐字同源
+                // （TextPostProcessor.cleanTranscript）——4.3.3 之前云端这条路一个字都没清过。
+                deliver(TranscriptionOutcome(text: TextPostProcessor.cleanTranscript(transcript.text),
+                                             completedSegments: 1,
                                              totalSegments: 1, failure: nil, cancelled: false))
             case .failure(let failure):
                 // 「这条链路不支持实时」不是一次故障：本句改走整段上传，

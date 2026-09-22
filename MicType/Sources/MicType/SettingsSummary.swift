@@ -37,7 +37,7 @@ enum SettingsSummary {
 
     // MARK: - 输入
 
-    /// 「右 Option (⌥) · 词汇表 11 条 · 有自定义规则 · 悬浮窗在屏幕底部 · 提示音开」
+    /// 「右 Option (⌥) · 词汇表 11 条 · 有自定义规则 · 开机自启」
     ///
     /// 键名仍然排在最前面，哪怕它只有一个值（见 Settings.hotkey）：这张卡回答的第一个问题
     /// 就是"按哪个键"，把它省掉，用户要按的那颗键在设置窗口首页上就一个字都没有了。
@@ -49,17 +49,17 @@ enum SettingsSummary {
     ///
     /// 没有徽章：这张卡里的每一项都是用户自己选的，没有"坏掉"的状态。
     /// 权限缺失不在这里说——那是整页顶上那条横幅的事（缺了就没法用，不只是输入不对劲）。
-    static func inputSummary(overlayPosition: OverlayPosition,
-                             sounds: Bool,
-                             launchAtLogin: Bool,
+    ///
+    /// 4.3.3 去掉了悬浮窗位置与提示音两格：那两个开关已经从「输入」页上撤了
+    /// （用户 2026-09-22 嫌那一页杂），卡片上再念一遍就成了"点进去找不到的东西"。
+    /// 现在这张卡剩下的每一格都在页内改得到。
+    static func inputSummary(launchAtLogin: Bool,
                              vocabCount: Int,
                              hasCustomRules: Bool) -> String {
         var parts = [HotkeyChoice.rightOption.displayName]
         if vocabCount > 0 { parts.append(vocabularyPhrase(vocabCount)) }
         // 规则的**内容**永远不上卡片（那是他写给 AI 的私人偏好，概览只说"有没有"）
         if hasCustomRules { parts.append(tr("有自定义规则", "Custom rules set")) }
-        parts.append(overlayPhrase(overlayPosition))
-        parts.append(sounds ? tr("提示音开", "Sounds on") : tr("提示音关", "Sounds off"))
         // 开机自启只在开着时占位置：关着是出厂默认，说出来等于用一格讲一件没发生的事
         if launchAtLogin { parts.append(tr("开机自启", "Starts at login")) }
         return parts.joined(separator: dot)
@@ -69,14 +69,6 @@ enum SettingsSummary {
     /// 一起搬——两张卡先后写过同一件事，最怕的就是留下两种说法
     private static func vocabularyPhrase(_ count: Int) -> String {
         tr("词汇表 \(count) 条", "\(count) vocabulary terms")
-    }
-
-    private static func overlayPhrase(_ position: OverlayPosition) -> String {
-        switch position {
-        case .bottomCenter: return tr("悬浮窗在屏幕底部", "Overlay at the bottom")
-        case .topCenter: return tr("悬浮窗在屏幕顶部", "Overlay at the top")
-        case .nearCursor: return tr("悬浮窗跟随鼠标", "Overlay follows the pointer")
-        }
     }
 
     // MARK: - 本地识别

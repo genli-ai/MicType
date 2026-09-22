@@ -14,8 +14,6 @@ struct SettingsOverview: View {
     @ObservedObject private var l10n = L10n.shared
 
     // 输入（4.1.6 起含「写作偏好」：词汇表与自定义规则都搬到了这一页）
-    @AppStorage(SettingsKeys.overlayPosition) private var overlayPosition = OverlayPosition.bottomCenter.rawValue
-    @AppStorage(SettingsKeys.playSounds) private var playSounds = true
     @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
     @AppStorage(SettingsKeys.customPolishRules) private var customRules = ""
     // 本地识别
@@ -53,7 +51,6 @@ struct SettingsOverview: View {
     /// 这扇窗开着没有：关窗时要停掉上面那个轮询，再开时要接着轮
     @ObservedObject private var windowState = SettingsWindowController.shared
 
-    private var selectedOverlay: OverlayPosition { OverlayPosition(rawValue: overlayPosition) ?? .bottomCenter }
     private var selectedProvider: LLMProvider { LLMProvider(rawValue: provider) ?? .openai }
     private var engineChoice: RecognitionEngineChoice { RecognitionEngineChoice.parse(recognitionEngine) }
     private var selectedPolishLevel: PolishLevel { PolishLevel(rawValue: polishLevel) ?? .smart }
@@ -66,8 +63,6 @@ struct SettingsOverview: View {
                 OverviewCard(title: tr("输入", "Input"),
                              card: SettingsSummary.Card(
                                 sentence: SettingsSummary.inputSummary(
-                                    overlayPosition: selectedOverlay,
-                                    sounds: playSounds,
                                     launchAtLogin: launchAtLogin,
                                     vocabCount: Settings.parseVocabulary(vocabulary).terms.count,
                                     hasCustomRules: !customRules.trimmingCharacters(

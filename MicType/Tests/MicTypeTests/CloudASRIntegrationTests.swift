@@ -965,6 +965,30 @@ final class CloudASRIntegrationTests: XCTestCase {
                      "第 1 段不该知道后面的事")
     }
 
+    /// 云端识别的原文也要过一遍本地清理（4.3.3），位置与本机引擎一样：**按段做、拼接之前**。
+    ///
+    /// 4.3.3 之前云端这条路一个字都没清过：本机档默认删掉的「嗯 / 那个 / um」在云端档
+    /// 原样进输入框，润色再被保真校验拦下的话（mini 上 39 次里拦了 6 次），用户看到的
+    /// 就是满屏语气词的识别原文——他以为润色坏了，其实是润色被丢掉了。
+    func testCloudTranscriptGetsTheSameLocalCleanupAsTheLocalEngine() {
+        let sender = FakeCloudSender()
+        sender.script(1, .success(CloudASRSegmentResult(text: "嗯，那个，我们明天开会。")))
+        sender.script(2, .success(CloudASRSegmentResult(text: "um, let's start")))
+        let engine = engineWithFakeSender(sender)
+
+        let finished = expectation(description: "交付")
+        var delivered: TranscriptionOutcome?
+        engine.transcribe(samples: longAudio(), language: nil, previousText: "",
+                          onSegment: nil) { outcome in
+            delivered = outcome
+            finished.fulfill()
+        }
+        wait(for: [finished], timeout: 20)
+        XCTAssertEqual(delivered?.text,
+                       CloudTextJoiner.join(["我们明天开会。", "let's start"]),
+                       "口水词该在交付之前就删掉，且清理按段做")
+    }
+
     /// 让主队列上已经排好的块跑完（回调都投在主队列上）
     private func drainMainQueue() {
         let spin = expectation(description: "main queue drained")

@@ -33,47 +33,42 @@ final class SettingsSummaryTests: XCTestCase {
 
     func testInputSummaryLeadsWithTheHotkeyFullName() {
         L10n.shared.language = .zh
-        let line = SettingsSummary.inputSummary(overlayPosition: .bottomCenter,
-                                                sounds: true,
-                                                launchAtLogin: false,
+        let line = SettingsSummary.inputSummary(launchAtLogin: false,
                                                 vocabCount: 0,
                                                 hasCustomRules: false)
         // 键名一律全名（R⌥ 这种缩写没人看得懂），而且排在最前面
         XCTAssertTrue(line.hasPrefix("右 Option"), line)
-        XCTAssertTrue(line.contains("底部"), line)
-        XCTAssertTrue(line.contains("提示音开"), line)
         // 开机自启关着就不占一格：那是出厂默认，说出来等于用一格讲一件没发生的事
         XCTAssertFalse(line.contains("自启"), line)
         // 写作偏好空着同理：一个"0 条词汇表"帮不了任何人
         XCTAssertFalse(line.contains("词汇表"), line)
         XCTAssertFalse(line.contains("自定义规则"), line)
+        // 4.3.3：悬浮窗位置与提示音那两个开关已经从「输入」页撤了，卡片上也不许再念——
+        // 卡片上有、页里改不到，那一格就成了死胡同
+        XCTAssertFalse(line.contains("悬浮窗"), line)
+        XCTAssertFalse(line.contains("提示音"), line)
     }
 
     func testInputSummaryMentionsLaunchAtLoginOnlyWhenOn() {
         L10n.shared.language = .zh
-        let on = SettingsSummary.inputSummary(overlayPosition: .nearCursor,
-                                              sounds: false,
-                                              launchAtLogin: true,
+        let on = SettingsSummary.inputSummary(launchAtLogin: true,
                                               vocabCount: 0,
                                               hasCustomRules: false)
         XCTAssertTrue(on.contains("开机自启"), on)
-        XCTAssertTrue(on.contains("提示音关"), on)
-        XCTAssertTrue(on.contains("跟随鼠标"), on)
     }
 
     /// 4.1.6：词汇表与自定义规则搬到了「输入」页，这张卡要把它们报出来——
     /// 而且**紧跟在键名后面**，和页内的段序一致（点进去才不用再找一遍）
     func testInputSummaryCarriesWritingPreferencesRightAfterTheHotkey() {
         L10n.shared.language = .zh
-        let line = SettingsSummary.inputSummary(overlayPosition: .bottomCenter,
-                                                sounds: true,
-                                                launchAtLogin: false,
+        let line = SettingsSummary.inputSummary(launchAtLogin: false,
                                                 vocabCount: 11,
                                                 hasCustomRules: true)
         XCTAssertTrue(line.contains("词汇表 11 条"), line)
         XCTAssertTrue(line.contains("有自定义规则"), line)
         let parts = line.components(separatedBy: " · ")
-        XCTAssertEqual(parts.count, 5, line)
+        // 4.3.3 起最多三格：键名 · 词汇表 · 有自定义规则（+ 开着时的开机自启）
+        XCTAssertEqual(parts.count, 3, line)
         XCTAssertEqual(parts[1], "词汇表 11 条", line)
         XCTAssertEqual(parts[2], "有自定义规则", line)
         // 规则的**内容**永不上卡片：概览只说"有没有"
@@ -83,14 +78,12 @@ final class SettingsSummaryTests: XCTestCase {
     /// 两项各自独立：只填了词汇表的人不该在卡上读到"有自定义规则"
     func testInputSummaryReportsEachWritingPreferenceOnItsOwn() {
         L10n.shared.language = .zh
-        let vocabOnly = SettingsSummary.inputSummary(overlayPosition: .bottomCenter,
-                                                     sounds: true, launchAtLogin: false,
+        let vocabOnly = SettingsSummary.inputSummary(launchAtLogin: false,
                                                      vocabCount: 3, hasCustomRules: false)
         XCTAssertTrue(vocabOnly.contains("词汇表 3 条"), vocabOnly)
         XCTAssertFalse(vocabOnly.contains("自定义规则"), vocabOnly)
 
-        let rulesOnly = SettingsSummary.inputSummary(overlayPosition: .bottomCenter,
-                                                     sounds: true, launchAtLogin: false,
+        let rulesOnly = SettingsSummary.inputSummary(launchAtLogin: false,
                                                      vocabCount: 0, hasCustomRules: true)
         XCTAssertFalse(rulesOnly.contains("词汇表"), rulesOnly)
         XCTAssertTrue(rulesOnly.contains("有自定义规则"), rulesOnly)
@@ -98,17 +91,13 @@ final class SettingsSummaryTests: XCTestCase {
 
     func testInputSummaryIsCleanInEnglish() {
         L10n.shared.language = .en
-        for position in OverlayPosition.allCases {
-            let line = SettingsSummary.inputSummary(overlayPosition: position,
-                                                    sounds: true,
-                                                    launchAtLogin: true,
-                                                    vocabCount: 4,
-                                                    hasCustomRules: true)
-            XCTAssertFalse(containsCJKOrFullWidth(line), line)
-            XCTAssertTrue(line.contains("Right Option"), line)
-            XCTAssertTrue(line.contains("4 vocabulary terms"), line)
-            XCTAssertTrue(line.contains("Custom rules set"), line)
-        }
+        let line = SettingsSummary.inputSummary(launchAtLogin: true,
+                                                vocabCount: 4,
+                                                hasCustomRules: true)
+        XCTAssertFalse(containsCJKOrFullWidth(line), line)
+        XCTAssertTrue(line.contains("Right Option"), line)
+        XCTAssertTrue(line.contains("4 vocabulary terms"), line)
+        XCTAssertTrue(line.contains("Custom rules set"), line)
     }
 
     // MARK: - 本地识别

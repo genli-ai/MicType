@@ -38,7 +38,12 @@ public sealed class AppSettings
     /// v4.0 型号迁移记账位。老 settings.json 里没有这个键 → 反序列化得 false → 迁移跑一次。
     /// 所以它**必须**默认 false；出厂新设置走 Factory() 直接置 true。
     public bool ModelsMigratedTo56 { get; set; }
-    public double PolishTemperature { get; set; } = 0.5;
+    /// 润色温度。**4.3.3 从 0.5 降到 0.3**（与 Mac 端同源）：温度越低模型越少自由发挥
+    /// （少无中生有的编号列表、少改写措辞），保真校验（PolishDriftCheck）的误拦就跟着少
+    /// ——而误拦的代价是用户拿到一整段没润色过的识别原文。真 Key 实测 qwen3.8-flash：
+    /// 0.2 与 0.5 对满是语气词的口述都是 0 残留，清理质量没差别。
+    /// 只改默认值：settings.json 里已经存过值的用户照旧（滑杆上的数是他自己定的）。
+    public double PolishTemperature { get; set; } = 0.3;
     public double CommandTemperature { get; set; } = 1.0;
     public string AboutMe { get; set; } = "";
     public string CustomPolishRules { get; set; } = "";

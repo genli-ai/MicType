@@ -394,7 +394,11 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
                     Log.warn("CloudASR seg=\(index + 1) failed status=\(failure.status) code=\(failure.code ?? "-")")
                     finish(.failure(failure))
                 case .success(let segResult):
-                    let texts = texts + [segResult.text]
+                    // 清理**按段做、拼接之前**，与本机引擎（QwenEngine）同一位置、同一口径：
+                    // 去引擎标记、折叠复读、删内置口水词表。4.3.3 之前云端这条路一个字都没清过
+                    // ——本机档默认删掉的「嗯 / 那个 / um」在云端档原样进输入框，
+                    // 润色再被保真校验拦下的话，用户看到的就是满屏语气词的原文。
+                    let texts = texts + [TextPostProcessor.cleanTranscript(segResult.text)]
                     // 这一段的成果立刻报上去：长段口述最怕"说了五分钟、屏幕上什么都没有"
                     let snapshot = CloudTextJoiner.join(texts)
                     if let onSegment = onSegment {

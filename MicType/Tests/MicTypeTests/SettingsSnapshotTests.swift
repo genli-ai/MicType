@@ -112,6 +112,9 @@ final class SettingsSnapshotTests: XCTestCase {
             // 「写作偏好」那一段整个入画：这一页比窗口高，按窗口高度拍只看得到最上面两段
             shoot(.input, name: "input-writing-preferences-\(tag)", fullHeight: true)
             shoot(.recognition, name: "recognition-\(tag)")
+            // 关于页 4.3.3 起多了「设置备份」与「保存听写历史」两行（从「输入」页搬来），
+            // 它比窗口高，所以整页入画——要看的正是最下面隐私那一段
+            shoot(.about, name: "about-\(tag)", fullHeight: true)
             shoot(.cloud, name: "cloud-openai-\(tag)")
 
             useProvider(.qwen, cloudRecognition: true)
@@ -121,6 +124,9 @@ final class SettingsSnapshotTests: XCTestCase {
             UserDefaults.standard.set(PolishLevel.off.rawValue, forKey: SettingsKeys.polishLevel)
             useProvider(.openai, cloudRecognition: false)
             shoot(.input, name: "input-local-only-\(tag)", fullHeight: true)
+            // 同一档下的「云端 AI」页：4.3.3 之前这里会冒出一条「钥匙串里还存着 Key…」
+            // 加一颗「删掉这把 Key」——用户点名不要（快照夹具里有假 Key，正好能触发原来那条）
+            shoot(.cloud, name: "cloud-local-only-\(tag)")
             UserDefaults.standard.set(PolishLevel.smart.rawValue, forKey: SettingsKeys.polishLevel)
         }
         print("[snapshot] PNGs written to \(outputDirectory.path)")

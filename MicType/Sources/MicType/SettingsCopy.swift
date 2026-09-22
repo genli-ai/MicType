@@ -35,35 +35,15 @@ enum SettingsCopy {
         tr("轻点听写，按住说指令", "Tap to dictate, hold to command")
     }
 
-    /// 只用云端、从没下过本机模型的人打开实时草稿开关什么也不会发生——当面说，别让他录一遍才发现
-    static var draftNeedsLocalModel: String {
-        tr("没有本机模型，草稿不出现", "No on-device model, so no draft appears")
-    }
-
     static var hotkeyInfo: String {
         tr("轻点开始、再轻点结束听写；按住说完松手执行语音指令。录音中按 Esc 取消。长录音已经转出前几段时，第一次 Esc 是收尾并输入，再按一次才彻底丢弃。",
            "Tap to start dictation and tap again to stop; hold, speak and release to run a voice command. Esc cancels while recording. Once a long take has already produced text, the first Esc finishes and inserts it — press it again to discard everything.")
     }
 
-    static var overlayInfo: String {
-        tr("多屏时悬浮窗永远出现在鼠标所在那块屏，这里只决定它落在这块屏的哪个位置。录音中点胶囊右端那颗小按钮等同于按 Esc，而且不抢输入焦点。",
-           "On multiple displays the overlay always appears on the screen holding the pointer; this only picks where it sits there. While recording, the small button at the right end of the capsule does exactly what pressing Esc does, without taking focus away from the app you are typing into.")
-    }
-
-    /// 录音那颗 ⓘ：草稿落在哪儿 + 录音上限那一整句（数字全部来自常量，见 recordingLimitCopy）。
-    ///
-    /// **"自动收尾不是丢弃"那一句不在这里写**：recordingLimitCopy 的末尾正写着
-    /// 「到上限自动收尾，说过的内容全部识别并插入」——同一颗气泡里说两遍，读的人会以为是两件事。
-    static var recordingInfo: String {
-        tr("静音自动停止默认关着：什么时候说完由你决定。实时草稿只在悬浮窗里，不落到光标处。\n",
-           "Stopping after silence is off by default: you decide when you are done. The live draft stays in the floating window and never reaches your cursor.\n")
-            + DictationController.recordingLimitCopy
-    }
-
-    /// 行为那颗 ⓘ：**只说怎么操作**。
+    /// 「保存听写历史」那一行的 ⓘ（4.3.3 起它和那个开关一起住在 关于 → 隐私）。
     ///
     /// 「存在哪儿、最多几条、不上传」那一句不在这里写：它是一句隐私陈述，出处只有一个
-    /// （HistoryStore.storageNote，关于页逐句摆出来）。4.1.0 之前这里自己写了一版
+    /// （HistoryStore.storageNote，就摆在这个开关上面那几行）。4.1.0 之前这里自己写了一版
     /// （「history.json、200 条」）而关于页写的是另一版（「Application Support 目录、明文」），
     /// 条数一改就有两个答案。
     static var behaviourInfo: String {
@@ -84,16 +64,22 @@ enum SettingsCopy {
 
     /// 「输入」页在屏幕上摆着的说明（录音上限那一行由 DictationController 现算，一并计入预算）。
     /// 4.1.6 起多了「写作偏好」那一段的三行（词汇表两句二选一 + 自定义规则的灰字 + 这一条）。
+    /// 4.3.3 砍到只剩四条：录音上限那一行连同它说明的那几个开关一起撤了，
+    /// 「没有本机模型，草稿不出现」也跟着走（那个开关已经不在界面上）。
     static var inputCaptions: [String] {
-        [hotkeyGestures, draftNeedsLocalModel,
-         DictationController.recordingLimitShort,
+        [hotkeyGestures,
          vocabularyArabicTip, vocabularyHardReplace, customRulesPlaceholder, rulesNeedAI]
     }
 
-    /// 词汇表与自定义规则那两颗 ⓘ 4.1.6 起算在这一页头上（控件搬来了，说明跟着搬）
+    /// 4.3.3：这一页只剩三颗 ⓘ（快捷键 / 词汇表 / 自定义规则）。
     static var inputInfos: [String] {
-        [hotkeyInfo, vocabularyInfo, customRulesInfo,
-         overlayInfo, recordingInfo, behaviourInfo, backupInfo]
+        [hotkeyInfo, vocabularyInfo, customRulesInfo]
+    }
+
+    /// 「关于」页上那两颗 ⓘ（4.3.3 从「输入」页搬来：保存听写历史 / 设置备份）。
+    /// 它们照旧按同一条 120 字预算量——换了页不换规矩。
+    static var aboutInfos: [String] {
+        [behaviourInfo, backupInfo]
     }
 
     // MARK: - 本地识别
@@ -348,12 +334,6 @@ enum SettingsCopy {
 
     // MARK: - 边界状态（一行结论 + 一颗按钮，永远不写成一段话）
 
-    /// 选了「只用本地」但钥匙串里那把 Key 还在：按住说指令照样计费
-    static func storedKeyWhileLocalOnly(provider: String) -> String {
-        tr("钥匙串里还存着 \(provider) 的 Key，按住说指令仍会计费。",
-           "A \(provider) key is still in your Keychain; hold-to-command keeps billing you.")
-    }
-
     static var polishOffInMenuBar: String {
         tr("润色在菜单栏里关着，轻点只出识别原文。",
            "Polish is switched off in the menu bar, so tapping gives the raw transcript.")
@@ -415,7 +395,7 @@ enum SettingsCopy {
     }
 
     static var boundaryLines: [String] {
-        [storedKeyWhileLocalOnly(provider: "OpenAI"), polishOffInMenuBar,
+        [polishOffInMenuBar,
          strandedOpenAIRecognition, strandedAlibabaRecognition, launchAtLoginFailed,
          endpointOverridden,
          endpointConfiguredByImport(provider: "Ollama"),
@@ -434,6 +414,6 @@ enum SettingsCopy {
     }
 
     static var allInfos: [String] {
-        inputInfos + recognitionInfos + cloudInfos
+        inputInfos + recognitionInfos + cloudInfos + aboutInfos
     }
 }

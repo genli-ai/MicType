@@ -212,16 +212,17 @@ final class PrivacyCopyTests: XCTestCase {
     }
 }
 
-/// 「输入」页的段序：第一个控件必须是快捷键，界面语言必须在最后。
+/// 「输入」页的段序：第一个控件必须是快捷键，通用那一段（界面语言 + 开机自启）在最后。
 /// 值得一条测试：这次重排的全部产出就是"顺序"，而顺序是最容易在下一次改动里被顺手推回去的东西。
 final class InputSectionOrderTests: XCTestCase {
 
     func testOrderIsHotkeyFirstAndLanguageLast() {
-        // 4.3.2：悬浮窗 / 录音 / 行为并成一张没有段标题的卡片（.controls）
+        // 4.3.3：整页只剩三段（用户嫌杂）。悬浮窗 / 录音 / 提示音 / 剪贴板那几个开关
+        // 从界面上撤了（设置键照旧生效），导入导出与保存历史搬去了「关于」页。
         XCTAssertEqual(InputSectionOrder.allCases,
-                       [.hotkey, .writingPreferences, .controls, .languageAndBackup])
+                       [.hotkey, .writingPreferences, .general])
         XCTAssertEqual(InputSectionOrder.allCases.first, .hotkey)
-        XCTAssertEqual(InputSectionOrder.allCases.last, .languageAndBackup)
+        XCTAssertEqual(InputSectionOrder.allCases.last, .general)
     }
 
     /// 4.1.6：「写作偏好」（词汇表 + 自定义规则）紧跟在快捷键后面。
@@ -234,11 +235,11 @@ final class InputSectionOrderTests: XCTestCase {
     /// 权限不再是这一页的一段：缺权限是"现在用不了"，归概览顶上那条横幅管。
     /// 钉住它是因为"顺手把权限搬回设置页"正是最容易发生的那次回退。
     func testPermissionsAreNotASectionOfThisPage() {
-        XCTAssertEqual(InputSectionOrder.allCases.count, 4)
+        XCTAssertEqual(InputSectionOrder.allCases.count, 3)
     }
 
     func testRawValuesAreContiguousFromZero() {
         // ForEach(id: \.self) 靠 rawValue 稳定排序；插新段落必须显式排到位置上
-        XCTAssertEqual(InputSectionOrder.allCases.map(\.rawValue), Array(0..<4))
+        XCTAssertEqual(InputSectionOrder.allCases.map(\.rawValue), Array(0..<3))
     }
 }

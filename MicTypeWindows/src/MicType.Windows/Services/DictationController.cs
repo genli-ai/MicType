@@ -220,9 +220,34 @@ public sealed class DictationController
                 ? null
                 : TextPostProcessor.ApplyVocabReplacements(polished.Text);
             var drift = polishedText is null ? null : TextPostProcessor.PolishDriftCheck(rawText, polishedText);
+            // 被拦下先**自动重试一趟「轻清理」**，仍不过才谈交付原文（4.3.3，与 Mac 端同源）。
+            // 主提示词的重排 / 分点正是最容易被这道校验拦下的东西，而拦下之后交付的是识别原文
+            // ——用户看到的是满屏语气词，以为润色根本没生效。轻清理只删口水词、补标点，
+            // 改动面小到几乎不可能再触发校验。绝不能拿它当第一趟（那等于把重排能力删掉）。
+            var lightRetried = false;
             if (drift is not null)
             {
-                Log.Warn($"Polish drift rejected: {drift}");
+                Log.Warn($"Polish drift rejected: {drift} -> light retry");
+                lightRetried = true;
+                polished = await PolishService.PolishAsync(rawText, settings.PolishLevel, light: true);
+                // 计时器不重置：两趟加起来才是用户真正等的时长
+                Log.Info($"Timing polish={polishWatch.ElapsedMilliseconds}ms model={settings.CurrentPolishModel} ok={polished.Text is not null} retry=light");
+                polishedText = polished.Text is null
+                    ? null
+                    : TextPostProcessor.ApplyVocabReplacements(polished.Text);
+                drift = polishedText is null ? null : TextPostProcessor.PolishDriftCheck(rawText, polishedText);
+                if (drift is not null)
+                {
+                    Log.Warn($"Polish light retry rejected: {drift}");
+                }
+                else if (polishedText is null)
+                {
+                    Log.Warn("Polish light retry failed");
+                }
+            }
+
+            if (drift is not null)
+            {
                 await DeliverAsync(
                     rawText,
                     rawText,
@@ -232,7 +257,10 @@ public sealed class DictationController
             }
             else if (polishedText is not null)
             {
-                await DeliverAsync(rawText, polishedText, L10n.Tr("已输入", "Inserted"));
+                await DeliverAsync(rawText, polishedText,
+                    lightRetried
+                        ? L10n.Tr("已输入（轻清理）", "Inserted (light cleanup)")
+                        : L10n.Tr("已输入", "Inserted"));
             }
             else
             {
