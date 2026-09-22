@@ -1103,6 +1103,17 @@ struct AboutPanel: View {
                         .multilineTextAlignment(.center)
                         .foregroundColor(.secondary)
                         .font(.callout)
+                    // 菜单栏那枚图标长什么样（4.3.4 加）：这个应用平时只以那枚图标存在，
+                    // 而"找不到它在哪"正是 2026-09-22 反馈里最靠前的一条。
+                    // 和引导最后一屏**同一张图**（MenuBarIcon），不另画一份
+                    HStack(spacing: 8) {
+                        Image(nsImage: MenuBarIcon.large())
+                            .renderingMode(.template)
+                            .foregroundColor(.accentColor)
+                        Text(tr("菜单栏里认这个图标", "Look for this icon in the menu bar"))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                     updateRow
                     backupRow
                     if let pending = pendingUpdate {

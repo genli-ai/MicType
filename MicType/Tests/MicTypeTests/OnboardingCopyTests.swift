@@ -29,15 +29,29 @@ final class OnboardingCopyTests: XCTestCase {
 
     // MARK: - 页序
 
-    /// 四屏，顺序写死（用户 2026-09-19 拍板：引导不许超过四屏）。
+    /// **五屏**，顺序写死（用户 2026-09-22 拍板，推翻 09-19「最多四屏」那条）：
+    /// 这是什么 + 按哪个键 → 权限 → 加 AI（可选）→ 试一下 → 它在哪。
     /// 「怎么用」必须在权限之后、「试一下」之前：先把权限和模型这两件必须的事办了，
-    /// 再问要不要加 AI；最后一屏是"就地试一次 + 收尾"。
-    func testOnboardingIsFourPagesInOrder() {
-        XCTAssertEqual(OnboardingPage.allCases.count, 4)
+    /// 再问要不要加 AI；「试一下」就地试一次；最后一屏回答"走完之后它去哪了"。
+    func testOnboardingIsFivePagesInOrder() {
+        XCTAssertEqual(OnboardingPage.allCases.count, 5)
         XCTAssertEqual(OnboardingPage.welcome.rawValue, 0)
         XCTAssertEqual(OnboardingPage.permissions.rawValue + 1, OnboardingPage.howYouUse.rawValue)
         XCTAssertEqual(OnboardingPage.howYouUse.rawValue + 1, OnboardingPage.tryIt.rawValue)
-        XCTAssertEqual(OnboardingPage(rawValue: 3), .tryIt)
+        XCTAssertEqual(OnboardingPage.tryIt.rawValue + 1, OnboardingPage.done.rawValue)
+        XCTAssertEqual(OnboardingPage(rawValue: 4), .done)
+    }
+
+    /// 「完成」那颗按钮住在最后一屏上：三件必办的事的关卡在它**前面**那一屏
+    ///（FirstRunEssentials.firstIncompletePage 最远只指到 .tryIt），
+    /// 所以任何人走到最后一屏时都已经被放行过一次了
+    func testTheGateSitsBeforeTheLastPage() {
+        for page in [FirstRunEssentials(microphone: false, accessibility: true, modelReady: true),
+                     FirstRunEssentials(microphone: true, accessibility: true, modelReady: false)]
+            .compactMap(\.firstIncompletePage) {
+            XCTAssertNotEqual(page, .done, "关卡不许落在最后一屏上")
+            XCTAssertLessThan(page.rawValue, OnboardingPage.done.rawValue)
+        }
     }
 
     // MARK: - 最后一屏两种收尾
@@ -217,9 +231,56 @@ final class OnboardingCopyTests: XCTestCase {
          OnboardingCopy.retryDownload, OnboardingCopy.permissionsStillMissing,
          OnboardingCopy.permissionsIntro(modelDownloading: true),
          OnboardingCopy.permissionsIntro(modelDownloading: false),
+         OnboardingCopy.keyboardHint, OnboardingCopy.pasteKeyHere,
+         OnboardingCopy.menuBarHome, OnboardingCopy.menuBarHolds,
+         OnboardingCopy.rarelyNeeded(hotkey: "⌥"), OnboardingCopy.launchAtLoginWhy,
          OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥"),
          OnboardingCopy.doneAIStatus(status: .commandsOnly, hotkey: "⌥"),
          OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")]
+    }
+
+    // MARK: - 第一屏与第五屏（4.3.4）
+
+    /// 键盘示意图下面那一行必须提 alt：很多键帽上印的不是 option，
+    /// 只写"右 Option"的人对不上自己手底下那颗键（2026-09-22 反馈："到底按哪个键"）
+    func testKeyboardHintNamesTheAltKeycap() {
+        for language in [AppLanguage.zh, .en] {
+            L10n.shared.language = language
+            XCTAssertTrue(OnboardingCopy.keyboardHint.lowercased().contains("alt"),
+                          OnboardingCopy.keyboardHint)
+        }
+        L10n.shared.language = .zh
+        XCTAssertTrue(OnboardingCopy.keyboardHint.contains("空格"), OnboardingCopy.keyboardHint)
+        L10n.shared.language = .en
+        XCTAssertTrue(OnboardingCopy.keyboardHint.lowercased().contains("space bar"),
+                      OnboardingCopy.keyboardHint)
+    }
+
+    /// Key 框上面那句要把动作说全：从哪儿复制 + 用 ⌘V 贴到这里
+    func testPasteKeyHintNamesTheShortcut() {
+        for language in [AppLanguage.zh, .en] {
+            L10n.shared.language = language
+            XCTAssertTrue(OnboardingCopy.pasteKeyHere.contains("⌘V"), OnboardingCopy.pasteKeyHere)
+        }
+    }
+
+    /// 最后一屏那两句：一句说菜单栏那枚图标里有什么，一句说**平时不用去找它**。
+    /// 后面这句是这一屏真正的意思，漏了的话这一屏就成了"请记住去菜单栏点图标"
+    func testLastPageSaysWhereItLivesAndThatYouRarelyNeedIt() {
+        L10n.shared.language = .zh
+        XCTAssertTrue(OnboardingCopy.menuBarHome.contains("菜单栏"), OnboardingCopy.menuBarHome)
+        XCTAssertTrue(OnboardingCopy.menuBarHolds.contains("历史记录"), OnboardingCopy.menuBarHolds)
+        let zh = OnboardingCopy.rarelyNeeded(hotkey: "右 Option")
+        XCTAssertTrue(zh.contains("轻点") && zh.contains("按住"), zh)
+        XCTAssertTrue(zh.contains("右 Option"), zh)
+
+        L10n.shared.language = .en
+        XCTAssertTrue(OnboardingCopy.menuBarHome.lowercased().contains("menu bar"),
+                      OnboardingCopy.menuBarHome)
+        let en = OnboardingCopy.rarelyNeeded(hotkey: "Right Option")
+        XCTAssertTrue(en.contains("tap Right Option"), en)
+        XCTAssertTrue(en.contains("hold Right Option"), en)
+        XCTAssertFalse(containsCJKOrFullWidth(en), en)
     }
 
     /// 这一屏的每一句在英文界面下都不许夹中文

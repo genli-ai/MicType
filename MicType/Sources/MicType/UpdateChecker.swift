@@ -507,8 +507,10 @@ extension UpdateChecker {
     /// 提示晚一点再闪：启动这一刻引导 / 权限 / 模型预加载都在抢主线程，
     /// 一闪而过的悬浮窗会被它们盖掉，等于没提示。
     static let installedNoticeDelay: TimeInterval = 3
-    /// 停留时长：比一般的「好了」长一点——这一句是要被读到的，不是背景音
-    static let installedNoticeDuration: TimeInterval = 2.5
+    /// 停留时长：比一般的「好了」长一点——这一句是要被读到的，不是背景音。
+    /// 4.3.4 从 2.5 改成 3 秒：每次启动那句「它在菜单栏里 · 轻点右 Option 开始听写」
+    /// 复用同一个数（见 LaunchNotice），而那一句比「已更新到 x.y.z」长，还带一个键名
+    static let installedNoticeDuration: TimeInterval = 3
 
     private static func describeInstallFailure(_ code: String) -> String {
         let reason: String

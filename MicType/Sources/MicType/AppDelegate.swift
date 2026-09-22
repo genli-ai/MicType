@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
@@ -6,6 +7,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let dictation = DictationController()
     private let hotkeys = HotkeyManager()
     private let menu = NSMenu()
+    /// 主菜单跟着界面语言重建。4.3.4 之前主菜单根本不存在、也从来不会被显示，
+    /// 现在不一样了：自家窗口开着时 App 是 .regular（见 WindowPresence），
+    /// 那一刻屏幕顶上摆着的就是这份菜单——它必须和窗口里的语言一致
+    private var menuLanguageObserver: AnyCancellable?
 
     /// 给其它窗口借用的悬浮提示层。历史窗口把文字留在剪贴板时要提示「按 ⌘V」，
     /// 但那一刻它已经让出前台、窗口也收起来了：窗口内的状态条既看不见，
@@ -25,6 +30,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         Log.startup()
+
+        // 主菜单：菜单栏应用同样需要它，否则自家窗口里 ⌘C / ⌘V / ⌘A 全都无人接收
+        //（用户 2026-09-22 反馈"Key 框不能粘贴"的根因，见 AppMenu）
+        NSApp.mainMenu = AppMenu.build()
+        // 切语言时重建。**下一轮 runloop 再建**：@Published 是在 willSet 时发出的，
+        // 此刻 L10n.shared.language 还是旧值，当场重建会得到一份旧语言的菜单
+        menuLanguageObserver = L10n.shared.$language.dropFirst().sink { _ in
+            DispatchQueue.main.async { NSApp.mainMenu = AppMenu.build() }
+        }
 
         setupStatusItem()
 
@@ -96,8 +110,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 后台预加载模型，第一次听写不用等
             QwenEngine.shared.preload()
         }
-        routeFirstLaunch()
-        reportPreviousUpdateResult()
+        let onboardingShowing = routeFirstLaunch()
+        announceLaunch(onboardingShowing: onboardingShowing)
         // 启动计数 +1。它只有一个用途：换过模型之后「至少重启过一次」才允许删旧模型
         // （顺带在这里问一次够不够条件删——上一轮换代的成功听写可能发生在上一次启动里）。
         ModelUpgrader.shared.noteAppLaunch()
@@ -106,14 +120,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ModelUpgrader.shared.refreshDecisionAtLaunch()
     }
 
+    /// 每次启动都要交代的两件事：**上次升级成没成**，以及**它现在在哪、下一步按什么**。
+    ///
     /// 自更新是"App 把自己换掉"：失败时本进程早就退了，界面上的失败回调永远不会触发，
     /// 而脚本有两条 abort 路径会把旧版重新打开——看起来和升级成功一模一样。
-    /// 所以脚本留了张条子，这里启动时念一次（成功静默），顺手清掉临时目录里的安装残留。
-    private func reportPreviousUpdateResult() {
+    /// 所以脚本留了张条子，这里启动时念一次，顺手清掉临时目录里的安装残留。
+    ///
+    /// 成功那一档不再单独闪："已更新到 x.y.z" 和 4.3.4 新加的那句"它在菜单栏里"合成一条
+    /// （LaunchNotice）——同一时刻闪两条只会互相盖掉。
+    private func announceLaunch(onboardingShowing: Bool) {
         UpdateChecker.cleanupStaleStages()
+        var updatedTo: String?
         switch UpdateChecker.consumePreviousInstallResult() {
         case .none:
-            return
+            break
         case .failed(let message):
             // 排在引导 / 权限那些窗口之后弹，别抢首启动的流程
             DispatchQueue.main.async {
@@ -126,24 +146,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 alert.runModal()
             }
         case .installed:
-            // 成功那一档 4.1.1 之前是完全静默的：App 自己换掉版本、重开，屏幕上一个字都没有，
-            // 用户只能自己去「关于」页对版本号（2026-09-20 的反馈原话）。
-            // 用悬浮窗而不是弹框：升级成功不值得打断任何事，闪一下让人知道就够。
-            let notice = UpdateChecker.installedNoticeCopy()
-            DispatchQueue.main.asyncAfter(deadline: .now() + UpdateChecker.installedNoticeDelay) {
-                // 这几秒里人可能已经开口说话了——那时候这句提示会把「正在听…」顶掉
-                guard !AppDelegate.isDictationBusy else {
-                    Log.info("Update notice skipped: dictation in progress")
-                    return
-                }
-                Log.info("Update notice shown \(UpdateChecker.currentVersion)")
-                // flashInfo 而不是 flashNotice：.notice 那一档画的是一枚 ✗（「已取消」用它），
-                // 摆在"已更新到 4.1.1"旁边正好把话说反，用户反而要去「关于」页确认一次——
-                // 而这句提示的全部用意就是免掉那一趟
-                AppDelegate.sharedOverlay?.flashInfo(notice,
-                                                     duration: UpdateChecker.installedNoticeDuration)
-            }
+            // 版本号取本 bundle（条子是上一个进程写的，回滚过的话两者会对不上）
+            updatedTo = UpdateChecker.currentVersion
         }
+        // flashInfo 而不是 flashNotice：.notice 那一档画的是一枚 ✗（「已取消」用它），
+        // 摆在"已更新到 4.1.1"旁边正好把话说反
+        LaunchNotice.flash(LaunchNotice.decide(updatedTo: updatedTo,
+                                               onboardingShowing: onboardingShowing),
+                           after: UpdateChecker.installedNoticeDelay)
+    }
+
+    /// 双击 Dock 图标 / Finder 里再打开一次已经在跑的 MicType。
+    ///
+    /// 4.3.4 之前这里什么都没实现：一个纯菜单栏应用被"再打开一次"时屏幕上毫无反应，
+    /// 于是用户会以为它没装上、再下一次（2026-09-22 的反馈就是这么来的）。
+    /// 现在：引导没走完的接着走引导，走完了的打开设置概览——那三张卡片本身
+    /// 就是"我现在是什么状态"的答案。
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows flag: Bool) -> Bool {
+        // 自家已经有窗口开着（Dock 计数说了算，比系统给的 flag 准：悬浮窗也是一扇窗，
+        // 正在听写时它会让 flag 变成真）：把它带到前台就够
+        guard WindowPresence.shared.open.isEmpty else {
+            NSApp.activate(ignoringOtherApps: true)
+            // 收进程序坞的窗口要自己弹回来：不然"点了 Dock 图标什么都没发生"照样成立，
+            // 而那正是这次改动要消灭的那种死路
+            NSApp.windows.first { $0.isMiniaturized }?.deminiaturize(nil)
+            Log.info("Reopen: own window already showing")
+            return true
+        }
+        // 和启动那条路**同一把尺子**（FirstRunEssentials）：权限齐了、引擎就绪了的人
+        // 不该被再拽回引导，哪怕他当年没点过那颗「完成」
+        let essentials = FirstRunEssentials.current()
+        if !Settings.shared.onboardingCompleted, !essentials.canFinish {
+            Log.info("Reopen: resuming onboarding at page=\(essentials.resumePage.rawValue)")
+            OnboardingWindowController.shared.show(startAt: essentials.resumePage)
+        } else {
+            Log.info("Reopen: opening settings overview")
+            openSettings()
+        }
+        return true
     }
 
     /// 首启动去哪儿：新用户走引导；已经配好的老用户一个字都不打扰。
@@ -154,7 +195,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 没走完的引导会**接着走**（用户 2026-09-20 拍板）：落在第一件没办完的事那一屏，
     /// 而不是每次都从第一屏重来一遍。点过「先跳过」的人 onboardingCompleted 已经是真，
     /// 从此不再被拦——缺的那几项改由设置概览上的徽章提醒。
-    private func routeFirstLaunch() {
+    /// - Returns: 这一次把引导窗口弹出来了没有（启动那句提示据此决定闪不闪，见 LaunchNotice）
+    @discardableResult
+    private func routeFirstLaunch() -> Bool {
         // 「他早就在用了」的判据和引导那颗「完成」按钮**同一把尺子**（FirstRunEssentials）。
         // 4.1.0 之前这里漏掉了麦克风：辅助功能勾了、麦克风还没给的人（在权限页给了一半就
         // 关掉窗口、模型在后台继续下）被判成"已经配好"，引导从此再也不出现，
@@ -171,7 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 Log.info("Onboarding resumes at page=\(essentials.resumePage.rawValue) "
                          + essentials.logSummary)
                 OnboardingWindowController.shared.show(startAt: essentials.resumePage)
-                return
+                return true
             }
         } else if RecognitionEngineReadiness.current() == .localModelMissing,
                   !Settings.shared.onboardingSkippedEssentials {
@@ -179,12 +222,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 只对本地档成立——云端档缺 Key 不抢启动，按下热键时悬浮窗上那个「去设置」胶囊接住他。
             // 点过「先跳过」的人例外：他已经知道模型没下，每次启动再弹一遍就成了催促
             OnboardingWindowController.shared.show(startAt: .permissions)
-            return
+            return true
         }
 
         if !Permissions.isAccessibilityTrusted {
             Permissions.promptAccessibility()
         }
+        return false
     }
 
     // MARK: - 菜单栏
@@ -196,17 +240,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
     }
 
+    /// 三态的图形全在 MenuBarIcon 里（4.3.4 起空闲 / 录音两态画的是 MicType 自己的标志，
+    /// 不再是系统通用的 mic 符号——那枚谁都认不出是哪个应用）。
+    /// 录音态那张自己带红色（非模板图），所以不再设 contentTintColor：
+    /// 对非模板图它不起作用，留着只会让人以为颜色是从这里来的。
     private func updateIcon(for phase: DictationController.Phase) {
         guard let button = statusItem.button else { return }
         switch phase {
         case .idle:
-            button.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "MicType")
+            button.image = MenuBarIcon.image(.idle)
             button.contentTintColor = nil
         case .recording:
-            button.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: tr("录音中", "Recording"))
-            button.contentTintColor = .systemRed
+            button.image = MenuBarIcon.image(.recording)
+            button.contentTintColor = nil
         case .processing:
-            button.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: tr("处理中", "Processing"))
+            button.image = MenuBarIcon.image(.processing)
             button.contentTintColor = .systemOrange
         }
     }
@@ -419,8 +467,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         QwenEngine.shared.unloadModel()
     }
 
-    @objc private func openSettings() {
+    /// 主菜单里的「设置…」也走这里（AppMenu 用 #selector 指过来，所以不能是 private）
+    @objc func openSettings() {
         SettingsWindowController.shared.show()
+    }
+
+    /// 主菜单里的「关于 MicType」：设置窗口的「关于」页（版本 / 更新 / 隐私都在那儿）
+    @objc func openAbout() {
+        SettingsWindowController.shared.show(tab: .about)
     }
 
     /// 带去设置 → 本地识别：升级横幅在那里，按钮上写着这次要下多少

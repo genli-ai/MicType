@@ -697,6 +697,10 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View, CloudExtras: Vi
             ProviderPickerField(selection: provider, offered: offered,
                                 inUse: inUse, showsNotSetUpHint: showsNotSetUpHint)
             providerNotices()
+            // 只有引导这一屏摆这句：首配最常卡住的一步就是"Key 怎么弄进这个框"
+            //（4.3.4 之前自家窗口里 ⌘V 根本不工作，见 AppMenu）。
+            // 设置页不加——去那儿改 Key 的人早就贴过一次了
+            Caption(OnboardingCopy.pasteKeyHere)
             keyField
             if showsHostField { hostField }
             if showsModel { modelField }

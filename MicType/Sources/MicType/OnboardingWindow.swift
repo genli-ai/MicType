@@ -2,16 +2,26 @@ import SwiftUI
 import AppKit
 import AVFoundation
 import Combine
+// 最后一屏那颗「登录时自动启动」（与设置页「输入」那一段同一套写法）
+import ServiceManagement
 
 // MARK: - 首次启动引导
 
-/// **四屏**：两种手势 → 权限（模型在这里后台开始下） → 怎么用（本地 / 本地 + AI） → 试一下。
+/// **五屏**：这是什么 + 按哪个键 → 权限（模型在这里后台开始下） → 怎么用（本地 / 本地 + AI）
+/// → 试一下 → 它在哪。
 ///
 /// 为什么值得单独做一个窗口而不是塞进设置页：第一次打开的人不知道"轻点/按住"是两回事，
 /// 也不知道要先下一个几百 MB 的模型；设置页是给已经会用的人改参数的，不是教人上手的。
 ///
 /// 为什么从六屏砍到四屏（用户 2026-09-19 实测后拍板）：下模型和配 AI 各占一整屏，
 /// 可这两件事都不需要用户盯着——模型可以后台下，AI 只是"要不要 + 哪一家 + 一把 Key"。
+///
+/// **4.3.4 加回第五屏「它在哪」**（用户 2026-09-22 拍板，推翻 09-19「引导最多四屏」那条）：
+/// 新用户的原话是"走完引导之后不知道它去哪了、也不知道接下来干什么"——一个纯菜单栏应用
+/// 关掉最后一扇窗之后屏幕上什么都不剩，而前四屏没有任何一屏回答过"它在哪"。
+/// 这一屏把菜单栏那枚图标画出来指给他看，并且把「登录时自动启动」摆在当面（默认开）——
+/// 否则第二天开机 App 根本没在跑，"它在哪"会原样再来一遍。
+///
 /// 四条硬要求（都是过去踩过的坑）：
 ///   • 权限授予后自己变绿、自己往下走，绝不要求重启或"请再按一次"；
 ///   • 模型下载不阻塞界面，可取消；进度条一直挂在底部，走到哪一屏都看得见；
@@ -28,6 +38,8 @@ enum OnboardingPage: Int, CaseIterable {
     case permissions
     case howYouUse
     case tryIt
+    /// 「它在哪」：菜单栏图标 + 开机自启 + 那颗「完成」（4.3.4 起）
+    case done
 }
 
 /// 页码 + 权限状态：窗口控制器与各页共享的唯一状态源
@@ -48,6 +60,10 @@ final class OnboardingModel: ObservableObject {
     /// 最近一次"字落进来了"的时刻，页面据此闪一下「已收到 ✓」。
     /// 没有这道确认，用户分不清"没识别到"和"字落到别处去了"——4.0.1 那次正是后者。
     @Published var tryItReceivedAt: Date?
+    /// 最后一屏那颗「登录时自动启动」这一轮已经替他打开过了。
+    /// 存在模型里而不是页面的 @State 里：那一页翻出去再翻回来会重建，
+    /// 而"默认开"只该发生一次——用户在这一屏关掉之后翻回去再进来，不许又被打开
+    @Published var launchAtLoginArmed = false
 
     /// 追加一段识别结果（只在主线程调）。追加而不是覆盖：这一页本来就该让人多试几次。
     func appendTryItText(_ text: String) {
@@ -243,10 +259,9 @@ enum OnboardingCopy {
            "Hold \(hotkey) to speak a command, release to run it.")
     }
 
-    static var menuBarTip: String {
-        tr("菜单栏的麦克风图标里有历史记录、润色档位和设置。",
-           "The menu-bar mic icon holds your history, polish mode and settings.")
-    }
+    // menuBarTip（「菜单栏的麦克风图标里有历史记录、润色档位和设置」）4.3.4 删掉了：
+    // 最后一屏用同一句话配着那枚图标的真图说了一遍（menuBarHolds），
+    // 而它原来挂在 ④ ——连着两屏说同一件事，还各说各的措辞。
 
     /// 4.1.6 起词汇表住在「输入 → 写作偏好」（和自定义规则一段），指路也跟着改——
     /// 指着一个已经没有那个框的页面，用户会以为功能没了
@@ -258,6 +273,46 @@ enum OnboardingCopy {
     static var reopenGuide: String {
         tr("随时可以在 设置 底部的「重看引导」打开这份引导。",
            "You can reopen this guide any time from \"Review the guide\" at the bottom of Settings.")
+    }
+
+    /// 第一屏键盘示意图下面那行：**说的是哪一颗键**，不是它叫什么。
+    /// 很多键帽上印的是 alt 而不是 option（非 Apple 键盘、以及一部分地区的 Apple 键盘），
+    /// 只写"右 Option"的人对不上自己手底下那颗键（2026-09-22 的反馈原话：「到底按哪个键」）
+    static var keyboardHint: String {
+        tr("空格键右侧第二颗；有的键帽印着 alt",
+           "Second key to the right of the space bar; some keycaps say alt")
+    }
+
+    /// 第三屏 Key 输入框上面那一行。只在引导里出现——设置页那一处的用户早就贴过一次了。
+    /// 4.3.4 之前 ⌘V 在自家窗口里是坏的（没有主菜单，见 AppMenu），用户只能右键粘贴，
+    /// 于是"粘不进去"成了首配最常卡住的一步
+    static var pasteKeyHere: String {
+        tr("从服务商控制台复制 Key，⌘V 粘贴到这里",
+           "Copy the key from your provider's console and paste it here with ⌘V")
+    }
+
+    // MARK: 第五屏「它在哪」
+
+    static var menuBarHome: String {
+        tr("它住在菜单栏", "It lives in the menu bar")
+    }
+
+    static var menuBarHolds: String {
+        tr("点这个图标：历史记录 · 润色档位 · 设置。",
+           "Click this icon for history, polish mode and settings.")
+    }
+
+    /// 这一屏真正要讲的那句：平时**不用**去找那枚图标
+    static func rarelyNeeded(hotkey: String) -> String {
+        tr("平时不用找它：在任何输入框里轻点 \(hotkey) 就能听写，按住 \(hotkey) 说指令。",
+           "You will rarely need it: tap \(hotkey) in any text field to dictate, hold \(hotkey) to give a command.")
+    }
+
+    /// 开机自启这一行的说明。默认开（用户 2026-09-22 拍板）：不开的话第二天开机
+    /// MicType 根本没在跑，而他只会觉得"昨天装的那个东西没了"
+    static var launchAtLoginWhy: String {
+        tr("开着机就在，不必每次自己打开。",
+           "MicType is there when you log in, so you never have to launch it.")
     }
 
     /// 权限页开头那两句。第二句**只在模型真的在下**的时候才说：
@@ -284,14 +339,15 @@ enum OnboardingCopy {
     /// "那一句"，而加到装不下只会变成默默多出一段滚动，没有任何测试会红。
     static var paragraphs: [String] {
         [usageExplanation, aiSkipReassurance,
-         dictateCardDetail, commandCardDetail, twoGesturesNeverGuessed,
+         dictateCardDetail, commandCardDetail, twoGesturesNeverGuessed, keyboardHint,
          permissionsIntro(modelDownloading: false), permissionsIntro(modelDownloading: true),
          microphonePurpose, accessibilityPurpose, micCheckHint,
          modelReadyHere, modelNotDownloadedHere, permissionsStuckHint,
-         providerNotAdoptedYet(current: "OpenAI"), modelNameNeeded,
+         providerNotAdoptedYet(current: "OpenAI"), modelNameNeeded, pasteKeyHere,
          tryItInstruction(hotkey: "⌥"), modelWarmingUp, modelMissingForTryIt,
          modelStillDownloading, escCancels,
-         holdToCommandTip(hotkey: "⌥"), menuBarTip, vocabularyTip, reopenGuide,
+         holdToCommandTip(hotkey: "⌥"), vocabularyTip, reopenGuide,
+         menuBarHome, menuBarHolds, rarelyNeeded(hotkey: "⌥"), launchAtLoginWhy,
          doneAIStatus(status: .ready, hotkey: "⌥"),
          doneAIStatus(status: .commandsOnly, hotkey: "⌥"),
          doneAIStatus(status: .off, hotkey: "⌥")]
@@ -369,6 +425,8 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
             window.makeKeyAndOrderFront(nil)
             return
         }
+        // 上一轮在最后一屏点开过的登录项开关，这一轮要重新来一次（见 DonePage.onAppear）
+        model.launchAtLoginArmed = false
         var page = requested
         if let first = FirstRunEssentials.current().firstIncompletePage,
            first.rawValue < requested.rawValue {
@@ -425,6 +483,9 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
         // 挂着期间 DictationController 交付前会先问一句 isOnTryItPage，
         // 所以停在别的页、或窗口没显示时行为和从前完全一样。
         registerTranscriptSink()
+        // 先进 Dock 再激活（见 WindowPresence）：第一次打开 MicType 的人最需要的就是
+        // "被别的窗口盖住之后还找得回来"
+        WindowPresence.shared.enter(.onboarding)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
         isOpen = true
@@ -506,8 +567,12 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
         TranscriptSink.unregister()
         // 里面那几页不会跟着消失，得由这里告诉它们停手
         isOpen = false
+        WindowPresence.shared.leave(.onboarding)
         Log.info("Onboarding closed at page=\(model.page.rawValue) "
                  + "completed=\(Settings.shared.onboardingCompleted)")
+        // 引导一关，屏幕上就一扇窗都不剩了——这正是"它去哪了"的那一刻。
+        // 启动时那句提示因为引导开着而没闪（LaunchNotice.decide），补在这里
+        LaunchNotice.flash(.running, after: LaunchNotice.afterOnboardingDelay)
     }
 }
 
@@ -527,6 +592,7 @@ struct OnboardingView: View {
                 case .permissions: PermissionsPage(model: model)
                 case .howYouUse: HowYouUsePage(model: model)
                 case .tryIt: TryItPage(model: model)
+                case .done: DonePage(model: model)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -600,9 +666,9 @@ struct OnboardingView: View {
                     step(1)
                 }
             }
-            Button(model.page == .tryIt ? tr("完成", "Done")
-                                        : tr("继续", "Continue")) {
-                if model.page == .tryIt {
+            Button(model.page == .done ? tr("完成", "Done")
+                                       : tr("继续", "Continue")) {
+                if model.page == .done {
                     OnboardingWindowController.shared.finish()
                 } else {
                     step(1)
@@ -646,6 +712,9 @@ struct OnboardingView: View {
         case .tryIt: return !essentials.canFinish
         // AI 那一屏永远不拦：轻点听写压根不需要 Key，把它做成关卡等于骗人
         case .welcome, .howYouUse: return false
+        // 最后一屏的「完成」无条件放行：**关卡在上一屏**（能走到这儿说明三件事已经齐了，
+        // 或者他点过「先跳过」）。在这里再拦一次只会拦住一个已经被放行过的人
+        case .done: return false
         }
     }
 
@@ -655,9 +724,9 @@ struct OnboardingView: View {
         guard !model.skippedEssentials else { return false }
         switch model.page {
         case .permissions: return !essentials.permissionsGranted
-        // 与上面那颗按钮同一条判据：凡是「完成」点不动的时候，出口都必须在
+        // 与上面那颗按钮同一条判据：凡是「继续」点不动的时候，出口都必须在
         case .tryIt: return !essentials.canFinish && !downloader.isDownloading
-        case .welcome, .howYouUse: return false
+        case .welcome, .howYouUse, .done: return false
         }
     }
 
@@ -693,6 +762,10 @@ private struct WelcomePage: View {
                     .font(.system(size: 16, weight: .medium))
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
+
+                // 键盘示意图（4.3.4 加）：光写"右 Option (⌥)"对不上很多人手底下那颗印着
+                // alt 的键——这一屏要回答的第一个问题就是"到底按哪个键"（用户 2026-09-22 反馈）
+                KeyboardHintView()
 
                 // 4.1.0 之前这里摆着一个三选一的热键选择器。拿掉它（用户 2026-09-20 拍板）：
                 // 这是他打开 MicType 的第一分钟，还一次都没听写过，凭什么在这时候挑键？
@@ -1377,24 +1450,16 @@ private struct TryItPage: View {
 
                 Divider()
 
+                // 这一页只留两条 tip。4.3.4 之前这里还挂着 AI 收尾句、菜单栏那条、
+                // 以及「重看引导」那一行——它们都是"最后一屏"该说的话，而最后一屏
+                // 现在是 ⑤（那里说得更全，还配着一张真图）。连着两屏说同一句，
+                // 用户只会以为自己漏看了什么新东西。
                 VStack(alignment: .leading, spacing: 8) {
                     TipRow(symbol: "hand.tap.fill",
                            text: OnboardingCopy.holdToCommandTip(hotkey: key))
-                    // 有 Key / 没 Key 两种收尾：这一行是用户离开引导时对"我现在有什么"的最后印象，
-                    // 说反了他要么白等一个不会发生的润色，要么以为自己还没配好
-                    TipRow(symbol: model.aiReady ? "wand.and.stars" : "cpu",
-                           text: OnboardingCopy.doneAIStatus(status: model.aiStatus, hotkey: key))
-                    TipRow(symbol: "menubar.arrow.up.rectangle",
-                           text: OnboardingCopy.menuBarTip)
                     TipRow(symbol: "text.book.closed",
                            text: OnboardingCopy.vocabularyTip)
                 }
-
-                // 页名跟着设置窗口走：4.0.2 的 Plan C 把「通用」改成了「输入」，
-                // 指路的句子指向一个不存在的页名比不指路更糟
-                Text(OnboardingCopy.reopenGuide)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1428,6 +1493,134 @@ private struct TryItPage: View {
                     flashReceived = false
                 }
             }
+        }
+    }
+}
+
+// MARK: - 5. 它在哪（4.3.4 起）
+
+/// 引导的最后一屏，回答的是走完引导之后那个必然的问题：**"它去哪了？"**
+///
+/// 4.3.4 之前这份引导关掉之后，屏幕上一扇窗都不剩、Dock 里没有图标、菜单栏那枚图标
+/// 和别的录音工具长得一样——用户（2026-09-22 的原话）"不知道它在哪，也不知道接下来干什么"。
+///
+/// 所以这一屏只做三件事：把菜单栏那枚图标**画出来**给他看、说清平时压根不用去找它、
+/// 以及当面把「登录时自动启动」打开（默认开，就在这一屏可以关掉）——
+/// 不开的话第二天开机 MicType 根本没在跑，同一个问题会原样再来一遍。
+private struct DonePage: View {
+    @ObservedObject var model: OnboardingModel
+    @ObservedObject private var l10n = L10n.shared
+    @State private var launchAtLogin = (SMAppService.mainApp.status == .enabled)
+    /// 上一次开关登录项被系统拒了（受管的 Mac 上可能被 MDM 挡住）。
+    /// 边界行的写法与设置页那一处完全一致：一行结论 + 一颗去处
+    @State private var launchAtLoginRefused = false
+
+    /// 这一页每一句话里念出来的那颗键（只有一颗，见 Settings.hotkey）
+    private var key: String { HotkeyChoice.rightOption.plainName }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                // 菜单栏里的那枚图标，原样画一张大的（同一个画法，见 MenuBarIcon）
+                Image(nsImage: MenuBarIcon.large())
+                    .renderingMode(.template)
+                    .foregroundColor(.accentColor)
+                Text(OnboardingCopy.menuBarHome)
+                    .font(.system(size: 16, weight: .semibold))
+                Text(OnboardingCopy.menuBarHolds)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(OnboardingCopy.rarelyNeeded(hotkey: key))
+                    .font(.system(size: 12))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle(tr("登录时自动启动", "Launch at login"), isOn: $launchAtLogin)
+                        .onChange(of: launchAtLogin) { _, newValue in
+                            applyLaunchAtLogin(newValue)
+                        }
+                    Text(OnboardingCopy.launchAtLoginWhy)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    if launchAtLoginRefused {
+                        BoundaryRow(text: SettingsCopy.launchAtLoginFailed) {
+                            Button(tr("打开登录项设置", "Open Login Items")) {
+                                SMAppService.openSystemSettingsLoginItems()
+                            }
+                        }
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.secondary.opacity(0.08))
+                .cornerRadius(8)
+
+                // 三种收尾（按 AI 到底配到哪一步）：他离开引导时对"我现在有什么"的最后印象
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: model.aiReady ? "wand.and.stars" : "cpu")
+                        .font(.system(size: 12))
+                        .foregroundColor(.accentColor)
+                        .frame(width: 18)
+                    Text(OnboardingCopy.doneAIStatus(status: model.aiStatus, hotkey: key))
+                        .font(.system(size: 12))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+
+                // 「以后还想再看一遍」：4.3.4 起这句住在最后一屏（原来在 ④）。
+                // 它说的是"这扇窗以后从哪儿再打开"，那正是他此刻要关掉它的这一刻该知道的事
+                Text(OnboardingCopy.reopenGuide)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .onAppear {
+            // 上一屏可能刚把 Key 配好，也可能他中途去设置页改了档位
+            model.refreshAIReady()
+            armLaunchAtLogin()
+        }
+    }
+
+    /// 「默认开」是怎么实现的：第一次走到这一屏时，**替他真的注册一次**登录项，
+    /// 并把开关画成开着。不只是把开关画成开着——那样他看到的是"已开"、系统里却没有，
+    /// 是这一屏最不该出的错。这一轮只做一次（model.launchAtLoginArmed）：
+    /// 在这一屏关掉再翻回来的人，不许被又打开一次。
+    private func armLaunchAtLogin() {
+        let enabled = SMAppService.mainApp.status == .enabled
+        launchAtLogin = enabled
+        // 只有真的开着引导窗口时才去动系统登录项。这一页还会被**离屏渲染**
+        //（引导页快照测试），那一刻绝不能顺手改掉这台机器上的登录项——
+        // 读一下状态可以，写下去不行
+        guard OnboardingWindowController.shared.isOpen else { return }
+        guard !model.launchAtLoginArmed else { return }
+        model.launchAtLoginArmed = true
+        guard !enabled else { return }
+        applyLaunchAtLogin(true)
+        launchAtLogin = (SMAppService.mainApp.status == .enabled)
+    }
+
+    /// 与设置页「输入」那一段同一套写法：失败只记日志 + 一行边界，
+    /// 系统给的原因不上屏（它可能是另一种语言，英文界面不能冒出中文）
+    private func applyLaunchAtLogin(_ on: Bool) {
+        do {
+            if on {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            launchAtLoginRefused = false
+            Log.info("Onboarding launch at login on=\(on)")
+        } catch {
+            Log.warn("Onboarding launch at login failed on=\(on) error=\(error)")
+            launchAtLoginRefused = true
+            launchAtLogin = (SMAppService.mainApp.status == .enabled)
         }
     }
 }

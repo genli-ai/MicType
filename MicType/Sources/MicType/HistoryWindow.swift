@@ -43,6 +43,8 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
         window?.title = tr("MicType 历史记录", "MicType History")
         installEscMonitor()
         installActivationObserver()
+        // 先进 Dock 再激活（见 WindowPresence）：窗口开着期间 MicType 在 Dock 和 ⌘Tab 里找得到
+        WindowPresence.shared.enter(.history)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }
@@ -101,6 +103,7 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         removeEscMonitor()
         removeActivationObserver()
+        WindowPresence.shared.leave(.history)
     }
 
     // MARK: 重新插入
@@ -125,6 +128,9 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
             return
         }
         window?.orderOut(nil)
+        // 这一下把窗口收起来但**不关**（windowWillClose 不会触发），所以 Dock 那笔账
+        // 只能在这里自己平掉——否则屏幕上一扇窗都没有，Dock 里却还挂着一个点不出东西的图标
+        WindowPresence.shared.leave(.history)
         NSApp.deactivate()
         Log.info("History insert target=\(target) chars=\(text.count)")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
