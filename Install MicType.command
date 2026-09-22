@@ -104,16 +104,8 @@ if [ -f "Resources/model-catalog.json" ]; then
     cp Resources/model-catalog.json "$APP/Contents/Resources/model-catalog.json"
 fi
 
-if [ -f "Resources/AppIcon.png" ]; then
-    ICONSET=$(mktemp -d)/AppIcon.iconset
-    mkdir -p "$ICONSET"
-    for SZ in 16 32 128 256 512; do
-        sips -z $SZ $SZ Resources/AppIcon.png --out "$ICONSET/icon_${SZ}x${SZ}.png" >/dev/null
-        DBL=$((SZ * 2))
-        sips -z $DBL $DBL Resources/AppIcon.png --out "$ICONSET/icon_${SZ}x${SZ}@2x.png" >/dev/null
-    done
-    iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns" 2>/dev/null || true
-fi
+# App icon: Icon Composer source -> Assets.car + icns (macOS 26 otherwise shows a grey tile)
+bash ../scripts/build-app-icon.sh "$APP" || true
 
 find "$APP" \( -name "._*" -o -name ".DS_Store" \) -delete 2>/dev/null || true
 xattr -rc "$APP" 2>/dev/null || true
