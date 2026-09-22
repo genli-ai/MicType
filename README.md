@@ -95,7 +95,7 @@ If the hotkey still does not work after Accessibility appears enabled, remove Mi
 - **The grey draft comes from the provider's own interim results.** They arrive about every two seconds, so the draft appears even if you never downloaded an on-device model. The on-device model stays installed purely as the fallback, and MicType does not decode the same audio twice.
 - **Falling back is silent, and it is remembered per provider and host.** If a link has no realtime support — the handshake is refused, the endpoint hands back a different model than the one asked for, or the key is rejected — MicType remembers that for the rest of the run and uses the older whole-take upload (`qwen3-asr-flash` or `gpt-transcribe`) instead, with no interruption to what you are saying. A one-off failure mid-recording falls back the same way; a failure after the final *finish* re-runs the whole recording on the on-device model, so nothing is lost either way.
 - **Verified before you rely on it, in one action.** Pasting the key sends one second of synthetic tone to the recognition endpoint, which also proves you have enabled the model once in Model Studio's Model Gallery. Turning the cloud-recognition switch on runs that same check by itself, plus a realtime handshake, and says which of the two you got — *it streams as you speak*, or *this key has no realtime support, so audio is sent after you finish*. If the check fails, the switch goes back off — a switch that is on always means it works.
-- **What travels with the audio differs by provider, and both choices are deliberate.** On OpenAI, your vocabulary goes along as `keywords` and your recognition-language setting goes along as a language hint — both were measured safe there, and a wrong hint still transcribes rather than translates. On Alibaba Cloud's realtime endpoint a language hint silently **translates** the audio instead of transcribing it, so MicType sends none and always lets it auto-detect; the vocabulary still travels on that provider's whole-take upload path. Switch to a different AI provider and recognition returns to on-device.
+- **What travels with the audio differs by provider, and both choices are deliberate.** On OpenAI, your vocabulary goes along as `keywords` and your recognition-language setting goes along as a language hint — both were measured safe there, and a wrong hint still transcribes rather than translates. On Alibaba Cloud's realtime endpoint a language hint silently **translates** the audio instead of transcribing it, so MicType sends none and always lets it auto-detect. Its recognition also ignores your vocabulary entirely — measured against `vocabulary`, `hotwords`, `phrase_list`, `context`, `prompt` and `corpus.text`, none of them reach the transcript — so on that provider proper nouns are put right afterwards, by polish (which does carry your vocabulary) and by your `wrong=right` replacements. Pick OpenAI if you want the vocabulary honoured during recognition itself. Switch to a different AI provider and recognition returns to on-device.
 
 **Recognition language** is set under Settings → On-device recognition. Leave it on Auto, or pick a language — with a language chosen, every segment of a long dictation is locked to it, which prevents the model from drifting to another language mid-recording.
 
@@ -109,10 +109,10 @@ A single take can run up to **ten minutes**. Anything under 90 seconds is transc
 
 Menu bar 🎤 → Settings → **Cloud AI**. The page is one decision: **Local only** or **Local + AI**. Local only means polish off and recognition on-device — and nothing else is shown, because there is nothing else to decide.
 
-With AI, three decisions and no more:
+With AI, the page is two cards and nothing else — every row carries its own label, and only three ⓘ buttons survive (API Key, cloud recognition, web search). Three decisions:
 
 - **One provider**: OpenAI, DeepSeek or Alibaba Cloud (Model Studio). Other OpenAI-compatible endpoints and a **local model** on your own machine (Ollama / LM Studio — no key needed, nothing leaves your computer) are configured through an imported settings file rather than on-screen fields; whichever one you are actually using always stays visible in the picker, so you can always switch back. The live one is marked **In use ✓**; picking another only previews its key and model, and MicType switches over once that provider's key verifies.
-- **One key**, verified as you paste it (Checking… / Connected ✓ / Failed, with the reason and what to do). A key that does not verify is never written to the Keychain. There is no second key field anywhere in the app.
+- **One key**, verified as you paste it (Checking… / Connected ✓ / Failed, with the reason and what to do). A key that does not verify is never written to the Keychain. There is no second key field anywhere in the app. Under Alibaba Cloud one more row appears right below it — **API Host** — empty by default (MicType picks the endpoint itself) and pinned to exactly what you paste otherwise; changing it re-verifies the key against that host.
 - **One Model dropdown** — polish and commands always run the same model, so this is the only model decision there is (the split fields are gone, and an older split pair is pulled back together once at launch). Defaults: `gpt-5.6-luna`, `deepseek-flash`, `qwen3.8-flash` — each provider's balanced, fast tier, because polish runs on every single sentence and a model that thinks for ten seconds is a worse default than one that answers in two. The flagship tiers are one click away in the same list, labelled as such. Pick *Custom…* to type any model name.
 
 **Custom rules** is not on this page: it says how *your words* should be written, not which provider to call, so it lives with your vocabulary under Settings → **Input** → **Writing preferences**. One multi-line box, once in the whole app: long-standing preferences for the AI (*sign as Gen*, *keep English jargon untranslated*), carried by every polish and every voice command. With **Local only** it stays editable and says so in one line — *Takes effect once AI is on*.
@@ -315,7 +315,7 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 - **灰字草稿改由服务端的中间结果供给**，约每两秒来一簇，所以**没下过本机模型的人也第一次看得到草稿**。本机模型留着只为回落，同一段音频不会在本机再解码一遍。
 - **回落是静默的，而且按「服务商 + 主机」分别记。** 某条链路不支持实时（握手被拒、回显的模型不是我们点的那个、或者 Key 被拒），MicType 就在这次运行里记住它，改走原来的整段上传（`qwen3-asr-flash` 或 `gpt-transcribe`），你正在说的话不受任何打扰。录音中途的偶发断线同样退回整段上传；松手之后才失败的那种，则把整段录音交给本机模型重跑一遍——两条路都不丢字。
 - **先验过再用，而且只有一个动作**：粘贴 Key 会立刻发 1 秒合成音到识别端点，连「模型有没有在百炼『模型广场』开通过」一起验到；把「识别也用云端」开关拨开时同样会自己跑一次，外加一次实时握手，并当场告诉你拿到的是哪一种——「边说边传，松手就有结果」，还是「这把 Key 不支持实时，录完再传」。**测不通开关自动弹回关闭**，开着的开关永远意味着它真的能用。
-- **跟着音频一起走的东西两家不同，而且两边都是有意为之。** OpenAI 那条路上，你的词汇表作为 `keywords`、识别语言作为语言提示一起送过去——这两样在那边都实测安全，提示给错了它也只会照着打、不会翻译。阿里云的实时端点相反：给了语言提示它会**把音频翻译过去**而不是照着打，所以 MicType 一个字都不送，语言一律交给自动检测；词汇表在那一家仍然随整段上传那条路发过去。换成别家 AI 服务商时，识别自动回到本机。
+- **跟着音频一起走的东西两家不同，而且两边都是有意为之。** OpenAI 那条路上，你的词汇表作为 `keywords`、识别语言作为语言提示一起送过去——这两样在那边都实测安全，提示给错了它也只会照着打、不会翻译。阿里云的实时端点相反：给了语言提示它会**把音频翻译过去**而不是照着打，所以 MicType 一个字都不送，语言一律交给自动检测。它的识别**也完全不认词汇表**——`vocabulary` / `hotwords` / `phrase_list` / `context` / `prompt` / `corpus.text` 逐个实测，没有一条能进到识别结果里——所以这一档的专名由润色（润色 prompt 带着你的词汇表）和「错写=正写」硬替换事后纠回来。要识别时就认词汇表，选 OpenAI 那一档。换成别家 AI 服务商时，识别自动回到本机。
 
 **识别语言**在 设置 → 本地识别 里设置。保持「自动」即可；一旦指定语言，长录音的每一段都会锁住这个语言，杜绝录到一半漂到别的语言。
 
@@ -329,10 +329,10 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 
 菜单栏 🎤 → 设置 → **云端 AI**。这一页只有一个决定：**只用本地** 还是 **本地 + AI**。「只用本地」= 润色关掉、识别在本机——然后下面一个控件都不摆，因为确实没有别的要决定了。
 
-选了 AI，也只有三个决定：
+选了 AI，整页就是**两张卡片**，再无其他——每一行自己带栏名，整页只剩三颗 ⓘ（API Key、云端识别、联网搜索）。三个决定：
 
 - **一家服务商**：OpenAI、DeepSeek 或阿里云百炼。其他 OpenAI 兼容接口、以及跑在你自己机器上的**本机模型**（Ollama / LM Studio——不用 Key，什么都不出本机）改由「导入设置…」配置，界面上不再摆地址与型号输入框；不过**你正在用的那一档永远摆在选择器上**，随时能切回去。生效的那一档旁边写着**「正在使用 ✓」**；点别的一档只是预览它的 Key 与模型，**验证通过才真的换过去**。
-- **一把 Key**，在粘贴的当下就会被验证（正在验证… / 已连通 ✓ / 连不上 + 原因与下一步）；验证不过的 Key 不会被写进钥匙串。全 App 没有第二个 Key 输入框。
+- **一把 Key**，在粘贴的当下就会被验证（正在验证… / 已连通 ✓ / 连不上 + 原因与下一步）；验证不过的 Key 不会被写进钥匙串。全 App 没有第二个 Key 输入框。阿里云这一档紧挨着它多一行 **API Host**：默认留空（地址由 MicType 自己挑），填了就只用你填的那一台；一改它就拿同一把 Key 对着新地址重验一次。
 - **一个「模型」下拉**——润色和指令永远用同一个型号，所以模型这件事只有这一个决定（分开设的入口已经没有了，老配置里不一致的那一对会在启动时拉回一致）。默认分别是 `gpt-5.6-luna`、`deepseek-flash`、`qwen3.8-flash`——每家均衡偏快的那一档：润色是每句话都要跑一次的东西，一个想十秒才答的模型不是更好的默认值。想要旗舰就在同一个下拉里，那几项标着「旗舰」。选「自定义…」可以手填任意型号名。
 
 **「自定义规则」**不在这一页：它讲的是**你的话该怎么被写出来**，不是「调用哪家」，所以和专有词汇表一起住在 设置 → **输入** → **写作偏好**。一个多行框，整个 App 里只有这一处：写给 AI 的长期偏好（「署名用 Gen」「英文术语保留原文」），每次润色和每条语音指令都会带上它。选「只用本地」时它照样能填能存，框下面会写一句「开启 AI 后生效」。

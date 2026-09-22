@@ -19,9 +19,9 @@ import ServiceManagement
 enum InputSectionOrder: Int, CaseIterable {
     case hotkey
     case writingPreferences
-    case overlay
-    case recording
-    case behaviour
+    /// 4.3.2 起悬浮窗 / 录音 / 行为并成一张**没有段标题**的卡片：那三个段标题
+    /// 都只是几个开关的帽子（「录音 ⓘ」下面就是三个开关），而开关自己带着名字。
+    case controls
     case languageAndBackup
 }
 
@@ -87,9 +87,7 @@ struct InputEditor: View {
         switch section {
         case .hotkey: hotkeySection
         case .writingPreferences: writingPreferencesSection
-        case .overlay: overlaySection
-        case .recording: recordingSection
-        case .behaviour: behaviourSection
+        case .controls: controlsSection
         case .languageAndBackup: languageAndBackupSection
         }
     }
@@ -105,15 +103,16 @@ struct InputEditor: View {
             //
             // 「重新打开引导」也从这一段搬走了：它不是一条输入设置，而是"再看一遍那份说明"
             // ——归概览底下那排小字（关于 · 隐私 · 检查更新 · 重看引导）。
-            HStack {
-                Text(tr("快捷键：", "Hotkey:"))
-                Spacer()
+            //
+            // 4.3.2 删掉了段标题「快捷键 ⓘ」：它和下面那行栏名逐字相同（用户 2026-09-22
+            // 嫌的就是这个），ⓘ 原样搬到这一行的右端。
+            SettingsFieldRow(label: tr("快捷键", "Hotkey"), info: SettingsCopy.hotkeyInfo) {
                 Text(HotkeyChoice.rightOption.displayName)
                     .foregroundColor(.secondary)
+                Spacer()
             }
+            // 这一行留着：轻点 / 按住是这个产品的**全部操作**，不是一句解释
             Caption(SettingsCopy.hotkeyGestures)
-        } header: {
-            SectionHeader(title: tr("快捷键", "Hotkey"), info: SettingsCopy.hotkeyInfo)
         }
     }
 
@@ -178,62 +177,49 @@ struct InputEditor: View {
     }
 
 
-    // MARK: ③ 悬浮窗
+    // MARK: ③ 悬浮窗 / 录音 / 行为（一张没有段标题的卡片）
+    //
+    // 4.3.2 把原来的三段并成一张（用户 2026-09-22：这一页太冗余）。那三个段标题
+    // ——「悬浮窗」「录音」「行为」——没有一个说出了下面那几个开关没说的事：
+    // 「悬浮窗 ⓘ」下面的栏名是「悬浮窗位置：」，另外两个只是开关的帽子。
+    // 三颗段 ⓘ 原样保留，各自挂到它真正在讲的那一行右端。
 
-    private var overlaySection: some View {
+    private var controlsSection: some View {
+        // 英文拼写统一用美式
         Section {
-            Picker(tr("悬浮窗位置：", "Overlay position:"), selection: $overlayPosition) {
-                ForEach(OverlayPosition.allCases, id: \.rawValue) { position in
-                    Text(position.displayName).tag(position.rawValue)
+            SettingsFieldRow(label: tr("悬浮窗位置", "Overlay"),
+                             info: SettingsCopy.overlayInfo) {
+                Picker("", selection: $overlayPosition) {
+                    ForEach(OverlayPosition.allCases, id: \.rawValue) { position in
+                        Text(position.displayName).tag(position.rawValue)
+                    }
                 }
+                .labelsHidden()
             }
-        } header: {
-            SectionHeader(title: tr("悬浮窗", "Overlay"), info: SettingsCopy.overlayInfo)
-        }
-    }
-
-
-    // MARK: ④ 录音
-
-    private var recordingSection: some View {
-        Section {
-            Toggle(tr("静音自动停止录音", "Stop recording after silence"), isOn: autoStopEnabled)
+            SettingsToggleRow(label: tr("静音自动停止录音", "Stop recording after silence"),
+                              isOn: autoStopEnabled, info: SettingsCopy.recordingInfo)
             if autoStopSilence > 0 {
                 Stepper(value: $autoStopSilence, in: 1...5, step: 1) {
                     Text(tr("静音 \(Int(autoStopSilence)) 秒后自动结束",
                             "Stop after \(Int(autoStopSilence))s of silence"))
                 }
             }
-            // 开着的时候那句「默认关」就成了废话：步进器已经把行为说全了
-            if autoStopSilence == 0 {
-                Caption(SettingsCopy.autoStopOff)
-            }
             Toggle(tr("录音时显示实时识别草稿", "Show live transcript while recording"), isOn: $livePreview)
             // 草稿是本机模型转的（云端档不会为了看草稿把每一秒都上传一遍）。只用云端、
             // 从没下过本机模型的人打开这个开关什么也不会发生——与其让他录一遍再来报 bug，
-            // 不如当面说清这个开关这会儿没有用武之地。
+            // 不如当面说清这个开关这会儿没有用武之地。**只在缺模型时才出现**：
+            // 4.3.2 删掉了"草稿只出现在悬浮窗里"那一行常驻说明（草稿本来就只在那儿出现，
+            // 用一次就知道了），这一行现在是纯状态行。
             if !QwenEngine.shared.isModelAvailable {
                 Caption(SettingsCopy.draftNeedsLocalModel, warning: true)
-            } else {
-                Caption(SettingsCopy.draftOverlayOnly)
             }
             // 时长上限此前在界面上无处可查，用户第一次知道它存在就是被自动收尾那一刻。
             // 数字由识别链路自己给（读的是上限那个常量），界面这边一个数字都不写死。
             Caption(DictationController.recordingLimitShort)
-        } header: {
-            SectionHeader(title: tr("录音", "Recording"), info: SettingsCopy.recordingInfo)
-        }
-    }
-
-
-    // MARK: ⑤ 行为
-
-    private var behaviourSection: some View {
-        // 英文拼写统一用美式
-        Section {
             Toggle(tr("开始 / 完成时播放提示音", "Play sounds on start / finish"), isOn: $playSounds)
             Toggle(tr("输入后恢复原剪贴板内容", "Restore clipboard after inserting"), isOn: $restoreClipboard)
-            Toggle(tr("保存听写历史", "Keep transcript history"), isOn: $keepHistory)
+            SettingsToggleRow(label: tr("保存听写历史", "Keep transcript history"),
+                              isOn: $keepHistory, info: SettingsCopy.behaviourInfo)
             Toggle(tr("登录时自动启动", "Launch at login"), isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { _, newValue in
                     do {
@@ -261,8 +247,6 @@ struct InputEditor: View {
                     }
                 }
             }
-        } header: {
-            SectionHeader(title: tr("行为", "Behavior"), info: SettingsCopy.behaviourInfo)
         }
     }
 
@@ -349,23 +333,14 @@ struct RecognitionEditor: View {
         // MeasuredFormPage：窗口高度跟着这一页的内容走（见 SettingsWindowSizing）
         MeasuredFormPage(route: .recognition) {
             Form {
-                // 麦克风选择 + 电平自检：与引导第二屏共用同一个组件（MicCheck.swift）
+                // 一张没有段标题的卡片：麦克风 / 识别语言 / 识别模型（4.3.2）。
+                // 原来这三段的段标题与它们下面第一行的栏名逐字相同（「麦克风 ⓘ」→「麦克风：」），
+                // 那正是用户 2026-09-22 说的冗余。三颗 ⓘ 一个字没改，各自搬到自己那一行的右端。
+                // 麦克风那一段与引导第二屏共用同一个组件（MicCheck.swift），引导页不摆 ⓘ。
                 Section {
-                    MicCheckPanel()
-                } header: {
-                    SectionHeader(title: tr("麦克风", "Microphone"), info: SettingsCopy.micCheckInfo)
-                }
-
-                Section {
+                    MicCheckPanel(info: SettingsCopy.micCheckInfo)
                     languageSection
-                } header: {
-                    SectionHeader(title: tr("识别语言", "Recognition language"), info: SettingsCopy.languageInfo)
-                }
-
-                Section {
                     localModelSection
-                } header: {
-                    SectionHeader(title: tr("识别模型", "Speech model"), info: SettingsCopy.modelInfo)
                 }
 
                 // 「词汇表」4.1.6 起不在这一页（用户 2026-09-21 拍板）：它是"我的话该怎么写"，
@@ -401,21 +376,29 @@ struct RecognitionEditor: View {
 
     @ViewBuilder
     private var languageSection: some View {
-        Picker(tr("识别语言：", "Recognition language:"), selection: $recognitionLanguage) {
-            Text(tr("自动检测（默认）", "Detect automatically (default)"))
-                .tag(RecognitionLanguages.autoCode)
-            ForEach(RecognitionLanguages.pickerOrdered) { lang in
-                Text(lang.displayName).tag(lang.code)
+        // 英文写短的 "Language"：这一页叫 On-device recognition，选单里写着
+        // "Detect automatically"，不会和「界面语言」混（那一个在「输入」页，标着
+        // "Language / 界面语言"）。写全的话 88pt 的栏名列装不下，会折成两行
+        SettingsFieldRow(label: tr("识别语言", "Language"),
+                         info: SettingsCopy.languageInfo) {
+            Picker("", selection: $recognitionLanguage) {
+                Text(tr("自动检测（默认）", "Detect automatically (default)"))
+                    .tag(RecognitionLanguages.autoCode)
+                ForEach(RecognitionLanguages.pickerOrdered) { lang in
+                    Text(lang.displayName).tag(lang.code)
+                }
             }
+            .labelsHidden()
         }
         // 云端的语言表比这张选单短：选了它不认识的码（荷兰语、波斯语、希腊语…）时，
         // 提示根本送不出去，云端照常自动检测。那句"选了就送过去"对这几种语言是假的，
         // 必须当面换一句话——挑语言的人图的恰恰是"说小语种更稳"。
+        //
+        // **另一支没有了**（4.3.2）：「自动检测对中英文很准」是一句常驻的安慰话，
+        // 已并进这一行的 ⓘ（languageInfo）。剩下这一条只在真的选错了语言时才出现。
         if engineChoice.isCloud,
            !CloudASRSettings.cloudHintDelivered(recognitionLanguage: recognitionLanguage) {
             Caption(SettingsCopy.cloudTakesNoHint, warning: true)
-        } else {
-            Caption(SettingsCopy.languageAutoIsFine)
         }
     }
 
@@ -426,15 +409,18 @@ struct RecognitionEditor: View {
     private var localModelSection: some View {
         // 升级横幅：非模态、可忽略，永不自动换模型（换代要下几百 MB，这种事只由用户点）
         upgradeBanner
-        Picker(tr("识别模型：", "Speech model:"), selection: $qwenRepo) {
-            ForEach(QwenModels.all, id: \.repo) { m in
-                Text(m.sizeNote.isEmpty ? m.title : "\(m.title) · \(m.sizeNote)").tag(m.repo)
+        SettingsFieldRow(label: tr("识别模型", "Speech model"), info: SettingsCopy.modelInfo) {
+            Picker("", selection: $qwenRepo) {
+                ForEach(QwenModels.all, id: \.repo) { m in
+                    Text(m.sizeNote.isEmpty ? m.title : "\(m.title) · \(m.sizeNote)").tag(m.repo)
+                }
+                // 目录里已经不列这一档了（换代下架），但用户正在用它：如实列出来，
+                // 不自动替他换（Picker 少一个能选中的选项会显示空白，那才是真的看不懂）
+                if !selectedModelListed {
+                    Text(SettingsCopy.modelNoLongerListed).tag(qwenRepo)
+                }
             }
-            // 目录里已经不列这一档了（换代下架），但用户正在用它：如实列出来，
-            // 不自动替他换（Picker 少一个能选中的选项会显示空白，那才是真的看不懂）
-            if !selectedModelListed {
-                Text(SettingsCopy.modelNoLongerListed).tag(qwenRepo)
-            }
+            .labelsHidden()
         }
         if !selectedModelLanguagesNote.isEmpty {
             Caption(selectedModelLanguagesNote)
@@ -763,6 +749,11 @@ struct CloudEditor: View {
                     usageNotices
                 } providerNotices: {
                     providerNotices
+                } cloudExtras: {
+                    // 「联网搜索」和「识别也用云端」摆进**同一张卡片**（4.3.2）：
+                    // 两个开关问的是同一件事——要不要为这个多花一笔钱。分成两段、
+                    // 各带一个段标题，读起来像两件互不相干的事，而那正是用户嫌冗余的地方。
+                    webSearchRows
                 }
                 if usageMode == .withAI {
                     // 「自定义规则」4.1.6 起不在这一页（用户 2026-09-21 拍板）：它说的是
@@ -770,7 +761,6 @@ struct CloudEditor: View {
                     // 挨个点 OpenAI / DeepSeek / 阿里云看看的人，会以为每家各有一份规则要填
                     //（用户原话：「现在似乎每个地方都有 Customer Rules」）。现在它和词汇表一起
                     // 住在 设置 → 输入 → 写作偏好，整个 App 里只有那一处。
-                    webSearchSection
                     // 「高级」整段只留给**没有内置型号清单**的那两档（其他 OpenAI 兼容服务 / 本机模型）：
                     // 4.1.4 拿掉「测试模型」之后，三家官方档的这一段里一个控件都不剩，
                     // 而一个空的折叠段只会让人以为界面坏了（用户 2026-09-20：一个测试，不是三个）。
@@ -993,18 +983,18 @@ struct CloudEditor: View {
 
     /// 不支持的服务商**连开关都不摆**：一个点了没反应的灰开关加一行"这家没有"，
     /// 是用两行讲一件与这位用户无关的事。
+    ///
+    /// 4.3.2 起这里不再是一个 Section：它被塞进云端识别那张卡片（见 cloudExtras），
+    /// 段标题连同那颗 ⓘ 一起搬到了开关自己那一行的右端。
     @ViewBuilder
-    private var webSearchSection: some View {
-        Section {
-            if let price = LLMCatalog.webSearchPriceNote(style: searchStyle) {
-                Toggle(tr("语音指令允许联网搜索", "Let voice commands search the web"), isOn: $webSearch)
-                // 代价写在开关旁边：价格是**代价**，不是解释，绝不搬进 ⓘ 里
-                Caption(price)
-            } else {
-                Caption(SettingsCopy.webSearchUnsupported)
-            }
-        } header: {
-            SectionHeader(title: tr("联网搜索", "Web search"), info: SettingsCopy.webSearchInfo)
+    private var webSearchRows: some View {
+        if let price = LLMCatalog.webSearchPriceNote(style: searchStyle) {
+            SettingsToggleRow(label: tr("语音指令允许联网搜索", "Let voice commands search the web"),
+                           isOn: $webSearch, info: SettingsCopy.webSearchInfo)
+            // 代价写在开关旁边：价格是**代价**，不是解释，绝不搬进 ⓘ 里
+            Caption(price)
+        } else {
+            Caption(SettingsCopy.webSearchUnsupported)
         }
     }
 

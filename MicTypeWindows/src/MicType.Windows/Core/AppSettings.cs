@@ -20,8 +20,15 @@ public sealed class AppSettings
 
     public PolishLevel PolishLevel { get; set; } = PolishLevel.Smart;
     public LlmProvider LlmProvider { get; set; } = LlmProvider.OpenAi;
-    public string OpenAiBaseUrl { get; set; } = "https://api.openai.com/v1";
-    public string DeepSeekBaseUrl { get; set; } = "https://api.deepseek.com";
+
+    // 官方接入地址的唯一出处：属性初始值、被清空时的回退、串槽自愈都引这两个常量，别再另写字面量。
+    // 用 const 而不是 static readonly：const 是编译期常量，不参与静态字段初始化顺序——
+    // Windows 端踩过「默认值覆盖已存档设置」那个坑，起因就是静态初始化的先后依赖。
+    public const string DefaultOpenAiBaseUrl = "https://api.openai.com/v1";
+    public const string DefaultDeepSeekBaseUrl = "https://api.deepseek.com";
+
+    public string OpenAiBaseUrl { get; set; } = DefaultOpenAiBaseUrl;
+    public string DeepSeekBaseUrl { get; set; } = DefaultDeepSeekBaseUrl;
     // 出厂型号全部引 LlmModels 的常量，别在这里另写一份——两处值不一样的时候，
     // 用户看到的默认和代码里认的"自动默认"对不上，迁移就会把他手填的值当成默认值改掉。
     public string OpenAiPolishModel { get; set; } = LlmModels.OpenAiPolishDefault;
@@ -44,7 +51,7 @@ public sealed class AppSettings
             // 被清空也回退官方默认——Base URL 永远自动有值
             var value = (LlmProvider == LlmProvider.OpenAi ? OpenAiBaseUrl : DeepSeekBaseUrl)?.Trim();
             if (!string.IsNullOrEmpty(value)) return value;
-            return LlmProvider == LlmProvider.OpenAi ? "https://api.openai.com/v1" : "https://api.deepseek.com";
+            return LlmProvider == LlmProvider.OpenAi ? DefaultOpenAiBaseUrl : DefaultDeepSeekBaseUrl;
         }
     }
 
@@ -55,8 +62,7 @@ public sealed class AppSettings
     public string CurrentCommandModel => LlmProvider == LlmProvider.OpenAi ? OpenAiCommandModel : DeepSeekCommandModel;
 
     [JsonIgnore]
-    public string CurrentCredentialTarget =>
-        LlmProvider == LlmProvider.OpenAi ? CredentialTargets.OpenAiApiKey : CredentialTargets.DeepSeekApiKey;
+    public string CurrentCredentialTarget => CredentialTargets.For(LlmProvider);
 
     [JsonIgnore]
     public IReadOnlyList<string> VocabularyTerms => ParseVocabulary(CustomVocabulary).Terms;
@@ -67,6 +73,85 @@ public sealed class AppSettings
     [JsonIgnore]
     public IReadOnlyList<(string Wrong, string Right)> VocabularyReplacements =>
         ParseVocabulary(CustomVocabulary).Replacements;
+
+    /// 只写**指定服务商**的三个槽位，不读也不改 LlmProvider。
+    /// 界面保存必须走这里：按「当前生效的服务商」判断写哪一家，会在切换的那一刻把上一家的值写进下一家
+    /// （4.3.1 及以前的 bug，后果是 OpenAI 的 Key 被发去 DeepSeek 的服务器）。
+    public void SetProviderFields(LlmProvider provider, string baseUrl, string polishModel, string commandModel)
+    {
+        if (provider == LlmProvider.OpenAi)
+        {
+            OpenAiBaseUrl = baseUrl;
+            OpenAiPolishModel = polishModel;
+            OpenAiCommandModel = commandModel;
+        }
+        else
+        {
+            DeepSeekBaseUrl = baseUrl;
+            DeepSeekPolishModel = polishModel;
+            DeepSeekCommandModel = commandModel;
+        }
+    }
+
+    /// 自愈已经被上面那个 bug 写坏的设置（载入之后跑一次，幂等）。
+    /// 只认「明显串槽」这一种形态：接入地址的主机名属于另一家、或型号名带着另一家的前缀。
+    /// 自定义代理地址、解析不出主机名的地址、空值**一律不动**——分不清是不是用户有意填的就别替他改。
+    /// 返回 true = 有改动，调用方负责记日志并保存。
+    public bool RepairCrossProviderFields() => RepairCrossProviderFields(out _);
+
+    /// 同上，另带被修复的字段名（给日志用；日志只写字段名，不写地址、更不写 Key）。
+    public bool RepairCrossProviderFields(out IReadOnlyList<string> repairedFields)
+    {
+        var repaired = new List<string>();
+
+        if (HostBelongsTo(OpenAiBaseUrl, "deepseek.com"))
+        {
+            OpenAiBaseUrl = DefaultOpenAiBaseUrl;
+            repaired.Add(nameof(OpenAiBaseUrl));
+        }
+        if (HostBelongsTo(DeepSeekBaseUrl, "openai.com"))
+        {
+            DeepSeekBaseUrl = DefaultDeepSeekBaseUrl;
+            repaired.Add(nameof(DeepSeekBaseUrl));
+        }
+        if (StartsWithIgnoreCase(OpenAiPolishModel, "deepseek"))
+        {
+            OpenAiPolishModel = LlmModels.OpenAiPolishDefault;
+            repaired.Add(nameof(OpenAiPolishModel));
+        }
+        if (StartsWithIgnoreCase(OpenAiCommandModel, "deepseek"))
+        {
+            OpenAiCommandModel = LlmModels.OpenAiCommandDefault;
+            repaired.Add(nameof(OpenAiCommandModel));
+        }
+        // DeepSeek 侧只认 gpt- 前缀：o 系、别家的型号名规则猜不准，猜错就是替用户改掉他手选的型号
+        if (StartsWithIgnoreCase(DeepSeekPolishModel, "gpt-"))
+        {
+            DeepSeekPolishModel = LlmModels.DeepSeekPolishDefault;
+            repaired.Add(nameof(DeepSeekPolishModel));
+        }
+        if (StartsWithIgnoreCase(DeepSeekCommandModel, "gpt-"))
+        {
+            DeepSeekCommandModel = LlmModels.DeepSeekCommandDefault;
+            repaired.Add(nameof(DeepSeekCommandModel));
+        }
+
+        repairedFields = repaired;
+        return repaired.Count > 0;
+    }
+
+    /// 「这个地址是不是那一家的」：只看主机名，端口 / 路径不参与。
+    /// 用「等于 domain 或以 .domain 结尾」而不是裸 EndsWith——否则 notdeepseek.com 也会被当成 DeepSeek。
+    private static bool HostBelongsTo(string? url, string domain)
+    {
+        if (!Uri.TryCreate(url?.Trim(), UriKind.Absolute, out var uri)) return false;
+        var host = uri.Host;
+        return host.Equals(domain, StringComparison.OrdinalIgnoreCase)
+               || host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool StartsWithIgnoreCase(string? value, string prefix) =>
+        (value ?? "").TrimStart().StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
 
     /// 词汇表解析：普通词条做热词/润色提示；"错写=正写"词条做硬替换（正写同时进热词）。
     /// 一个正写可以挂多个错写：「杰文|捷纹|结文=捷文」——同一个名字的各种听错法不必分行写。
@@ -122,6 +207,11 @@ public static class CredentialTargets
 {
     public const string OpenAiApiKey = "MicType/openai_api_key";
     public const string DeepSeekApiKey = "MicType/deepseek_api_key";
+
+    /// 按服务商取 Key 的存放槽位。界面读写 Key 一律走这里传「框里装的那一家」，
+    /// 这样「Key 只会存回它被载入的那一家」是结构性保证，不用靠事件先后碰运气。
+    public static string For(LlmProvider provider) =>
+        provider == LlmProvider.OpenAi ? OpenAiApiKey : DeepSeekApiKey;
 }
 
 public sealed class SettingsStore
@@ -149,9 +239,7 @@ public sealed class SettingsStore
     private SettingsStore()
     {
         Current = Load();
-        // v4.0 一次性型号迁移：旧版写进设置的 deepseek-v4-flash 等型号已经下线（调用直接 404/400），
-        // 不改名的话用户每次润色 / 指令都失败，而错误只说「模型名不存在」，他无从知道是默认值死了。
-        if (LlmModels.ApplyMigration(Current)) Save();
+        ApplyPostLoadFixups();
     }
 
     public AppSettings Current { get; private set; }
@@ -170,7 +258,23 @@ public sealed class SettingsStore
     public void Reload()
     {
         Current = Load();
-        if (LlmModels.ApplyMigration(Current)) Save();
+        ApplyPostLoadFixups();
+    }
+
+    /// 载入之后的修复，只在这一处：型号迁移 + 跨服务商串槽自愈。任一有改动才保存（保存仍是原子写入）。
+    private void ApplyPostLoadFixups()
+    {
+        // v4.0 一次性型号迁移：旧版写进设置的 deepseek-v4-flash 等型号已经下线（调用直接 404/400），
+        // 不改名的话用户每次润色 / 指令都失败，而错误只说「模型名不存在」，他无从知道是默认值死了。
+        var needsSave = LlmModels.ApplyMigration(Current);
+        // 4.3.1 及以前切服务商会把上一家的地址 / 型号写进下一家（SettingsWindow 里先保存后重载、
+        // 保存时却按刚切过去的新服务商判断写哪一家）。已经写坏的设置在这里自愈；日志只记字段名。
+        if (Current.RepairCrossProviderFields(out var repairedFields))
+        {
+            Log.Info("Repaired cross-provider settings fields: " + string.Join(", ", repairedFields));
+            needsSave = true;
+        }
+        if (needsSave) Save();
     }
 
     private static AppSettings Load()

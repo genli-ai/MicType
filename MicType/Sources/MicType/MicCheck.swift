@@ -174,6 +174,8 @@ final class MicTestSession: ObservableObject {
 /// 设置 → 本地识别 里早已写全并踩平了坑（让位给听写、设备热插拔、结论对齐静音闸门）。
 /// 两处共用同一份实现，行为与文案只有一处可改，不会再出现"引导里能换麦、设置里不能"这种偏差。
 struct MicCheckPanel: View {
+    /// 麦克风那一行右端那颗 ⓘ。nil = 不摆（引导页）
+    var info: String? = nil
 
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKeys.inputDeviceUID) private var inputDeviceUID = ""
@@ -182,8 +184,9 @@ struct MicCheckPanel: View {
     /// 插拔 AirPods / 接上声卡时下拉框要立刻跟上（否则得关掉窗口再打开才看得见）
     @State private var deviceObserver: InputDevices.DeviceChangeObserver?
 
-    /// 那段"测试会录 3 秒、只看音量"的说明**不在这个组件里**：设置页把它收进段头那颗 ⓘ
-    /// （SettingsCopy.micCheckInfo），引导页那一屏寸土寸金，本来就只摆控件。
+    /// 那段"测试会录 3 秒、只看音量"的说明**不在这个组件里**：设置页把它挂在麦克风那一行
+    /// 右端那颗 ⓘ 上（4.3.2 之前是段头那颗），引导页那一屏寸土寸金，本来就只摆控件。
+    /// - info: 摆不摆那颗 ⓘ（设置页传 micCheckInfo，引导页传 nil）
 
     /// 「系统默认」当前实际指向谁——写在选项里，用户不用去系统设置里对照
     private var systemDefaultLabel: String {
@@ -201,15 +204,19 @@ struct MicCheckPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker(tr("麦克风：", "Microphone:"), selection: $inputDeviceUID) {
-                Text(systemDefaultLabel).tag("")
-                ForEach(devices) { device in
-                    Text(device.name).tag(device.uid)
+            // 栏名不带冒号、宽度与另外两页那几行对齐（SettingsFieldRow，4.3.2 起三页共用）
+            SettingsFieldRow(label: tr("麦克风", "Microphone"), info: info) {
+                Picker("", selection: $inputDeviceUID) {
+                    Text(systemDefaultLabel).tag("")
+                    ForEach(devices) { device in
+                        Text(device.name).tag(device.uid)
+                    }
+                    if savedDeviceMissing {
+                        Text(tr("已选的麦克风（当前未连接）", "Selected microphone (not connected)"))
+                            .tag(inputDeviceUID)
+                    }
                 }
-                if savedDeviceMissing {
-                    Text(tr("已选的麦克风（当前未连接）", "Selected microphone (not connected)"))
-                        .tag(inputDeviceUID)
-                }
+                .labelsHidden()
             }
             HStack(spacing: 10) {
                 Button(session.isRunning ? tr("测试中…", "Testing…")

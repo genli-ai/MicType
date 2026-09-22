@@ -75,7 +75,7 @@ enum PrivacyCopy {
     static var keyInKeychain: String { LLMCatalog.keyStorageNote }
 
     /// 费用直付服务商：MicType 不代理请求。同上——Key 输入框下面那一行价格用的是同一个出处
-    /// （LLMCatalog.billingNote，KeyEntryView 渲染它）。
+    /// （LLMCatalog.billingNote；4.3.2 起设置页里它住在 API Key 那颗 ⓘ 里）。
     static var youPayProvider: String { LLMCatalog.billingNote }
 
     /// 联网搜索是显式付费开关，4.1.1 起默认**开**（支持的服务商）。

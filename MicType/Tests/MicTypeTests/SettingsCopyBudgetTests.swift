@@ -132,46 +132,6 @@ final class SettingsCopyBudgetTests: XCTestCase {
 
     // MARK: - 说的话和代码做的事对得上
 
-    /// 云端识别开着的时候，「使用方式」下面那一行**绝不能**还写着"本机识别"。
-    /// AISetup.mode 把"引擎是云端"也算成「本地 + AI」，所以只看档位选文案，正好会在
-    /// 每段录音都在上传的那一刻说反话——这是这条测试唯一要拦的东西。
-    func testUsageCaptionFollowsTheEngineNotJustTheMode() {
-        for language in AppLanguage.allCases {
-            L10n.shared.language = language
-            XCTAssertEqual(SettingsCopy.usageCaption(mode: .localOnly, engine: .local),
-                           SettingsCopy.usageLocalOnly)
-            // 「只用本地」这一档本来就不可能是云端引擎，真出现了也仍然只说这一句
-            XCTAssertEqual(SettingsCopy.usageCaption(mode: .withAI, engine: .local),
-                           SettingsCopy.usageWithAI)
-            for engine in RecognitionEngineChoice.allCases where engine.isCloud {
-                let caption = SettingsCopy.usageCaption(mode: .withAI, engine: engine)
-                XCTAssertEqual(caption, SettingsCopy.usageWithCloudRecognition, caption)
-                XCTAssertNotEqual(caption, SettingsCopy.usageWithAI)
-            }
-        }
-        L10n.shared.language = .zh
-        XCTAssertFalse(SettingsCopy.usageWithCloudRecognition.contains("本机"),
-                       SettingsCopy.usageWithCloudRecognition)
-        L10n.shared.language = .en
-        XCTAssertFalse(SettingsCopy.usageWithCloudRecognition.lowercased().contains("on this mac"),
-                       SettingsCopy.usageWithCloudRecognition)
-    }
-
-    /// 「只用本地」写回的只有"润色关掉 + 识别回本机"，**钥匙串里那把 Key 不动**，
-    /// 而指令路径只看 LLMClient.isConfigured——所以这一档下按住说指令照样会计费。
-    /// 边界那一行（storedKeyWhileLocalOnly）说的就是这件事，ⓘ 不许在隔壁说反话。
-    func testUsageInfoDoesNotContradictTheStoredKeyNotice() {
-        L10n.shared.language = .zh
-        XCTAssertFalse(SettingsCopy.usageInfo.contains("那一档没有"), SettingsCopy.usageInfo)
-        XCTAssertTrue(SettingsCopy.usageInfo.contains("按住说指令仍然要有 Key"), SettingsCopy.usageInfo)
-        XCTAssertTrue(SettingsCopy.storedKeyWhileLocalOnly(provider: "OpenAI").contains("计费"))
-
-        L10n.shared.language = .en
-        let en = SettingsCopy.usageInfo.lowercased()
-        XCTAssertFalse(en.contains("not available"), SettingsCopy.usageInfo)
-        XCTAssertTrue(en.contains("still needs a key"), SettingsCopy.usageInfo)
-    }
-
     /// 「自定义规则」那颗 ⓘ 讲的是**数据流向**，写错就是告诉用户每一次轻点都在把个人信息
     /// 发出去。4.1.1 起只有一个框（「关于我」已经并进来了），所以这里也不许再提第二个框。
     func testCustomRulesInfoMatchesWhereTheTextActuallyGoes() {
@@ -203,26 +163,6 @@ final class SettingsCopyBudgetTests: XCTestCase {
         XCTAssertTrue(SettingsCopy.inputCaptions.contains(SettingsCopy.rulesNeedAI))
         XCTAssertFalse(SettingsCopy.recognitionCaptions.contains(SettingsCopy.vocabularyArabicTip))
         XCTAssertFalse(SettingsCopy.cloudCaptions.contains(SettingsCopy.customRulesPlaceholder))
-    }
-
-    /// 「模型」那颗 ⓘ 只许指屏幕上**真有**的控件：三家官方档的「高级」里只剩「测试模型」，
-    /// 「刷新模型列表」只长在没有内置清单的那两档上（SettingsEditors.modelMaintenance）。
-    /// 指一个不存在的按钮，用户会以为界面少了东西。
-    func testModelInfoOnlyPointsAtControlsThatExist() {
-        for provider in LLMProvider.allCases where !LLMCatalog.modelMenu(for: provider).isEmpty {
-            L10n.shared.language = .zh
-            XCTAssertFalse(SettingsCopy.cloudModelInfo(provider: provider).contains("刷新"),
-                           provider.rawValue)
-            L10n.shared.language = .en
-            XCTAssertFalse(SettingsCopy.cloudModelInfo(provider: provider)
-                            .lowercased().contains("refresh"), provider.rawValue)
-        }
-        // 那两档反过来：它们的「高级」里真有那颗按钮，ⓘ 该说
-        for provider in [LLMProvider.custom, .local] {
-            L10n.shared.language = .zh
-            XCTAssertTrue(SettingsCopy.cloudModelInfo(provider: provider).contains("刷新"),
-                          provider.rawValue)
-        }
     }
 
     /// 选择器下面那行「预览中」必须点名**正在生效**的那一家：预览的这一刻
@@ -286,22 +226,25 @@ final class SettingsCopyBudgetTests: XCTestCase {
             let zh = SettingsCopy.cloudRecognitionInfo(provider: provider)
             XCTAssertTrue(zh.contains("传给"), zh)
             XCTAssertTrue(zh.contains("计费"), zh)
-            XCTAssertTrue(zh.contains("本机"), zh)
         }
-        // 阿里云那一档还要提醒"先去控制台开通一次模型"
-        XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .alibaba).contains("开通"))
         // OpenAI 那一档必须点名它贵得多——两家差着近八倍，这是选择的一部分
         XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .openai).contains("数倍"))
+        // 词汇表这件事两家必须各说各的实话（2026-09-22 真 Key 实测）：
+        // 阿里云实时识别对 vocabulary / hotwords / corpus.text 等全部无效，只能靠润色纠正；
+        // OpenAI 那一档认。用户按这个开关之前有权知道自己会失去什么。
+        XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .alibaba).contains("不认词汇表"))
+        XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .alibaba).contains("润色"))
+        XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .openai).contains("词汇表"))
+        XCTAssertFalse(SettingsCopy.cloudRecognitionInfo(provider: .openai).contains("不认词汇表"))
 
         L10n.shared.language = .en
         for provider in CloudASRProvider.allCases {
             let en = SettingsCopy.cloudRecognitionInfo(provider: provider).lowercased()
             XCTAssertTrue(en.contains("streams to"), en)
             XCTAssertTrue(en.contains("billed"), en)
-            XCTAssertTrue(en.contains("on this mac"), en)
         }
         XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .alibaba)
-            .lowercased().contains("enable the model"))
+            .lowercased().contains("ignores your vocabulary"))
         XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .openai)
             .lowercased().contains("several times"))
     }
@@ -323,16 +266,28 @@ final class SettingsCopyBudgetTests: XCTestCase {
         }
     }
 
-    /// Key 那颗 ⓘ 必须逐字引用 LLMCatalog 的存储说明（全 App 唯一出处），
-    /// 而且开着云端识别时多说一句"这把 Key 走的是识别端点"
+    /// Key 那颗 ⓘ 必须逐字引用 LLMCatalog 的存储与费用两句（全 App 唯一出处），
+    /// 而且阿里云那一档多说一句"接入地址去哪儿找"——那一栏自己没有 ⓘ。
+    ///
+    /// 4.3.2 起费用那句只住在这颗 ⓘ 里（原来它常驻在输入框下面），所以这条测试
+    /// 同时是"它没被漏掉"的保险。
     func testKeyInfoQuotesTheSingleSource() {
         for language in AppLanguage.allCases {
             L10n.shared.language = language
-            XCTAssertTrue(SettingsCopy.keyInfo(cloudASRProbe: false).contains(LLMCatalog.keyStorageNote))
-            XCTAssertTrue(SettingsCopy.keyInfo(cloudASRProbe: false).contains(LLMCatalog.newAccountNote))
-            XCTAssertGreaterThan(SettingsCopy.keyInfo(cloudASRProbe: true).count,
-                                 SettingsCopy.keyInfo(cloudASRProbe: false).count)
+            let base = SettingsCopy.keyInfo(hostField: false)
+            XCTAssertTrue(base.contains(LLMCatalog.keyStorageNote), base)
+            XCTAssertTrue(base.contains(LLMCatalog.billingNote), base)
+            let withHost = SettingsCopy.keyInfo(hostField: true)
+            XCTAssertGreaterThan(withHost.count, base.count)
+            XCTAssertTrue(withHost.lowercased().contains("api host"), withHost)
         }
+    }
+
+    /// 这一页只剩三颗 ⓘ（用户 2026-09-22：太冗余）。段标题连同它们各自那颗一起没了，
+    /// 所以这里钉的是"没人再把 ⓘ 悄悄加回来"。
+    func testCloudPageKeepsOnlyThreeInfoPopovers() {
+        // API Key（两档）+ 云端识别（两家）+ 联网搜索 + 高级（只在自定义/本机那两档出现）
+        XCTAssertEqual(SettingsCopy.cloudInfos.count, 6, "\(SettingsCopy.cloudInfos)")
     }
 
     // MARK: - 隐私文案只在关于页与引导页出现
@@ -403,6 +358,57 @@ final class SettingsCopyBudgetTests: XCTestCase {
         XCTAssertTrue(offenders.isEmpty, """
             这几处直接把字面量塞进了 Caption，没有任何预算量得到它：\(offenders.joined(separator: "、"))
             —— 一行说明请写进 SettingsCopy / OnboardingCopy。
+            """)
+    }
+
+    /// **段标题不许和它下面那一行的栏名说同一件事**（用户 2026-09-22 点名的"冗余"）。
+    ///
+    /// 4.3.1 的三页上到处是这种一模一样的两行：段标题「麦克风 ⓘ」下面第一行栏名
+    /// 又是「麦克风：」，「识别语言」「识别模型」「快捷键」「服务商」「模型」全都如此。
+    /// 收掉之后最容易复发的就是它——下一次加一段，顺手又写一个同名的帽子。
+    ///
+    /// 扫的是源码：把 `SectionHeader(title: tr("X", …)` 与 `SettingsFieldRow(label: tr("X", …)`
+    /// 两串里的中文抠出来，取交集。**数据断言做不到**：栏名与段标题都活在视图代码里，
+    /// 不在 SettingsCopy 那张表上（它们是控件的名字，不是说明）。
+    func testNoSectionTitleRepeatsTheFieldLabelBelowIt() throws {
+        let dir = Self.sourcesDirectory
+        // 「X：」和「X」算同一个名字：4.3.2 之前正是靠那个冒号看着像两样东西
+        func normalized(_ raw: String) -> String {
+            raw.trimmingCharacters(in: CharacterSet(charactersIn: "：: "))
+        }
+        func zhLiterals(_ source: String, after marker: String) -> Set<String> {
+            var out = Set<String>()
+            for chunk in source.components(separatedBy: marker).dropFirst() {
+                // 形如 `tr("中", "EN")` 或直接一个字面量
+                guard let open = chunk.firstIndex(of: "\"") else { continue }
+                let rest = chunk[chunk.index(after: open)...]
+                guard let close = rest.firstIndex(of: "\"") else { continue }
+                let literal = normalized(String(rest[rest.startIndex..<close]))
+                if !literal.isEmpty { out.insert(literal) }
+            }
+            return out
+        }
+        var offenders: [String] = []
+        var allTitles = Set<String>()
+        var allLabels = Set<String>()
+        for file in Self.swiftFiles(under: dir) {
+            let source = Self.stripComments(
+                try String(contentsOf: dir.appendingPathComponent(file), encoding: .utf8))
+            let titles = zhLiterals(source, after: "SectionHeader(title: ")
+            let labels = zhLiterals(source, after: "SettingsFieldRow(label: ")
+                .union(zhLiterals(source, after: "SettingsToggleRow(label: "))
+            allTitles.formUnion(titles)
+            allLabels.formUnion(labels)
+            for shared in titles.intersection(labels).sorted() {
+                offenders.append("\(file): 「\(shared)」")
+            }
+        }
+        // 扫不到东西的话上面那个交集永远是空的，这条测试就成了摆设——先证明它有活干
+        XCTAssertGreaterThan(allTitles.count, 3, "没扫到段标题，抓取方式该修了")
+        XCTAssertGreaterThan(allLabels.count, 5, "没扫到栏名，抓取方式该修了")
+        XCTAssertTrue(offenders.isEmpty, """
+            段标题和它下面那一行的栏名逐字相同：\(offenders.joined(separator: "、"))
+            —— 删掉段标题，把它那颗 ⓘ 搬到那一行的右端（4.3.2 的版式）。
             """)
     }
 

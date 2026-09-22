@@ -10,6 +10,12 @@ public partial class SettingsWindow : Window
     private readonly SenseVoiceModelDownloader _modelDownloader = SenseVoiceModelDownloader.Shared;
     private AppSettings Settings => SettingsStore.Instance.Current;
 
+    /// 此刻 BaseUrl / 两个型号 / Key 这四个框里装的是**谁**的值。
+    /// 切服务商时是「先保存界面、再重载字段」，保存必须回写「框里装的那一家」；按 Settings.LlmProvider
+    /// 判断的话，那一行已经切成新服务商了，于是上一家的地址和型号被写进下一家（4.3.1 及以前的 bug，
+    /// 后果是 OpenAI 的 Key 被发去 DeepSeek 的服务器）。
+    private LlmProvider _shownProvider;
+
     public SettingsWindow()
     {
         InitializeComponent();
@@ -196,8 +202,9 @@ public partial class SettingsWindow : Window
                 TestResultText.Text = L10n.Tr("Key 框为空——已存的 Key 未改动", "Key box is empty — stored key unchanged");
                 return;
             }
-            CredentialStore.Save(Settings.CurrentCredentialTarget, ApiKeyBox.Password);
-            TestResultText.Text = CredentialStore.Load(Settings.CurrentCredentialTarget) is null
+            // Key 存回「框里装的那一家」：这样一把 Key 绝不会因为事件先后跑到另一家的槽位里去
+            CredentialStore.Save(CredentialTargets.For(_shownProvider), ApiKeyBox.Password);
+            TestResultText.Text = CredentialStore.Load(CredentialTargets.For(_shownProvider)) is null
                 ? L10n.Tr("保存后读取失败——请把日志发给开发者", "Saved but read-back failed — please send the logs")
                 : L10n.Tr("已保存 Key ✓", "Key saved ✓");
         }
@@ -223,7 +230,7 @@ public partial class SettingsWindow : Window
         SaveUiIntoSettings();
         try
         {
-            CredentialStore.Save(Settings.CurrentCredentialTarget, ApiKeyBox.Password);
+            CredentialStore.Save(CredentialTargets.For(_shownProvider), ApiKeyBox.Password);
         }
         catch (Exception ex)
         {
@@ -317,26 +324,19 @@ public partial class SettingsWindow : Window
         Settings.AboutMe = AboutMeBox.Text;
         Settings.CustomPolishRules = RulesBox.Text;
 
-        if (Settings.LlmProvider == LlmProvider.OpenAi)
-        {
-            Settings.OpenAiBaseUrl = BaseUrlBox.Text;
-            Settings.OpenAiPolishModel = PolishModelBox.Text;
-            Settings.OpenAiCommandModel = CommandModelBox.Text;
-        }
-        else
-        {
-            Settings.DeepSeekBaseUrl = BaseUrlBox.Text;
-            Settings.DeepSeekPolishModel = PolishModelBox.Text;
-            Settings.DeepSeekCommandModel = CommandModelBox.Text;
-        }
+        // 服务商专属的三个字段只回写「框里装的那一家」，不是上面刚从下拉框读到的那一家——
+        // 切换服务商时这两者正好不同，按后者写就会把上一家的地址 / 型号灌进下一家。
+        Settings.SetProviderFields(_shownProvider, BaseUrlBox.Text, PolishModelBox.Text, CommandModelBox.Text);
     }
 
     private void LoadProviderFields()
     {
+        // 从这一刻起四个框装的是这一家的值，保存与存 Key 都只认它（见 _shownProvider）
+        _shownProvider = Settings.LlmProvider;
         BaseUrlBox.Text = Settings.CurrentBaseUrl;
         PolishModelBox.Text = Settings.CurrentPolishModel;
         CommandModelBox.Text = Settings.CurrentCommandModel;
-        ApiKeyBox.Password = CredentialStore.Load(Settings.CurrentCredentialTarget) ?? "";
+        ApiKeyBox.Password = CredentialStore.Load(CredentialTargets.For(_shownProvider)) ?? "";
     }
 
     private static void SelectByTag(ComboBox comboBox, string tag)

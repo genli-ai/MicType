@@ -41,6 +41,9 @@ final class SettingsSnapshotTests: XCTestCase {
         SettingsKeys.qwenModel,
         SettingsKeys.qwenCommandModel,
         SettingsKeys.webSearchEnabled,
+        // 4.3.1 起开关读的是**意愿**这条键，不是引擎档位——不摆它，照出来的云端识别
+        // 永远是关着的那一档（而开着那一档才有型号 · 边说边上传 · 单价那一行要看）
+        SettingsKeys.cloudRecognitionWanted,
     ]
 
     private var savedDefaults: [String: Any?] = [:]
@@ -64,11 +67,15 @@ final class SettingsSnapshotTests: XCTestCase {
         KeychainHelper.lookupOverride = { account in
             account.contains("deepseek") ? nil : "sk-snapshot-placeholder"
         }
+        // 开关开着的那一页一露面就会去真测云端识别——拿着假 Key 连真服务器，
+        // 照出来的还是一行 401。告诉它"已经测过了"，拍照就不出网
+        CloudASRProvider.allCases.forEach { CloudRecognitionCheckMemory.markChecked($0) }
         seedRepresentativeSettings()
     }
 
     override func tearDownWithError() throws {
         KeychainHelper.lookupOverride = nil
+        CloudRecognitionCheckMemory.resetForTesting()
         let defaults = UserDefaults.standard
         for (key, value) in savedDefaults {
             if let value = value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
@@ -123,7 +130,9 @@ final class SettingsSnapshotTests: XCTestCase {
     private func useProvider(_ provider: LLMProvider, cloudRecognition: Bool) {
         let defaults = UserDefaults.standard
         defaults.set(provider.rawValue, forKey: SettingsKeys.llmProvider)
-        defaults.set(cloudRecognition ? RecognitionEngineChoice.cloudAlibaba.rawValue
+        defaults.set(cloudRecognition, forKey: SettingsKeys.cloudRecognitionWanted)
+        defaults.set(cloudRecognition ? AISetup.engine(provider: provider,
+                                                       cloudRecognition: true).rawValue
                                       : RecognitionEngineChoice.local.rawValue,
                      forKey: SettingsKeys.recognitionEngine)
         defaults.set(LLMCatalog.defaultModel(for: provider),

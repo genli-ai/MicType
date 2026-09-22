@@ -321,20 +321,16 @@ struct KeyEntryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if provider.requiresAPIKey {
-                HStack(spacing: 8) {
-                    SecureField(tr("粘贴 \(provider.segmentName) 的 API Key", "Paste your \(provider.segmentName) API key"),
-                                text: $key)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($focused)
-                        .onSubmit { verifyNow() }
-                    if let url = LLMCatalog.apiKeyConsoleURL(for: provider) {
-                        Button(tr("去申请 Key ↗", "Get a key ↗")) {
-                            guard let link = URL(string: url) else { return }
-                            NSWorkspace.shared.open(link)
-                        }
-                        .fixedSize()
-                    }
+                // 栏名就写 "API Key"（4.3.2）：原来那句占位文字是「粘贴 阿里云 的 API Key」，
+                // 换一家就变一次、还把输入框撑得老长——而屏幕上方那一行已经写着是哪一家了。
+                SettingsFieldRow(label: "API Key",
+                              info: SettingsCopy.keyInfo(hostField: provider == .qwen)) {
+                    secureField
+                    consoleLink
                 }
+                // 状态行：**只在真有话说时才出现**（验证中 / 已连通 ✓ / 失败原因）。
+                // 4.3.2 删掉了原来常驻在这儿的那行费用说明——它并进了上面那颗 ⓘ，
+                // 因为它一天要被同一个人读一百遍，而它说的事一个月也用不上一次。
                 if let text = KeyVerifier.statusText(verifier.status) {
                     Text(text)
                         .font(.caption)
@@ -342,10 +338,6 @@ struct KeyEntryView: View {
                         .lineLimit(3)
                         .textSelection(.enabled)
                 }
-                // 输入框下面永远留这一行**价格**（LLMCatalog.billingNote，全 App 唯一出处）：
-                // Key 怎么存、新账号要先充值这些细则收进段头那颗 ⓘ（SettingsCopy.keyInfo），
-                // 控件旁边只留代价——代价不是解释，永远不进 ⓘ
-                Caption(LLMCatalog.billingNote)
             } else {
                 // 本机模型：没有 Key 不是"还没配好"，是这一档的正常状态
                 Caption(SettingsCopy.localModelNeedsNoKey)
@@ -376,6 +368,28 @@ struct KeyEntryView: View {
         }
         // 状态行是一次性快照，切语言要跟着换（见 CLAUDE.md「i18n 快照字符串」）
         .onChange(of: l10n.language) { _, _ in verifier.invalidate() }
+    }
+
+    /// Key 输入框本体。拆出来是为了让 body 的类型检查跑得动（整串修饰符写在 body 里
+    /// 会让编译器直接放弃："unable to type-check this expression in reasonable time"）。
+    private var secureField: some View {
+        SecureField(text: $key, prompt: Text(verbatim: "sk-…")) { Text("API Key") }
+            .labelsHidden()
+            .textFieldStyle(.roundedBorder)
+            .focused($focused)
+            .onSubmit { verifyNow() }
+    }
+
+    /// 「去申请 Key ↗」：只有我们能打包票的那两家有（见 LLMCatalog.apiKeyConsoleURL）
+    @ViewBuilder
+    private var consoleLink: some View {
+        if let url = LLMCatalog.apiKeyConsoleURL(for: provider) {
+            Button(tr("去申请 Key ↗", "Get a key ↗")) {
+                guard let link = URL(string: url) else { return }
+                NSWorkspace.shared.open(link)
+            }
+            .fixedSize()
+        }
     }
 
     private func load() {

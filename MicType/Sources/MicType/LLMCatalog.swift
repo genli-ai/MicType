@@ -226,12 +226,6 @@ enum LLMCatalog {
         tr("费用由服务商直接结给你，MicType 不经手、不加价，也不代发你的请求。",
            "You pay the provider directly. MicType takes no cut and never proxies your requests.")
     }
-    /// 新账号的第一道坎（BoltAI 把它写在同一屏是对的：拿到 Key 也可能是 429/余额不足）
-    static var newAccountNote: String {
-        tr("新账号通常要先在服务商那边绑卡或充一点额度，Key 才真的能用。",
-           "A brand-new account usually has to add a card or buy some credit before the key works.")
-    }
-
     // MARK: - 接口地址
 
     /// DashScope 兼容模式的接入区域。**必须做成选择器**：URL 里带 WorkspaceId，

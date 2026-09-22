@@ -414,32 +414,45 @@ struct SectionHeader: View {
     /// nil = 这一段没有需要展开的细则（不摆一颗点开是空的 ⓘ）
     var info: String? = nil
 
-    @State private var showingInfo = false
-
     var body: some View {
         HStack(spacing: 4) {
             Text(title)
-            if let info = info {
-                Button {
-                    showingInfo.toggle()
-                } label: {
-                    Image(systemName: "info.circle")
-                }
-                .buttonStyle(.borderless)
-                .help(tr("详细说明", "Details"))
-                .accessibilityLabel(tr("详细说明", "Details"))
-                .popover(isPresented: $showingInfo, arrowEdge: .bottom) {
-                    ScrollView {
-                        Text(info)
-                            .font(.callout)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(14)
-                    }
-                    .frame(width: 320)
-                    .frame(maxHeight: 420)
-                }
+            if let info = info { InfoButton(info) }
+        }
+    }
+}
+
+/// 那颗 ⓘ 本身。
+///
+/// 4.3.2 从 SectionHeader 里抽出来：「云端 AI」页不再有段标题了（段标题和栏名一直在
+/// 说同一件事，用户 2026-09-22 的原话是"这个 settings 设计还是太冗余"），
+/// 可那几条真正有信息量的细则还得有地方放——现在它们挂在**那一行控件自己**的右端。
+struct InfoButton: View {
+    let info: String
+
+    @State private var showing = false
+
+    init(_ info: String) { self.info = info }
+
+    var body: some View {
+        Button {
+            showing.toggle()
+        } label: {
+            Image(systemName: "info.circle")
+        }
+        .buttonStyle(.borderless)
+        .help(tr("详细说明", "Details"))
+        .accessibilityLabel(tr("详细说明", "Details"))
+        .popover(isPresented: $showing, arrowEdge: .bottom) {
+            ScrollView {
+                Text(info)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
             }
+            .frame(width: 320)
+            .frame(maxHeight: 420)
         }
     }
 }

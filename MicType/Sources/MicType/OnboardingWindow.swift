@@ -1057,6 +1057,9 @@ private struct HowYouUsePage: View {
                     EmptyView()
                 } providerNotices: {
                     providerNotices
+                } cloudExtras: {
+                    // 引导第三屏不摆联网搜索：第一次上手的人不该在这一屏决定要不要多花那笔钱
+                    EmptyView()
                 }
 
                 if usageMode == .localOnly {

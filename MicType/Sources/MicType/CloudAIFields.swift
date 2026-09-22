@@ -6,6 +6,77 @@ import SwiftUI
 // 于是阿里云那个「识别也用云端」开关只长在设置页上——在引导里选了阿里云的人根本看不到它，
 // 也就没人告诉他云端识别是可选的、要花钱的。同一个决定只写一处，两处就不会走散
 // （与 QwenHostField、PrivacyCopy 同一条纪律）。
+//
+// 4.3.2 的版式（用户 2026-09-22：「API host 为什么是一个 optional，下面写的 only this host
+// 又是什么……这个 settings 设计还是太冗余，把这个简化」）：
+//
+//   使用方式   [只用本地 | 本地 + AI]
+//   ┌ 服务商   [OpenAI | DeepSeek | 阿里云]   正在使用 ✓
+//   │ API Key  [••••••]  [去申请 Key ↗]                    ⓘ
+//   │ API Host [百炼控制台里的接入地址]        ← 只有阿里云这一档
+//   └ 模型     [qwen3.8-flash · 快（默认） ▾]
+//   ┌ 识别也用云端                            [开关]       ⓘ
+//   │ qwen3-asr-flash-realtime · 边说边上传 · 约 $0.13/小时
+//   │ 语音指令允许联网搜索                    [开关]       ⓘ
+//   └ 联网搜索按服务商自己的价目计费，默认开启。
+//
+// 三条规矩，改这一页之前先读：
+//   • **没有段标题**。4.3.1 之前每一段都是「段标题 + ⓘ」再跟一行「栏名：控件」，
+//     而段标题和栏名说的是同一件事（「服务商」上面写一遍、下面再写一遍）。现在栏名
+//     由 SettingsFieldRow 摆在控件左边，一行只说一次。
+//   • **ⓘ 只剩三颗**：API Key、识别也用云端、联网搜索。其余几段的细则要么已经被状态行
+//     说掉了（「正在使用 ✓」「预览中，仍用 X」），要么并进了 Key 那一颗。
+//   • **常驻说明行只留"带着钱或隐私"的那两行**（云端识别的单价、联网搜索的计费）。
+//     状态行不算说明：它只在真有话说时才出现。
+
+/// 一行：栏名 + 控件 +（可选）那一行自己的 ⓘ。**设置窗口三页共用**（4.3.2 起）。
+///
+/// 为什么自己写而不用 Form 的 LabeledContent：这一串控件要在**两个容器**里长得一样——
+/// 设置页是 Form(.grouped)，引导第二 / 三屏是 VStack。LabeledContent 的栏名宽度由容器算，
+/// 两处对不齐；而"栏名宽度一致"正是这一版要的（用户嫌的就是排版乱）。
+///
+/// 栏名**不带冒号**：它是一列表头，不是一句话的开头。
+struct SettingsFieldRow<Content: View>: View {
+    let label: String
+    var info: String? = nil
+    @ViewBuilder var content: () -> Content
+
+    /// 栏名那一列的宽度。**88 是被右边那一行顶住的上限**：识别模型那一行要摆
+    /// 「Qwen3-ASR 0.6B 6-bit (recommended, fast) · ~862 MB」，112pt 时它当场被裁成 "· ~8…"。
+    /// 所以英文栏名要写短（"Language" 而不是 "Recognition language"，
+    /// "Overlay" 而不是 "Overlay position"）——栏名是一列表头，不是一句话。
+    /// 改之前先拍一张快照看对齐与裁字（见 SettingsSnapshotTests）。
+    static var labelWidth: CGFloat { 88 }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .frame(width: Self.labelWidth, alignment: .leading)
+            // 控件占满剩下的宽度、靠左：ⓘ 因此永远落在行末同一条竖线上，
+            // 不会因为这一行是个窄下拉就贴到下拉旁边去（各行 ⓘ 忽左忽右）
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let info = info { InfoButton(info) }
+        }
+    }
+}
+
+/// 一行开关 + 它自己的那颗 ⓘ（云端识别、联网搜索、输入页那几个开关共用这一个）。
+///
+/// 开关自带栏名，所以不走 SettingsFieldRow 那条"栏名列"——它要的是"标签在左、开关靠右"，
+/// 而那正是 Toggle 在 Form 里的默认长相。这里只负责把 ⓘ 接在最右边。
+struct SettingsToggleRow: View {
+    let label: String
+    @Binding var isOn: Bool
+    var info: String? = nil
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Toggle(label, isOn: $isOn)
+            if let info = info { InfoButton(info) }
+        }
+    }
+}
 
 /// 阿里云那一档的「接入地址（可选）」输入框（设置页与引导页共用这一个）。
 ///
@@ -39,7 +110,16 @@ struct QwenHostField: View {
     private static let settleDelay: TimeInterval = 0.8
 
     var body: some View {
-        TextField(tr("接入地址（可选）", "API host (optional)"), text: $text)
+        // 栏名只写 "API Host"，**不写「（可选）」**：一栏东西是不是可选，看它空着能不能用就知道了，
+        // 写在栏名里只是把每一行都拉长（用户 2026-09-22 点名了这两个字）。
+        // 去哪儿找这一串写在占位文字里，不再单起一行说明。
+        SettingsFieldRow(label: "API Host") {
+            TextField(text: $text,
+                      prompt: Text(tr("百炼控制台里的接入地址",
+                                      "API host from the Model Studio console"))) {
+                Text("API Host")
+            }
+            .labelsHidden()
             .textFieldStyle(.roundedBorder)
             .focused($focused)
             .onSubmit { commit() }
@@ -53,14 +133,13 @@ struct QwenHostField: View {
             .onChange(of: focused) { _, isFocused in
                 if !isFocused { commit() }
             }
-        // 控件旁边**永远只有一行**（Plan C 的预算）：填错了说错在哪，否则空着说默认、
-        // 填了说代价。三句话互斥，不叠着摆。
+        }
+        // **只在出问题时才有字**（4.3.2）：留空要自动探测、填了只用这一台——这两件事
+        // 由行为本身说，不再各占一行解释。填了个不像主机名的串才必须当场说，
+        // 否则他会以为自己已经把地址定下来了。
         if AlibabaEndpoint.storedHostIsJunk(text) {
             // **不删、不清空**，只说它现在不算数（用户 2026-09-21：上次填了什么就保持什么）
             Caption(SettingsCopy.hostMalformed, warning: true)
-        } else {
-            Caption(AlibabaEndpoint.normalizeHost(text) == nil
-                    ? SettingsCopy.hostAutoDetected : SettingsCopy.hostPinned)
         }
     }
 
@@ -108,12 +187,15 @@ struct ProviderPickerField: View {
     var showsNotSetUpHint: Bool = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            Picker(tr("服务商：", "Provider:"), selection: $selection) {
+        // 这一行没有 ⓘ（4.3.2）：原来那颗里讲的「验证通过才真的换过去」，
+        // 现在由右边那枚「正在使用 ✓」和下面那行「预览中，仍用 X」当场说掉了。
+        SettingsFieldRow(label: tr("服务商", "Provider")) {
+            Picker("", selection: $selection) {
                 ForEach(offered, id: \.rawValue) { provider in
                     Text(provider.segmentName).tag(provider)
                 }
             }
+            .labelsHidden()
             .pickerStyle(.segmented)
             if selection == inUse {
                 Text(SettingsCopy.providerInUse)
@@ -188,20 +270,26 @@ struct ModelPickerField: View {
                 // 下拉整个藏掉，指路「高级」里那两个输入框，而不是摆一个点了没反应的控件
                 Caption(SettingsCopy.modelNameInAdvanced)
             } else {
-                Picker(tr("模型：", "Model:"), selection: selection) {
-                    ForEach(menu, id: \.id) { choice in
-                        Text(LLMCatalog.modelLabel(choice)).tag(choice.id)
+                // 这一行没有 ⓘ、下面也没有说明（4.3.2）：下拉里每一项自己带着标签
+                //（「快（默认）」「旗舰」「最强」），而"润色和指令共用这一个型号"由
+                // **整页只有这一个型号下拉**这件事本身说清楚——再写一行等于替用户念一遍屏幕。
+                SettingsFieldRow(label: tr("模型", "Model")) {
+                    Picker("", selection: selection) {
+                        ForEach(menu, id: \.id) { choice in
+                            Text(LLMCatalog.modelLabel(choice)).tag(choice.id)
+                        }
+                        // 空串 = 「自定义…」：用户自己填型号名，或者他在「高级」里把润色和指令分开设过了
+                        Text(tr("自定义…", "Custom…")).tag("")
                     }
-                    // 空串 = 「自定义…」：用户自己填型号名，或者他在「高级」里把润色和指令分开设过了
-                    Text(tr("自定义…", "Custom…")).tag("")
+                    .labelsHidden()
                 }
                 if selection.wrappedValue.isEmpty {
-                    TextField(tr("型号名", "Model name"), text: customText)
-                        .textFieldStyle(.roundedBorder)
+                    SettingsFieldRow(label: tr("型号名", "Model name")) {
+                        TextField("", text: customText)
+                            .labelsHidden()
+                            .textFieldStyle(.roundedBorder)
+                    }
                 }
-                // 下拉下面唯一那一行：这一个选择管到哪儿。型号名不在这句话里重复
-                // （下拉自己写着它），型号各是什么来头收进段头那颗 ⓘ
-                Caption(SettingsCopy.modelUsedForBoth)
             }
         }
     }
@@ -250,6 +338,12 @@ struct CloudRecognitionFields: View {
     /// 把开关拨回去、换一把 Key——回来的那条旧结论绝不能落在新配置下面。
     @State private var checkGeneration = 0
 
+    /// 这一段那颗 ⓘ 按家给：两家的单价、留存口径、认不认词汇表都不一样。
+    /// 4.3.2 起它挂在开关那一行的右端（段标题没有了）。
+    private var cloudRecognitionInfo: String {
+        SettingsCopy.cloudRecognitionInfo(provider: asrProvider)
+    }
+
     /// 这一家开着的时候，识别引擎该是哪一档
     private var engineWhenOn: RecognitionEngineChoice {
         AISetup.engine(provider: provider, cloudRecognition: true)
@@ -297,7 +391,8 @@ struct CloudRecognitionFields: View {
     var body: some View {
         Group {
             // onChange 都挂在开关上（挂在 Group 上会被逐个子视图各触发一次）。
-            Toggle(tr("识别也用云端", "Also recognize speech in the cloud"), isOn: engineBinding)
+            SettingsToggleRow(label: tr("识别也用云端", "Also recognize speech in the cloud"),
+                           isOn: engineBinding, info: cloudRecognitionInfo)
                 // 引擎被别处改掉（「使用方式」切回只用本地、导入设置文件）：那句「可用 ✓」
                 // 不能挂在一个已经关掉的开关旁边。**失败那句留着**——它正是开关自己弹回去的原因，
                 // 擦掉它等于让开关无缘无故跳回 OFF。
@@ -473,7 +568,7 @@ struct CloudRecognitionFields: View {
 /// 结果同一个决定在两个地方读起来像两件事。现在连同这些一起收进这一个视图，
 /// 两处只剩下真正不同的那一点：设置页是"选了就生效"，引导页是"验证通过才采纳"
 /// （所以 Binding 的 setter 仍由调用方写，见 providerBinding 的两份注释）。
-struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
+struct CloudSetupCore<UsageNotices: View, ProviderNotices: View, CloudExtras: View>: View {
 
     /// 摆成 Form 的分段（设置页），还是摆成一串行（引导页那一屏是 VStack）
     enum Style { case settings, onboarding }
@@ -511,6 +606,13 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
     @ViewBuilder var usageNotices: () -> UsageNotices
     /// 「服务商」下面的边界状态（地址被改过、这一档还没 Key……）
     @ViewBuilder var providerNotices: () -> ProviderNotices
+    /// 第二张卡片里、云端识别开关**下面**再摆点什么。设置页塞的是「联网搜索」那一行
+    ///（两个开关都是"要不要多花钱"，同一张卡片才读得成一件事）；引导页什么都不塞——
+    /// 第一次上手的人不该在那一屏做这个决定。
+    @ViewBuilder var cloudExtras: () -> CloudExtras
+
+    /// 第二张卡片里除了云端识别之外还有没有东西（没有就连卡片都不摆）
+    private var hasCloudExtras: Bool { CloudExtras.self != EmptyView.self }
 
     /// Key 验证通过的次数。**一个动作管到底**（用户 2026-09-20 拍板：一个测试，不是三个）：
     /// 验一次 Key，下面开着的云端识别跟着重测一次。计数住在这里而不是两个调用方里，
@@ -551,51 +653,33 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
     private var settingsSections: some View {
         Section {
             usagePicker
-            // 这一档现在是什么，一行说完；两档各自的代价收在段头那颗 ⓘ 里
-            Caption(usageCaption)
             usageNotices()
-        } header: {
-            SectionHeader(title: usageTitle, info: SettingsCopy.usageInfo)
         }
         // 「只用本地」时下面一个控件都不摆：那一档的全部事实就是"不联网、不花钱"，
         // 再摆一排 AI 设置只会让人以为自己还有什么没配完
         if usingAI {
+            // 一张卡片装完"发给谁"：服务商 / API Key /（阿里云的）API Host / 模型。
+            // **没有段标题**——每一行自己带栏名（见文件头那张图）
             Section {
                 ProviderPickerField(selection: provider, offered: offered,
                                     inUse: inUse, showsNotSetUpHint: showsNotSetUpHint)
                 providerNotices()
-            } header: {
-                SectionHeader(title: providerTitle, info: SettingsCopy.providerInfo)
-            }
-            Section {
                 keyField
-            } header: {
-                SectionHeader(title: keyTitle, info: SettingsCopy.keyInfo(cloudASRProbe: keyProbe != .llm))
+                // 「API Host」只在阿里云这一档出现：只有百炼的控制台会给你一条 apiHost，
+                // OpenAI / DeepSeek 的地址是固定的，摆一个永远该留空的框只会让人以为自己漏填了
+                if showsHostField { hostField }
+                if showsModel { modelField }
             }
-            // 「接入地址」只在阿里云这一档出现：只有百炼的控制台会给你一条 apiHost，
-            // OpenAI / DeepSeek 的地址是固定的，摆一个永远该留空的框只会让人以为自己漏填了
-            if showsHostField {
+            // 第二张卡片装完"要不要多花钱开这两个开关"。两个开关各带一颗 ⓘ、
+            // 各带一行单价——这两行是**代价**，永远不许收进 ⓘ
+            if showsCloudRecognition || hasCloudExtras {
                 Section {
-                    hostField
-                } header: {
-                    SectionHeader(title: hostTitle, info: SettingsCopy.hostInfo)
-                }
-            }
-            if showsModel {
-                Section {
-                    modelField
-                } header: {
-                    SectionHeader(title: modelTitle,
-                                  info: SettingsCopy.cloudModelInfo(provider: selected))
-                }
-            }
-            if showsCloudRecognition {
-                Section {
-                    CloudRecognitionFields(keyVerifiedTick: keyVerifiedTick,
-                                           onEngineChange: onEngineChange,
-                                           provider: selected)
-                } header: {
-                    SectionHeader(title: cloudRecognitionTitle, info: cloudRecognitionInfo)
+                    if showsCloudRecognition {
+                        CloudRecognitionFields(keyVerifiedTick: keyVerifiedTick,
+                                               onEngineChange: onEngineChange,
+                                               provider: selected)
+                    }
+                    cloudExtras()
                 }
             }
         }
@@ -608,45 +692,39 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
         usagePicker
         usageNotices()
         if usingAI {
+            // 与设置页**逐行相同**（同样没有段标题、同样的栏名、同样三颗 ⓘ）——
+            // 只是这里没有 Form 的卡片外框
             ProviderPickerField(selection: provider, offered: offered,
                                 inUse: inUse, showsNotSetUpHint: showsNotSetUpHint)
             providerNotices()
-            SectionHeader(title: keyTitle, info: SettingsCopy.keyInfo(cloudASRProbe: keyProbe != .llm))
             keyField
-            if showsHostField {
-                SectionHeader(title: hostTitle, info: SettingsCopy.hostInfo)
-                hostField
-            }
-            if showsModel {
-                SectionHeader(title: modelTitle, info: SettingsCopy.cloudModelInfo(provider: selected))
-                modelField
-            }
+            if showsHostField { hostField }
+            if showsModel { modelField }
             if showsCloudRecognition {
-                SectionHeader(title: cloudRecognitionTitle, info: cloudRecognitionInfo)
                 CloudRecognitionFields(keyVerifiedTick: keyVerifiedTick,
                                        onEngineChange: onEngineChange,
                                        provider: selected)
             }
+            cloudExtras()
         }
     }
 
     // MARK: 控件本体（两种摆法共用这四个）
 
-    /// 这一档现在是什么，一行说完（哪一句由 SettingsCopy.usageCaption 这个纯函数判，单测钉死）
-    private var usageCaption: String {
-        SettingsCopy.usageCaption(mode: usageMode.wrappedValue, engine: engine)
-    }
-
-    /// 选择器自己不再带标签：上面那一行（设置页的段名 / 引导页的标题）写的就是「使用方式」，
-    /// 两处摆在一起读起来像排版坏了。无障碍那边仍然要有名字，所以补一条 accessibilityLabel。
+    /// 使用方式：一行栏名 + 一个二选一。**没有 ⓘ、没有说明行**（4.3.2）——
+    /// 两档各是什么，段里那两个词（「只用本地」「本地 + AI」）自己说得清；
+    /// 而"选了只用本地、钥匙串里那把 Key 还在按住说指令时计费"这类真要紧的事，
+    /// 由下面 usageNotices() 那几条边界状态在**真的发生时**当面说。
     private var usagePicker: some View {
-        Picker(tr("使用方式：", "How you use MicType:"), selection: usageMode) {
-            ForEach(AIUsageMode.allCases, id: \.rawValue) { mode in
-                Text(mode.displayName).tag(mode)
+        SettingsFieldRow(label: usageTitle) {
+            Picker("", selection: usageMode) {
+                ForEach(AIUsageMode.allCases, id: \.rawValue) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
             }
+            .labelsHidden()
+            .pickerStyle(.segmented)
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
         .accessibilityLabel(usageTitle)
     }
 
@@ -675,18 +753,7 @@ struct CloudSetupCore<UsageNotices: View, ProviderNotices: View>: View {
                          customChosen: customModelChosen)
     }
 
-    /// 这一段那颗 ⓘ 按家给：两家的单价、留存口径、认不认词汇表都不一样
-    private var cloudRecognitionInfo: String {
-        SettingsCopy.cloudRecognitionInfo(
-            provider: AISetup.engine(provider: selected, cloudRecognition: true).cloudProvider
-                ?? .alibaba)
-    }
-
-    // 段名只写一处：引导页指路「设置 → 云端 AI → …」时，用户要在那边认得出同一个名字
-    private var usageTitle: String { tr("使用方式", "How you use MicType") }
-    private var providerTitle: String { tr("服务商", "Provider") }
-    private var keyTitle: String { "API Key" }
-    private var hostTitle: String { tr("接入地址（可选）", "API host (optional)") }
-    private var modelTitle: String { tr("模型", "Model") }
-    private var cloudRecognitionTitle: String { tr("云端识别（可选）", "Cloud recognition (optional)") }
+    /// 栏名：英文那个要短（它和 API Key / API Host 共用一条 88pt 的栏名列），
+    /// 所以是 "Mode" 而不是 "How you use MicType"
+    private var usageTitle: String { tr("使用方式", "Mode") }
 }

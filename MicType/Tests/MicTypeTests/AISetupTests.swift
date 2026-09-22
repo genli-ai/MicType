@@ -129,23 +129,6 @@ final class AISetupTests: XCTestCase {
                        "qwen3.7-plus")
     }
 
-    /// 下拉下面那一行只说**这一个选择管到哪儿**（4.1.1：润色和指令永远同一个型号）。
-    /// 两件事必须拦住：① 不许再指路"分开设在高级"——那条路已经没有了；
-    /// ② 不许在这里重复型号名——下拉自己写着它，重复一遍就是同一个事实写两处。
-    func testModelCaptionSaysItCoversPolishAndCommands() {
-        L10n.shared.language = .zh
-        let zh = SettingsCopy.modelUsedForBoth
-        XCTAssertTrue(zh.contains("润色") && zh.contains("指令"), zh)
-        XCTAssertFalse(zh.contains("高级"), zh)
-        XCTAssertFalse(zh.contains("gpt"), zh)
-        L10n.shared.language = .en
-        let en = SettingsCopy.modelUsedForBoth.lowercased()
-        XCTAssertTrue(en.contains("polish") && en.contains("commands"), en)
-        XCTAssertFalse(en.contains("advanced"), en)
-        XCTAssertFalse(containsCJKOrFullWidth(SettingsCopy.modelUsedForBoth),
-                       SettingsCopy.modelUsedForBoth)
-    }
-
     /// 4.1.1 的一次性迁移：把「指令型号」拉回「润色型号」。
     /// 界面上分开设的入口已经没有了，留着两个不一样的值就是一条**改不动的设置**——
     /// 下拉显示「自定义…」，而按住说指令跑的是另一个型号、按另一个价钱计费。
@@ -462,7 +445,7 @@ final class AISetupTests: XCTestCase {
     /// Key 与费用那两句在两处界面逐字复用，英文侧同样不许有中文标点
     func testFixedKeyAndBillingCopyIsCleanInEnglish() {
         L10n.shared.language = .en
-        for copy in [LLMCatalog.keyStorageNote, LLMCatalog.billingNote, LLMCatalog.newAccountNote] {
+        for copy in [LLMCatalog.keyStorageNote, LLMCatalog.billingNote] {
             XCTAssertFalse(containsCJKOrFullWidth(copy), copy)
         }
     }

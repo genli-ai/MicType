@@ -35,18 +35,9 @@ enum SettingsCopy {
         tr("轻点听写，按住说指令", "Tap to dictate, hold to command")
     }
 
-    /// 静音自动停止关着时才说：开着的时候步进器已经把行为说全了
-    static var autoStopOff: String {
-        tr("默认关：什么时候说完你定", "Off by default: you decide when you are done")
-    }
-
     /// 只用云端、从没下过本机模型的人打开实时草稿开关什么也不会发生——当面说，别让他录一遍才发现
     static var draftNeedsLocalModel: String {
         tr("没有本机模型，草稿不出现", "No on-device model, so no draft appears")
-    }
-
-    static var draftOverlayOnly: String {
-        tr("草稿只出现在悬浮窗里", "The draft only shows in the overlay")
     }
 
     static var hotkeyInfo: String {
@@ -64,8 +55,8 @@ enum SettingsCopy {
     /// **"自动收尾不是丢弃"那一句不在这里写**：recordingLimitCopy 的末尾正写着
     /// 「到上限自动收尾，说过的内容全部识别并插入」——同一颗气泡里说两遍，读的人会以为是两件事。
     static var recordingInfo: String {
-        tr("草稿只在悬浮窗里，不落到光标处。\n",
-           "The live draft stays in the floating window and never reaches your cursor.\n")
+        tr("静音自动停止默认关着：什么时候说完由你决定。实时草稿只在悬浮窗里，不落到光标处。\n",
+           "Stopping after silence is off by default: you decide when you are done. The live draft stays in the floating window and never reaches your cursor.\n")
             + DictationController.recordingLimitCopy
     }
 
@@ -94,7 +85,7 @@ enum SettingsCopy {
     /// 「输入」页在屏幕上摆着的说明（录音上限那一行由 DictationController 现算，一并计入预算）。
     /// 4.1.6 起多了「写作偏好」那一段的三行（词汇表两句二选一 + 自定义规则的灰字 + 这一条）。
     static var inputCaptions: [String] {
-        [hotkeyGestures, autoStopOff, draftNeedsLocalModel, draftOverlayOnly,
+        [hotkeyGestures, draftNeedsLocalModel,
          DictationController.recordingLimitShort,
          vocabularyArabicTip, vocabularyHardReplace, customRulesPlaceholder, rulesNeedAI]
     }
@@ -106,10 +97,6 @@ enum SettingsCopy {
     }
 
     // MARK: - 本地识别
-
-    static var languageAutoIsFine: String {
-        tr("自动检测对中英文很准", "Automatic detection is reliable for Chinese and English")
-    }
 
     /// 云端的语言表比这张选单短：它不认识的语言码，提示根本送不出去
     static var cloudTakesNoHint: String {
@@ -141,8 +128,8 @@ enum SettingsCopy {
     }
 
     static var languageInfo: String {
-        tr("说小语种、或中英夹杂被判错时指定语言更稳，指定只影响识别。云端引擎读的是同一条设置：具体语言作为提示送过去，云端不认识的语言码一个提示都不会送。",
-           "Pick a language when you speak something else, or when mixed speech gets detected wrong; it only affects recognition. Cloud engines read the same setting: a specific language is sent as a hint, and a language the provider does not know is never sent at all.")
+        tr("自动检测对中英文很准，默认就好。说小语种、或中英夹杂被判错时指定语言更稳，指定只影响识别。云端引擎读的是同一条设置：具体语言作为提示送过去，云端不认识的语言码一个提示都不会送。",
+           "Automatic detection is reliable for Chinese and English, so the default is fine. Pick a language when you speak something else, or when mixed speech gets detected wrong; it only affects recognition. Cloud engines read the same setting: a specific language is sent as a hint, and a language the provider does not know is never sent at all.")
     }
 
     /// 识别模型那颗 ⓘ。
@@ -155,8 +142,8 @@ enum SettingsCopy {
     }
 
     static var vocabularyInfo: String {
-        tr("这些词作为热词直接送进识别模型，也参与 AI 润色纠错——专有名词准确率的第一杠杆。硬替换「杰文=捷文」零耗时，一个正写可挂多个错写「杰文|捷纹=捷文」。云端引擎吃同一张表。口水词内置。",
-           "These terms go to the speech model as hotwords and are used by AI polish — the number one lever for proper-noun accuracy. Hard replacement such as \"Jevin=Jaywen\" rewrites every occurrence at zero latency, and one correct form can take several wrong spellings: \"Jevin|Javin=Jaywen\". Cloud engines use the same list. Filler words are built in.")
+        tr("这些词作为热词直接送进本机识别模型与 OpenAI 云端识别，也参与 AI 润色纠错——专有名词准确率的第一杠杆。阿里云那一档识别时不认它，由润色纠正。硬替换「杰文=捷文」零耗时，一个正写可挂多个错写「杰文|捷纹=捷文」。口水词内置。",
+           "These terms go as hotwords to the on-device model and to OpenAI cloud recognition, and are used by AI polish — the number one lever for proper-noun accuracy. Alibaba Cloud recognition ignores them, so polish fixes those names afterwards. Hard replacement such as \"Jevin=Jaywen\" rewrites every occurrence at zero latency, and one correct form can take several wrong spellings: \"Jevin|Javin=Jaywen\". Filler words are built in.")
     }
 
     static var performanceInfo: String {
@@ -166,7 +153,7 @@ enum SettingsCopy {
 
     /// 4.1.6 起词汇表那两句不在这一页（控件搬去了「输入 → 写作偏好」）
     static var recognitionCaptions: [String] {
-        [languageAutoIsFine, cloudTakesNoHint, localModelStillUsed, performanceCloudRoundTrip]
+        [cloudTakesNoHint, localModelStillUsed, performanceCloudRoundTrip]
     }
 
     static var recognitionInfos: [String] {
@@ -175,41 +162,9 @@ enum SettingsCopy {
 
     // MARK: - 云端 AI
 
-    static var usageLocalOnly: String {
-        tr("不联网、不花钱、不填 Key", "No network, no cost, no key to fill in")
-    }
-
-    static var usageWithAI: String {
-        tr("本机识别，再交服务商润色", "Recognized on this Mac, then polished by your provider")
-    }
-
-    /// 同一段的第二种：**云端识别开着的时候**这一行绝不能还写着"本机识别"。
-    /// 4.1.0 之前这一行只看「使用方式」那一档，而 AISetup.mode 把"引擎是云端"也算成「本地 + AI」
-    /// ——于是开着阿里云识别的人，在这一页读到的第一句话是"识别在本机"，而每段录音都在上传。
-    static var usageWithCloudRecognition: String {
-        tr("云端识别，再交服务商润色", "Recognized in the cloud, then polished by your provider")
-    }
-
-    /// 「使用方式」那一段下面那一行到底说哪一句。**纯函数**：判错了不会崩，但会在
-    /// 每段录音都在上传的那一刻对着用户说"识别在本机"，所以由单测钉住。
-    ///
-    /// 判据是**识别引擎本身**，不是「使用方式」那一档——AISetup.mode 把"引擎是云端"也算成
-    /// 「本地 + AI」，只看档位就永远选不到云端那一句。
-    static func usageCaption(mode: AIUsageMode, engine: RecognitionEngineChoice) -> String {
-        guard mode != .localOnly else { return usageLocalOnly }
-        return engine.isCloud ? usageWithCloudRecognition : usageWithAI
-    }
-
     /// 其他兼容服务 / 本机模型没有内置型号：指路「高级」，而不是摆一个点了没反应的下拉
     static var modelNameInAdvanced: String {
         tr("型号名在下面的「高级」里填", "Type the model id under Advanced below")
-    }
-
-    /// 「模型」下拉下面那一行。**只说这一个选择管到哪里**：4.1.1 起润色和指令永远是同一个
-    /// 型号（用户 2026-09-20 拍板），"分开设"那条路连同「高级」里的两个输入框一起没了。
-    /// 型号名不在这句话里重复——下拉自己写着它。
-    static var modelUsedForBoth: String {
-        tr("润色和指令都用它", "Used for polish and commands")
     }
 
     /// 「自定义规则」那个框空着时里面的灰字。写两个**能照抄的**例子，而不是"请输入…"：
@@ -265,54 +220,30 @@ enum SettingsCopy {
 
     // MARK: 接入地址（只有阿里云有，见 QwenHostField）
 
-    /// 空着——也就是绝大多数人该有的样子
-    static var hostAutoDetected: String {
-        tr("留空自动挑最快的一台", "Leave empty to pick the fastest")
-    }
-
-    /// 填了。这一行是**代价**不是解释：填了就没有自动探测了，出问题也不会替他换一台
-    static var hostPinned: String {
-        tr("只用这一台，不再自动挑", "Only this host; no auto-detection")
-    }
-
     /// 填的东西拼不出主机名。**不删、不清空**，只说它现在不算数
     static var hostMalformed: String {
         tr("这串不像接入地址，暂不使用", "Not a hostname, so it is ignored for now")
     }
 
-    /// 接入地址那颗 ⓘ：**去哪儿找**是这一段唯一值得多说的事。
-    /// 今天（2026-09-21）实测的那件事也写进去：Key 里 `sk-ws-` 后面那一段并不是业务空间 ID，
-    /// 所以自动挑出来的那台可能不是控制台上写的那台——两台都能用，但用户想要哪台是他的自由。
-    static var hostInfo: String {
-        tr("留空时 MicType 自己并发试一圈，挑认这把 Key 又最快的那台。想固定用某一台，就填百炼控制台 API Key 页上的「接入地址（apiHost）」：填了之后润色、指令、云端识别全走它，不再自动挑，也不会因为一次失败被换掉。",
-           "Left empty, MicType probes the candidates in parallel and keeps the fastest one that accepts your key. To pin one, paste the API host shown on the API Key page of the Model Studio console: polish, commands and cloud recognition then all go there, with no auto-detection and no switching away after a failure.")
-    }
-
-    /// 使用方式那颗 ⓘ。两句话都**只许说代码真会做的事**：
-    ///   • 「只用本地」写回的是"润色关掉 + 识别回本机"（AISetup.localOnlyWrites），**不删 Key**，
-    ///     而指令路径只看 LLMClient.isConfigured、不看档位——所以这一档下按住说指令照样会计费
-    ///     （storedKeyWhileLocalOnly 那条边界说的就是这件事）。写成"那一档没有指令"就是当面说假话。
-    ///   • 「本地 + AI」下识别在哪儿，由下面那个「云端识别」开关决定，不是这一档决定的。
-    static var usageInfo: String {
-        tr("「只用本地」：识别和输入全在这台 Mac 上，不联网、不花钱；按住说指令仍然要有 Key，这一档不替你删 Key。\n「本地 + AI」：文字交给你选的服务商润色，按住说指令也走这家；识别在本机还是云端，看阿里云档下那个开关。",
-           "On-device only: recognition and typing all happen on this Mac — no network, no cost. Hold-to-command still needs a key, and this mode does not remove one.\nOn-device + AI: your text is polished by the provider you pick, and hold-to-command uses the same one; whether recognition runs here or in the cloud is set by the Cloud recognition switch under Alibaba Cloud.")
-    }
-
-    /// 服务商那颗 ⓘ。4.1.1 起第一句必须说清**什么时候才算换过去**：选择器点一下只是预览，
-    /// 钥匙串里有这一档的 Key 才真的换（AISetup.adoptsProvider）。选择器旁边那枚
-    /// 「正在使用 ✓」写的就是这一刻生效的是哪一家。
-    static var providerInfo: String {
-        tr("换一家只要贴那一家的 Key，验证通过才真的换过去；每档各有一条钥匙串条目，换回来不用重贴。\n「其他 OpenAI 兼容服务」与「本机模型」改由「导入设置…」配置。",
-           "Switching means pasting that provider's key, and the switch takes effect only once that key verifies. Each provider has its own Keychain entry, so switching back needs no re-paste.\nOther OpenAI-compatible services and on-device models are configured through Import Settings now.")
-    }
-
-    /// Key 那颗 ⓘ。存储与费用两句必须逐字引用 LLMCatalog（全 App 唯一出处）。
-    /// - cloudASRProbe: 这把 Key 走的是识别端点而不是润色那条链路（开着云端识别的阿里云档）
-    static func keyInfo(cloudASRProbe: Bool) -> String {
-        let base = LLMCatalog.keyStorageNote + "\n" + LLMCatalog.newAccountNote
-        guard cloudASRProbe else { return base }
-        return base + "\n" + tr("开着云端识别，这把 Key 直接拿识别端点验，连模型有没有开通一起验到。",
-                                "With cloud recognition on, the key is verified against the recognition endpoint, which also proves the model is enabled.")
+    /// Key 那一行右端那颗 ⓘ——**整页只剩三颗之一**（4.3.2）。
+    ///
+    /// 存储与费用两句必须逐字引用 LLMCatalog（全 App 唯一出处）。费用那句 4.3.2 之前
+    /// 是常驻在输入框下面的一行字：它一天要被同一个人读一百遍，而它说的事一个月也用不上
+    /// 一次——所以收进这颗 ⓘ（用户 2026-09-22 嫌这一页冗余，这是最该收的一行）。
+    ///
+    /// **「新账号要先充值」那句删了**：余额不足时 429 那条错误话术会当面说，还带一个
+    /// 「去充值」的链接（LLMCatalog.describeHTTPError）——在真的撞上之前先讲一遍，
+    /// 属于"预支的焦虑"。
+    /// **「开着云端识别就拿识别端点验」那句也删了**：验完的状态行写的是
+    /// 「已连通 ✓ 阿里云 · qwen3-asr-flash」，它自己就把这件事演示了一遍。
+    ///
+    /// - hostField: 这一档下面跟着 API Host 那一行（只有阿里云）。那一栏没有自己的 ⓘ，
+    ///   "去哪儿找这一串"就挂在这里——它和 Key 本来就印在百炼控制台的同一页上。
+    static func keyInfo(hostField: Bool) -> String {
+        let base = LLMCatalog.keyStorageNote + "\n" + LLMCatalog.billingNote
+        guard hostField else { return base }
+        return base + "\n" + tr("API Host 留空即自动选择；要固定就填百炼控制台的接入地址。",
+                                "Leave API Host empty to choose automatically, or paste the host from the Model Studio console to pin it.")
     }
 
     /// 云端识别那颗 ⓘ：上传、计费、留存、回落——每家各一份。
@@ -325,11 +256,23 @@ enum SettingsCopy {
     /// OpenAI 的数据政策照它官方文档写（2026-09-21 查证，developers.openai.com 的
     /// 「Your data」页）：API 数据默认不用于训练，滥用监控日志最多保留 30 天。
     /// **不许凭印象写**——查不到就只说"以服务商的政策为准"。
+    ///
+    /// 阿里云那一份 4.3.2 多了一句"识别时不认词汇表"，那是 2026-09-22 拿真 Key 测出来的：
+    /// `qwen3-asr-flash-realtime` 对 vocabulary / hotwords / phrase_list / context / prompt /
+    /// corpus.text / corpus_text **全都无效或直接丢弃**——这一档在识别环节没有任何通道能
+    /// 把词汇表送进去。专名是靠润色（润色 prompt 带着词汇表，实测能把 MixType→MicType、
+    /// Quin 三点零→Qwen 3.0 纠回来）和「错写=正写」硬替换补的。用户按这个开关之前有权知道。
+    ///
+    /// 为了塞下这句话（120 字硬预算），删掉了阿里云那一份里的两句：
+    ///   • 「第一次用之前要在百炼控制台把这个模型开通一次」——没开通的表现是拨开开关当场
+    ///     报 403，而那句错误话术本来就指着「模型广场」（AlibabaASRClient.failure）；
+    ///   • 「出错时自动改用本机模型再识别一遍」——真回落时悬浮窗会当面说
+    ///     （CloudFallbackDecision.fallbackNote），不必预先讲一遍。
     static func cloudRecognitionInfo(provider: CloudASRProvider) -> String {
         switch provider {
         case .alibaba:
-            return tr("每段录音在你说话的同时就传给阿里云，按音频秒数计费（约每小时 0.13 美元）。第一次用之前要在百炼控制台把这个模型开通一次。阿里云声明不拿这些数据训练模型，但会保存调用数据，没有公布保留期。出错时自动改用本机模型再识别一遍。",
-                      "Every recording streams to Alibaba Cloud while you speak, billed by the second (about $0.13 per hour) directly by the provider. Before the first use, enable the model once in the Alibaba Cloud Model Studio console. Alibaba Cloud states this data is not used to train models, but it does store data generated by API calls, with no published retention period. If the cloud call fails, MicType re-runs recognition on this Mac.")
+            return tr("每段录音在你说话的同时就传给阿里云，按音频秒数计费（约每小时 0.13 美元）。阿里云声明不拿这些数据训练模型，但会保存调用数据，没有公布保留期。这一档识别时不认词汇表，专名由润色按词汇表纠正；要识别时就认，用 OpenAI 那一档。",
+                      "Every recording streams to Alibaba Cloud while you speak, billed by the second (about $0.13 per hour) directly by the provider. Alibaba Cloud states this data is not used to train models, but it does store data generated by API calls, with no published retention period. This engine ignores your vocabulary while recognizing; proper nouns are fixed afterwards by polish, which does use it. Pick OpenAI to have the vocabulary honoured during recognition itself.")
         case .openai:
             return tr("每段录音在你说话的同时就传给 OpenAI，按分钟计费（约每小时 1 美元，是阿里云那一档的数倍）。它认你的词汇表，专名更准。OpenAI 声明 API 数据默认不用于训练，滥用监控日志最多留 30 天。出错时自动改用本机模型再识别一遍。",
                       "Every recording streams to OpenAI while you speak, billed per minute (about $1 per hour, several times the Alibaba Cloud option) directly by the provider. It honours your vocabulary, so proper nouns come out right. OpenAI states API data is not used to train its models by default, and abuse-monitoring logs are kept for up to 30 days. If the cloud call fails, MicType re-runs recognition on this Mac.")
@@ -344,34 +287,6 @@ enum SettingsCopy {
     static var customRulesInfo: String {
         tr("写给 AI 的长期偏好：署名用 Gen、邮件偏正式、英文术语保留原文、数字用阿拉伯数字。每次润色和每条语音指令都会带上它，轻点听写不润色时不发。",
            "Long-standing preferences for the AI: sign as Gen, keep email formal, leave English jargon untranslated, use Arabic numerals. It travels with every polish and every voice command, and goes nowhere when polish is off.")
-    }
-
-    /// 「模型」那颗 ⓘ：这一家的型号各是什么来头。**这句话属于做选择的地方**——
-    /// 4.1.0 之前它挂在「高级」那颗 ⓘ 上，而下拉就在上面一段，要点开另一段才读得到。
-    /// 每一档都要过 120 字那条线。
-    static func cloudModelInfo(provider: LLMProvider) -> String {
-        // 「刷新模型列表」那句**只写给没有内置清单的那两档**：4.1.4 起三家官方档
-        // 连「高级」这一段都不渲染（见 SettingsEditors.modelMaintenance），
-        // 指着一个不存在的控件，用户会以为界面少了东西。
-        let shared = tr("润色每句话都要跑一次，指令偶尔跑一次，两者用同一个型号。换代之后旧型号名可能直接 404。",
-                        "Polish runs on every sentence and commands run now and then; both use this one model. After a generation change an old model id can simply 404.")
-        switch provider {
-        case .openai:
-            return shared + tr("\n默认 luna：最快也最便宜。terra 平衡，sol 旗舰，astra 最强也最贵——越强越慢。",
-                               "\nluna is the default: fastest and cheapest. terra is balanced, sol is the flagship, astra is the strongest and priciest - stronger also means slower.")
-        case .deepseek:
-            return shared + tr("\n默认 deepseek-flash：快且便宜，润色时不思考。deepseek-v4-pro 更强，但每句话都要多等。",
-                               "\ndeepseek-flash is the default: fast and cheap, with no thinking for polish. deepseek-v4-pro is stronger but adds a wait to every sentence.")
-        case .qwen:
-            return shared + tr("\n默认 qwen3.8-flash：实测润色 2–4 秒。qwen3.8-max 更强但要 4–12 秒，长句会撞上超时。",
-                               "\nqwen3.8-flash is the default: 2-4 seconds for polish in practice. qwen3.8-max is stronger but takes 4-12 seconds, and long sentences can hit the timeout.")
-        case .custom:
-            return shared + tr("\n这一档没有内置清单：型号名照服务商文档填，设置页「高级」里的「刷新」问端点现在有哪些。",
-                               "\nNo built-in list here: type the model id from your provider's docs, or hit Refresh under Advanced in Settings.")
-        case .local:
-            return shared + tr("\n填你本机已经拉下来的模型名，例如 Ollama 里的 llama3.1:8b；设置页「高级」里的「刷新」问它现在有哪些。",
-                               "\nUse a model you have pulled locally, such as llama3.1:8b in Ollama, or hit Refresh under Advanced in Settings.")
-        }
     }
 
     /// 「高级」那颗 ⓘ。4.1.4 起这一段**只为没有内置型号清单的那两档渲染**
@@ -399,21 +314,22 @@ enum SettingsCopy {
     // 而屏幕上没有那个开关之后，这两句话一句也没有落脚的地方。代价改在 关于 → 隐私 说一次
     //（PrivacyCopy.fastTier）；服务商实际给了哪一档照常进 Metrics 与诊断信息。
 
-    /// 4.1.6 起自定义规则那行灰字不在这一页（控件搬去了「输入 → 写作偏好」）
+    /// 这一页**常驻**在屏幕上的说明行。4.3.2 砍到只剩"带着钱或隐私"的那几条
+    ///（用户 2026-09-22：这一页太冗余）——删掉的是使用方式下那句、模型下那句、
+    /// Key 下那行费用、接入地址下那两句。剩下的几条要么是价钱，要么只在出事时才出现。
     static var cloudCaptions: [String] {
-        [usageLocalOnly, usageWithAI, usageWithCloudRecognition,
-         providerNotSetUp(current: "OpenAI"), modelNameInAdvanced, modelUsedForBoth,
-         localModelNeedsNoKey, hostAutoDetected, hostPinned, hostMalformed,
+        [providerNotSetUp(current: "OpenAI"), modelNameInAdvanced,
+         localModelNeedsNoKey, hostMalformed,
          cloudRecognitionCost, cloudRecognitionOff,
          webSearchUnsupported]
     }
 
-    /// 4.1.6 少了两颗：customRulesInfo 跟着控件搬去「输入」页，priorityInfo 连同整段一起删了
+    /// 4.3.2 起整页只剩三颗 ⓘ：API Key、识别也用云端（按家两份）、联网搜索。
+    /// advancedInfo 只在自定义端点 / 本机模型那两档的「高级」里出现，也算这一页头上。
     static var cloudInfos: [String] {
-        [usageInfo, providerInfo, keyInfo(cloudASRProbe: false), keyInfo(cloudASRProbe: true),
+        [keyInfo(hostField: false), keyInfo(hostField: true),
          cloudRecognitionInfo(provider: .alibaba), cloudRecognitionInfo(provider: .openai),
-         hostInfo, webSearchInfo, advancedInfo]
-            + LLMProvider.allCases.map { cloudModelInfo(provider: $0) }
+         webSearchInfo, advancedInfo]
     }
 
     // MARK: - 概览（权限横幅：缺了才出现，一行 + 一颗按钮）
