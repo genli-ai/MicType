@@ -487,8 +487,8 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
     func makeRequest(wav: Data, seconds: Double, context: String?) -> Result<URLRequest, CloudASRFailure> {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else {
-            return .failure(CloudASRFailure(tr("还没有填阿里云 API Key（设置 → 云端 AI）",
-                                               "No Alibaba API key yet (Settings → Cloud AI)")))
+            return .failure(CloudASRFailure(tr("还没有填阿里云 API Key（去「设置」）",
+                                               "No Alibaba API key yet (open Settings)")))
         }
         if let failure = Self.precheck(base64Length: WAVEncoder.base64Length(forByteCount: wav.count),
                                        seconds: seconds) {
@@ -687,8 +687,9 @@ struct AlibabaASRClient: CloudTranscriptionProviding {
             // 与粘 Key 那两趟上（见 CloudASRProbe.runTryingModels），日常听写这条路不换模型。
             // 说成已经试过，用户就不会再去做那个真能救他的动作。
             // 4.1.4 起那个动作是"开关关掉再打开"——「测试识别」按钮已经并进它了。
-            return made("这个接入地址上没有这个识别模型。请到百炼控制台 → 模型广场开通 qwen3-asr-flash，或在 设置 → 云端 AI 里把「识别也用云端」关掉再打开，让 MicType 自动换到它",
-                        "This endpoint has no such speech model. Enable qwen3-asr-flash in the Model Studio console → Model Gallery, or switch \"Also recognize speech in the cloud\" off and on again under Settings → Cloud AI so MicType switches to it")
+            // 5.0.0 起没有那个"关掉再打开"的开关了，所以只剩去控制台开通这一条路
+            return made("这个接入地址上没有这个识别模型。请到百炼控制台 → 模型广场开通 qwen3-asr-flash",
+                        "This endpoint has no such speech model. Enable qwen3-asr-flash in the Model Studio console → Model Gallery")
         case 429:
             // 只认 AllocationQuota：Throttling.RateQuota 里也有 "quota" 字样，但那是限流，该重试
             if raw.localizedCaseInsensitiveContains("allocation") {
@@ -793,8 +794,8 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
     func makeRequest(wav: Data, seconds: Double, context: String?) -> Result<URLRequest, CloudASRFailure> {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else {
-            return .failure(CloudASRFailure(tr("还没有填 OpenAI API Key（设置 → 云端 AI）",
-                                               "No OpenAI API key yet (Settings → Cloud AI)")))
+            return .failure(CloudASRFailure(tr("还没有填 OpenAI API Key（去「设置」）",
+                                               "No OpenAI API key yet (open Settings)")))
         }
         if let failure = Self.precheck(fileBytes: wav.count) { return .failure(failure) }
         guard let url = URL(string: Self.endpointString) else {
@@ -872,8 +873,8 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
 
         switch status {
         case 401:
-            return made("OpenAI Key 无效或已被吊销。请在 设置 → 云端 AI 里重填（这把 Key 与润色用的是同一把）",
-                        "The OpenAI key is invalid or revoked. Re-enter it in Settings → Cloud AI (same key the polish step uses)")
+            return made("OpenAI Key 无效或已被吊销。请在「设置」里重填（听写、润色、指令用的是同一把）",
+                        "The OpenAI key is invalid or revoked. Re-enter it in Settings (dictation, polish and commands share one key)")
         case 403:
             return made("这把 Key 没有调用该模型的权限。请在 OpenAI 控制台确认项目权限",
                         "This key is not allowed to call the model. Check the project permissions in the OpenAI console")

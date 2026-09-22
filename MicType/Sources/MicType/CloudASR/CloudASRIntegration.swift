@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 // MARK: - 云端识别的接线层（Settings ↔ CloudASREngine）
 //
@@ -6,40 +7,43 @@ import Foundation
 // 那些决定全在这一层，而且**全写成纯函数**：语言提示怎么来、接入地址怎么定、云端炸了要不要
 // 回落本地——每一条都能在单测里钉死，不用真的花钱调云端。
 //
-// 铁律（用户拍板，别动）：
-//   • 本地识别是默认档，云端是用户**显式**选的；
-//   • 选了云端才会有音频离开这台 Mac，按秒计费的事实必须当面写清楚；
-//   • 云端失败要有退路（本地模型在就本地重跑），但绝不自动改用户的设置。
+// 铁律（用户 2026-09-22 拍板，5.0.0 起）：
+//   • 识别**只有云端**一条路（本机 Qwen3-ASR 整条链路已删）；
+//   • 用哪一家不是一条单独的设置，跟着生效服务商走；
+//   • 录音按秒计费的事实必须当面写清楚；
+//   • 云端失败的退路是**同一家的同步接口重试一次**，再失败就如实报错，绝不自动改用户的设置。
 
 // MARK: - 识别引擎档位
 
-/// 设置里存的识别引擎。默认 local——音频不出机那一档永远是默认值。
+/// 这一刻走哪一家的云端识别。**不再是一条设置**（5.0.0 起由 Settings.recognitionEngine
+/// 从生效服务商推出来）；留成枚举是因为整条云端链路（配置组装、就绪判定、日志、
+/// 设置导入摘要）都按它工作。
 enum RecognitionEngineChoice: String, CaseIterable {
-    case local
     case cloudAlibaba
     case cloudOpenAI
 
-    /// 脏值一律回落本地：一条坏设置绝不能把音频送上云端
+    /// 脏值回落阿里云那一档只是个形式：调用方拿到的值一律由服务商推出来，
+    /// 这条路只剩设置导入摘要在用。
     static func parse(_ raw: String) -> RecognitionEngineChoice {
-        RecognitionEngineChoice(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines)) ?? .local
+        RecognitionEngineChoice(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines))
+            ?? .cloudAlibaba
     }
 
-    var isCloud: Bool { self != .local }
+    /// 恒真（5.0.0 起识别只有云端）。留着是因为它读起来比 `true` 说明意图。
+    var isCloud: Bool { true }
 
-    /// 对应的云端供应商（本地档没有）
-    var cloudProvider: CloudASRProvider? {
+    /// 对应的云端供应商
+    var cloudProvider: CloudASRProvider {
         switch self {
-        case .local: return nil
         case .cloudAlibaba: return .alibaba
         case .cloudOpenAI: return .openai
         }
     }
 
-    /// 这一档的名字。4.0.1 起界面上没有「识别引擎」选择器了（云端识别只剩 AI 页上
-    /// 阿里云那一个开关），所以这串只出现在设置导入摘要、日志与诊断信息里。
+    /// 这一档的名字。界面上没有「识别引擎」选择器，所以这串只出现在设置导入摘要、
+    /// 日志与诊断信息里。
     var displayName: String {
         switch self {
-        case .local: return tr("本地 Qwen3-ASR（默认）", "On-device Qwen3-ASR (default)")
         case .cloudAlibaba: return tr("云端 · 阿里云", "Cloud · Alibaba")
         case .cloudOpenAI: return tr("云端 · OpenAI", "Cloud · OpenAI")
         }
@@ -54,36 +58,16 @@ enum CloudASRSettings {
 
     // MARK: 语言提示
 
-    /// 识别语言 → 云端的 language_hints。
+    /// 词汇表 → 云端的 language_hints。
     ///
-    /// 两档，和本机引擎同一套规矩（永远不猜）：
-    ///   • 用户显式选了某种语言 → 就送这一个代码；云端不认识这个码（荷兰语、波斯语…）就
-    ///     一个提示都不送，让云端自己判——送一个它不认识的码只会被判 InvalidParameter。
-    ///   • Auto → 默认什么都不送。**只有**词汇表里同时有中日韩文字和西文词条时才送
-    ///     ["zh","en"]：那是用户自己的词表在说"这是一场中英夹杂的口述"，不是我们替他猜的。
-    static func languageHints(recognitionLanguage: String, vocabulary: [String]) -> [String] {
-        let code = recognitionLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if !code.isEmpty, code != "auto" {
-            return CloudASRLanguage.sanitize(hints: [code])
-        }
+    /// 5.0.0 起**没有「识别语言」这条设置了**（用户 2026-09-22 拍板：设置页只做一个决定），
+    /// 所以这里只剩原来那条 Auto 的规矩：默认什么都不送；**只有**词汇表里同时有
+    /// 中日韩文字和西文词条时才送 ["zh","en"]——那是用户自己的词表在说"这是一场中英夹杂
+    /// 的口述"，不是我们替他猜的。
+    static func languageHints(vocabulary: [String]) -> [String] {
         let hasCJK = vocabulary.contains { containsCJK($0) }
         let hasLatin = vocabulary.contains { containsLatinLetter($0) }
         return (hasCJK && hasLatin) ? ["zh", "en"] : []
-    }
-
-    /// 选了具体语言时，这条提示云端到底收不收得到。
-    ///
-    /// 为什么要单独有这个判据：识别语言那张表有 30 种，云端的语言表比它短
-    /// （nl / fa / el / ro / hu / mk 不在里面），送一个云端不认识的码只会被判 InvalidParameter，
-    /// 所以 sanitize 一律滤掉——**但界面上那句「选了具体语言就作为语言提示送过去」是无条件的**。
-    /// 用户挑语言的动机恰恰是"说小语种更稳"，被滤掉的又恰恰全是小语种：提示没送出去、
-    /// 云端照常自动检测、界面却说已经送了。所以设置页要按这个判据换一句话。
-    /// 「自动」与空值返回 true：那一档本来就不送提示，界面说的就是"交给云端判"。
-    static func cloudHintDelivered(recognitionLanguage: String) -> Bool {
-        let code = recognitionLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !code.isEmpty, code != "auto" else { return true }
-        // 走 sanitize 而不是自己查表：与真正送出去的那条路同源，改一处两处一起变
-        return !CloudASRLanguage.sanitize(hints: [code]).isEmpty
     }
 
     static func containsCJK(_ text: String) -> Bool {
@@ -228,14 +212,12 @@ enum CloudASRSettings {
     static func config(provider: CloudASRProvider,
                        alibabaModel: AlibabaASRModel,
                        host: String,
-                       recognitionLanguage: String,
                        vocabulary: [String],
                        apiKey: String) -> CloudASRConfig {
         CloudASRConfig(provider: provider,
                        alibabaModel: alibabaModel,
                        host: AlibabaEndpoint.normalizeHost(host) ?? AlibabaEndpoint.defaultHost,
-                       languageHints: languageHints(recognitionLanguage: recognitionLanguage,
-                                                    vocabulary: vocabulary),
+                       languageHints: languageHints(vocabulary: vocabulary),
                        // 词表按权重 4 送进热词（权重与过滤规则在 AlibabaASRClient）
                        vocabulary: vocabulary,
                        apiKey: apiKey,
@@ -244,11 +226,11 @@ enum CloudASRSettings {
                        enableITN: false)
     }
 
-    /// 当前设置下的配置。nil = 本地档（这一档没有云端配置可言）。
-    /// 4.0.1 起它不再因为"区域没有接入点"而返回 nil：区域这个概念已经没有了。
-    static func currentConfig() -> CloudASRConfig? {
+    /// 当前设置下的配置。5.0.0 起**永远拿得到**（识别只有云端，用哪一家跟着服务商走）；
+    /// Key 可能是空串，那由 RecognitionEngineReadiness 在按下热键那一刻当面拦。
+    static func currentConfig() -> CloudASRConfig {
         let s = Settings.shared
-        guard let provider = s.recognitionEngine.cloudProvider else { return nil }
+        let provider = s.recognitionEngine.cloudProvider
         let apiKey = KeychainHelper.loadCloudASRKey(for: provider) ?? ""
         return config(provider: provider,
                       alibabaModel: s.cloudAlibabaModel,
@@ -257,7 +239,6 @@ enum CloudASRSettings {
                                         workspace: s.qwenWorkspaceID,
                                         legacyRegionSlug: s.qwenRegion.regionSlug,
                                         apiKey: apiKey),
-                      recognitionLanguage: s.recognitionLanguage,
                       vocabulary: s.vocabularyTerms,
                       apiKey: apiKey)
     }
@@ -273,10 +254,9 @@ enum CloudASRSettings {
         LLMClient.usesResponsesAPI(baseURL: Settings.shared.baseURL(for: .openai))
     }
 
-    /// 这一档的 Key 在钥匙串里吗（本地档没有 Key 的概念，返回 true）
+    /// 这一档的 Key 在钥匙串里吗
     static func hasKey(for choice: RecognitionEngineChoice) -> Bool {
-        guard let provider = choice.cloudProvider else { return true }
-        let key = KeychainHelper.loadCloudASRKey(for: provider) ?? ""
+        let key = KeychainHelper.loadCloudASRKey(for: choice.cloudProvider) ?? ""
         return !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
@@ -313,6 +293,53 @@ enum CloudRecognitionCheckMemory {
     }
 }
 
+// MARK: - 这台机器有没有网
+
+/// 5.0.0 起识别、润色、指令三件事全在云端，所以"没网"从一个偶发的失败变成了
+/// **按下热键那一刻就该当面说清的状态**——否则用户说完一整段，等来的是一句
+/// 看不懂的传输错误，而他要做的事（连上网）和那句话毫无关系。
+///
+/// 三条纪律：
+///   • **拿不准就放行**：监视器还没报过第一次、或者 Network 框架说不清楚时一律算"有网"。
+///     误拦一次听写（明明有网却不让录）比误放一次糟得多——误放最多是一句正常的失败提示。
+///   • 只读一个布尔，**绝不在按键路径上做同步网络调用**。
+///   • 不区分 Wi-Fi / 蜂窝 / 有线：用户要做的事都是一样的。
+enum NetworkReachability {
+
+    private static let lock = NSLock()
+    private static var online = true
+    private static var monitor: NWPathMonitor?
+
+    /// 启动时开一次（AppDelegate）。没开过也不影响正确性——那时 isOnline 恒为 true。
+    static func start() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard monitor == nil else { return }
+        let m = NWPathMonitor()
+        m.pathUpdateHandler = { path in
+            let next = path.status != .unsatisfied
+            lock.lock()
+            let changed = next != online
+            online = next
+            lock.unlock()
+            if changed { Log.info("Network reachability online=\(next)") }
+        }
+        m.start(queue: DispatchQueue.global(qos: .utility))
+        monitor = m
+    }
+
+    static var isOnline: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return online
+    }
+
+    /// 单测用：直接设定这一位（跑完记得设回 true）
+    static func setForTesting(online value: Bool) {
+        lock.lock(); online = value; lock.unlock()
+    }
+}
+
 // MARK: - 开录之前的可用性判定
 
 /// 按下热键这一刻，当前这一档识别引擎能不能开工。
@@ -320,54 +347,49 @@ enum CloudRecognitionCheckMemory {
 /// 「模型没下载」和「云端没填 Key」指向的是两个完全不同的落点。
 enum RecognitionEngineReadiness: Equatable {
     case ready
-    /// 本地档但模型没下载
-    case localModelMissing
-    /// 云端档但钥匙串里没有 Key
+    /// 钥匙串里没有这一家的 Key——5.0.0 起这一档下**连听写都不能用**（识别也在云端）
     case cloudKeyMissing(CloudASRProvider)
+    /// 这台机器这会儿没有网。识别、润色、指令三件事全在云端，没网就是全都做不了，
+    /// 而"Key 没填"和"没网"要用户做的事完全不同——混成一句话会把人支去重贴 Key。
+    case offline
 
-    /// 当前设置下的就绪状态（读 Settings + 钥匙串）。听写入口与启动路由共用同一个判据：
-    /// 选了云端的人不该在启动时被拽去下载一个他明确决定不下的模型。
+    /// 当前设置下的就绪状态（读 Settings + 钥匙串）。
     static func current() -> RecognitionEngineReadiness {
-        let choice = Settings.shared.recognitionEngine
-        return evaluate(choice: choice,
-                        localModelAvailable: QwenEngine.shared.isModelAvailable,
-                        hasCloudKey: CloudASRSettings.hasKey(for: choice))
+        evaluate(choice: Settings.shared.recognitionEngine,
+                 hasCloudKey: CloudASRSettings.hasKey(for: Settings.shared.recognitionEngine),
+                 online: NetworkReachability.isOnline)
     }
 
-    /// 4.0.1 起只剩两个闸门：本地档看模型在不在，云端档看有没有 Key。
-    /// 原来还有一个「这个区域没有识别接入点」——区域选择器已经拿掉了（用户拍板），
-    /// 接入地址改成 App 自己试，配不出地址这件事不再存在。
+    /// 两个闸门（纯函数，单测钉死）：**先问 Key**。
+    /// 没填 Key 的人就算这会儿断网，他要做的第一件事也是去填 Key；
+    /// 反过来，Key 好好的人突然按不出字，八成就是网没了。
     static func evaluate(choice: RecognitionEngineChoice,
-                         localModelAvailable: Bool,
-                         hasCloudKey: Bool) -> RecognitionEngineReadiness {
-        guard let provider = choice.cloudProvider else {
-            return localModelAvailable ? .ready : .localModelMissing
-        }
-        return hasCloudKey ? .ready : .cloudKeyMissing(provider)
+                         hasCloudKey: Bool, online: Bool) -> RecognitionEngineReadiness {
+        guard hasCloudKey else { return .cloudKeyMissing(choice.cloudProvider) }
+        return online ? .ready : .offline
     }
 
     var isReady: Bool { self == .ready }
 
-    /// 悬浮窗上那句话。云端两档都明确指向 设置 → 云端 AI（胶囊按钮会把那一页直接打开）：
-    /// 4.0.1 起云端识别的开关和那把 Key 都在那一页上。
+    /// 悬浮窗上那句话。缺 Key 那一档明确指向设置（胶囊按钮会把设置窗口直接打开）。
     var message: String {
         switch self {
         case .ready:
             return ""
-        case .localModelMissing:
-            // 与 DictationController 既有文案逐字一致：模型缺失时打开的是引导的下载页
-            return tr("识别模型未下载——已为你打开下载页",
-                      "Speech model not downloaded - opening the download page")
         case .cloudKeyMissing(let provider):
-            return tr("当前用的是\(provider.displayName)，但还没填 API Key（设置 → 云端 AI）",
-                      "Cloud recognition (\(provider.displayName)) has no API key yet (Settings → Cloud AI)")
+            return tr("还没填\(provider.displayName)的 API Key——听写和指令都要用它",
+                      "No API key for \(provider.displayName) yet - dictation and commands both need one")
+        case .offline:
+            return tr("这台 Mac 现在没有网络，识别要联网才能跑",
+                      "This Mac is offline, and recognition needs a connection")
         }
     }
 
-    /// 云端那一档给一个可点的胶囊（和「去配置」同一套机制），本地档沿用旧的下载页跳转
+    /// 缺 Key 那一档给一个可点的胶囊（和「去配置」同一套机制）。
+    /// 没网那一档不给：设置页上没有任何一个开关能把网接回来。
     var settingsChipLabel: String? {
         switch self {
-        case .ready, .localModelMissing: return nil
+        case .ready, .offline: return nil
         case .cloudKeyMissing: return tr("去设置", "Open settings")
         }
     }
@@ -375,29 +397,39 @@ enum RecognitionEngineReadiness: Equatable {
 
 // MARK: - 云端失败之后怎么办
 
-/// 云端识别失败时这一轮该往哪走。**引擎不做这个决定**（它只报失败详情），因为"要不要回落、
+/// 云端识别失败时这一轮该往哪走。**引擎不做这个决定**（它只报失败详情），因为"要不要重试、
 /// 怎么跟用户说"是产品决定，不是网络层决定。
+///
+/// 5.0.0 没有本机模型可回落了，所以退路只剩一条：**整段录音还在内存里，
+/// 拿它再走一次同一家的同步接口**（用户 2026-09-22 拍板）。只重试一次——
+/// 再失败多半是 Key / 额度 / 网络本身的问题，第三趟只是让用户多等一轮。
 enum CloudFallbackDecision: Equatable {
-    /// 本地模型在 → 用本地重跑一遍整段音频（用户一个字都不会丢）
-    case retryLocally
-    /// 没有本地模型，但云端已经转出来几段 → 把这几段交付出去，并说清尾巴没转
+    /// 这一轮还没重试过 → 拿整段音频再走一次同步接口
+    case retryOnce
+    /// 已经重试过，但云端转出来过几段 → 把这几段交付出去，并说清尾巴没转
     case deliverPartial
-    /// 什么都没有 → 照常报错
+    /// 已经重试过、什么都没有 → 照常报错
     case reportFailure
 
     /// - partialText: 云端已经转出来的文字（可能为空串）
-    /// - localModelAvailable: 本机模型文件在不在（不要求已加载）
-    static func decide(partialText: String, localModelAvailable: Bool) -> CloudFallbackDecision {
-        if localModelAvailable { return .retryLocally }
+    /// - alreadyRetried: 这一轮已经用同步接口重试过一次了
+    static func decide(partialText: String, alreadyRetried: Bool) -> CloudFallbackDecision {
+        if !alreadyRetried { return .retryOnce }
         return partialText.isEmpty ? .reportFailure : .deliverPartial
     }
 
-    /// 回落本地之后挂在结果提示里的那句话。原因串来自云端客户端，本来就是双语的。
-    static func fallbackNote(reason: String) -> String {
+    /// 重试那一下悬浮窗上的提示。原因串来自云端客户端，本来就是双语的。
+    static func retryNote(reason: String) -> String {
         let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
         let detail = trimmed.count > 120 ? String(trimmed.prefix(120)) : trimmed
-        return tr("云端识别失败（\(detail)），已改用本地识别",
-                  "Cloud recognition failed (\(detail)) - used on-device recognition")
+        return tr("云端识别失败（\(detail)），正在重试一次",
+                  "Cloud recognition failed (\(detail)) - retrying once")
+    }
+
+    /// 重试也没成时交给用户的那一句。不报技术细节：他已经等了两趟，
+    /// 现在唯一有用的信息是"这一段没了，再说一次"（原因照常进日志）。
+    static var retryExhausted: String {
+        tr("没识别到，请重试", "Nothing came back - please try again")
     }
 }
 

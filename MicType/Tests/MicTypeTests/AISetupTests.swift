@@ -25,10 +25,7 @@ final class AISetupTests: XCTestCase {
     func testBaseURLIsResolvedPerProviderNotFromTheActiveOne() {
         let s = Settings.shared
         XCTAssertEqual(s.baseURL(for: .openai), s.openaiBaseURL)
-        XCTAssertEqual(s.baseURL(for: .deepseek), s.deepseekBaseURL)
         XCTAssertEqual(s.baseURL(for: .qwen), s.qwenBaseURL)
-        XCTAssertEqual(s.baseURL(for: .custom), s.customBaseURL)
-        XCTAssertEqual(s.baseURL(for: .local), s.localRuntime.baseURL)
         // "当前档"只是"按档取"的一个特例，不再是唯一的取法
         XCTAssertEqual(s.currentBaseURL, s.baseURL(for: s.llmProvider))
     }
@@ -42,145 +39,21 @@ final class AISetupTests: XCTestCase {
         }
     }
 
-    // MARK: - 模型选单（4.0.1 起界面上唯一的型号决定）
-
-    /// 每家的默认型号必须是**选单里的一项**，否则干净安装一打开设置页，
-    /// 下拉就停在「自定义…」上——用户会以为自己动过什么
-    func testDefaultModelIsInsideTheMenu() {
-        for provider in [LLMProvider.openai, .deepseek, .qwen] {
-            let menu = LLMCatalog.modelMenu(for: provider)
-            XCTAssertTrue(menu.contains { $0.id == LLMCatalog.defaultModel(for: provider) },
-                          provider.rawValue)
-        }
-    }
-
-    /// 铁律（用户 2026-09-20 拍板，推翻 2026-09-19 那条"默认必须是旗舰"）：
-    /// 默认是这家**均衡偏快**的那一档。理由是实测——润色每句话都要跑一次，
-    /// qwen3.8-flash 1.8–3.6 秒可用，qwen3.8-max 4–12 秒还撞得上 12 秒超时（整句话白说）。
-    /// 这三个名字写死在这里——改默认值必须先改这条测试，也就必须先过一遍脑子。
-    func testDefaultsAreTheBalancedFastTier() {
-        XCTAssertEqual(LLMCatalog.defaultModel(for: .openai), "gpt-5.6-luna")
-        XCTAssertEqual(LLMCatalog.defaultModel(for: .deepseek), "deepseek-flash")
-        XCTAssertEqual(LLMCatalog.defaultModel(for: .qwen), "qwen3.8-flash")
-    }
-
-    /// 默认那一项排在下拉的**最前面**，而且标签直说它为什么是默认（「快」）。
-    /// 打开下拉第一眼看到的就该是正在用的那个。
-    func testDefaultModelLeadsTheMenuAndSaysWhy() {
-        for language in AppLanguage.allCases {
-            L10n.shared.language = language
-            for provider in [LLMProvider.openai, .deepseek, .qwen] {
-                let menu = LLMCatalog.modelMenu(for: provider)
-                XCTAssertEqual(menu.first?.id, LLMCatalog.defaultModel(for: provider),
-                               provider.rawValue)
-                let note = menu.first?.note ?? ""
-                XCTAssertTrue(note.contains("默认") || note.lowercased().contains("default"), note)
-                XCTAssertTrue(note.contains("快") || note.lowercased().contains("fast"), note)
-            }
-        }
-        L10n.shared.language = .zh
-        // 旗舰档仍然一眼认得出来（它只是不再是默认值）
-        let qwenMax = LLMCatalog.modelMenu(for: .qwen).first { $0.id == "qwen3.8-max" }
-        XCTAssertEqual(qwenMax?.note, "旗舰（较慢）", "慢不是修辞：实测 4–12 秒，长句会撞上超时")
-        XCTAssertEqual(LLMCatalog.modelMenu(for: .openai).first { $0.id == "gpt-6-astra" }?.note,
-                       "最强")
-        XCTAssertEqual(LLMCatalog.modelMenu(for: .openai).first { $0.id == "gpt-5.6-sol" }?.note,
-                       "旗舰")
-    }
-
-    /// 润色与指令共用同一个默认值：4.0.0 的"润色便宜、指令贵"已经收掉了
-    func testPolishAndCommandShareOneDefault() {
-        for provider in LLMProvider.allCases {
-            XCTAssertEqual(LLMCatalog.polishDefault(for: provider),
-                           LLMCatalog.commandDefault(for: provider), provider.rawValue)
-        }
-    }
-
-    /// 选单里的型号必须互不重复，而且每一项都能在「高级」的快选清单里找到
-    /// （下拉里选中的那个，在高级区必须看得见）
-    func testMenuModelsAreDistinctAndPresent() {
-        for provider in [LLMProvider.openai, .deepseek, .qwen] {
-            let ids = LLMCatalog.modelMenu(for: provider).map(\.id)
-            XCTAssertEqual(Set(ids).count, ids.count, provider.rawValue)
-            for id in ids {
-                XCTAssertTrue(LLMCatalog.presets(for: provider).contains(id), id)
-            }
-        }
-    }
-
-    /// 其他兼容服务 / 本机模型没有内置型号：给不出选单就别硬给（界面据此把下拉藏掉，
-    /// 改在「高级」里给一个型号名输入框）
-    func testCustomAndLocalHaveNoModelMenu() {
-        for provider in [LLMProvider.custom, .local] {
-            XCTAssertTrue(LLMCatalog.modelMenu(for: provider).isEmpty, provider.rawValue)
-            XCTAssertTrue(LLMCatalog.defaultModel(for: provider).isEmpty, provider.rawValue)
-        }
-    }
-
-    /// 下拉每一行都要先写型号名（那才是真正发出去的东西），标签只是跟在后面的大白话
-    func testMenuLabelLeadsWithTheModelID() {
-        L10n.shared.language = .zh
-        let flagship = LLMCatalog.modelMenu(for: .openai).first { $0.id == "gpt-5.6-sol" }
-        XCTAssertNotNil(flagship)
-        XCTAssertTrue(LLMCatalog.modelLabel(flagship!).hasPrefix("gpt-5.6-sol"),
-                      LLMCatalog.modelLabel(flagship!))
-        // 没有标签的那一项就只显示型号名，不留一个孤零零的分隔点
-        XCTAssertEqual(LLMCatalog.modelLabel(LLMCatalog.ModelChoice(id: "qwen3.7-plus", note: "")),
-                       "qwen3.7-plus")
-    }
-
-    /// 4.1.1 的一次性迁移：把「指令型号」拉回「润色型号」。
-    /// 界面上分开设的入口已经没有了，留着两个不一样的值就是一条**改不动的设置**——
-    /// 下拉显示「自定义…」，而按住说指令跑的是另一个型号、按另一个价钱计费。
-    func testUnifyModelWritesPullsTheCommandModelBackToThePolishOne() {
-        let openai = LLMCatalog.modelKeys(for: .openai)
-        let writes = LLMCatalog.unifyModelWrites(current: [
-            openai.polish: "gpt-5.6-luna", openai.command: "gpt-6-astra",
-        ])
-        XCTAssertEqual(writes, [openai.command: "gpt-5.6-luna"])
-    }
-
-    /// 本来就一样、或者压根没存过润色型号：一个字节都不写
-    func testUnifyModelWritesLeavesMatchingOrUnsetPairsAlone() {
-        let qwen = LLMCatalog.modelKeys(for: .qwen)
-        XCTAssertTrue(LLMCatalog.unifyModelWrites(current: [
-            qwen.polish: "qwen3.8-max", qwen.command: "qwen3.8-max",
-        ]).isEmpty)
-        // 官方三档没存过润色型号 = 用的是注册默认值（一个非空型号），不是"空着"：
-        // 拿指令型号去顶掉那个默认值才是替用户做主
-        XCTAssertTrue(LLMCatalog.unifyModelWrites(current: [
-            qwen.polish: nil, qwen.command: "qwen3.8-flash",
-        ]).isEmpty)
-    }
-
-    /// 自定义端点 / 本机模型出厂就是空串：4.0.x 只在「高级」里填过**指令**型号的人，
-    /// 迁移后会剩下一条看不见的设置——界面写着"型号名未填"、润色回落识别原文，
-    /// 按住说指令却真的在跑另一个型号。反过来把润色型号补成它。
-    func testUnifyModelWritesFillsAnEmptyPolishModelFromTheCommandOne() {
-        for provider in [LLMProvider.local, .custom] {
-            let keys = LLMCatalog.modelKeys(for: provider)
-            XCTAssertEqual(LLMCatalog.unifyModelWrites(current: [
-                keys.polish: "", keys.command: "llama3.1:8b",
-            ]), [keys.polish: "llama3.1:8b"], provider.rawValue)
-        }
-        // 两个都空着：没有任何可搬的东西，一个字节都不写
-        let local = LLMCatalog.modelKeys(for: .local)
-        XCTAssertTrue(LLMCatalog.unifyModelWrites(current: [
-            local.polish: "", local.command: "",
-        ]).isEmpty)
-    }
+    // 「模型选单」整段 5.0.0 删掉（型号写死平衡档，界面上没有下拉了）：
+    // 默认值本身由 LLMCatalogTests.testDefaultsAreTheBalancedFastTier 钉着。
 
     // MARK: - 设置窗口的路由（概览 + 三个编辑页 + 关于）
 
-    /// 五条路由，而且深链用的那三条必须还在。
-    /// 写死在测试里是为了：这几个名字是 AppDelegate 的菜单项、悬浮窗的「去配置」胶囊、
-    /// 模型升级横幅共同的落点，改名字之前得先过一遍这条注释。
-    func testSettingsRoutesAreOverviewPlusThreeEditorsAndAbout() {
-        XCTAssertEqual(SettingsRoute.allCases, [.overview, .input, .recognition, .cloud, .about])
-        // 悬浮窗的「去配置」、菜单栏的「配置 AI…」、云端识别缺 Key 都落在这一条
-        XCTAssertEqual(SettingsRoute.cloud.rawValue, "cloud")
-        // 模型升级横幅落在这一条
-        XCTAssertEqual(SettingsRoute.recognition.rawValue, "recognition")
+    /// 三条路由（5.0.0：设置就是一页，另外两页从底部那排小字点开）。
+    /// 写死在测试里是为了：这几个名字是 AppDelegate 的菜单项、悬浮窗的「去配置」胶囊
+    /// 共同的落点，改名字之前得先过一遍这条注释。
+    func testSettingsRoutesAreOnePageAndTwoSubpages() {
+        XCTAssertEqual(SettingsRoute.allCases, [.overview, .writing, .about])
+        // 悬浮窗的「去配置」、菜单栏的「配置 AI…」、缺 Key 那个胶囊都落在设置正页——
+        // 那一页第二行就是 API Key 输入框
+        XCTAssertEqual(SettingsRoute.overview.rawValue, "overview")
+        // 菜单栏的「写作偏好…」直接落到这一条
+        XCTAssertEqual(SettingsRoute.writing.rawValue, "writing")
     }
 
     /// 概览是首页，没有返回；其余四页都必须有自己的标题——顶栏上那颗「‹ 设置」旁边
@@ -192,160 +65,11 @@ final class AISetupTests: XCTestCase {
         }
     }
 
-    /// 英文界面下选单里的标签同样不许夹中文或全角标点
-    func testMenuNotesAreCleanInEnglish() {
-        L10n.shared.language = .en
-        for provider in [LLMProvider.openai, .deepseek, .qwen] {
-            for choice in LLMCatalog.modelMenu(for: provider) {
-                XCTAssertFalse(containsCJKOrFullWidth(LLMCatalog.modelLabel(choice)),
-                               LLMCatalog.modelLabel(choice))
-            }
-        }
-    }
+    // 选单标签与「型号存在哪两个键上」整段 5.0.0 删掉：没有选单、也没有型号键了。
 
-    // MARK: - 型号存在哪两个键上 / 选一个型号写回什么
-
-    /// 五档服务商各有独立的两个键，十个键必须互不相同：
-    /// 撞一个的后果是换服务商时把另一档的型号改掉（用户完全看不出为什么突然 404）
-    func testModelKeysAreDistinctAcrossEveryProvider() {
-        var seen = Set<String>()
-        for provider in LLMProvider.allCases {
-            let keys = LLMCatalog.modelKeys(for: provider)
-            XCTAssertFalse(keys.polish.isEmpty)
-            XCTAssertFalse(keys.command.isEmpty)
-            XCTAssertNotEqual(keys.polish, keys.command, provider.rawValue)
-            XCTAssertTrue(seen.insert(keys.polish).inserted, keys.polish)
-            XCTAssertTrue(seen.insert(keys.command).inserted, keys.command)
-        }
-        XCTAssertEqual(seen.count, LLMProvider.allCases.count * 2)
-    }
-
-    /// 键名要与老版本用的那几个逐字相同：改一个字就是把老用户的型号设置清空
-    func testModelKeysMatchTheShippedSettingsKeys() {
-        XCTAssertEqual(LLMCatalog.modelKeys(for: .openai).polish, SettingsKeys.chatModel)
-        XCTAssertEqual(LLMCatalog.modelKeys(for: .openai).command, SettingsKeys.openaiCommandModel)
-        XCTAssertEqual(LLMCatalog.modelKeys(for: .deepseek).polish, SettingsKeys.deepseekModel)
-        XCTAssertEqual(LLMCatalog.modelKeys(for: .local).command, SettingsKeys.localCommandModel)
-    }
-
-    /// 在下拉里选一个型号 = **同时**写润色和指令两个字段（用户只做一个决定）
-    func testSelectingAModelWritesBothFields() {
-        for provider in [LLMProvider.openai, .deepseek, .qwen] {
-            for choice in LLMCatalog.modelMenu(for: provider) {
-                let writes = LLMCatalog.modelWrites(provider: provider, model: choice.id)
-                let keys = LLMCatalog.modelKeys(for: provider)
-                XCTAssertEqual(writes.count, 2, provider.rawValue)
-                XCTAssertEqual(writes[keys.polish], choice.id)
-                XCTAssertEqual(writes[keys.command], choice.id)
-            }
-        }
-    }
-
-    /// 写回之后下拉必须落回同一项（否则界面会立刻显示「自定义…」，像刚点的那一下没生效）
-    func testModelWritesRoundTripBackToTheSameMenuItem() {
-        for provider in [LLMProvider.openai, .deepseek, .qwen] {
-            for choice in LLMCatalog.modelMenu(for: provider) {
-                let writes = LLMCatalog.modelWrites(provider: provider, model: choice.id)
-                let keys = LLMCatalog.modelKeys(for: provider)
-                XCTAssertEqual(LLMCatalog.selectedMenuModel(provider: provider,
-                                                            polish: writes[keys.polish] ?? "",
-                                                            command: writes[keys.command] ?? ""),
-                               choice.id, provider.rawValue)
-            }
-        }
-    }
-
-    /// 空型号名一个字节都不写：写一个空值进去等于把这一档弄瘫（发出去就是 400）
-    func testModelWritesNothingForAnEmptyName() {
-        XCTAssertTrue(LLMCatalog.modelWrites(provider: .openai, model: "   ").isEmpty)
-        XCTAssertTrue(LLMCatalog.modelWrites(provider: .local, model: "").isEmpty)
-        // 其他兼容服务 / 本机模型没有内置选单，但用户自己填的型号名照样要写回两个字段
-        let writes = LLMCatalog.modelWrites(provider: .local, model: " llama3.1:8b ")
-        XCTAssertEqual(writes[LLMCatalog.modelKeys(for: .local).polish], "llama3.1:8b")
-        XCTAssertEqual(writes[LLMCatalog.modelKeys(for: .local).command], "llama3.1:8b")
-    }
-
-    /// 在「高级」里把润色和指令分开设过 → 下拉必须如实显示「自定义…」（nil），
-    /// 绝不把他钉回某一项（那等于下次点别处时悄悄把他的指令模型改掉）
-    func testSplitOrUnknownModelsAreReportedAsCustom() {
-        XCTAssertNil(LLMCatalog.selectedMenuModel(provider: .openai,
-                                                  polish: "gpt-5.6-luna", command: "gpt-5.6-sol"))
-        XCTAssertNil(LLMCatalog.selectedMenuModel(provider: .openai,
-                                                  polish: "gpt-4.1", command: "gpt-4.1"))
-        XCTAssertNil(LLMCatalog.selectedMenuModel(provider: .openai, polish: "", command: ""))
-        XCTAssertNil(LLMCatalog.selectedMenuModel(provider: .local,
-                                                  polish: "llama3.1:8b", command: "llama3.1:8b"))
-    }
-
-    /// 前后空白不该把用户从某一项踢成「自定义…」
-    func testSelectedMenuModelIgnoresSurroundingWhitespace() {
-        XCTAssertEqual(LLMCatalog.selectedMenuModel(provider: .qwen,
-                                                    polish: "  qwen3.8-max ", command: "\nqwen3.8-max"),
-                       "qwen3.8-max")
-    }
-
-    // MARK: - 使用方式：一个决定落到哪几条设置上
-
-    /// 「只用本地」= 润色关掉 + 识别回本机。少写一条就是留下一条看不见的设置
-    /// （润色关了、音频还在往云端传）
-    func testLocalOnlyTurnsOffPolishAndCloudRecognition() {
-        let writes = AISetup.localOnlyWrites()
-        XCTAssertEqual(writes.polish, .off)
-        XCTAssertEqual(writes.engine, .local)
-        XCTAssertEqual(AISetup.mode(polishLevel: writes.polish, engine: writes.engine), .localOnly)
-    }
-
-    /// 两个条件都满足才算「只用本地」：只看润色的话，从菜单栏关掉润色、云端识别还开着的人
-    /// 会看到一页"只用本地"，而音频照传不误
-    func testCloudRecognitionAloneStillCountsAsUsingAI() {
-        XCTAssertEqual(AISetup.mode(polishLevel: .off, engine: .cloudAlibaba), .withAI)
-        XCTAssertEqual(AISetup.mode(polishLevel: .smart, engine: .local), .withAI)
-        XCTAssertEqual(AISetup.mode(polishLevel: .off, engine: .local), .localOnly)
-    }
-
-    /// 打开 AI 时润色要回到自适应档；本来就开着的话一个字都别动
-    func testEnablingAITurnsPolishBackOnWithoutOverridingIt() {
-        XCTAssertEqual(AISetup.polishAfterEnablingAI(.off), .smart)
-        XCTAssertEqual(AISetup.polishAfterEnablingAI(.smart), .smart)
-    }
-
-    /// 云端识别只有阿里云这一档，而且只有开关打开时才是云端
-    func testCloudRecognitionOnlyExistsUnderAlibaba() {
-        XCTAssertEqual(AISetup.engine(provider: .qwen, cloudRecognition: true,
-                                      officialOpenAI: true), .cloudAlibaba)
-        XCTAssertEqual(AISetup.engine(provider: .qwen, cloudRecognition: false,
-                                      officialOpenAI: true), .local)
-    }
-
-    /// **换走服务商就必须回本机**：不然用户换到 OpenAI 之后，音频还在往阿里云传，
-    /// 而界面上已经没有那个开关可以关了
-    func testSwitchingProviderAwayFromAlibabaGoesBackToLocal() {
-        // 4.2.2 起 OpenAI 也有这条路（实时转写端点，而且它认词汇表热词）
-        XCTAssertEqual(AISetup.engine(provider: .openai, cloudRecognition: true,
-                                      officialOpenAI: true), .cloudOpenAI)
-        XCTAssertEqual(AISetup.engine(provider: .openai, cloudRecognition: false,
-                                      officialOpenAI: true), .local)
-        // OpenAI 档指着第三方网关：实时地址是写死的官方域名，这一档没有云端识别这条路
-        XCTAssertEqual(AISetup.engine(provider: .openai, cloudRecognition: true,
-                                      officialOpenAI: false), .local)
-        XCTAssertFalse(AISetup.supportsCloudRecognition(provider: .openai, officialOpenAI: false))
-        XCTAssertTrue(AISetup.supportsCloudRecognition(provider: .qwen, officialOpenAI: false))
-        // 其余几档没有识别接口
-        for provider in [LLMProvider.deepseek, .custom, .local] {
-            XCTAssertEqual(AISetup.engine(provider: provider, cloudRecognition: true,
-                                          officialOpenAI: true), .local, provider.rawValue)
-        }
-    }
-
-    /// 识别停在 OpenAI、服务商却不是它：那个开关不渲染，界面上关不掉 —— 必须当面说。
-    /// **服务商就是 OpenAI 时一个字都不许说**：那是用户刚刚自己打开的开关（4.2.2）
-    func testStrandedOpenAICloudRecognitionIsSurfaced() {
-        XCTAssertTrue(AISetup.showsStrandedOpenAICloudNotice(engine: .cloudOpenAI, provider: .qwen))
-        XCTAssertTrue(AISetup.showsStrandedOpenAICloudNotice(engine: .cloudOpenAI, provider: .local))
-        XCTAssertFalse(AISetup.showsStrandedOpenAICloudNotice(engine: .cloudOpenAI, provider: .openai))
-        XCTAssertFalse(AISetup.showsStrandedOpenAICloudNotice(engine: .cloudAlibaba, provider: .qwen))
-        XCTAssertFalse(AISetup.showsStrandedOpenAICloudNotice(engine: .local, provider: .openai))
-    }
+    // 「使用方式」整段（localOnlyWrites / mode / polishAfterEnablingAI / 云端识别开关的
+    // supportsCloudRecognition / engine / cloudRecognitionMove / 那两条 stranded 提示）
+    // 5.0.0 全部删掉：识别永远云端、润色永远开着，这些判断都没有第二个答案了。
 
     // MARK: - AI 配齐了没有
 
@@ -378,14 +102,15 @@ final class AISetupTests: XCTestCase {
         XCTAssertEqual(AlibabaEndpoint.asrURL(host: host)?.host, host)
     }
 
-    /// 自定义端点 / 本机模型没填型号名同样不算就绪（空型号发出去是 400）
+    /// 型号名是空的不算就绪（空型号发出去是 400）。5.0.0 起型号写死，这一条因此恒真——
+    /// 留着是因为它是 aiReady 的一部分判据，下一次真让用户填型号名时它要先红
     func testAIReadyIsFalseWithoutAPolishModel() {
         XCTAssertFalse(LLMCatalog.aiReady(hasCredential: true,
-                                          baseURL: "http://localhost:11434/v1",
+                                          baseURL: "https://api.openai.com/v1",
                                           polishModel: "   "))
         XCTAssertTrue(LLMCatalog.aiReady(hasCredential: true,
-                                         baseURL: "http://localhost:11434/v1",
-                                         polishModel: "llama3.1:8b"))
+                                         baseURL: "https://api.openai.com/v1",
+                                         polishModel: "gpt-5.6-luna"))
     }
 
     // MARK: - 去申请 Key
@@ -393,10 +118,8 @@ final class AISetupTests: XCTestCase {
     /// 只给确定的地址；猜不出来的一律 nil（宁可不给按钮，也不塞一个点进去 404 的链接）
     func testAPIKeyConsoleLinksOnlyExistWhereWeAreSure() {
         XCTAssertEqual(LLMCatalog.apiKeyConsoleURL(for: .openai), "https://platform.openai.com/api-keys")
-        XCTAssertEqual(LLMCatalog.apiKeyConsoleURL(for: .deepseek), "https://platform.deepseek.com")
-        for provider in [LLMProvider.qwen, .custom, .local] {
-            XCTAssertNil(LLMCatalog.apiKeyConsoleURL(for: provider), provider.rawValue)
-        }
+        // 阿里云的控制台随区域不同，我们打不了包票 → 宁可不给按钮
+        XCTAssertNil(LLMCatalog.apiKeyConsoleURL(for: .qwen))
     }
 
     /// 申请页一律 https：设置页会把它直接交给 NSWorkspace 打开
@@ -463,85 +186,9 @@ final class AISetupTests: XCTestCase {
         }
     }
 
-    /// 识别停在阿里云、服务商却不是阿里云：AI 页上那个开关这时根本不渲染，
-    /// 所以音频在传、界面上却没有关掉它的控件。和 cloudOpenAI 那条同样要当面说
-    func testStrandedAlibabaCloudRecognitionIsSurfaced() {
-        XCTAssertTrue(AISetup.showsStrandedAlibabaCloudNotice(engine: .cloudAlibaba, provider: .openai))
-        XCTAssertTrue(AISetup.showsStrandedAlibabaCloudNotice(engine: .cloudAlibaba, provider: .local))
-        // 服务商就是阿里云 = 那个开关就在下面，不必多话
-        XCTAssertFalse(AISetup.showsStrandedAlibabaCloudNotice(engine: .cloudAlibaba, provider: .qwen))
-        XCTAssertFalse(AISetup.showsStrandedAlibabaCloudNotice(engine: .local, provider: .openai))
-        XCTAssertFalse(AISetup.showsStrandedAlibabaCloudNotice(engine: .cloudOpenAI, provider: .openai))
-    }
-
-    /// 换服务商时识别引擎怎么走——设置页与引导页共用这一条，两处不许各写一份。
-    ///
-    /// **4.3.1 起：意愿是一个与服务商无关的持久量，换服务商不再把它抹掉**
-    /// （用户 2026-09-21 推翻了 4.3.0 那条"换一家就关掉、让他重新同意一次价钱"）。
-    /// 用户在设置里本来就会来回点几家对比，每采纳一次就要重新打开一次开关；
-    /// 而价钱 4.3.0 起关着也写在开关旁边，那一句就够了。
-    func testCloudRecognitionMoveFollowsTheWishNotTheProvider() {
-        // 阿里云（开）→ OpenAI：保持开着，引擎换成 cloudOpenAI
-        XCTAssertEqual(AISetup.cloudRecognitionMove(wanted: true, current: .cloudAlibaba,
-                                                    next: .openai, officialOpenAI: true),
-                       .moved(.cloudOpenAI))
-        // 阿里云（开）→ DeepSeek：那一家没有这条路，实际回本机——**意愿不丢**
-        XCTAssertEqual(AISetup.cloudRecognitionMove(wanted: true, current: .cloudAlibaba,
-                                                    next: .deepseek, officialOpenAI: true),
-                       .paused)
-        // ……再切回阿里云：自动恢复
-        XCTAssertEqual(AISetup.cloudRecognitionMove(wanted: true, current: .local,
-                                                    next: .qwen, officialOpenAI: true),
-                       .moved(.cloudAlibaba))
-        // 阿里云（关）→ OpenAI：仍然关着，什么都不用改
-        XCTAssertEqual(AISetup.cloudRecognitionMove(wanted: false, current: .local,
-                                                    next: .openai, officialOpenAI: true),
-                       .unchanged)
-        // OpenAI（开）→ OpenAI 指着第三方网关：实际本机，意愿留着
-        XCTAssertEqual(AISetup.cloudRecognitionMove(wanted: true, current: .cloudOpenAI,
-                                                    next: .openai, officialOpenAI: false),
-                       .paused)
-        // 换到自己：引擎已经对了
-        XCTAssertEqual(AISetup.cloudRecognitionMove(wanted: true, current: .cloudAlibaba,
-                                                    next: .qwen, officialOpenAI: true),
-                       .unchanged)
-    }
-
-    /// 日志三句话（只有 ASCII，不上界面）：两处调用点共用一份措辞
-    func testCloudRecognitionMoveLogNamesWhatHappened() {
-        XCTAssertEqual(AISetup.cloudRecognitionMoveLog(.moved(.cloudOpenAI), wasCloud: true,
-                                                       next: .openai),
-                       "Cloud recognition kept on: provider=openai engine=cloudOpenAI")
-        XCTAssertEqual(AISetup.cloudRecognitionMoveLog(.moved(.cloudAlibaba), wasCloud: false,
-                                                       next: .qwen),
-                       "Cloud recognition restored: provider=qwen engine=cloudAlibaba")
-        XCTAssertEqual(AISetup.cloudRecognitionMoveLog(.paused, wasCloud: true, next: .deepseek),
-                       "Cloud recognition paused: provider=deepseek (wanted=on)")
-        XCTAssertNil(AISetup.cloudRecognitionMoveLog(.unchanged, wasCloud: false, next: .qwen))
-    }
-
-    /// 「这一家这次运行里已经验过」的记忆：换服务商会让云端识别**自动**落到新一家上，
-    /// 那一刻要不要再花一秒钱测一遍就看它。切走又切回来不该每次都测（用户就是来回点着对比的），
-    /// 但验失败之后必须忘掉——否则下次落回这一家会跳过检查，开着的开关就不再意味着它能用。
-    func testCloudRecognitionCheckMemoryIsPerProviderAndForgettable() {
-        CloudRecognitionCheckMemory.resetForTesting()
-        defer { CloudRecognitionCheckMemory.resetForTesting() }
-        XCTAssertFalse(CloudRecognitionCheckMemory.isChecked(.alibaba))
-        CloudRecognitionCheckMemory.markChecked(.alibaba)
-        XCTAssertTrue(CloudRecognitionCheckMemory.isChecked(.alibaba))
-        // 两家互不影响
-        XCTAssertFalse(CloudRecognitionCheckMemory.isChecked(.openai))
-        CloudRecognitionCheckMemory.forget(.alibaba)
-        XCTAssertFalse(CloudRecognitionCheckMemory.isChecked(.alibaba))
-    }
-
-    /// 老用户迁移：没有"意愿"这个键的人，由当前引擎推出来一次。
-    /// 不迁的话，升上来的云端识别用户开关显示"关"，而音频照常在上传
-    func testCloudRecognitionWishMigratesFromTheEngine() {
-        XCTAssertTrue(AISetup.cloudRecognitionWanted(fromEngine: .cloudAlibaba))
-        XCTAssertTrue(AISetup.cloudRecognitionWanted(fromEngine: .cloudOpenAI))
-        XCTAssertFalse(AISetup.cloudRecognitionWanted(fromEngine: .local))
-    }
+    // 「识别停在旧档」的两条提示、cloudRecognitionMove 的三条分支、那份"这一家验过了"的
+    // 内存记忆、以及"意愿由引擎推出来"的迁移，5.0.0 一起删掉：识别引擎跟着生效服务商走，
+    // 这几种说不通的状态都不再可能出现。
 
     // MARK: - 4.1.1：「关于我」并进「自定义规则」
 
@@ -568,6 +215,8 @@ final class AISetupTests: XCTestCase {
     /// 没存过 = 一直用着出厂默认，跟着新默认走；存过 = 他自己拨过那个开关，一个字都不动
     /// （拨开再拨回也算——那是一次明确的"我不要"，替他点开就是替他花钱）
     func testWebSearchDefaultMigrationKeepsAnExplicitChoice() {
+        // 这个纯函数 5.0.0 起没有调用点了（联网搜索永远开、没有开关），但它记着
+        // 「明确选过的人一个字都不动」这条规矩——下一次再加按次计费的开关时照抄它
         XCTAssertTrue(AISetup.webSearchAfterDefaultChange(stored: nil))
         XCTAssertFalse(AISetup.webSearchAfterDefaultChange(stored: false))
         XCTAssertTrue(AISetup.webSearchAfterDefaultChange(stored: true))
@@ -589,36 +238,23 @@ final class AISetupTests: XCTestCase {
     /// 没 Key 的那一档只是**预览**：点一下就把生效服务商换过去，表现是他下次按住说指令
     /// 直接失败，而完全不知道是刚才那一下点的
     func testProviderIsAdoptedOnlyOnceItsKeyIsThere() {
-        XCTAssertTrue(AISetup.adoptsProvider(current: .openai, next: .deepseek,
+        XCTAssertTrue(AISetup.adoptsProvider(current: .openai, next: .qwen,
                                              requiresKey: true, hasKey: true,
-                                             polishModel: "deepseek-v4-pro"))
-        XCTAssertFalse(AISetup.adoptsProvider(current: .openai, next: .deepseek,
+                                             polishModel: "qwen3.8-flash"))
+        XCTAssertFalse(AISetup.adoptsProvider(current: .openai, next: .qwen,
                                               requiresKey: true, hasKey: false,
-                                              polishModel: "deepseek-v4-pro"))
+                                              polishModel: "qwen3.8-flash"))
         // 已经就是这一档：不必再写一遍（也就不会白记一行日志）
         XCTAssertFalse(AISetup.adoptsProvider(current: .qwen, next: .qwen,
                                               requiresKey: true, hasKey: true,
-                                              polishModel: "qwen3.8-max"))
+                                              polishModel: "qwen3.8-flash"))
     }
 
-    /// 本机模型那一档没有 Key 可验，但型号名是空的照样跑不起来（发出去就是 400）——
-    /// 同样不能拿它换掉一个正在好好用着的服务商
-    func testLocalProviderStillNeedsAModelNameToBeAdopted() {
-        XCTAssertFalse(AISetup.adoptsProvider(current: .openai, next: .local,
-                                              requiresKey: false, hasKey: false,
+    /// 型号名是空的照样跑不起来（发出去就是 400）——同样不能拿它换掉一个正在好好用着的服务商。
+    /// 5.0.0 起型号写死，这一支因此走不到；留着是因为它是这条判据的一部分。
+    func testAnEmptyModelNameBlocksAdoption() {
+        XCTAssertFalse(AISetup.adoptsProvider(current: .openai, next: .qwen,
+                                              requiresKey: true, hasKey: true,
                                               polishModel: "  "))
-        XCTAssertTrue(AISetup.adoptsProvider(current: .openai, next: .local,
-                                             requiresKey: false, hasKey: false,
-                                             polishModel: "llama3.1:8b"))
     }
-
-    /// 4.1.6：「自定义规则」搬到了「输入 → 写作偏好」，而「只用本地」那一档下它一个字
-    /// 都不会被发出去——框照样能填，但要当面说一句。
-    /// （「优先处理」那一段连同 showsPriorityToggle 一起删了：OpenAI 官方接口恒走 Fast，
-    /// 见 LLMClientFastTierTests。）
-    func testRulesNeedAINoteOnlyUnderLocalOnly() {
-        XCTAssertTrue(AISetup.showsRulesNeedAINote(mode: .localOnly))
-        XCTAssertFalse(AISetup.showsRulesNeedAINote(mode: .withAI))
-    }
-
 }

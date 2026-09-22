@@ -19,14 +19,14 @@ final class PrivacyCopyTests: XCTestCase {
         super.tearDown()
     }
 
-    func testSevenSentencesInFixedOrder() {
-        // 4.1.6 多了一句：OpenAI 官方接口恒走 Fast 档（token 单价约 2 倍）。
-        // 界面上已经没有那个开关了，多花的钱只剩这一处写着
-        XCTAssertEqual(PrivacyCopy.allLines.count, 7)
-        // 顺序是文案的一部分：先说数据去了哪，再说钱谁收
+    func testEightSentencesInFixedOrder() {
+        // 5.0.0 又多了一句：听写历史只在本机。别的东西都上云之后，
+        // 用户很容易以为历史也跟着上去了——不说清就是让他自己猜
+        XCTAssertEqual(PrivacyCopy.allLines.count, 8)
+        // 顺序是文案的一部分：先说数据去了哪，再说钱谁收，最后说什么留在了本机
         XCTAssertEqual(PrivacyCopy.allLines, PrivacyCopy.dataFlowLines + PrivacyCopy.keyAndCostLines)
         XCTAssertEqual(PrivacyCopy.dataFlowLines.count, 2)
-        XCTAssertEqual(PrivacyCopy.keyAndCostLines.count, 5)
+        XCTAssertEqual(PrivacyCopy.keyAndCostLines.count, 6)
     }
 
     /// Fast 档那一句：单价只有 LLMCatalog 一个出处（引用，不复述），而且必须点名
@@ -127,31 +127,33 @@ final class PrivacyCopyTests: XCTestCase {
 
     /// 云端识别那几句 4.0.2 起不在 PrivacyCopy 里：它们搬去了做那个选择的地方
     /// （SettingsCopy.cloudRecognitionInfo，由 SettingsCopyBudgetTests 把四件代价钉死）。
-    /// 这里守住"别再搬回来"：这六句讲的是**默认状态**下的承诺，按秒计费、先去控制台开通模型
-    /// 这类只有开着那个开关才成立的话，混进来就成了对所有人说的假话。
-    func testCloudRecognitionCostDoesNotLiveHere() {
+    /// 这里守住"别再搬回来"：这几句讲的是**打开 MicType 就成立**的事实，
+    /// 具体单价、去控制台开通模型这类只在某一档下才成立的话，混进来就成了假话。
+    /// （一小时多少钱那句住在设置页 Key 那颗 ⓘ 与引导 ③ 的卡片上。）
+    func testPerProviderPricingDoesNotLiveHere() {
         L10n.shared.language = .zh
         for line in PrivacyCopy.allLines {
-            XCTAssertFalse(line.contains("按秒计费"), line)
             XCTAssertFalse(line.contains("开通"), line)
+            XCTAssertFalse(line.contains("/小时"), line)
         }
         L10n.shared.language = .en
         for line in PrivacyCopy.allLines {
-            XCTAssertFalse(line.lowercased().contains("billed by the second"), line)
             XCTAssertFalse(line.lowercased().contains("enable the model"), line)
+            XCTAssertFalse(line.lowercased().contains("/hour"), line)
         }
-        // 反过来，默认那一档必须仍然把"只有选了云端才上传"说清楚——收口不是删掉边界
-        L10n.shared.language = .zh
-        XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("云端引擎"))
     }
 
-    /// 六句话各自对应一条能在代码里指出来的行为，关键词漏了就说明句子被改空了
+    /// 每句话各自对应一条能在代码里指出来的行为，关键词漏了就说明句子被改空了
     func testEachClaimKeepsItsKeyword() {
         L10n.shared.language = .en
-        // v4.0 起多了一档可选的云端识别：这句话必须同时说清"默认在本机"和"云端才会上传"，
-        // 不能再是一句无条件的承诺（那在云端档下不成立）
-        XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("On-device recognition by default"))
-        XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("only if you choose a cloud engine"))
+        // 5.0.0：识别只有云端一条路，所以这句话必须说清**边说边传**，
+        // 以及 Esc 只能停下、收不回已经传出去的那几秒
+        XCTAssertTrue(PrivacyCopy.audioGoesToProvider.lowercased().contains("while you are still speaking"))
+        XCTAssertTrue(PrivacyCopy.audioGoesToProvider.contains("Esc"))
+        XCTAssertFalse(PrivacyCopy.audioGoesToProvider.lowercased().contains("on-device"),
+                       "没有本机识别那一档了，别再承诺它")
+        // 听写历史仍然只在本机：别的东西都上云之后，这一句格外要紧
+        XCTAssertTrue(PrivacyCopy.historyStaysLocal.lowercased().contains("never uploaded"))
         // 指令模式会把**前台应用的选区原文**发出去（常常不是用户自己说的话），
         // 这句话必须把它点名说出来——以前写的"只有识别出的文字"在主路径上就不成立
         XCTAssertTrue(PrivacyCopy.onlyTextLeaves.lowercased().contains("recognized text"))
@@ -164,14 +166,16 @@ final class PrivacyCopyTests: XCTestCase {
         // 单价那句由 LLMCatalog 提供（唯一出处），所以只认意思、不认大小写
         // 4.1.1 起默认**开**（支持的服务商）：这句话跟着改，写着"默认关闭"而实际开着，
         // 比不说更糟——用户按它判断自己有没有在花这笔钱
-        XCTAssertTrue(PrivacyCopy.webSearchBilled.lowercased().contains("on by default"))
+        XCTAssertTrue(PrivacyCopy.webSearchBilled.lowercased().contains("always on"))
 
         L10n.shared.language = .zh
-        XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("默认本地识别"))
-        XCTAssertTrue(PrivacyCopy.audioStaysLocal.contains("只有选择云端引擎时音频才会上传"))
+        XCTAssertTrue(PrivacyCopy.audioGoesToProvider.contains("你选的服务商"))
+        XCTAssertTrue(PrivacyCopy.audioGoesToProvider.contains("收不回来"))
+        XCTAssertFalse(PrivacyCopy.audioGoesToProvider.contains("本机"), "没有本机识别那一档了")
         XCTAssertTrue(PrivacyCopy.onlyTextLeaves.contains("选中"))
         XCTAssertTrue(PrivacyCopy.keyInKeychain.contains("钥匙串"))
-        XCTAssertTrue(PrivacyCopy.webSearchBilled.contains("默认开启"))
+        XCTAssertTrue(PrivacyCopy.webSearchBilled.contains("永远开"))
+        XCTAssertTrue(PrivacyCopy.historyStaysLocal.contains("从不上传"))
     }
 
     /// 「请求带 store:false」这句话只有在**真的会发 store:false 的那条路**上才许出现。
@@ -182,10 +186,7 @@ final class PrivacyCopyTests: XCTestCase {
         let cases: [(LLMProvider, String)] = [
             (.openai, "https://api.openai.com/v1"),
             (.openai, "https://gateway.example.com/v1"),   // OpenAI 档改了 Base URL → 走 chat
-            (.deepseek, "https://api.deepseek.com"),
             (.qwen, "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
-            (.custom, "https://api.moonshot.cn/v1"),
-            (.local, "http://localhost:11434/v1"),
         ]
         for (provider, baseURL) in cases {
             let line = PrivacyCopy.retention(provider: provider, baseURL: baseURL)
@@ -195,11 +196,10 @@ final class PrivacyCopyTests: XCTestCase {
             XCTAssertFalse(line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             XCTAssertFalse(CJKSourceScanner.containsFlagged(line), "英文侧混进了中文：\(line)")
         }
-        // 本机模型那一档说的是"请求不出网"，不是"服务商不留存"
-        XCTAssertTrue(PrivacyCopy.retention(provider: .local, baseURL: "http://localhost:11434/v1")
-                        .lowercased().contains("no request leaves it"))
-        // 第三方云端那一档必须把留存交回给服务商的政策，不许留下任何"我们保证"的暗示
-        XCTAssertTrue(PrivacyCopy.retention(provider: .deepseek, baseURL: "https://api.deepseek.com")
+        // 阿里云那一档必须把留存交回给服务商的政策，不许留下任何"我们保证"的暗示
+        XCTAssertTrue(PrivacyCopy.retention(
+            provider: .qwen,
+            baseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
                         .lowercased().contains("its own policy"))
     }
 
@@ -212,34 +212,5 @@ final class PrivacyCopyTests: XCTestCase {
     }
 }
 
-/// 「输入」页的段序：第一个控件必须是快捷键，通用那一段（界面语言 + 开机自启）在最后。
-/// 值得一条测试：这次重排的全部产出就是"顺序"，而顺序是最容易在下一次改动里被顺手推回去的东西。
-final class InputSectionOrderTests: XCTestCase {
-
-    func testOrderIsHotkeyFirstAndLanguageLast() {
-        // 4.3.3：整页只剩三段（用户嫌杂）。悬浮窗 / 录音 / 提示音 / 剪贴板那几个开关
-        // 从界面上撤了（设置键照旧生效），导入导出与保存历史搬去了「关于」页。
-        XCTAssertEqual(InputSectionOrder.allCases,
-                       [.hotkey, .writingPreferences, .general])
-        XCTAssertEqual(InputSectionOrder.allCases.first, .hotkey)
-        XCTAssertEqual(InputSectionOrder.allCases.last, .general)
-    }
-
-    /// 4.1.6：「写作偏好」（词汇表 + 自定义规则）紧跟在快捷键后面。
-    /// 钉住位置而不只是"存在"：除了快捷键，这一页就数这两个框改得最多——
-    /// 一旦被顺手挪到最底下，它就和以前藏在别的页里一样找不着了。
-    func testWritingPreferencesSitRightAfterTheHotkey() {
-        XCTAssertEqual(InputSectionOrder.allCases[1], .writingPreferences)
-    }
-
-    /// 权限不再是这一页的一段：缺权限是"现在用不了"，归概览顶上那条横幅管。
-    /// 钉住它是因为"顺手把权限搬回设置页"正是最容易发生的那次回退。
-    func testPermissionsAreNotASectionOfThisPage() {
-        XCTAssertEqual(InputSectionOrder.allCases.count, 3)
-    }
-
-    func testRawValuesAreContiguousFromZero() {
-        // ForEach(id: \.self) 靠 rawValue 稳定排序；插新段落必须显式排到位置上
-        XCTAssertEqual(InputSectionOrder.allCases.map(\.rawValue), Array(0..<3))
-    }
-}
+// 「输入」页的段序测试（InputSectionOrderTests）5.0.0 删掉：设置只剩一页，
+// 那一页没有了（快捷键 / 界面语言 / 开机自启三样都走出厂默认或搬去了菜单栏与引导）。

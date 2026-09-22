@@ -11,24 +11,23 @@ final class CloudASRIntegrationTests: XCTestCase {
     // MARK: - 档位本身
 
     func testEngineChoiceRawValuesAreStable() {
-        // rawValue 存在 UserDefaults 里，改一个字就等于把所有老用户的设置作废
-        XCTAssertEqual(RecognitionEngineChoice.local.rawValue, "local")
+        // rawValue 仍然出现在设置导入摘要与日志里，改一个字就对不上老文件
         XCTAssertEqual(RecognitionEngineChoice.cloudAlibaba.rawValue, "cloudAlibaba")
         XCTAssertEqual(RecognitionEngineChoice.cloudOpenAI.rawValue, "cloudOpenAI")
-        XCTAssertEqual(RecognitionEngineChoice.allCases.count, 3)
+        XCTAssertEqual(RecognitionEngineChoice.allCases.count, 2, "5.0.0 起没有本机那一档了")
     }
 
-    /// 脏值、空值、别的分支写进来的值——一律回落本地。默认档永远是"音频不出机"那一档。
-    func testUnknownEngineFallsBackToLocal() {
-        XCTAssertEqual(RecognitionEngineChoice.parse(""), .local)
-        XCTAssertEqual(RecognitionEngineChoice.parse("cloud"), .local)
-        XCTAssertEqual(RecognitionEngineChoice.parse("CLOUDALIBABA"), .local)
-        XCTAssertEqual(RecognitionEngineChoice.parse(" cloudOpenAI "), .cloudOpenAI, "两头的空白要容忍")
+    /// 生效服务商 → 用哪一家识别。**这是全 App 唯一的推导**（5.0.0 起识别引擎不是设置）
+    func testEngineFollowsTheProvider() {
+        let saved = Settings.shared.llmProvider
+        defer { Settings.shared.llmProvider = saved }
+        Settings.shared.llmProvider = .openai
+        XCTAssertEqual(Settings.shared.recognitionEngine, .cloudOpenAI)
+        Settings.shared.llmProvider = .qwen
+        XCTAssertEqual(Settings.shared.recognitionEngine, .cloudAlibaba)
     }
 
     func testCloudProviderMapping() {
-        XCTAssertNil(RecognitionEngineChoice.local.cloudProvider)
-        XCTAssertFalse(RecognitionEngineChoice.local.isCloud)
         XCTAssertEqual(RecognitionEngineChoice.cloudAlibaba.cloudProvider, .alibaba)
         XCTAssertEqual(RecognitionEngineChoice.cloudOpenAI.cloudProvider, .openai)
         XCTAssertTrue(RecognitionEngineChoice.cloudOpenAI.isCloud)
@@ -36,33 +35,16 @@ final class CloudASRIntegrationTests: XCTestCase {
 
     // MARK: - 语言提示
 
-    func testExplicitLanguageBecomesItsCode() {
-        XCTAssertEqual(CloudASRSettings.languageHints(recognitionLanguage: "zh", vocabulary: []), ["zh"])
-        XCTAssertEqual(CloudASRSettings.languageHints(recognitionLanguage: "ar", vocabulary: []), ["ar"])
-        XCTAssertEqual(CloudASRSettings.languageHints(recognitionLanguage: "YUE", vocabulary: []), ["yue"])
-    }
-
-    /// 云端不认识的语言（荷兰语、波斯语…本机模型有、云端列表里没有）→ 一个提示都不送，
-    /// 让云端自己判。送一个它不认识的码只会被判 InvalidParameter，整段识别失败。
-    func testLanguagesTheCloudDoesNotKnowSendNoHint() {
-        XCTAssertEqual(CloudASRSettings.languageHints(recognitionLanguage: "nl", vocabulary: []), [])
-        XCTAssertEqual(CloudASRSettings.languageHints(recognitionLanguage: "fa", vocabulary: []), [])
-        XCTAssertEqual(CloudASRSettings.languageHints(recognitionLanguage: "mk", vocabulary: []), [])
-    }
-
-    /// Auto 默认什么都不送；只有用户**自己的词表**证明这是一场中英夹杂的口述时才送两个提示
+    /// 5.0.0 起没有「识别语言」这条设置了（两家云端都不发语言提示），
+    /// 只剩这一条：词表里中西夹杂才送 ["zh","en"]——那是用户自己的词表在说话。
     func testAutoOnlyHintsWhenVocabularyIsMixed() {
-        XCTAssertEqual(CloudASRSettings.languageHints(recognitionLanguage: "", vocabulary: []), [])
-        XCTAssertEqual(CloudASRSettings.languageHints(recognitionLanguage: "auto", vocabulary: []), [])
-        XCTAssertEqual(CloudASRSettings.languageHints(recognitionLanguage: "", vocabulary: ["捷文", "云术法"]), [],
+        XCTAssertEqual(CloudASRSettings.languageHints(vocabulary: []), [])
+        XCTAssertEqual(CloudASRSettings.languageHints(vocabulary: ["捷文", "云术法"]), [],
                        "只有中文词条不等于只说中文，不替用户锁语言")
-        XCTAssertEqual(CloudASRSettings.languageHints(recognitionLanguage: "", vocabulary: ["Power BI"]), [])
-        XCTAssertEqual(CloudASRSettings.languageHints(recognitionLanguage: "",
-                                                     vocabulary: ["捷文", "Power BI"]),
-                       ["zh", "en"])
-        XCTAssertEqual(CloudASRSettings.languageHints(recognitionLanguage: "auto",
-                                                     vocabulary: ["MicType 捷文"]),
-                       ["zh", "en"], "同一条词条里中西夹杂也算混合")
+        XCTAssertEqual(CloudASRSettings.languageHints(vocabulary: ["Power BI"]), [])
+        XCTAssertEqual(CloudASRSettings.languageHints(vocabulary: ["捷文", "Power BI"]), ["zh", "en"])
+        XCTAssertEqual(CloudASRSettings.languageHints(vocabulary: ["MicType 捷文"]), ["zh", "en"],
+                       "同一条词条里中西夹杂也算混合")
     }
 
     func testScriptDetectionHelpers() {
@@ -644,14 +626,13 @@ final class CloudASRIntegrationTests: XCTestCase {
         let config = CloudASRSettings.config(provider: .alibaba,
                                              alibabaModel: .qwen3Flash,
                                              host: "  https://ws-123.cn-beijing.maas.aliyuncs.com/api/v1  ",
-                                             recognitionLanguage: "zh",
                                              vocabulary: ["捷文", "Power BI"],
                                              apiKey: "sk-test")
         XCTAssertEqual(config.provider, .alibaba)
         XCTAssertEqual(config.alibabaModel, .qwen3Flash)
         XCTAssertEqual(config.host, "ws-123.cn-beijing.maas.aliyuncs.com",
                        "整条 URL 也要能直接粘进来，归一成裸主机名")
-        XCTAssertEqual(config.languageHints, ["zh"])
+        XCTAssertEqual(config.languageHints, ["zh", "en"], "词表中西夹杂 → 两个提示")
         XCTAssertEqual(config.vocabulary, ["捷文", "Power BI"], "词表原样交给客户端，权重与过滤在那一层")
         XCTAssertEqual(config.apiKey, "sk-test")
         XCTAssertFalse(config.enableITN, "ITN 一律关：MicType 自己有润色层")
@@ -663,7 +644,6 @@ final class CloudASRIntegrationTests: XCTestCase {
         let config = CloudASRSettings.config(provider: .alibaba,
                                              alibabaModel: .qwen3Flash,
                                              host: "   ",
-                                             recognitionLanguage: "",
                                              vocabulary: [],
                                              apiKey: "k")
         XCTAssertEqual(config.host, AlibabaEndpoint.defaultHost)
@@ -675,7 +655,6 @@ final class CloudASRIntegrationTests: XCTestCase {
         let config = CloudASRSettings.config(provider: .alibaba,
                                              alibabaModel: .qwen3Flash,
                                              host: AlibabaEndpoint.defaultHost,
-                                             recognitionLanguage: "",
                                              vocabulary: ["MicType", "捷文"],
                                              apiKey: "k")
         let vocab = AlibabaASRClient.vocabularyParameter(config.vocabulary)
@@ -685,34 +664,34 @@ final class CloudASRIntegrationTests: XCTestCase {
 
     // MARK: - 开录之前：这一档能不能用
 
-    /// 4.0.1 起只剩两个闸门：本地档看模型，云端档看 Key。
-    /// 「这个区域没有接入点」那一档随区域选择器一起没了——地址现在是试出来的。
+    /// 5.0.0 起只剩两个闸门，而且**先问 Key**：没填 Key 的人就算这会儿断网，
+    /// 他要做的第一件事也是去填 Key；反过来，Key 好好的人按不出字八成就是网没了。
     func testReadinessMatrix() {
-        XCTAssertEqual(RecognitionEngineReadiness.evaluate(choice: .local, localModelAvailable: true,
-                                                           hasCloudKey: false),
-                       .ready, "本地档不看云端 Key")
-        XCTAssertEqual(RecognitionEngineReadiness.evaluate(choice: .local, localModelAvailable: false,
-                                                           hasCloudKey: true),
-                       .localModelMissing)
-        XCTAssertEqual(RecognitionEngineReadiness.evaluate(choice: .cloudAlibaba, localModelAvailable: false,
-                                                           hasCloudKey: true),
-                       .ready, "云端档不需要本机模型")
-        XCTAssertEqual(RecognitionEngineReadiness.evaluate(choice: .cloudAlibaba, localModelAvailable: true,
-                                                           hasCloudKey: false),
+        XCTAssertEqual(RecognitionEngineReadiness.evaluate(choice: .cloudAlibaba,
+                                                           hasCloudKey: true, online: true),
+                       .ready)
+        XCTAssertEqual(RecognitionEngineReadiness.evaluate(choice: .cloudAlibaba,
+                                                           hasCloudKey: false, online: true),
                        .cloudKeyMissing(.alibaba))
-        XCTAssertEqual(RecognitionEngineReadiness.evaluate(choice: .cloudOpenAI, localModelAvailable: true,
-                                                           hasCloudKey: false),
+        XCTAssertEqual(RecognitionEngineReadiness.evaluate(choice: .cloudOpenAI,
+                                                           hasCloudKey: false, online: true),
                        .cloudKeyMissing(.openai))
+        XCTAssertEqual(RecognitionEngineReadiness.evaluate(choice: .cloudOpenAI,
+                                                           hasCloudKey: true, online: false),
+                       .offline)
+        XCTAssertEqual(RecognitionEngineReadiness.evaluate(choice: .cloudOpenAI,
+                                                           hasCloudKey: false, online: false),
+                       .cloudKeyMissing(.openai), "没 Key 优先于没网")
     }
 
-    /// 每一种"开不了工"都必须有一句话和一个落点；云端那两档还要有可点的胶囊
+    /// 每一种"开不了工"都必须有一句话；缺 Key 那一档还要有可点的胶囊
     func testReadinessMessagesAndChips() {
         XCTAssertTrue(RecognitionEngineReadiness.ready.isReady)
         XCTAssertTrue(RecognitionEngineReadiness.ready.message.isEmpty)
         XCTAssertNil(RecognitionEngineReadiness.ready.settingsChipLabel)
-        XCTAssertNil(RecognitionEngineReadiness.localModelMissing.settingsChipLabel,
-                     "本地档走的是引导下载页，不用胶囊")
-        for state: RecognitionEngineReadiness in [.localModelMissing, .cloudKeyMissing(.alibaba),
+        // 没网那一档不给胶囊：设置页上没有任何一个开关能把网接回来
+        XCTAssertNil(RecognitionEngineReadiness.offline.settingsChipLabel)
+        for state: RecognitionEngineReadiness in [.offline, .cloudKeyMissing(.alibaba),
                                                   .cloudKeyMissing(.openai)] {
             XCTAssertFalse(state.isReady)
             XCTAssertFalse(state.message.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -722,27 +701,35 @@ final class CloudASRIntegrationTests: XCTestCase {
 
     // MARK: - 云端炸了之后
 
-    /// 本地模型在 = 永远先本地重跑一遍：用户说过的话一个字都不该因为云端抽风而丢
-    func testFallbackPrefersTheLocalEngine() {
-        XCTAssertEqual(CloudFallbackDecision.decide(partialText: "", localModelAvailable: true),
-                       .retryLocally)
-        XCTAssertEqual(CloudFallbackDecision.decide(partialText: "前两段的字", localModelAvailable: true),
-                       .retryLocally)
+    /// 5.0.0 没有本机模型可回落了：整段录音还在内存里，**先拿它再走一次同步接口**。
+    /// 用户说过的话一个字都不该因为云端抽一下就丢。
+    func testFallbackRetriesTheSyncEndpointOnce() {
+        XCTAssertEqual(CloudFallbackDecision.decide(partialText: "", alreadyRetried: false),
+                       .retryOnce)
+        XCTAssertEqual(CloudFallbackDecision.decide(partialText: "前两段的字", alreadyRetried: false),
+                       .retryOnce)
     }
 
-    /// 没有本地退路：有字就把已经转出来的段落交付出去，什么都没有才报错
-    func testFallbackWithoutLocalModel() {
-        XCTAssertEqual(CloudFallbackDecision.decide(partialText: "前两段的字", localModelAvailable: false),
+    /// 已经重试过一次：有字就把已经转出来的段落交付出去，什么都没有才报错。
+    /// **只重试一次**——再失败多半是 Key / 额度 / 网络本身的问题，第三趟只是让用户多等一轮。
+    func testFallbackAfterTheRetry() {
+        XCTAssertEqual(CloudFallbackDecision.decide(partialText: "前两段的字", alreadyRetried: true),
                        .deliverPartial)
-        XCTAssertEqual(CloudFallbackDecision.decide(partialText: "", localModelAvailable: false),
+        XCTAssertEqual(CloudFallbackDecision.decide(partialText: "", alreadyRetried: true),
                        .reportFailure)
     }
 
-    func testFallbackNoteNamesTheReasonAndStaysShort() {
-        let note = CloudFallbackDecision.fallbackNote(reason: "429 Throttling")
+    func testRetryNoteNamesTheReasonAndStaysShort() {
+        let note = CloudFallbackDecision.retryNote(reason: "429 Throttling")
         XCTAssertTrue(note.contains("429 Throttling"), "原因要原样摆出来：用户据此判断要不要重试")
-        let long = CloudFallbackDecision.fallbackNote(reason: String(repeating: "x", count: 400))
+        let long = CloudFallbackDecision.retryNote(reason: String(repeating: "x", count: 400))
         XCTAssertLessThan(long.count, 200, "悬浮窗一行放不下 400 个字符的云端原话")
+    }
+
+    /// 重试也没成那一句**不报技术细节**：他已经等了两趟，现在唯一有用的信息是"再说一次"
+    func testRetryExhaustedCopyJustAsksToTryAgain() {
+        XCTAssertFalse(CloudFallbackDecision.retryExhausted.isEmpty)
+        XCTAssertFalse(CloudFallbackDecision.retryExhausted.contains("429"))
     }
 
     // MARK: - 探针（粘贴即验证 / 「测试识别」）
@@ -825,30 +812,12 @@ final class CloudASRIntegrationTests: XCTestCase {
         }
         wait(for: [done], timeout: 2)
 
-        // 没有 Key 的这一轮，集成层会按"没有本地退路就报错"走
-        XCTAssertEqual(CloudFallbackDecision.decide(partialText: "", localModelAvailable: false),
+        // 没有 Key 的这一轮，重试过之后集成层按"什么都没有就报错"走
+        XCTAssertEqual(CloudFallbackDecision.decide(partialText: "", alreadyRetried: true),
                        .reportFailure)
     }
 
-    // MARK: - 语言提示送不送得到（界面据此换文案）
-
-    /// 云端的语言表比「识别语言」那张选单短：选了它不认识的码，提示根本送不出去。
-    /// 设置页那句"选了具体语言就送过去"必须按这个判据分支，否则对小语种就是假话。
-    func testCloudHintDeliveredMatchesWhatIsActuallySent() {
-        XCTAssertTrue(CloudASRSettings.cloudHintDelivered(recognitionLanguage: "zh"))
-        XCTAssertTrue(CloudASRSettings.cloudHintDelivered(recognitionLanguage: "ar"))
-        XCTAssertTrue(CloudASRSettings.cloudHintDelivered(recognitionLanguage: " EN "))
-        // 「自动」与空值：本来就不送提示，界面说的就是"交给云端判"，不算不一致
-        XCTAssertTrue(CloudASRSettings.cloudHintDelivered(recognitionLanguage: ""))
-        XCTAssertTrue(CloudASRSettings.cloudHintDelivered(recognitionLanguage: "auto"))
-        // 选单里有、云端不认的那几种（荷兰语 / 波斯语 / 希腊语 / 罗马尼亚语 / 匈牙利语 / 马其顿语）
-        for code in ["nl", "fa", "el", "ro", "hu", "mk"] {
-            XCTAssertFalse(CloudASRSettings.cloudHintDelivered(recognitionLanguage: code),
-                           "\(code) 不在云端语言表里，界面必须换一句话")
-            XCTAssertTrue(CloudASRSettings.languageHints(recognitionLanguage: code, vocabulary: []).isEmpty,
-                          "判据必须与真正送出去的 hints 同源")
-        }
-    }
+    // 「语言提示送不送得到」那条测试随「识别语言」设置一起删掉（5.0.0）。
 
     // MARK: - 桥接层的取消语义（假发送器，不上网）
 

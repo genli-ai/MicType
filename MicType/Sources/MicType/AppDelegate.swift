@@ -49,14 +49,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 录音中 *和* 处理中都要保持 Esc 拦截：处理中 Esc 是用户唯一的出口
             self?.hotkeys.setCancellable(phase != .idle)
         }
-        // 模型缺失时的"去哪儿"：引导窗口比设置页更直接（模型在那里后台下，有进度、下完自动继续）。
-        // 4.0.1 的引导只剩四屏，下载挂在权限那一屏上，所以落点改成 .permissions
+        // 没别的可说时的"去哪儿"：设置窗口（5.0.0 起识别只有云端，不再有"模型没下载"这条路）
         dictation.onNeedSettings = {
-            if QwenEngine.shared.isModelAvailable {
-                SettingsWindowController.shared.show()
-            } else {
-                OnboardingWindowController.shared.show(startAt: .permissions)
-            }
+            SettingsWindowController.shared.show()
         }
 
         // 缺系统权限时同样去引导（OWNER 规则 2026-09-20：三件必办的事都在引导里办完）。
@@ -65,15 +60,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             OnboardingWindowController.shared.show(startAt: .permissions)
         }
 
-        // 悬浮窗上的「去配置」：直接落到「云端 AI」那一页，不让用户自己从概览点进去
+        // 悬浮窗上的「去配置」/「去设置」：5.0.0 起设置就是一页，两条深链都落在它上面
+        // （那一页第二行就是 API Key 输入框）
         dictation.onNeedAISettings = {
-            SettingsWindowController.shared.show(tab: .cloud)
+            SettingsWindowController.shared.show()
         }
-
-        // 悬浮窗上的「去设置」：云端识别没填 Key 时落到「云端 AI」页——云端识别的开关
-        // 和那把 Key 都在那里（「本地识别」页只剩麦克风、语言、词汇表、本机模型）
         dictation.onNeedRecognitionSettings = {
-            SettingsWindowController.shared.show(tab: .cloud)
+            SettingsWindowController.shared.show()
         }
 
         // 云端识别的 Key 统一到润色那把（qwen_api_key）：开发期存过旧账号的搬过来再删
@@ -87,14 +80,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             AlibabaFastestHostRefresh.runAtLaunch()
         }
 
-        // 识别停在阿里云、服务商却已经不是阿里云：「云端 AI」页上那个开关这时根本不渲染。
-        // **不替他改**（音频出不出这台 Mac 永远由用户自己点），但要留一行日志——
-        // 那一页现在会当面说这件事，用户抄来问的时候日志里得找得到。
-        if AISetup.showsStrandedAlibabaCloudNotice(engine: Settings.shared.recognitionEngine,
-                                                   provider: Settings.shared.llmProvider) {
-            Log.warn("Cloud recognition stranded: engine=cloudAlibaba provider="
-                     + Settings.shared.llmProvider.rawValue)
-        }
+        // 识别引擎 5.0.0 起由生效服务商推出来，「识别停在旧档」那条边界状态不再可能出现。
+
+        // 网络可达性：识别、润色、指令三件事全在云端，"没网"是按下热键那一刻就该说清的状态
+        NetworkReachability.start()
 
         hotkeys.onTapToggle = { [weak self] in self?.dictation.toggle() }
         hotkeys.onPressStart = { [weak self] in self?.dictation.pressStart() }
@@ -108,18 +97,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotkeys.onBusyGesture = { [weak self] in self?.dictation.gestureWhileBusy() }
         hotkeys.start()
 
-        if QwenEngine.shared.isModelAvailable {
-            // 后台预加载模型，第一次听写不用等
-            QwenEngine.shared.preload()
-        }
+        // 5.0.0 的一次性清理：本机模型目录整棵删掉，并把释放了多少空间记下来
+        // （那个数会出现在这一次启动的悬浮窗提示里）
+        let freedBytes = LocalModelCleanup.runIfNeeded()
         let onboardingShowing = routeFirstLaunch()
-        announceLaunch(onboardingShowing: onboardingShowing)
-        // 启动计数 +1。它只有一个用途：换过模型之后「至少重启过一次」才允许删旧模型
-        // （顺带在这里问一次够不够条件删——上一轮换代的成功听写可能发生在上一次启动里）。
-        ModelUpgrader.shared.noteAppLaunch()
-        // 模型目录：最多 24 小时查一次，查到更好的模型只在菜单栏和设置页里「摆出来」，
-        // 绝不自动下载、绝不弹窗——启动这一刻用户想的是说话，不是换模型。
-        ModelUpgrader.shared.refreshDecisionAtLaunch()
+        announceLaunch(onboardingShowing: onboardingShowing, freedBytes: freedBytes)
     }
 
     /// 每次启动都要交代的两件事：**上次升级成没成**，以及**它现在在哪、下一步按什么**。
@@ -130,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     ///
     /// 成功那一档不再单独闪："已更新到 x.y.z" 和 4.3.4 新加的那句"它在菜单栏里"合成一条
     /// （LaunchNotice）——同一时刻闪两条只会互相盖掉。
-    private func announceLaunch(onboardingShowing: Bool) {
+    private func announceLaunch(onboardingShowing: Bool, freedBytes: Int64 = 0) {
         UpdateChecker.cleanupStaleStages()
         var updatedTo: String?
         switch UpdateChecker.consumePreviousInstallResult() {
@@ -155,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 摆在"已更新到 4.1.1"旁边正好把话说反
         LaunchNotice.flash(LaunchNotice.decide(updatedTo: updatedTo,
                                                onboardingShowing: onboardingShowing),
+                           freedBytes: freedBytes,
                            after: UpdateChecker.installedNoticeDelay)
     }
 
@@ -222,12 +205,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 OnboardingWindowController.shared.show(startAt: essentials.resumePage)
                 return true
             }
-        } else if RecognitionEngineReadiness.current() == .localModelMissing,
+        } else if case .cloudKeyMissing = RecognitionEngineReadiness.current(),
                   !Settings.shared.onboardingSkippedEssentials {
-            // 走过引导但模型没了（换了模型 / 被删）：仍然带去下载页，而不是把人扔进设置页。
-            // 只对本地档成立——云端档缺 Key 不抢启动，按下热键时悬浮窗上那个「去设置」胶囊接住他。
-            // 点过「先跳过」的人例外：他已经知道模型没下，每次启动再弹一遍就成了催促
-            OnboardingWindowController.shared.show(startAt: .permissions)
+            // 走过引导、但这一刻**没有 Key**（5.0.0 把 DeepSeek / 自定义端点 / 本机大模型
+            // 三档删掉了，用那几档的老用户升上来就落在这里）。识别也在云端，没有 Key
+            // 连听写都不能用——所以把他接回引导第三屏，而不是让他按一次热键才发现。
+            // 点过「先跳过」的人例外：他已经知道，每次启动再弹一遍就成了催促。
+            Log.info("Onboarding reopened: no API key after the 5.0 upgrade")
+            OnboardingWindowController.shared.show(startAt: .howYouUse)
             return true
         }
 
@@ -312,19 +297,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        // 润色档位
-        let levelItem = NSMenuItem(title: tr("润色档位", "Polish Mode"), action: nil, keyEquivalent: "")
-        let levelMenu = NSMenu()
-        let current = Settings.shared.polishLevel
-        for level in PolishLevel.allCases {
-            let mi = NSMenuItem(title: level.displayName, action: #selector(setPolishLevel(_:)), keyEquivalent: "")
-            mi.target = self
-            mi.representedObject = level.rawValue
-            mi.state = (level == current) ? .on : .off
-            levelMenu.addItem(mi)
-        }
-        levelItem.submenu = levelMenu
-        menu.addItem(levelItem)
+        // 「润色档位」子菜单 5.0.0 删掉：润色永远开着，那个菜单里没有第二个答案可选。
 
         // 历史记录：菜单里只留最近 5 条速览（复制），完整的搜索/原文对照/重新插入在历史窗口里
         let historyItem = NSMenuItem(title: tr("最近记录", "Recent Transcripts"), action: nil, keyEquivalent: "")
@@ -360,25 +333,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        // 有更好的识别模型时在菜单栏摆一条。点它是「带我去看」，不是「立刻下载 800 MB」——
-        // 那一下必须是设置页横幅上写着体量的那个按钮（菜单项点错的代价太大）。
-        switch ModelUpgrader.shared.decision {
-        case .none:
-            break
-        case .upgrade, .refresh:
-            menu.addItem(makeItem(tr("升级识别模型…", "Upgrade speech model…"), #selector(openModelUpgrade)))
-        case .needsAppUpdate:
-            menu.addItem(makeItem(tr("新识别模型需要更新 MicType…", "New speech model needs a MicType update…"),
-                                  #selector(openAppUpdate)))
-        }
+        // 「升级识别模型」与「释放模型内存」5.0.0 一并删掉：没有本机模型了。
 
-        if QwenEngine.shared.isModelLoaded {
-            menu.addItem(makeItem(tr("释放模型内存", "Free Model Memory"), #selector(unloadModel)))
-        }
-
-        // 没配 AI 时给一条看得见的入口（配好就消失）。3.3 之前菜单栏对"AI 没配"
+        // 没配 Key 时给一条看得见的入口（配好就消失）。3.3 之前菜单栏对"AI 没配"
         // 一个字都不说，用户只有在按住说完话之后才在悬浮窗看到一句错误。
-        // 本机模型那一档不需要 Key，isConfigured 已经替我们认下了。
+        // 5.0.0 起没有 Key 连听写都不能用，所以这一条比从前更该在。
         if !LLMClient.isConfigured {
             menu.addItem(makeItem(tr("配置 AI…", "Set up AI…"), #selector(openAISettings)))
         }
@@ -387,6 +346,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsItem.keyEquivalent = ","
         settingsItem.keyEquivalentModifierMask = .command
         menu.addItem(settingsItem)
+        // 「写作偏好…」直接摆在菜单里（5.0.0）：它是设置窗口底部那排小字里的一页，
+        // 而往词汇表里补一个听错的名字，是这个产品第二常做的事——不该要两次点击
+        menu.addItem(makeItem(tr("写作偏好…", "Writing Preferences…"),
+                              #selector(openWritingPreferences)))
+        // 界面语言：设计文档第 1 节写的是"界面语言跟系统，菜单栏可切"——设置页上没有
+        // 这一项了（一辈子点一次的东西不该占那一页），但它必须还够得着
+        menu.addItem(languageItem())
+        menu.addItem(makeItem(tr("检查更新…", "Check for Updates…"), #selector(openAppUpdate)))
         menu.addItem(makeItem(tr("打开日志文件夹", "Open Logs Folder"), #selector(openLogsFolder)))
 
         menu.addItem(.separator())
@@ -395,6 +362,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         quitItem.keyEquivalent = "q"
         quitItem.keyEquivalentModifierMask = .command
         menu.addItem(quitItem)
+    }
+
+    /// 界面语言子菜单。当前那一档打勾——不打勾的话，两项并排看不出现在是哪一种
+    /// （尤其界面正是他看不懂的那一种语言时）
+    private func languageItem() -> NSMenuItem {
+        let item = NSMenuItem(title: tr("界面语言", "Language"), action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        for language in AppLanguage.allCases {
+            let mi = NSMenuItem(title: language.displayName, action: #selector(setLanguage(_:)),
+                                keyEquivalent: "")
+            mi.target = self
+            mi.representedObject = language.rawValue
+            mi.state = (language == L10n.shared.language) ? .on : .off
+            submenu.addItem(mi)
+        }
+        item.submenu = submenu
+        return item
     }
 
     private func makeItem(_ title: String, _ action: Selector) -> NSMenuItem {
@@ -417,10 +401,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dictation.revertToRaw()
     }
 
-    @objc private func setPolishLevel(_ sender: NSMenuItem) {
+    @objc private func setLanguage(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
-              let level = PolishLevel(rawValue: raw) else { return }
-        Settings.shared.polishLevel = level
+              let language = AppLanguage(rawValue: raw) else { return }
+        L10n.shared.language = language
     }
 
     @objc private func copyHistory(_ sender: NSMenuItem) {
@@ -470,10 +454,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         HistoryWindowController.shared.show()
     }
 
-    @objc private func unloadModel() {
-        QwenEngine.shared.unloadModel()
-    }
-
     /// 主菜单里的「设置…」也走这里（AppMenu 用 #selector 指过来，所以不能是 private）
     @objc func openSettings() {
         SettingsWindowController.shared.show()
@@ -484,20 +464,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         SettingsWindowController.shared.show(tab: .about)
     }
 
-    /// 带去设置 → 本地识别：升级横幅在那里，按钮上写着这次要下多少
-    @objc private func openModelUpgrade() {
-        Log.info("Menu: open model upgrade banner")
-        SettingsWindowController.shared.show(tab: .recognition)
-    }
-
-    /// 新模型要求更新的 App 版本：这条路只能先更新 MicType（关于页有「检查更新」）
-    @objc private func openAppUpdate() {
-        Log.info("Menu: model needs newer app, routing to Check for Updates")
-        SettingsWindowController.shared.show(tab: .about)
-    }
-
     @objc private func openAISettings() {
-        SettingsWindowController.shared.show(tab: .cloud)
+        SettingsWindowController.shared.show()
+    }
+
+    /// 菜单栏的「写作偏好…」：直接落到那一页，不必先开设置再点底下那排小字
+    @objc private func openWritingPreferences() {
+        SettingsWindowController.shared.show(tab: .writing)
+    }
+
+    /// 菜单栏的「检查更新…」：进关于页并当场开查（他点的就是这个动作）
+    @objc private func openAppUpdate() {
+        SettingsWindowController.shared.show(tab: .about, intent: .checkUpdate)
     }
 
     @objc private func openLogsFolder() {

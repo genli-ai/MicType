@@ -22,151 +22,26 @@ enum LLMCatalog {
     /// 一个更聪明但慢三倍、偶尔整句丢掉的润色，不是更好的默认值，是更差的产品。
     /// 想要旗舰的人在「模型」下拉里一眼就能选到（那一档标着「旗舰」）。
     static let openaiDefaultModel = "gpt-5.6-luna"
-    static let deepseekDefaultModel = "deepseek-flash"
     static let qwenDefaultModel = "qwen3.8-flash"
 
-    /// OpenAI 快选（2026-09 在售主力）。
-    /// **这几张表只喂「高级」里那个型号名输入框的快选清单**，而那一段只长在没有内置清单的
-    /// 两档上（自定义端点 / 本机模型）——所以顺序在界面上看不见，下拉的顺序由 modelMenu 定。
-    /// 仍然按"默认的在前"排，免得读到这里的人以为两处的顺序该一样。
-    static let openaiPresets = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"]
-    /// DeepSeek 快选。老的 deepseek-v4-flash / deepseek-chat / deepseek-reasoner 已全部下线（见迁移）。
-    static let deepseekPresets = ["deepseek-flash", "deepseek-v4-pro"]
-    /// Qwen（DashScope 兼容模式）快选。3.8 是当前代；`qwen-flash` / `qwen-plus` / `qwen-max`
-    /// 是阿里维护的稳定别名——换代时它们自己指向新模型，怕过时的用户直接用别名最省心。
-    static let qwenPresets = ["qwen3.8-flash", "qwen3.7-plus", "qwen3.8-max",
-                             "qwen-max", "qwen-plus", "qwen-flash"]
-
-    static func presets(for provider: LLMProvider) -> [String] {
-        switch provider {
-        case .openai: return openaiPresets
-        case .deepseek: return deepseekPresets
-        case .qwen: return qwenPresets
-        // 自定义端点与本机模型的型号名只有用户自己知道（Ollama 里是 `llama3.1:8b` 这种本地 tag）：
-        // 写死一份猜出来的清单只会误导人，让「刷新模型列表」去问端点本身。
-        case .custom, .local: return []
-        }
-    }
-
-    /// 这一档服务商的默认型号（润色与指令同一个）。"" = 这一档没有内置型号。
+    /// 这一档服务商用哪个型号。**5.0.0 起这就是全部**：没有设置、没有下拉、没有输入框
+    /// （用户 2026-09-22 拍板）。"挑型号"是一个用户没有依据、也不该被问的问题；
+    /// 而这两个值本来就是按实测挑出来的速度/质量平衡点（见上面那段注释）。
     static func defaultModel(for provider: LLMProvider) -> String {
         switch provider {
         case .openai: return openaiDefaultModel
-        case .deepseek: return deepseekDefaultModel
         case .qwen: return qwenDefaultModel
-        case .custom, .local: return ""
         }
     }
 
-    /// 润色 / 指令的默认值现在是同一个。两个函数都留着，是因为调用方问的是**不同的键**
-    /// （chatModel vs openaiCommandModel），读起来比到处写 defaultModel 清楚。
+    /// 润色 / 指令永远是同一个型号。两个函数都留着，是因为调用方问的是两件不同的事，
+    /// 读起来比到处写 defaultModel 清楚。
     static func polishDefault(for provider: LLMProvider) -> String { defaultModel(for: provider) }
     static func commandDefault(for provider: LLMProvider) -> String { defaultModel(for: provider) }
 
-    // MARK: - 型号选单（界面上唯一的型号决定）
-
-    /// 「模型」下拉里的一项：型号名 + 一句大白话标签。
-    /// 标签可以是空串——同一档里并列的第二、第三个型号不必每个都贴一个词。
-    struct ModelChoice: Equatable {
-        let id: String
-        let note: String
-    }
-
-    /// **整个产品里唯一一张「服务商 → 可选型号」表**：型号换代只改这里（以及上面的默认值），
-    /// 界面层一个型号名都不认识。空数组 = 这一档没有内置型号（自定义端点 / 本机模型的型号名
-    /// 只有用户自己知道），界面据此把下拉整个藏掉，而不是摆一个点了没反应的控件。
-    ///
-    /// 4.0.0 这里是「快 / 最好」两档。用户 2026-09-19 拍板换成型号本身：
-    /// 「快」「最好」这种词既没说清花多少钱，也不让想指定型号的人指定。
-    ///
-    /// 顺序：**默认那一项在最前**（4.1.4）。下拉打开的第一眼看到的就该是正在用的那个，
-    /// 而且标签直说它为什么是默认（「快」）——往下走才是更强更慢的那几档。
-    static func modelMenu(for provider: LLMProvider) -> [ModelChoice] {
-        switch provider {
-        case .openai:
-            return [ModelChoice(id: openaiDefaultModel, note: tr("快（默认）", "Fast (default)")),
-                    ModelChoice(id: "gpt-5.6-terra", note: tr("均衡", "Balanced")),
-                    ModelChoice(id: "gpt-5.6-sol", note: tr("旗舰", "Flagship")),
-                    ModelChoice(id: "gpt-6-astra", note: tr("最强", "Strongest"))]
-        case .deepseek:
-            return [ModelChoice(id: deepseekDefaultModel, note: tr("快（默认）", "Fast (default)")),
-                    ModelChoice(id: "deepseek-v4-pro", note: tr("旗舰", "Flagship"))]
-        case .qwen:
-            return [ModelChoice(id: qwenDefaultModel, note: tr("快（默认）", "Fast (default)")),
-                    ModelChoice(id: "qwen3.7-plus", note: ""),
-                    // 「较慢」不是修辞：实测润色 4–12 秒，撞得上 12 秒的润色超时（见默认值那段注释）
-                    ModelChoice(id: "qwen3.8-max", note: tr("旗舰（较慢）", "Flagship (slower)"))]
-        case .custom, .local:
-            return []
-        }
-    }
-
-    /// 下拉里显示的那一行（型号名永远在前：它才是要发出去的东西）
-    static func modelLabel(_ choice: ModelChoice) -> String {
-        choice.note.isEmpty ? choice.id : choice.id + " · " + choice.note
-    }
-
-    /// 选中一个型号要写回的键值（**润色与指令一起改**，纯函数）。
-    /// 空字典 = 型号名是空的，一个字节都不写。
-    static func modelWrites(provider: LLMProvider, model: String) -> [String: String] {
-        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [:] }
-        let keys = modelKeys(for: provider)
-        return [keys.polish: trimmed, keys.command: trimmed]
-    }
-
-    /// 当前这两个字段落在选单的哪一项上。nil = 两个字段不一样（在「高级」里分开设过），
-    /// 或者是一个选单里没有的型号——界面据此显示「自定义…」，绝不把用户钉回我们的某一项。
-    static func selectedMenuModel(provider: LLMProvider, polish: String, command: String) -> String? {
-        let p = polish.trimmingCharacters(in: .whitespacesAndNewlines)
-        let c = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !p.isEmpty, p == c else { return nil }
-        return modelMenu(for: provider).contains { $0.id == p } ? p : nil
-    }
-
-    /// 把两个型号字段拉成同一个值（**纯函数**，4.1.1 的一次性迁移与设置导入都走它）。
-    ///
-    /// 4.1.1 起「润色模型」和「指令模型」不再是两个决定（用户 2026-09-20 拍板：
-    /// 全部同一个）。界面上分开设的入口已经没有了，可老设置里、别人给的设置文件里，
-    /// 仍然可能存着两个不一样的值——那会变成一条**看不见的设置**：下拉显示「自定义…」，
-    /// 按住说指令跑的却是另一个型号。返回要写回的键值，空字典 = 本来就是一样的。
-    static func unifyModelWrites(current: [String: String?]) -> [String: String] {
-        var writes: [String: String] = [:]
-        for provider in LLMProvider.allCases {
-            let keys = modelKeys(for: provider)
-            let polish = storedValue(current, keys.polish)
-            let command = storedValue(current, keys.command)
-            guard command != polish else { continue }
-            guard let polish = polish else {
-                // 润色型号空着、指令型号却有值：**只有没有内置默认值的那两档**
-                //（自定义端点 / 本机模型，出厂就是空串）会真的空着，4.0.x 里只在「高级」
-                // 填过指令型号的人正是这个样子。丢着不管的话，界面上写着"型号名未填"、
-                // 润色回落识别原文，按住说指令却真的在跑另一个型号——这条迁移要消灭的
-                // 正是这种看不见的设置，所以反过来把润色型号补成它。
-                // 官方三档的 nil 是另一回事：那是"用注册默认值"（一个非空型号），
-                // 拿指令型号去顶掉它才是替用户做主。
-                if let command = command, defaultModel(for: provider).isEmpty {
-                    writes[keys.polish] = command
-                }
-                continue
-            }
-            writes[keys.command] = polish
-        }
-        return writes
-    }
-
-    /// 某个服务商的「润色型号 / 指令型号」分别存在哪两个 UserDefaults 键上。
-    /// 为什么值得一个纯函数：在「模型」下拉里选一下就要**同时**改这两个字段，而设置页与引导页
-    /// 各写一份 switch 的话，早晚有一处在加服务商时漏掉一档——漏掉的表现是「选了没反应」。
-    static func modelKeys(for provider: LLMProvider) -> (polish: String, command: String) {
-        switch provider {
-        case .openai: return (SettingsKeys.chatModel, SettingsKeys.openaiCommandModel)
-        case .deepseek: return (SettingsKeys.deepseekModel, SettingsKeys.deepseekCommandModel)
-        case .qwen: return (SettingsKeys.qwenModel, SettingsKeys.qwenCommandModel)
-        case .custom: return (SettingsKeys.customModel, SettingsKeys.customCommandModel)
-        case .local: return (SettingsKeys.localModel, SettingsKeys.localCommandModel)
-        }
-    }
+    // 「模型选单」5.0.0 整段删掉（ModelChoice / modelMenu / modelLabel / modelWrites /
+    // selectedMenuModel / unifyModelWrites / modelKeys，以及 4.x 那三条型号迁移）：
+    // 型号不再是一条设置，defaultModel 就是唯一的答案。
 
     // MARK: - 配置齐了没有
 
@@ -182,26 +57,101 @@ enum LLMCatalog {
         return !polishModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// 引导收尾那一行到底该说哪一种话。**三档，不是两档**：
-    /// 「配好了但润色关着」（选了「只用本地」却留着一把 Key）既不是 ready 也不是没配——
-    /// 此刻轻点听写一个字都不润色，而按住说指令照常会调用云端并计费。
-    /// 只用 aiReady 判的话，这一档会被说成「AI 润色和语音指令都就绪了」，用户白等一个
-    /// 不会发生的润色。
+    /// 引导收尾那一行该说哪一种话。**5.0.0 只剩两档**：润色不再有开关，
+    /// 所以「配齐了但润色关着」（commandsOnly）这一档不存在了。
     enum AIStatus: Equatable {
-        /// 凭据、地址、型号齐了，润色也开着
+        /// 凭据、地址齐了：听写、润色、指令全都跑得起来
         case ready
-        /// 配齐了，但润色档位是关的：只有按住说指令还走 AI
-        case commandsOnly
-        /// 还没配 AI（或者这一档缺型号名 / 拼不出地址）
+        /// 还没填 Key（或者拼不出地址）——这一档下**连听写都不能用**，5.0.0 起识别也在云端
         case off
     }
 
-    static func aiStatus(hasCredential: Bool, baseURL: String,
-                         polishModel: String, polishEnabled: Bool) -> AIStatus {
-        guard aiReady(hasCredential: hasCredential, baseURL: baseURL, polishModel: polishModel) else {
-            return .off
+    static func aiStatus(hasCredential: Bool, baseURL: String, polishModel: String) -> AIStatus {
+        aiReady(hasCredential: hasCredential, baseURL: baseURL, polishModel: polishModel)
+            ? .ready : .off
+    }
+
+    // MARK: - 一小时要花多少钱（识别 + 润色合计）
+    //
+    // 5.0.0 起用户在引导 ③ 要在两家之间做一个选择，而**两家差着五倍**——那不是一条解释，
+    // 是选择本身的全部内容。所以这个数必须摆在那两张卡片上，而且只能有一个出处。
+    //
+    // 两段费用的来路不一样，注释也要如实分开写：
+    //   • 识别那一段是**查过官方价目页的**（2026-09-21，与 cloudASRPriceNote 同源）；
+    //   • 润色那一段是**估算**：按普通语速约 150 词/分钟、润色一进一出约 2.5 倍输入 token，
+    //     乘各家当前默认型号的 token 单价推出来。它比识别小一个数量级，估错也不改变结论
+    //     （哪一家更贵），但**绝不许把它说成实测数字**。
+    //
+    // 界面上一律只说"约"，而且只保留一位小数（见 hourlyCostNote）：给一个 $1.1234 的数字，
+    // 等于假装我们知道用户会说多久、说多密。
+
+    /// 每小时录音的**识别**费用（美元）。阿里云 $0.13/小时；OpenAI $0.017/分钟 × 60。
+    static func asrHourlyUSD(provider: LLMProvider) -> Double {
+        switch provider {
+        case .qwen: return 0.13
+        case .openai: return 0.017 * 60
         }
-        return polishEnabled ? .ready : .commandsOnly
+    }
+
+    /// 每小时录音的**润色**费用（美元，估算，见上面那段注释）
+    static func polishHourlyUSD(provider: LLMProvider) -> Double {
+        switch provider {
+        case .qwen: return 0.07
+        case .openai: return 0.08
+        }
+    }
+
+    /// 两段加起来：引导卡片与设置状态行念的就是这个数
+    static func hourlyUSD(provider: LLMProvider) -> Double {
+        asrHourlyUSD(provider: provider) + polishHourlyUSD(provider: provider)
+    }
+
+    /// 「约 $1.1/小时」。**只留一位小数**，而且永远带"约"。纯函数，单测钉住格式。
+    static func hourlyCostNote(provider: LLMProvider) -> String {
+        let text = String(format: "$%.1f", hourlyUSD(provider: provider))
+        return tr("约 \(text)/小时", "about \(text)/hour")
+    }
+
+    /// 一小时能说多少句。**30 字一句、每句连着说约 10 秒**（含停顿）——这个数只用来
+    /// 把"每小时多少钱"翻译成用户真正能感知的那个单位（他不会按小时说话，他按句说话）。
+    static let sentencesPerHour: Double = 360
+
+    /// 一句话大约多少钱（美元）
+    static func perSentenceUSD(provider: LLMProvider) -> Double {
+        hourlyUSD(provider: provider) / sentencesPerHour
+    }
+
+    /// 「每句话约 $0.003」。**不写成"分钱"**：中文里"分"既可能被读成人民币、也可能被读成
+    /// 美分，而这笔钱是用户拿自己的卡直接付给服务商的——写清货币符号比读着顺重要。
+    /// 纯函数，单测钉住格式。
+    static func perSentenceCostNote(provider: LLMProvider) -> String {
+        let text = String(format: "$%.3f", perSentenceUSD(provider: provider))
+        return tr("每句话约 \(text)", "about \(text) per sentence")
+    }
+
+    // MARK: - 引导 ③ 的两张卡片（哪一家适合谁）
+
+    /// 卡片上第二行：**谁付得起、在哪儿用得了**。这是两家真正的分野——
+    /// 一个要海外信用卡，一个支付宝就能充。
+    static func audienceNote(provider: LLMProvider) -> String {
+        switch provider {
+        case .openai:
+            return tr("海外信用卡 · 全球可用", "Overseas card · works worldwide")
+        case .qwen:
+            return tr("支付宝 / 国内可用 · 也有国际站",
+                      "Alipay / works in China · international site too")
+        }
+    }
+
+    /// 卡片上第三行：这一家**一句话的优势**。两句必须各说各的实话
+    /// （2026-09-22 真 Key 实测：阿里云实时识别对词汇表热词全部无效，OpenAI 那一档认）。
+    static func strengthNote(provider: LLMProvider) -> String {
+        switch provider {
+        case .openai:
+            return tr("专名更准（识别时认词汇表）", "Better with names (honours your vocabulary)")
+        case .qwen:
+            return tr("更便宜、更快", "Cheaper and faster")
+        }
     }
 
     // MARK: - 去哪儿申请 Key / 固定的 Key 与费用说法
@@ -212,15 +162,77 @@ enum LLMCatalog {
     static func apiKeyConsoleURL(for provider: LLMProvider) -> String? {
         switch provider {
         case .openai: return "https://platform.openai.com/api-keys"
-        case .deepseek: return "https://platform.deepseek.com"
-        case .qwen, .custom, .local: return nil
+        case .qwen: return nil
+        }
+    }
+
+    // MARK: - 引导 ③ 的申请步骤（编号 + 每步一个「打开 ↗」）
+
+    /// 一步：一句能照着做的话，外加它要打开的那几个页面。
+    ///
+    /// 为什么值得一张表：这是**整个产品最容易卡死人的一分钟**——用户手上没有 Key，
+    /// 而"去哪儿点"这件事我们知道、他不知道。写成一行"去服务商控制台申请一把 Key"
+    /// 等于把最难的一步留给他自己。链接与文字都只写这一处（引导 ③ 是唯一的渲染点）。
+    struct ConsoleStep: Equatable {
+        let text: String
+        /// 这一步能打开的页面。空 = 这一步不用离开 MicType（最后那一步"回到这里粘贴"）。
+        /// 多于一个 = 同一步有两个入口（阿里云的国际站 / 中国站）。
+        let links: [Link]
+
+        struct Link: Equatable {
+            let label: String
+            let url: String
+        }
+    }
+
+    /// 阿里云百炼控制台：**国际站与中国站是两个账号体系**，我们无从得知用户在哪一边，
+    /// 所以两颗按钮都摆出来让他自己认（写死一个的结果是另一边的人点进去看到空页面）。
+    static let alibabaConsoleInternational = "https://modelstudio.console.alibabacloud.com/"
+    static let alibabaConsoleChina = "https://bailian.console.aliyun.com/"
+
+    /// 拿 Key 的那几步（纯函数，单测钉住"每一步都有话、链接都是 https"）
+    static func consoleSteps(for provider: LLMProvider) -> [ConsoleStep] {
+        switch provider {
+        case .openai:
+            return [
+                ConsoleStep(text: tr("注册或登录 OpenAI 平台", "Sign up or log in to the OpenAI platform"),
+                            links: [.init(label: tr("打开", "Open"),
+                                          url: "https://platform.openai.com/")]),
+                ConsoleStep(text: tr("Billing 里充值（最低 $5）", "Add credit under Billing (minimum $5)"),
+                            links: [.init(label: tr("打开", "Open"),
+                                          url: "https://platform.openai.com/settings/organization/billing/overview")]),
+                ConsoleStep(text: tr("API keys → Create new secret key → 复制",
+                                     "API keys → Create new secret key → copy it"),
+                            links: [.init(label: tr("打开", "Open"),
+                                          url: "https://platform.openai.com/api-keys")]),
+                ConsoleStep(text: tr("回到这里，⌘V 贴进下面的框",
+                                     "Come back here and paste it below with ⌘V"),
+                            links: []),
+            ]
+        case .qwen:
+            return [
+                ConsoleStep(text: tr("注册 / 登录百炼控制台，开通模型服务",
+                                     "Sign in to the Model Studio console and enable the models"),
+                            links: [.init(label: tr("国际站", "International"),
+                                          url: alibabaConsoleInternational),
+                                    .init(label: tr("中国站", "China"),
+                                          url: alibabaConsoleChina)]),
+                ConsoleStep(text: tr("API-KEY 页创建一把，复制", "Create a key on the API-KEY page and copy it"),
+                            links: []),
+                ConsoleStep(text: tr("同一页上方「接入地址（apiHost）」也复制一份",
+                                     "Copy the API host shown at the top of that same page"),
+                            links: []),
+                ConsoleStep(text: tr("回到这里，Key 与接入地址各贴一格（接入地址可留空）",
+                                     "Come back here and paste both (the host may be left empty)"),
+                            links: []),
+            ]
         }
     }
 
     /// Key 怎么存 / 钱怎么付。**设置页与引导页必须逐字用这两句**（同一个事实只写一处）。
     static var keyStorageNote: String {
-        tr("Key 加密存在 macOS 钥匙串里，仅本机可读，从不写进明文文件，也不随设置导出。",
-           "Your key is encrypted in the macOS Keychain, readable only on this Mac, never written to a plain file and never included in a settings export.")
+        tr("Key 存在 macOS 钥匙串里，不写进文件，也不随设置导出。",
+           "Your key lives in the macOS Keychain: never written to a file, never included in a settings export.")
     }
     static var billingNote: String {
         tr("费用由服务商直接结给你，MicType 不经手、不加价，也不代发你的请求。",
@@ -281,26 +293,7 @@ enum LLMCatalog {
         return "https://\(ws).\(slug).maas.aliyuncs.com/compatible-mode/v1"
     }
 
-    /// 本机模型运行时。端口写死是刻意的：这两个软件的默认端口就是它们的招牌，
-    /// 改过端口的人属于「自定义端点」那一档。
-    enum LocalRuntime: String, CaseIterable {
-        case ollama
-        case lmstudio
-
-        var displayName: String {
-            switch self {
-            case .ollama: return "Ollama (11434)"
-            case .lmstudio: return "LM Studio (1234)"
-            }
-        }
-
-        var baseURL: String {
-            switch self {
-            case .ollama: return "http://localhost:11434/v1"
-            case .lmstudio: return "http://localhost:1234/v1"
-            }
-        }
-    }
+    // LocalRuntime（Ollama / LM Studio）5.0.0 删掉：本机大模型那一档没有了。
 
     /// 自定义 Base URL 的毛病。分四档是因为「怎么改」完全不同：
     /// 少了版本段（`/v1`）的地址拼出来是 404，用户会以为模型名写错了。
@@ -436,8 +429,6 @@ enum LLMCatalog {
             return LLMClient.usesResponsesAPI(baseURL: baseURL) ? .openaiResponsesTool : .unsupported
         case .qwen:
             return .qwenEnableSearch
-        case .deepseek, .custom, .local:
-            return .unsupported
         }
     }
 
@@ -571,195 +562,9 @@ enum LLMCatalog {
     static let polishMinOutputTokens = 2048
     static let commandMinOutputTokens = 4096
 
-    // MARK: - 一次性迁移到 5.6 线
-
-    /// v4.0 迁移标记。写在 UserDefaults 里，只跑一次。
-    static let migrationFlagKey = "migratedTo56"
-
-    /// 仍停在「历史自动默认」上的润色型号。这些值不是用户挑的，是各版 MicType 自己写进去的：
-    /// nil（没存过）/ gpt-4o-mini（更早的默认）/ gpt-5.4-nano（3.2.1 拆分时写的）/ gpt-5.5（migratedPolishTo55 写的）。
-    private static let autoPolishModels: Set<String?> = [nil, "gpt-4o-mini", "gpt-5.4-nano", "gpt-5.5"]
-    /// 同理，指令型号的历史自动默认只有 gpt-5.4-mini（和没存过）。
-    private static let autoCommandModels: Set<String?> = [nil, "gpt-5.4-mini"]
-    /// DeepSeek 这几个型号**已经不存在了**（调用直接 404/400），所以无论是不是用户手选的都得改名。
-    /// 目标型号名在这里写死、不跟着默认值走：这一步是「把死型号换成最接近的活型号」，
-    /// 不是「换成我们推荐的那个」——默认值以后再变，也不该悄悄改掉这条等价关系。
-    private static let deadDeepSeekModels: [String: String] = [
-        "deepseek-v4-flash": "deepseek-flash",
-        "deepseek-chat": "deepseek-flash",
-        "deepseek-reasoner": "deepseek-v4-pro",
-    ]
-
-    /// 读一条「当前存着什么」。nil / 空白 = 没存过（用的是注册默认值）。
-    private static func storedValue(_ current: [String: String?], _ key: String) -> String? {
-        guard let stored = current[key], let raw = stored else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    /// 迁移规则（**纯函数**，便于单测钉死「手选过的一个都不动」这条铁律）。
-    /// 入参：当前存着什么（key = SettingsKeys，值为 nil 表示没存过 / 用的是注册默认值）。
-    /// 返回：需要写回的键值；空字典 = 什么都不用改。
-    static func migrationTo56(current: [String: String?]) -> [String: String] {
-        var writes: [String: String] = [:]
-
-        func value(_ key: String) -> String? { storedValue(current, key) }
-
-        // OpenAI：只搬还停在自动默认上的用户。手选过 gpt-5.4 / gpt-5.4-mini 当润色的人
-        // 是自己做的决定，替他改掉就是「替用户做主」——铁律不许。
-        if autoPolishModels.contains(value(SettingsKeys.chatModel)) {
-            writes[SettingsKeys.chatModel] = defaultModel(for: .openai)
-        }
-        if autoCommandModels.contains(value(SettingsKeys.openaiCommandModel)) {
-            writes[SettingsKeys.openaiCommandModel] = defaultModel(for: .openai)
-        }
-
-        // DeepSeek：没存过 → 新默认；存着已下线的型号 → 按等价关系改名（不改就是每次调用都失败）。
-        for key in [SettingsKeys.deepseekModel, SettingsKeys.deepseekCommandModel] {
-            guard let current = value(key) else {
-                writes[key] = defaultModel(for: .deepseek)
-                continue
-            }
-            if let renamed = deadDeepSeekModels[current.lowercased()] {
-                writes[key] = renamed
-            }
-        }
-
-        return writes
-    }
-
-    // MARK: - 一次性迁移到「默认用最好的型号」（4.0.1）
-
-    /// 4.0.1 迁移标记。写在 UserDefaults 里，只跑一次。
-    static let bestDefaultMigrationFlagKey = "migratedToBestDefault"
-
-    /// 4.0.0 由 **MicType 自己**写进去的那几对组合（润色便宜一档、指令贵一档）。
-    /// 这几对不是用户挑的，是出厂默认或上一次迁移的产物——所以可以整体搬到当前默认值；
-    /// 只要有一边对不上，就说明用户动过手，一个字都不碰。
-    ///
-    /// 这张表是**历史事实**（4.0.0 写过什么），不跟着默认值变；
-    /// 搬到哪里由 defaultModel(for:) 说了算。4.1.4 把默认值改回"快"那一档之后，
-    /// 这一步对还没升上来的老用户就只剩一个作用：把指令型号拉回和润色同一个。
-    private static let autoPairs40: [LLMProvider: (polish: String, command: String)] = [
-        .openai: ("gpt-5.6-luna", "gpt-5.6-terra"),
-        .deepseek: ("deepseek-flash", "deepseek-v4-pro"),
-        .qwen: ("qwen3.8-flash", "qwen3.8-max"),
-    ]
-
-    /// 一处被迁移改掉的型号：改的是哪个键、从什么改成什么。
-    /// 有了 from 才说得出那句"我把你的型号换了"——只报新值等于让用户自己去猜原来是什么。
-    struct ModelChange: Equatable {
-        let key: String
-        let from: String
-        let to: String
-    }
-
-    /// 迁移规则的**真身**（纯函数，单测钉死「手选过的一个都不动」这条铁律）。
-    /// 入参：当前存着什么（key = SettingsKeys，值为 nil / 空白表示没存过）。
-    /// 返回：要改哪几处，顺序稳定（openai → deepseek → qwen），好让提示里那几行不会每次不一样。
-    static func migrationToBestDefaultChanges(current: [String: String?]) -> [ModelChange] {
-        var changes: [ModelChange] = []
-        for provider in [LLMProvider.openai, .deepseek, .qwen] {
-            guard let auto = autoPairs40[provider] else { continue }
-            let keys = modelKeys(for: provider)
-            // 没存过 = 出厂默认，和"停在自动默认上"是同一件事
-            let polish = storedValue(current, keys.polish) ?? auto.polish
-            let command = storedValue(current, keys.command) ?? auto.command
-            guard polish == auto.polish, command == auto.command else { continue }
-            let target = defaultModel(for: provider)
-            if polish != target { changes.append(ModelChange(key: keys.polish, from: polish, to: target)) }
-            if command != target { changes.append(ModelChange(key: keys.command, from: command, to: target)) }
-        }
-        return changes
-    }
-
-    /// 要写回的键值；空字典 = 什么都不用改。
-    static func migrationToBestDefault(current: [String: String?]) -> [String: String] {
-        var writes: [String: String] = [:]
-        for change in migrationToBestDefaultChanges(current: current) {
-            writes[change.key] = change.to
-        }
-        return writes
-    }
-
-    /// 把改动编码成一行存进设置：**只存型号名，不存句子**——句子要按看的时候那一刻的语言拼
-    /// （见 CLAUDE.md「i18n 快照字符串」）。同一对只留一份（润色和指令往往换成同一个）。
-    static func encodeModelChanges(_ changes: [ModelChange]) -> String {
-        var pairs: [String] = []
-        for change in changes {
-            let pair = change.from + ">" + change.to
-            if !pairs.contains(pair) { pairs.append(pair) }
-        }
-        return pairs.joined(separator: ",")
-    }
-
-    /// AI 页上那条一次性提示。nil = 没有可说的（没迁移过、或者用户已经点过「知道了」）。
-    ///
-    /// 为什么非说不可：4.0.0 的「快」档写进去的那一对，和出厂默认一字不差，迁移分不出
-    /// 「停在默认」与「明确选过某一档」。分不出就只能把改动摆在明面上。
-    ///
-    /// 话要**中性**（4.1.4）：4.0.1 那一版写的是"跟着升级换成了…想省钱在「模型」里挑"，
-    /// 而默认值这一版是往"更快更便宜"那边走的——同一句话会变成当面说反话。
-    /// 只说改了什么、去哪儿改回来。
-    static func modelChangeNotice(_ raw: String) -> String? {
-        let pairs = raw.split(separator: ",").compactMap { pair -> String? in
-            let parts = pair.split(separator: ">", maxSplits: 1)
-            guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
-            return parts[0] + " → " + parts[1]
-        }
-        guard !pairs.isEmpty else { return nil }
-        let list = pairs.joined(separator: tr("、", ", "))
-        // 一行结论 + 一颗「知道了」（Plan C 的边界状态预算）
-        return tr("默认型号换成了 \(list)，要换回来在「模型」里挑。",
-                  "The default model changed to \(list) - pick another one under Model.")
-    }
-
-    // MARK: - 一次性迁移到「默认用快的那一档」（4.1.4）
-
-    /// 4.1.4 迁移标记。写在 UserDefaults 里，只跑一次。
-    static let fastDefaultMigrationFlagKey = "migratedToFastDefault"
-
-    /// 被这一版换掉的**老默认值**：只有阿里云这一档。
-    ///
-    /// 为什么只搬它、而且明知道可能是用户手选的也照搬：qwen3.8-max 在听写这条路上
-    /// 慢得不能用（实测润色 4–12 秒，撞得上 12 秒超时 = 整句话白说，见默认值那段注释），
-    /// 留着它的人每天都在撞这堵墙，而"我是不是自己选过这个型号"他自己都未必记得。
-    /// OpenAI / DeepSeek 那两档不搬：gpt-5.6-sol 实测 1.6–3.5 秒，是能用的——
-    /// 那可能是一个深思熟虑的选择，替他改掉才是真正的越权。
-    private static let supersededDefaults: [LLMProvider: (from: String, to: String)] = [
-        .qwen: ("qwen3.8-max", "qwen3.8-flash"),
-    ]
-
-    /// 一处默认值迁移：哪一档、哪个键、从什么改成什么。
-    /// 带着 provider 是为了那行日志（`Default model migrated provider=qwen from=… to=…`）——
-    /// 只报键名的话，读日志的人还要自己把键名翻回服务商。
-    struct DefaultModelChange: Equatable {
-        let provider: LLMProvider
-        let key: String
-        let from: String
-        let to: String
-    }
-
-    /// 迁移规则（**纯函数**，单测钉死）。
-    ///
-    /// - stored: **持久域**里真的存着的值（nil = 从来没存过）。
-    ///   这一条与别的迁移不同，必须读持久域而不是 `d.string(forKey:)`：后者会把注册默认值
-    ///   也算进来，于是"从来没选过型号"的人会被判成"存着老默认值"，然后被写进一个
-    ///   本来就等于新默认值的字符串——从此他的型号被钉死，以后再改默认值也轮不到他。
-    ///   没存过的人什么都不用做：注册默认值本身已经换成新的了。
-    static func migrationToFastDefaultChanges(stored: [String: String?]) -> [DefaultModelChange] {
-        var changes: [DefaultModelChange] = []
-        for provider in [LLMProvider.openai, .deepseek, .qwen] {
-            guard let pair = supersededDefaults[provider] else { continue }
-            let keys = modelKeys(for: provider)
-            for key in [keys.polish, keys.command] {
-                guard storedValue(stored, key) == pair.from else { continue }
-                changes.append(DefaultModelChange(provider: provider, key: key,
-                                                  from: pair.from, to: pair.to))
-            }
-        }
-        return changes
-    }
+    // 4.x 的型号迁移（migrationTo56 / migrationToBestDefault / migrationToFastDefault，
+    // 连同 ModelChange / encodeModelChanges / modelChangeNotice 与那几个 flag key）
+    // 5.0.0 整段删掉：型号已经不是一条设置，没有东西可迁、也没有改动要向用户交代。
 
     // MARK: - 错误话术
 
@@ -844,20 +649,12 @@ enum LLMCatalog {
     private static func forbiddenText(for provider: LLMProvider) -> String {
         switch provider {
         case .openai:
-            return tr("你所在的国家/地区不支持这个服务 (403)。可以改用 DeepSeek 或 Qwen，或在设置里填一个自定义端点",
-                      "This service is not supported in your country or region (403). Switch to DeepSeek or Qwen, or point MicType at a custom endpoint in Settings")
+            // 5.0.0 起只剩两家，所以这句里能改去的也只剩阿里云（自定义端点那一档没有了）
+            return tr("你所在的国家/地区不支持这个服务 (403)。可以在设置里改用阿里云",
+                      "This service is not supported in your country or region (403). Switch to Alibaba Cloud in Settings")
         case .qwen:
             return tr("这个模型还没在阿里云百炼开通，或账户欠费、子工作空间无权 (403)。请到百炼控制台 → 模型广场把它开通一次",
                       "This model is not enabled for your account, or the account is in arrears, or the sub-workspace lacks access (403). Enable it once in the Alibaba Model Studio console (Model Gallery)")
-        case .deepseek:
-            return tr("服务商拒绝了这次请求 (403)：这把 Key 可能没有该模型的权限，或你所在的地区不被支持。可以改用 OpenAI，或在设置里填一个自定义端点",
-                      "The provider refused this request (403): this key may lack access to the model, or your region is not supported. Switch to OpenAI, or point MicType at a custom endpoint in Settings")
-        case .custom:
-            return tr("这个端点拒绝了请求 (403)：Key 可能没有该模型的权限，或网关按地区/来源做了限制。请到该端点自己的控制台核对",
-                      "This endpoint refused the request (403): the key may lack access to the model, or the gateway restricts your region or origin. Check it in that endpoint's own console")
-        case .local:
-            return tr("本机模型服务拒绝了这次请求 (403)。Ollama / LM Studio 默认只接受本机来源，请确认它正在运行、并允许来自 MicType 的请求",
-                      "The local model server refused this request (403). Ollama and LM Studio only accept local origins by default - make sure it is running and allows requests from MicType")
         }
     }
 
@@ -900,8 +697,7 @@ enum LLMCatalog {
     private static func billingURL(for provider: LLMProvider) -> String? {
         switch provider {
         case .openai: return "https://platform.openai.com/settings/organization/billing"
-        case .deepseek: return "https://platform.deepseek.com/top_up"
-        case .qwen, .custom, .local: return nil
+        case .qwen: return nil
         }
     }
 }

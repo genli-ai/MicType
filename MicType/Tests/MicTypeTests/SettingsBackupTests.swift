@@ -54,17 +54,13 @@ final class SettingsBackupTests: XCTestCase {
     /// 而 API Key 一如既往不在里面
     func testExportIncludesRecognitionSettings() {
         let settings = SettingsBackup.makeDocument()["settings"] as? [String: Any]
-        for key in [SettingsBackup.Key.recognitionEngine, SettingsBackup.Key.recognitionLanguage,
-                    SettingsBackup.Key.cloudAlibabaModel, SettingsBackup.Key.qwenRegion,
-                    SettingsBackup.Key.qwenWorkspaceId, SettingsBackup.Key.speechModelRepo] {
+        // 5.0.0 起识别这一段只剩三条（引擎由 llmProvider 推出来，语言与本机模型仓库没有了）
+        for key in [SettingsBackup.Key.cloudAlibabaModel, SettingsBackup.Key.qwenRegion,
+                    SettingsBackup.Key.qwenWorkspaceId] {
             XCTAssertNotNil(settings?[key] as? String, "导出表里少了 \(key)")
             XCTAssertTrue(SettingsBackup.Key.all.contains(key), "\(key) 不在已知键表里，导入端会忽略它")
         }
         // 导出的值必须是自己那道校验放行的值，否则"导出再导入"会掉设置
-        let language = (settings?[SettingsBackup.Key.recognitionLanguage] as? String) ?? "x"
-        XCTAssertTrue(SettingsBackup.isAcceptableRecognitionLanguage(language))
-        let repo = (settings?[SettingsBackup.Key.speechModelRepo] as? String) ?? ""
-        XCTAssertTrue(SettingsBackup.isAcceptableModelRepo(repo))
         let workspace = (settings?[SettingsBackup.Key.qwenWorkspaceId] as? String) ?? "!"
         XCTAssertTrue(SettingsBackup.isAcceptableWorkspaceID(workspace))
         // API Key 永远不导出（"hotkey" 里也有 key 三个字母，所以按 apikey/secret/token 判）
@@ -78,12 +74,7 @@ final class SettingsBackupTests: XCTestCase {
 
     // MARK: 识别相关字段的导入校验
 
-    func testRecognitionLanguageMustBeAKnownCode() {
-        XCTAssertTrue(SettingsBackup.isAcceptableRecognitionLanguage(""), "空 = 自动检测")
-        XCTAssertTrue(SettingsBackup.isAcceptableRecognitionLanguage("ar"))
-        XCTAssertFalse(SettingsBackup.isAcceptableRecognitionLanguage("zz"))
-        XCTAssertFalse(SettingsBackup.isAcceptableRecognitionLanguage("language ar<asr_text>"))
-    }
+    // 识别语言与本机模型仓库那两道校验随它们的设置一起删掉（5.0.0）。
 
     /// WorkspaceId 会被拼进主机名第一段——别人发来的文件不该能把音频指到别的主机去
     func testWorkspaceIDRejectsAnythingThatIsNotAHostLabel() {
@@ -95,15 +86,6 @@ final class SettingsBackupTests: XCTestCase {
         XCTAssertFalse(SettingsBackup.isAcceptableWorkspaceID(String(repeating: "a", count: 64)))
     }
 
-    func testModelRepoMustLookLikeOwnerSlashName() {
-        XCTAssertTrue(SettingsBackup.isAcceptableModelRepo("mlx-community/Qwen3-ASR-0.6B-6bit"))
-        XCTAssertFalse(SettingsBackup.isAcceptableModelRepo(""))
-        XCTAssertFalse(SettingsBackup.isAcceptableModelRepo("no-slash"))
-        XCTAssertFalse(SettingsBackup.isAcceptableModelRepo("../../etc/passwd"))
-        XCTAssertFalse(SettingsBackup.isAcceptableModelRepo("owner/name/extra"))
-        XCTAssertFalse(SettingsBackup.isAcceptableModelRepo("https://example.com/x"))
-    }
-
     /// 新加的偏好要跟着备份走：导出表里必须有它，键名也必须在已知表里（否则导入端会忽略）
     func testExportIncludesKeepHistoryPreference() {
         let settings = SettingsBackup.makeDocument()["settings"] as? [String: Any]
@@ -111,23 +93,15 @@ final class SettingsBackupTests: XCTestCase {
         XCTAssertTrue(SettingsBackup.Key.all.contains(SettingsBackup.Key.keepHistory))
     }
 
-    /// llmProvider 现在是五档：只把档位搬过去、地址与型号留在原机器上的话，
-    /// 对面落到一个"端点空着、型号空着"的档上——custom 档静默没了润色，
-    /// local 档每次听写都报"还没填模型名"。每一档要的字段都得在导出表 + 已知键表里。
-    func testExportCarriesEveryProviderEndpointAndModelNames() {
+    /// 5.0.0 的导出**只写这一版还有的设置**：型号、润色档位、识别语言、本机模型仓库、
+    /// 以及删掉那三档服务商的地址，一条都不再写出去（老文件导进来照样认得，见 legacyIgnored）。
+    func testExportDoesNotCarryRemovedSettings() {
         let settings = SettingsBackup.makeDocument()["settings"] as? [String: Any]
-        for key in [SettingsBackup.Key.customBaseURL,
-                    SettingsBackup.Key.qwenPolishModel, SettingsBackup.Key.qwenCommandModel,
-                    SettingsBackup.Key.customPolishModel, SettingsBackup.Key.customCommandModel,
-                    SettingsBackup.Key.localRuntime,
-                    SettingsBackup.Key.localPolishModel, SettingsBackup.Key.localCommandModel] {
-            XCTAssertNotNil(settings?[key] as? String, "导出表里少了 \(key)")
+        for key in SettingsBackup.Key.legacyIgnored {
+            XCTAssertNil(settings?[key], "\(key) 已经不是一条设置了，不该出现在导出文件里")
             XCTAssertTrue(SettingsBackup.Key.all.contains(key),
-                          "\(key) 不在已知键表里，导入端会忽略它")
+                          "\(key) 必须留在已知键表里，否则老文件导入会报一串未知键")
         }
-        // 本机运行时是枚举：导出的值必须是导入端认得的 rawValue，否则来回一趟就掉设置
-        let runtime = (settings?[SettingsBackup.Key.localRuntime] as? String) ?? ""
-        XCTAssertNotNil(LLMCatalog.LocalRuntime(rawValue: runtime))
     }
 
     // MARK: 接口地址白名单（导入的 base URL 决定 API Key 发给谁）
@@ -155,10 +129,8 @@ final class SettingsBackupTests: XCTestCase {
     /// 自己导出的地址必须能被自己导回来（白名单不能把正常配置也挡掉）
     func testExportedEndpointsSurviveTheImportCheck() {
         let settings = SettingsBackup.makeDocument()["settings"] as? [String: Any]
-        for key in [SettingsBackup.Key.openaiBaseURL, SettingsBackup.Key.deepseekBaseURL] {
-            let value = settings?[key] as? String ?? ""
-            XCTAssertTrue(SettingsBackup.isAcceptableBaseURL(value), "exported \(key) rejected: \(value)")
-        }
+        let value = settings?[SettingsBackup.Key.openaiBaseURL] as? String ?? ""
+        XCTAssertTrue(SettingsBackup.isAcceptableBaseURL(value), "exported base URL rejected: \(value)")
     }
 
     // MARK: 失败文案（系统错误不能把界面语言带跑偏）

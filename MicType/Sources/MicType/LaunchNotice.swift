@@ -36,8 +36,10 @@ enum LaunchNotice {
         return .running
     }
 
-    /// 闪的内容。nil = 不闪
-    static func copy(for kind: Kind) -> String? {
+    /// 闪的内容。nil = 不闪。
+    /// - freedBytes: 5.0.0 的一次性清理释放了多少磁盘（0 = 没删过 / 没删出空间）。
+    ///   只挂在"刚升完级"那一句上：平常启动说这个毫无意义。
+    static func copy(for kind: Kind, freedBytes: Int64 = 0) -> String? {
         switch kind {
         case .none:
             return nil
@@ -47,8 +49,19 @@ enum LaunchNotice {
             return tr("MicType 已在运行 · ", "MicType is running · ") + tapHint
         case .updated(let version):
             // 升级那半句与「关于」页、与自更新提示同一处出处，不另写一份
-            return UpdateChecker.installedNoticeCopy(version: version) + " · " + tapHint
+            return UpdateChecker.installedNoticeCopy(version: version)
+                + freedSuffix(freedBytes) + " · " + tapHint
         }
+    }
+
+    /// 「· 本地识别已移除，释放 1.2 GB」。5.0.0 把本机模型整条链路删了，而用户对这件事
+    /// 唯一能感知到的就是磁盘——不说的话，他只会发现"识别变成联网的了"，
+    /// 却不知道自己换回了几百 MB 空间。释放不出空间（早就删过 / 本来就没下过）就一个字不说。
+    private static func freedSuffix(_ bytes: Int64) -> String {
+        let size = LocalModelCleanup.gigabytesLabel(bytes)
+        guard !size.isEmpty else { return "" }
+        return tr(" · 本地识别已移除，释放 \(size)",
+                  " · on-device recognition removed, \(size) freed")
     }
 
     /// 两句话共用的后半截。键名走 HotkeyChoice（只有右 Option 这一颗，见 Settings.hotkey），
@@ -70,8 +83,8 @@ enum LaunchNotice {
     /// 真去闪那一下。**两个调用方**：启动（AppDelegate）与引导关窗（OnboardingWindowController）。
     /// - delay: 启动那次要等一等（引导 / 权限 / 模型预加载都在抢主线程，立刻闪会被盖掉）；
     ///   引导关窗那次只等窗口收完动画。
-    static func flash(_ kind: Kind, after delay: TimeInterval) {
-        guard let text = copy(for: kind) else { return }
+    static func flash(_ kind: Kind, freedBytes: Int64 = 0, after delay: TimeInterval) {
+        guard let text = copy(for: kind, freedBytes: freedBytes) else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             // 这几秒里人可能已经开口说话了——那时候这句提示会把「正在听…」顶掉
             guard !AppDelegate.isDictationBusy else {

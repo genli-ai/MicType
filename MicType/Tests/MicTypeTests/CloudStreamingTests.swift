@@ -681,32 +681,6 @@ final class CloudStreamingTests: XCTestCase {
         XCTAssertFalse(session.isLive)
     }
 
-    /// 松手之前就断了，这一轮交给谁（纯函数）。用户 2026-09-21 定的两条分支：
-    /// 「这台主机没有实时接口」→ 照常整段上传；「网断了」+ 本机模型在 → 直接回落本机
-    func testLostRouteSendsTransientFailuresToTheLocalEngine() {
-        typealias Failure = AlibabaRealtimeClient.Failure
-        // 这台主机不支持实时：链路本身好好的，整段上传反而是对的
-        for failure: Failure in [.handshakeRejected(status: 403), .modelUnavailable,
-                                 .modelMismatch(reported: "x")] {
-            XCTAssertEqual(CloudStreamingSession.route(afterLosing: failure,
-                                                       localModelAvailable: true),
-                           .uploadWholeTake)
-            XCTAssertEqual(CloudStreamingSession.route(afterLosing: failure,
-                                                       localModelAvailable: false),
-                           .uploadWholeTake)
-        }
-        // 偶发断线：网多半本来就出了问题，再传一趟整段大概率也失败，而那条路超时 120 秒
-        XCTAssertEqual(CloudStreamingSession.route(afterLosing: .transport("closed"),
-                                                   localModelAvailable: true), .localEngine)
-        XCTAssertEqual(CloudStreamingSession.route(afterLosing: .serverError(code: nil, message: nil),
-                                                   localModelAvailable: true), .localEngine)
-        // 没有本机模型可回落：那就只剩整段上传这一条路，试一次总比直接报错强
-        XCTAssertEqual(CloudStreamingSession.route(afterLosing: .transport("closed"),
-                                                   localModelAvailable: false), .uploadWholeTake)
-        XCTAssertEqual(CloudStreamingSession.route(afterLosing: nil, localModelAvailable: true),
-                       .uploadWholeTake)
-    }
-
     /// 「这台主机不支持实时」→ 这一轮自己退回整段上传，用户什么都不该察觉
     func testStreamLostBeforeReleaseFallsBackToTheUploadPath() {
         let socket = FakeSocket()
@@ -714,7 +688,6 @@ final class CloudStreamingTests: XCTestCase {
         let session = CloudStreamingSession(config: streamingConfig(),
                                             fallback: stubFallback(text: "整段上传的结果"),
                                             client: client)
-        session.localModelAvailable = { true }
         let lost = expectation(description: "lost")
         session.onStreamingLost = { lost.fulfill() }
         session.start()
@@ -737,14 +710,14 @@ final class CloudStreamingTests: XCTestCase {
         XCTAssertNil(outcome?.failure, "同步那条路能用就不算错误")
     }
 
-    /// 录音中途断线 + 本机模型在 → 报 failure 上去，让现有那条「云端失败 → 回落本机」接手整段
-    func testStreamLostTransientlyHandsTheTakeToTheLocalEngine() {
+    /// 录音中途偶发断线（5.0.0 起没有本机引擎可回落）→ 这一轮整段走同步接口。
+    /// 音频一个采样都没丢，用户最多只是多等一趟上传。
+    func testStreamLostTransientlyUploadsTheWholeTake() {
         let socket = FakeSocket()
         let client = makeClient(socket)
         let session = CloudStreamingSession(config: streamingConfig(),
-                                            fallback: stubFallback(text: "不该走到这里"),
+                                            fallback: stubFallback(text: "整段上传的结果"),
                                             client: client)
-        session.localModelAvailable = { true }
         let lost = expectation(description: "lost")
         session.onStreamingLost = { lost.fulfill() }
         session.start()
@@ -766,36 +739,9 @@ final class CloudStreamingTests: XCTestCase {
             done.fulfill()
         }
         wait(for: [done], timeout: 5)
-        XCTAssertNotNil(outcome?.failure, "要报上去，上层才会整段重跑本机")
-        XCTAssertEqual(outcome?.text, "")
-        XCTAssertEqual(outcome?.cancelled, false)
-    }
-
-    /// 同一次断线，但这台机器没有本机模型 → 只剩整段上传这一条路
-    func testStreamLostTransientlyWithoutALocalModelStillUploads() {
-        let socket = FakeSocket()
-        let client = makeClient(socket)
-        let session = CloudStreamingSession(config: streamingConfig(),
-                                            fallback: stubFallback(text: "整段上传的结果"),
-                                            client: client)
-        session.localModelAvailable = { false }
-        let lost = expectation(description: "lost")
-        session.onStreamingLost = { lost.fulfill() }
-        session.start()
-        bringUp(client, socket)
-        socket.close(status: nil, code: 1006, detail: nil)
-        wait(for: [lost], timeout: 2)
-
-        let done = expectation(description: "outcome")
-        var outcome: TranscriptionOutcome?
-        session.transcribe(samples: tone(seconds: 1), language: nil, previousText: "",
-                           onSegment: nil) {
-            outcome = $0
-            done.fulfill()
-        }
-        wait(for: [done], timeout: 5)
         XCTAssertEqual(outcome?.text, "整段上传的结果")
-        XCTAssertNil(outcome?.failure)
+        XCTAssertNil(outcome?.failure, "同步那条路能用就不算错误")
+        XCTAssertEqual(outcome?.cancelled, false)
     }
 
     /// 偶发失败（终稿超时）交回给现有那条「云端失败 → 回落本机」的路：

@@ -4,33 +4,33 @@ import Combine
 
 // MARK: - 设置窗口
 
-/// 设置窗口现在只有**一个首页加四个编辑页**（Plan C，用户 2026-09-20 拍板）。
+/// **设置就是一页**（用户 2026-09-22 拍板，5.0.0）：服务商、API Key、（阿里云的）接入地址。
 ///
-/// 4.0.2 早些时候那四个标签页（通用 / 本地识别 / 云端 AI / 关于）解决了"分法不对"的问题，
-/// 却没解决"打开设置看不出现在是什么状态"——每一页都是一屏控件加一屏解释，用户要把四页
-/// 逐个点开、逐行读，才能回答「我现在用的是哪个模型？云端开着吗？」这种一句话的问题。
+/// 为什么能砍到这个程度：识别、润色、语音指令三件事现在共用一把 Key、一个写死的型号、
+/// 一条自己试出来的地址——4.x 那些开关（使用方式 / 识别引擎 / 识别语言 / 模型 / 润色档位 /
+/// 云端识别 / 联网搜索 / 麦克风 / 本机模型）全都没有第二个答案了。而 4.1 那套
+/// 「概览卡片 + 点进编辑页」是为"有四页设置"这个前提做的：只剩一页之后，
+/// 那一层卡片就纯粹是多一次点击。
 ///
-/// 于是：**概览先回答状态，点「更改」才进控件**。路由名字就是卡片名字，深链（菜单栏
-/// 「配置 AI…」、悬浮窗的「去配置」、模型升级横幅）照旧直接落到对应的编辑页。
+/// 剩下两页都是**从底部那排小字点开的**，不是首页的一部分：
+///   • 写作偏好（词汇表 + 自定义规则）——改得不勤，但改的是用户自己的文字；
+///   • 关于（版本 / 更新 / 诊断 / 备份 / 隐私六句）。
 enum SettingsRoute: String, Hashable, CaseIterable {
-    /// 三张状态卡 + 权限横幅 + 脚注三个链接
+    /// **这一页就是设置**：服务商 + Key +（阿里云的）接入地址 + 权限横幅 + 脚注四个链接
     case overview
-    /// 原「通用」：快捷键、写作偏好（词汇表 + 自定义规则）、悬浮窗、录音、行为、语言与备份
-    case input
-    /// 麦克风、识别语言、本机模型、性能
-    case recognition
-    /// 服务商、Key、模型、（阿里云的）云端识别开关
-    case cloud
+    /// 写作偏好：专有词汇表 + 自定义规则
+    case writing
     /// 版本 / 更新 / 诊断 / 作者 + 隐私与费用（PrivacyCopy 在设置里**只**出现在这里）
     case about
 
-    /// 编辑页顶栏的标题。概览没有顶栏（它就是首页，没有"返回"可言）
+    // `.input`（输入页）与 `.cloud`（云端 AI 页）5.0.0 合并进 `.overview`：
+    // 设置只剩一页之后，它们各自剩下的那点内容要么是这一页本身，要么进了「写作偏好」。
+
+    /// 子页顶栏的标题。设置正页没有顶栏（它就是首页，没有"返回"可言）
     var editorTitle: String? {
         switch self {
         case .overview: return nil
-        case .input: return tr("输入", "Input")
-        case .recognition: return tr("本地识别", "On-device recognition")
-        case .cloud: return tr("云端 AI", "Cloud AI")
+        case .writing: return tr("写作偏好", "Writing preferences")
         case .about: return tr("关于 MicType", "About MicType")
         }
     }
@@ -50,14 +50,14 @@ enum SettingsWindowSizing {
     /// 宽度不变。整套文案与控件的换行都是按这个宽度调出来的
     static let width: CGFloat = 560
 
-    /// 下限：概览（三张卡 + 脚注）正好装得下。编辑页再短也不比首页矮——
-    /// 一扇会缩成半张卡高的窗口，点进点出时像在抽搐
-    static let minContentHeight: CGFloat = 300
+    /// 下限。5.0.0 从 300 降到 220：设置正页只剩三行控件加一行脚注，实测自然高度约
+    /// 230——钉在 300 的话，窗口底下会空出一整块，正好是这一版要消掉的那种"比内容大"。
+    /// 再低就不给了：一扇比一张卡还矮的窗口，点进点出时像在抽搐。
+    static let minContentHeight: CGFloat = 220
 
     /// 上限：再高也不该占满整块屏。超过就让这一页自己滚。
-    /// 760 而不是 680：「云端 AI」页在阿里云档实测 747 高，680 会把最后一段「联网搜索」
-    /// 的标题留在屏内、内容折到屏外——一页只差 67 点就得滚，是最糟的那种滚动。
-    /// 13 寸 MacBook Air 的可见高度 868 − 余量 120 = 748，仍然装得下这一页。
+    /// 760 这个数留着不动：现在最高的是「关于」页（隐私六句 + 两排按钮），
+    /// 13 寸 MacBook Air 的可见高度 868 − 余量 120 = 748，仍然装得下它。
     static let maxContentHeight: CGFloat = 760
 
     /// 离屏幕可见区域上下各留出来的余量：窗口顶到菜单栏、底到程序坞边上，既难拖也难看
@@ -266,8 +266,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, ObservableObje
     /// - tab: 深链要停在哪一页；nil = 回概览。
     ///   为什么 nil 不再是"保持上次的位置"：概览就是这个窗口的首页，打开设置的人第一眼
     ///   该看到的是"现在是什么状态"，而不是上次退出时停在的某个编辑页。
-    func show(tab: SettingsRoute? = nil) {
-        SettingsNavigator.shared.go(to: tab ?? .overview)
+    /// - intent: 落到「关于」页时顺带要做的事（进去就开始查更新）
+    func show(tab: SettingsRoute? = nil, intent: SettingsNavigator.AboutIntent = .none) {
+        SettingsNavigator.shared.go(to: tab ?? .overview, intent: intent)
         if window == nil {
             let hosting = NSHostingController(rootView: SettingsView())
             // 高度由我们自己按内容算（见 fitContentHeight）。放着不管的话，
@@ -356,10 +357,8 @@ struct SettingsView: View {
     private var page: some View {
         Group {
             switch nav.route {
-            case .overview: SettingsOverview()
-            case .input: InputEditor()
-            case .recognition: RecognitionEditor()
-            case .cloud: CloudEditor()
+            case .overview: MainSettingsPage()
+            case .writing: WritingPreferencesEditor()
             case .about: AboutPanel()
             }
         }

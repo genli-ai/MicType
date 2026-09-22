@@ -70,24 +70,7 @@ final class LLMClientTests: XCTestCase {
 
     // MARK: - chat/completions 请求体
 
-    /// DeepSeek 默认开思考且 effort=high：润色只是改写，白等几秒 → 显式关掉
-    func testDeepSeekPolishDisablesThinking() {
-        let body = LLMClient.chatBody(model: "deepseek-flash",
-                                      messages: [["role": "user", "content": "hi"]],
-                                      temperature: 0.5, purpose: .polish, provider: .deepseek)
-        XCTAssertEqual((body["thinking"] as? [String: Any])?["type"] as? String, "disabled")
-        XCTAssertEqual(body["temperature"] as? Double, 0.5)
-    }
-
-    /// 指令低频、要质量 → 不碰思考开关，保留服务商默认
-    func testDeepSeekCommandLeavesThinkingAlone() {
-        let body = LLMClient.chatBody(model: "deepseek-v4-pro",
-                                      messages: [["role": "user", "content": "hi"]],
-                                      temperature: 1.0, purpose: .command, provider: .deepseek)
-        XCTAssertNil(body["thinking"])
-        // deepseek-v4-pro 是思考档，同样忽略自定义温度 → 不发
-        XCTAssertNil(body["temperature"])
-    }
+    // DeepSeek 的 `thinking: disabled` 那两条测试随那一档服务商一起删掉（5.0.0）。
 
     /// 思考开关是 DeepSeek 专有字段，别的兼容端点收到会 400
     func testThinkingIsNeverSentToOpenAI() {
@@ -124,11 +107,9 @@ final class LLMClientTests: XCTestCase {
 
     /// enable_thinking 是 DashScope 专有字段：别的端点收到只会多一个它不认识的键（有的直接 400）
     func testQwenThinkingSwitchNeverGoesToOtherProviders() {
-        for provider in [LLMProvider.deepseek, .openai, .custom, .local] {
-            let body = LLMClient.chatBody(model: "m", messages: [], temperature: nil,
-                                          purpose: .polish, provider: provider)
-            XCTAssertNil(body["enable_thinking"], "provider=\(provider.rawValue)")
-        }
+        let body = LLMClient.chatBody(model: "m", messages: [], temperature: nil,
+                                      purpose: .polish, provider: .openai)
+        XCTAssertNil(body["enable_thinking"])
     }
 
     // MARK: - Responses 响应解析
@@ -356,12 +337,9 @@ final class LLMClientTests: XCTestCase {
                                                  baseURL: "https://gateway.example.com/v1",
                                                  model: "gpt-5.6-sol", refusedModels: []))
         // 别家一律不发（service_tier 是 OpenAI 的字段）
-        for provider in [LLMProvider.deepseek, .qwen, .custom, .local] {
-            XCTAssertFalse(LLMClient.asksForFastTier(provider: provider,
-                                                     baseURL: "https://api.openai.com/v1",
-                                                     model: "m", refusedModels: []),
-                           provider.rawValue)
-        }
+        XCTAssertFalse(LLMClient.asksForFastTier(provider: .qwen,
+                                                 baseURL: "https://api.openai.com/v1",
+                                                 model: "m", refusedModels: []))
         // 判据必须和"走不走 Responses"是同一条：两处分家的那天，这条断言会先红
         for url in ["https://api.openai.com/v1", "https://gateway.example.com/v1",
                     "http://localhost:11434/v1", ""] {
@@ -427,9 +405,9 @@ final class LLMClientTests: XCTestCase {
 
     /// service_tier 是 OpenAI 的字段：别的服务商收到只会多一个它不认识的键
     func testFastTierOnlyGoesToOpenAIOnChatCompletions() {
-        let deepseek = LLMClient.chatBody(model: "deepseek-flash", messages: [], temperature: nil,
-                                          purpose: .polish, provider: .deepseek, fastTier: true)
-        XCTAssertNil(deepseek["service_tier"])
+        let qwen = LLMClient.chatBody(model: "qwen3.8-flash", messages: [], temperature: nil,
+                                      purpose: .polish, provider: .qwen, fastTier: true)
+        XCTAssertNil(qwen["service_tier"])
         let openai = LLMClient.chatBody(model: "gpt-5.6-luna", messages: [], temperature: nil,
                                         purpose: .polish, provider: .openai, fastTier: true)
         XCTAssertEqual(openai["service_tier"] as? String, "fast")
@@ -475,13 +453,11 @@ final class LLMClientTests: XCTestCase {
 
     /// 同一条铁律在入口那一层也钉住：润色永远拿不到 .unsupported 以外的写法
     func testSearchStyleForPolishIsAlwaysUnsupported() {
-        let saved = Settings.shared.webSearchEnabled
-        defer { Settings.shared.webSearchEnabled = saved }
-        Settings.shared.webSearchEnabled = true
+        // 5.0.0 起联网搜索永远开着（没有开关），所以这条铁律只剩"润色那一路不发"这一半
         XCTAssertEqual(LLMClient.searchStyle(for: .polish), .unsupported)
     }
 
-    /// Qwen 走 body 字段，OpenRouter 走 plugins，DeepSeek 什么都没有
+    /// Qwen 走 body 字段，OpenRouter 走 plugins，不支持的那一档什么都没有
     func testChatWebSearchShapesPerProvider() {
         let qwen = LLMClient.chatBody(model: "qwen3.8-max", messages: [], temperature: nil,
                                       purpose: .command, provider: .qwen,
@@ -494,16 +470,16 @@ final class LLMClientTests: XCTestCase {
         XCTAssertNil(qwen["plugins"])
 
         let router = LLMClient.chatBody(model: "anything", messages: [], temperature: nil,
-                                        purpose: .command, provider: .custom,
+                                        purpose: .command, provider: .openai,
                                         searchStyle: .openrouterPlugin)
         XCTAssertEqual((router["plugins"] as? [[String: String]])?.first?["id"], "web")
         XCTAssertNil(router["enable_search"])
 
-        let deepseek = LLMClient.chatBody(model: "deepseek-v4-pro", messages: [], temperature: nil,
-                                          purpose: .command, provider: .deepseek,
-                                          searchStyle: .unsupported)
-        XCTAssertNil(deepseek["enable_search"])
-        XCTAssertNil(deepseek["plugins"])
+        let none = LLMClient.chatBody(model: "gpt-5.6-luna", messages: [], temperature: nil,
+                                      purpose: .command, provider: .openai,
+                                      searchStyle: .unsupported)
+        XCTAssertNil(none["enable_search"])
+        XCTAssertNil(none["plugins"])
     }
 
     // MARK: - chat/completions 的输出上限与截断
@@ -511,11 +487,11 @@ final class LLMClientTests: XCTestCase {
     /// 这条路也必须发输出上限：不发就跑服务商自己的默认额度，而 v4.0 的长口述（最长 600 s）
     /// 润色出来的文本轻松越过那条线——这边没有 Responses 的 status=incomplete 可以兜底
     func testChatBodyCarriesMaxTokens() {
-        let body = LLMClient.chatBody(model: "deepseek-flash", messages: [], temperature: nil,
-                                      purpose: .polish, provider: .deepseek, maxOutputTokens: 8192)
+        let body = LLMClient.chatBody(model: "qwen3.8-flash", messages: [], temperature: nil,
+                                      purpose: .polish, provider: .qwen, maxOutputTokens: 8192)
         XCTAssertEqual(body["max_tokens"] as? Int, 8192)
-        let bare = LLMClient.chatBody(model: "deepseek-flash", messages: [], temperature: nil,
-                                      purpose: .polish, provider: .deepseek)
+        let bare = LLMClient.chatBody(model: "qwen3.8-flash", messages: [], temperature: nil,
+                                      purpose: .polish, provider: .qwen)
         XCTAssertNil(bare["max_tokens"])
     }
 

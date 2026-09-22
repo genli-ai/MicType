@@ -31,11 +31,6 @@ final class OnboardingSnapshotTests: XCTestCase {
     private static let touchedKeys = [
         SettingsKeys.appLanguage,
         SettingsKeys.llmProvider,
-        SettingsKeys.polishLevel,
-        SettingsKeys.recognitionEngine,
-        SettingsKeys.cloudRecognitionWanted,
-        SettingsKeys.qwenModel,
-        SettingsKeys.qwenCommandModel,
     ]
 
     private var savedDefaults: [String: Any?] = [:]
@@ -55,21 +50,12 @@ final class OnboardingSnapshotTests: XCTestCase {
         let defaults = UserDefaults.standard
         for key in Self.touchedKeys { savedDefaults[key] = defaults.object(forKey: key) }
         KeychainHelper.lookupOverride = { _ in "sk-snapshot-placeholder" }
-        CloudASRProvider.allCases.forEach { CloudRecognitionCheckMemory.markChecked($0) }
-        // 阿里云 + 云端识别：第三屏这一档控件最全（服务商 / Key / 接入地址 / 模型 / 云端识别），
-        // 而且**云端档不会触发本机模型下载**——这条正是这组测试敢在别人机器上跑的前提
+        // 阿里云：第三屏这一档控件最全（服务商 / Key / 接入地址），OpenAI 那一档少一行
         defaults.set(LLMProvider.qwen.rawValue, forKey: SettingsKeys.llmProvider)
-        defaults.set(PolishLevel.smart.rawValue, forKey: SettingsKeys.polishLevel)
-        defaults.set(true, forKey: SettingsKeys.cloudRecognitionWanted)
-        defaults.set(RecognitionEngineChoice.cloudAlibaba.rawValue,
-                     forKey: SettingsKeys.recognitionEngine)
-        defaults.set(LLMCatalog.defaultModel(for: .qwen), forKey: SettingsKeys.qwenModel)
-        defaults.set(LLMCatalog.defaultModel(for: .qwen), forKey: SettingsKeys.qwenCommandModel)
     }
 
     override func tearDownWithError() throws {
         KeychainHelper.lookupOverride = nil
-        CloudRecognitionCheckMemory.resetForTesting()
         let defaults = UserDefaults.standard
         for (key, value) in savedDefaults {
             if let value = value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }

@@ -77,7 +77,7 @@ enum Log {
         let os = ProcessInfo.processInfo.operatingSystemVersionString
         info("Startup version=\(version) macOS=\(os)")
         let s = Settings.shared
-        info("Settings hotkey=\(s.hotkey.rawValue) polish=\(s.polishLevel.rawValue) provider=\(s.llmProvider.rawValue) "
+        info("Settings hotkey=\(s.hotkey.rawValue) provider=\(s.llmProvider.rawValue) "
              + "vocabTerms=\(s.vocabularyTerms.count) replacements=\(s.vocabularyReplacements.count)")
         // 只记序号与几何，不记 localizedName：AirPlay / 随航目标的"名字"就是用户的设备名
         //（"Gen 的 iPad"），而日志尾巴会被「复制诊断信息」整段贴出去。排悬浮窗的问题

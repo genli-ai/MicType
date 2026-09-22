@@ -844,11 +844,8 @@ enum AlibabaHostResolver {
         ]
     }
 
-    /// 确认要用的型号：用户这一档存着什么就用什么，空着才退到出厂默认
-    static func currentConfirmModel() -> String {
-        let stored = Settings.shared.qwenModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        return stored.isEmpty ? LLMCatalog.qwenDefaultModel : stored
-    }
+    /// 确认要用的型号。5.0.0 起型号不是设置了（写死平衡档），所以这里直接是那一个。
+    static func currentConfirmModel() -> String { LLMCatalog.qwenDefaultModel }
 
     /// 并发试一遍挑出排名，再**逐台确认它肯不肯干活**，返回真正能用的那一台。completion 在主线程。
     ///

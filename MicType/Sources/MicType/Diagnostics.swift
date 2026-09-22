@@ -27,22 +27,21 @@ enum Diagnostics {
         lines.append("App: \(UpdateChecker.currentVersion) (build \(buildNumber))")
         lines.append("macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)")
         lines.append("Chip: \(chip)")
-        lines.append("Speech model: \(s.qwenModelRepo)"
-                     + " downloaded=\(QwenEngine.shared.isModelAvailable)"
-                     + " loaded=\(QwenEngine.shared.isModelReady)")
-        // 识别引擎这一行是排障第一问：他的音频到底出没出这台 Mac。
-        // 只报档位、接入地址、语言与"有没有 Key"——Key 本身一个字符都不出现。
+        // 识别这一行是排障第一问：走的哪一家、地址对不对、Key 在不在、这会儿有没有网。
+        // 只报档位与"有没有 Key"——Key 本身一个字符都不出现。
         // 主机名里第一段是工作空间编号，抹掉再报（诊断信息是要被整段贴出来的）
+        let resolvedHost = s.qwenResolvedHost.isEmpty
+            ? "unresolved" : AlibabaEndpoint.redacted(s.qwenResolvedHost)
+        let cloudKey = CloudASRSettings.hasKey(for: s.recognitionEngine) ? "configured" : "absent"
         lines.append("Recognition: engine=\(s.recognitionEngine.rawValue)"
-                     + " language=\(s.recognitionLanguage.isEmpty ? "auto" : s.recognitionLanguage)"
                      + " cloudModel=\(s.cloudAlibabaModel.rawValue)"
-                     + " host=\(s.qwenResolvedHost.isEmpty ? "unresolved" : AlibabaEndpoint.redacted(s.qwenResolvedHost))"
+                     + " host=\(resolvedHost)"
                      + " pastedHost=\(s.qwenAPIHost.isEmpty ? "unset" : "set")"
-                     + " cloudKey=\(CloudASRSettings.hasKey(for: s.recognitionEngine) ? "configured" : "absent")"
+                     + " cloudKey=\(cloudKey)"
+                     + " online=\(NetworkReachability.isOnline)"
                      + " ready=\(RecognitionEngineReadiness.current().isReady)")
         lines.append("Hotkey: \(s.hotkey.rawValue)")
-        lines.append("Polish: level=\(s.polishLevel.rawValue) model=\(s.currentPolishModel)"
-                     + " command=\(s.currentCommandModel)")
+        lines.append("Polish: model=\(s.currentPolishModel) command=\(s.currentCommandModel)")
         // 服务商与"配没配 Key"就是全部；顺带报端点主机名（自定义/本机档最容易出错的就是它，
         // 而主机名不是秘密——Key 本身一个字符都不出现在这里）
         lines.append("Provider: \(s.llmProvider.rawValue)"

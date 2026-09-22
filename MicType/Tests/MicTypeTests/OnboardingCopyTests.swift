@@ -65,12 +65,13 @@ final class OnboardingCopyTests: XCTestCase {
 
         L10n.shared.language = .en
         let en = OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥")
-        XCTAssertTrue(en.contains("Hold ⌥"), en)
+        XCTAssertTrue(en.contains("hold ⌥"), en)
         XCTAssertTrue(en.lowercased().contains("more formal"), en)
         XCTAssertFalse(containsCJKOrFullWidth(en), en)
     }
 
-    /// 没 Key：必须说清"现在这样也完整可用"，并指路 设置 → AI
+    /// 没 Key：必须指路 设置 → 云端 AI。
+    /// 5.0.0 起**不能**再说"现在这样也完整可用"——识别也在云端，没 Key 一个字都打不出来。
     func testDoneStatusWithoutAKeyPointsAtSettings() {
         L10n.shared.language = .zh
         let zh = OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")
@@ -80,88 +81,81 @@ final class OnboardingCopyTests: XCTestCase {
         L10n.shared.language = .en
         let en = OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")
         XCTAssertTrue(en.contains("Settings"), en)
-        XCTAssertTrue(en.contains("on-device"), en)
+        XCTAssertFalse(en.contains("on-device"), "没有本机那一档了，别再承诺它：\(en)")
         XCTAssertFalse(containsCJKOrFullWidth(en), en)
     }
 
-    /// 三种收尾不能串台（复制粘贴写错一处就会一模一样）
+    /// 两种收尾不能串台（复制粘贴写错一处就会一模一样）。
+    /// 5.0.0 起只剩两种：润色不再有开关，「配齐了但润色关着」那一档不存在了。
     func testDoneStatusVariantsDiffer() {
         for language in [AppLanguage.zh, .en] {
             L10n.shared.language = language
             let all = [OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥"),
-                       OnboardingCopy.doneAIStatus(status: .commandsOnly, hotkey: "⌥"),
                        OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")]
-            XCTAssertEqual(Set(all).count, 3, "\(all)")
+            XCTAssertEqual(Set(all).count, 2, "\(all)")
         }
     }
 
-    /// 选了「只用本地」却还留着一把 Key：**不许**宣告"润色就绪"——此刻轻点听写
-    /// 一个字都不润色，而按住说指令仍然会用那把 Key 计费。两件事都要说出来。
-    func testDoneStatusForLocalOnlyWithAStoredKey() {
+    /// 没配 Key 那一档必须说清**听写也用不了**（5.0.0 起识别也在云端）——
+    /// 4.x 那句"你现在是纯本机听写，完整可用"照抄过来就是骗人
+    func testDoneStatusWithoutAKeySaysDictationNeedsIt() {
         L10n.shared.language = .zh
-        let zh = OnboardingCopy.doneAIStatus(status: .commandsOnly, hotkey: "右 Option")
-        XCTAssertTrue(zh.contains("不润色"), zh)
+        let zh = OnboardingCopy.doneAIStatus(status: .off, hotkey: "右 Option")
+        XCTAssertTrue(zh.contains("听写"), zh)
         XCTAssertTrue(zh.contains("Key"), zh)
-        XCTAssertTrue(zh.contains("按住"), zh)
 
         L10n.shared.language = .en
-        let en = OnboardingCopy.doneAIStatus(status: .commandsOnly, hotkey: "Right Option")
-        XCTAssertTrue(en.contains("does not polish"), en)
-        XCTAssertTrue(en.lowercased().contains("billed"), en)
+        let en = OnboardingCopy.doneAIStatus(status: .off, hotkey: "Right Option")
+        XCTAssertTrue(en.lowercased().contains("dictation"), en)
+        XCTAssertTrue(en.contains("API key"), en)
         XCTAssertFalse(containsCJKOrFullWidth(en), en)
     }
 
-    /// 判据本身：钥匙串里有 Key 但润色关着 → commandsOnly，不是 ready
-    func testAIStatusNeedsPolishOnToCallItReady() {
+    /// 判据本身：凭据 + 拼得出来的地址 + 非空型号，三样齐了才算配好
+    func testAIStatusNeedsCredentialAndEndpoint() {
         XCTAssertEqual(LLMCatalog.aiStatus(hasCredential: true, baseURL: "https://api.openai.com/v1",
-                                           polishModel: "gpt-5.6-sol", polishEnabled: true), .ready)
-        XCTAssertEqual(LLMCatalog.aiStatus(hasCredential: true, baseURL: "https://api.openai.com/v1",
-                                           polishModel: "gpt-5.6-sol", polishEnabled: false), .commandsOnly)
+                                           polishModel: "gpt-5.6-luna"), .ready)
         XCTAssertEqual(LLMCatalog.aiStatus(hasCredential: false, baseURL: "https://api.openai.com/v1",
-                                           polishModel: "gpt-5.6-sol", polishEnabled: true), .off)
-        // 型号名是空的（自定义端点 / 本机模型没填）同样不算配好
-        XCTAssertEqual(LLMCatalog.aiStatus(hasCredential: true, baseURL: "http://localhost:11434/v1",
-                                           polishModel: "  ", polishEnabled: true), .off)
+                                           polishModel: "gpt-5.6-luna"), .off)
+        // 地址拼不出来（阿里云区域端点缺 WorkspaceId）同样不算配好
+        XCTAssertEqual(LLMCatalog.aiStatus(hasCredential: true, baseURL: "",
+                                           polishModel: "gpt-5.6-luna"), .off)
     }
 
     // MARK: - 「怎么用」那一屏的文案
 
-    /// 那句解释必须把边界说清：听写在本机、不需要 Key；Key 只多润色与按住说指令
+    /// 那句解释必须把边界说清：**这一把 Key 管三件事**（听写、润色、指令），
+    /// 而且录音会离开这台 Mac。5.0.0 之前那句写的是"不填 Key 也能一直用"——
+    /// 照抄过来就是骗人（本机识别没有了）。
     func testUsageExplanationStatesWhatAKeyBuys() {
         L10n.shared.language = .zh
         let zh = OnboardingCopy.usageExplanation
-        XCTAssertTrue(zh.contains("本机") || zh.contains("这台 Mac"), zh)
-        XCTAssertTrue(zh.contains("润色") && zh.contains("指令"), zh)
+        XCTAssertTrue(zh.contains("听写") && zh.contains("润色") && zh.contains("指令"), zh)
+        XCTAssertFalse(zh.contains("不填 Key"), zh)
 
         L10n.shared.language = .en
         let en = OnboardingCopy.usageExplanation
-        XCTAssertTrue(en.contains("without a key"), en)
+        XCTAssertTrue(en.lowercased().contains("dictation"), en)
         XCTAssertTrue(en.lowercased().contains("polish"), en)
-        XCTAssertTrue(en.lowercased().contains("hold-to-command"), en)
+        XCTAssertFalse(en.contains("without a key"), en)
     }
 
-    /// 标题要写明这一步是可选的——不写就是把一道可跳过的屏做成了关卡。
-    /// 名字还得和设置页那一段（「使用方式」/ How you use MicType）对得上：
-    /// 同一个决定在两处叫两个名字，用户按第四屏指的路去设置页时认不出来。
-    func testUsageHeadlineSaysItIsOptionalAndMatchesSettings() {
+    /// 标题**不再写「可选」**（5.0.0）：没有 Key 这个产品一件事都干不了。
+    /// 名字还得和设置页那一页对得上：同一个决定在两处叫两个名字，
+    /// 用户按引导指的路去设置页时认不出来。
+    func testUsageHeadlineIsNoLongerOptional() {
         L10n.shared.language = .zh
-        XCTAssertTrue(OnboardingCopy.usageHeadline.contains("可选"), OnboardingCopy.usageHeadline)
-        XCTAssertTrue(OnboardingCopy.usageHeadline.hasPrefix("使用方式"), OnboardingCopy.usageHeadline)
+        XCTAssertFalse(OnboardingCopy.usageHeadline.contains("可选"), OnboardingCopy.usageHeadline)
+        XCTAssertTrue(OnboardingCopy.usageHeadline.contains("AI"), OnboardingCopy.usageHeadline)
         L10n.shared.language = .en
-        XCTAssertTrue(OnboardingCopy.usageHeadline.lowercased().contains("optional"),
-                      OnboardingCopy.usageHeadline)
-        XCTAssertTrue(OnboardingCopy.usageHeadline.hasPrefix("How you use MicType"),
-                      OnboardingCopy.usageHeadline)
+        XCTAssertFalse(OnboardingCopy.usageHeadline.lowercased().contains("optional"),
+                       OnboardingCopy.usageHeadline)
+        XCTAssertTrue(OnboardingCopy.usageHeadline.contains("AI"), OnboardingCopy.usageHeadline)
     }
 
 
-    /// 跳过那句必须是"没关系"的口吻，不能留一句像警告的话
-    func testSkipReassuranceIsReassuring() {
-        L10n.shared.language = .en
-        let en = OnboardingCopy.aiSkipReassurance
-        XCTAssertTrue(en.contains("fine"), en)
-        XCTAssertTrue(en.contains("Settings"), en)
-    }
+    // 「跳过也没关系」那句（aiSkipReassurance）5.0.0 删掉：没有 Key 这个产品一个功能
+    // 都用不了，说"没关系"就是骗人。走不下去的人仍然有那条写明代价的「先跳过」。
 
     // MARK: - 三件必办的事：出口那两句
 
@@ -202,40 +196,19 @@ final class OnboardingCopyTests: XCTestCase {
         XCTAssertFalse(en.contains("Settings → Input"), en)
     }
 
-    /// 下载掉下来之后那颗按钮写的是「重试」，不是「下载」：
-    /// 对刚看着进度条归零的人，「下载模型」像是什么都没发生过
-    func testRetryDownloadSaysRetry() {
-        L10n.shared.language = .zh
-        XCTAssertTrue(OnboardingCopy.retryDownload.contains("重试"), OnboardingCopy.retryDownload)
-        L10n.shared.language = .en
-        XCTAssertTrue(OnboardingCopy.retryDownload.lowercased().contains("retry"),
-                      OnboardingCopy.retryDownload)
-    }
-
-    /// 按钮上那颗字的状态判据：取消过 / 失败过才叫「重试」
-    func testRetryLabelFollowsTheDownloadPhase() {
-        XCTAssertTrue(QwenDownloadPhase.cancelled.didNotFinish)
-        XCTAssertTrue(QwenDownloadPhase.failed(.allMirrorsFailed).didNotFinish)
-        XCTAssertFalse(QwenDownloadPhase.idle.didNotFinish)
-        XCTAssertFalse(QwenDownloadPhase.fetchingList.didNotFinish)
-        XCTAssertFalse(QwenDownloadPhase.completed(fileCount: 3).didNotFinish)
-        XCTAssertFalse(QwenDownloadPhase.downloading(fileIndex: 0, fileCount: 3,
-                                                     doneBytes: 1, totalBytes: 2).didNotFinish)
-    }
+    // 模型下载那两条测试（「重试下载」的措辞与它的状态判据）随下载器一起删掉（5.0.0）。
 
     /// 引导里现在有文字的每一处（按钮、链接、那几行说明）
     private var everyLine: [String] {
         [OnboardingCopy.usageHeadline, OnboardingCopy.usageExplanation,
-         OnboardingCopy.aiSkipReassurance, OnboardingCopy.reopenGuide,
+         OnboardingCopy.reopenGuide,
          OnboardingCopy.skipForNow, OnboardingCopy.dictationUnavailable,
-         OnboardingCopy.retryDownload, OnboardingCopy.permissionsStillMissing,
-         OnboardingCopy.permissionsIntro(modelDownloading: true),
-         OnboardingCopy.permissionsIntro(modelDownloading: false),
+         OnboardingCopy.permissionsStillMissing, OnboardingCopy.permissionsIntro,
          OnboardingCopy.keyboardHint, OnboardingCopy.pasteKeyHere,
+         OnboardingCopy.keyMissingForTryIt,
          OnboardingCopy.menuBarHome, OnboardingCopy.menuBarHolds,
          OnboardingCopy.rarelyNeeded(hotkey: "⌥"), OnboardingCopy.launchAtLoginWhy,
          OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥"),
-         OnboardingCopy.doneAIStatus(status: .commandsOnly, hotkey: "⌥"),
          OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")]
     }
 
@@ -272,7 +245,11 @@ final class OnboardingCopyTests: XCTestCase {
         L10n.shared.language = .zh
         XCTAssertTrue(OnboardingCopy.menuBarHome.contains("菜单栏"), OnboardingCopy.menuBarHome)
         XCTAssertTrue(OnboardingCopy.menuBarHome.contains("Dock"), OnboardingCopy.menuBarHome)
-        XCTAssertTrue(OnboardingCopy.menuBarHolds.contains("历史记录"), OnboardingCopy.menuBarHolds)
+        // 菜单里那几项 5.0.0 变了（没有「润色档位」了，多了「写作偏好」）：
+        // 这一句念的必须是菜单里真有的那几项，否则用户照着去找会找不到
+        XCTAssertTrue(OnboardingCopy.menuBarHolds.contains("最近记录"), OnboardingCopy.menuBarHolds)
+        XCTAssertTrue(OnboardingCopy.menuBarHolds.contains("写作偏好"), OnboardingCopy.menuBarHolds)
+        XCTAssertFalse(OnboardingCopy.menuBarHolds.contains("润色档位"), OnboardingCopy.menuBarHolds)
         XCTAssertTrue(OnboardingCopy.menuBarHolds.contains("Dock"), OnboardingCopy.menuBarHolds)
         let zh = OnboardingCopy.rarelyNeeded(hotkey: "右 Option")
         XCTAssertTrue(zh.contains("轻点") && zh.contains("按住"), zh)
@@ -338,24 +315,12 @@ final class OnboardingCopyTests: XCTestCase {
 
     // MARK: - 权限页开头那两句
 
-    /// 「正在后台下载」只有真的在下的时候才说。选了云端识别、取消过、失败过的人看到的
-    /// 下一行正写着「已取消」——上面压一句"已经在后台下载"就是当面说假话
-    func testPermissionsIntroOnlyClaimsADownloadThatIsRunning() {
-        for language in [AppLanguage.zh, .en] {
-            L10n.shared.language = language
-            let idle = OnboardingCopy.permissionsIntro(modelDownloading: false)
-            let running = OnboardingCopy.permissionsIntro(modelDownloading: true)
-            XCTAssertTrue(running.hasPrefix(idle), running)
-            XCTAssertGreaterThan(running.count, idle.count)
-        }
+    /// 权限页开头那一句里**不许再提下载**（5.0.0 没有本机模型了）
+    func testPermissionsIntroNeverMentionsADownload() {
         L10n.shared.language = .zh
-        XCTAssertFalse(OnboardingCopy.permissionsIntro(modelDownloading: false).contains("下载"))
-        XCTAssertTrue(OnboardingCopy.permissionsIntro(modelDownloading: true).contains("下载"))
+        XCTAssertFalse(OnboardingCopy.permissionsIntro.contains("下载"))
         L10n.shared.language = .en
-        XCTAssertFalse(OnboardingCopy.permissionsIntro(modelDownloading: false)
-                        .lowercased().contains("download"))
-        XCTAssertTrue(OnboardingCopy.permissionsIntro(modelDownloading: true)
-                        .lowercased().contains("download"))
+        XCTAssertFalse(OnboardingCopy.permissionsIntro.lowercased().contains("download"))
     }
 
     /// 引导里那些整句的说明：装不进 16 字，但同样要有一条线。

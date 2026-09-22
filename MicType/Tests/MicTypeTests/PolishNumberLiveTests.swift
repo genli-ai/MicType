@@ -69,7 +69,7 @@ final class PolishNumberLiveTests: XCTestCase {
 
     /// 阿里云：chat/completions。系统提示词取**线上那一份**，原文照样用定界块包住
     private func polishWithQwen(_ raw: String, key: String,
-                                system: String = PolishService.systemPrompt(for: .smart)) throws -> String {
+                                system: String = PolishService.systemPrompt()) throws -> String {
         let body: [String: Any] = [
             "model": Self.qwenModel,
             // qwen3.5–3.8 默认开思考，润色必须关掉（4.1.2 踩过）
@@ -93,7 +93,7 @@ final class PolishNumberLiveTests: XCTestCase {
     private func polishWithOpenAI(_ raw: String, key: String) throws -> String {
         let body = LLMClient.responsesBody(
             model: Self.openAIModel,
-            system: PolishService.systemPrompt(for: .smart),
+            system: PolishService.systemPrompt(),
             user: "<<<原文>>>\n" + raw + "\n<<<结束>>>",
             purpose: .polish,
             temperature: nil,

@@ -126,7 +126,12 @@ enum SettingsBackup {
         static let qwenWorkspaceId = "qwenWorkspaceId"
         static let speechModelRepo = "speechModelRepo"
 
-        /// 已知键全集——不在这里面的一律忽略并计数（含任何伪装成设置的 Key 字段）
+        /// 已知键全集——不在这里面的一律忽略并计数（含任何伪装成设置的 Key 字段）。
+        ///
+        /// **5.0.0 删掉的那些键仍然在这张表里**（polishLevel、各家型号、本机模型仓库、
+        /// 识别语言、识别引擎…）：4.x 导出的文件里每一条都在，不认下来的话导入摘要会报
+        /// 一串"未知键"，用户以为自己的文件坏了。认下来之后**一条都不写**——
+        /// 它们在 5.0 里没有对应的东西可写（见下面 applyLegacy 那一段与 LegacyKeys）。
         static let all: Set<String> = [
             hotkey, polishLevel, vocabulary, fillerWords, aboutMe, customPolishRules,
             llmProvider, openaiBaseURL, deepseekBaseURL, customBaseURL,
@@ -138,6 +143,16 @@ enum SettingsBackup {
             recognitionEngine, recognitionLanguage, cloudAlibabaModel,
             qwenApiHost, qwenRegion, qwenWorkspaceId, speechModelRepo,
         ]
+
+        /// 这些键 5.0.0 之后**只认、不写**（见 all 的注释）。导入时读到就跳过，
+        /// 既不报错、也不记进"被忽略的键"——它们不是坏数据，只是没有归宿了。
+        static let legacyIgnored: Set<String> = [
+            polishLevel, deepseekBaseURL, customBaseURL,
+            openaiPolishModel, openaiCommandModel, deepseekPolishModel, deepseekCommandModel,
+            qwenPolishModel, qwenCommandModel, customPolishModel, customCommandModel,
+            localRuntime, localPolishModel, localCommandModel,
+            recognitionEngine, recognitionLanguage, speechModelRepo,
+        ]
     }
 
     // MARK: - 导出
@@ -145,9 +160,11 @@ enum SettingsBackup {
     /// 组装导出文档（纯函数，方便单测）
     static func makeDocument(date: Date = Date()) -> [String: Any] {
         let s = Settings.shared
+        // 5.0.0 导出的这一份**只含 5.0 还有的设置**：型号、润色档位、识别语言、
+        // 本机模型仓库、DeepSeek / 自定义端点 / 本机大模型那三档的地址，统统不再写出去
+        // （它们在这一版里没有对应的东西）。老文件导进来照样认得（见 Key.legacyIgnored）。
         let settings: [String: Any] = [
             // Key.hotkey 不在这里：Mac 上快捷键只有一个值，导出它等于承诺对面能改
-            Key.polishLevel: s.polishLevel.rawValue,
             Key.vocabulary: s.customVocabulary,
             Key.fillerWords: s.customFillerWords,
             // Key.aboutMe **不导出**（4.1.1 起只进不出）：这一版把「关于我」并进了自定义规则，
@@ -157,22 +174,6 @@ enum SettingsBackup {
             Key.customPolishRules: s.customPolishRules,
             Key.llmProvider: s.llmProvider.rawValue,
             Key.openaiBaseURL: s.openaiBaseURL,
-            Key.deepseekBaseURL: s.deepseekBaseURL,
-            // custom / local 这两档的地址与型号必须一起导出：llmProvider 已经是五档了，
-            // 只把档位搬过去、不带地址和型号名，对面就落到一个"端点空着、型号空着"的档上——
-            // 轻点听写静默没了润色（custom 连凭据都判成没配），长按每次报"还没填模型名"。
-            Key.customBaseURL: s.customBaseURL,
-            Key.openaiPolishModel: s.chatModel,
-            Key.openaiCommandModel: s.openaiCommandModel,
-            Key.deepseekPolishModel: s.deepseekModel,
-            Key.deepseekCommandModel: s.deepseekCommandModel,
-            Key.qwenPolishModel: s.qwenModel,
-            Key.qwenCommandModel: s.qwenCommandModel,
-            Key.customPolishModel: s.customModel,
-            Key.customCommandModel: s.customCommandModel,
-            Key.localRuntime: s.localRuntime.rawValue,
-            Key.localPolishModel: s.localModel,
-            Key.localCommandModel: s.localCommandModel,
             Key.polishTemperature: s.polishTemperature,
             Key.commandTemperature: s.commandTemperature,
             Key.appLanguage: L10n.shared.language.rawValue,
@@ -181,17 +182,14 @@ enum SettingsBackup {
             Key.playSounds: s.playSounds,
             Key.restoreClipboard: s.restoreClipboard,
             Key.keepHistory: s.keepHistory,
-            // 识别这一段：引擎档位、语言、云端模型、接入地址、本机模型仓库。
-            // Key 一如既往不在里面（云端识别用的就是「云端 AI」页那把 Key）。
-            // 试出来的那台主机（qwenResolvedHost）**不导出**：它是本机探测的缓存，
-            // 换台机器重新试一次就有，和模型下载状态同一类
-            Key.recognitionEngine: s.recognitionEngine.rawValue,
-            Key.recognitionLanguage: s.recognitionLanguage,
+            // 识别这一段只剩三条：同步那条退路用哪个模型、接入地址、工作空间。
+            // 「用哪一家识别」不导出——它由 llmProvider 推出来（5.0.0 起没有单独的引擎设置）。
+            // Key 一如既往不在里面。试出来的那台主机（qwenResolvedHost）**不导出**：
+            // 它是本机探测的缓存，换台机器重新试一次就有。
             Key.cloudAlibabaModel: s.cloudAlibabaModel.rawValue,
             Key.qwenApiHost: s.qwenAPIHost,
             Key.qwenRegion: s.qwenRegion.rawValue,
             Key.qwenWorkspaceId: s.qwenWorkspaceID,
-            Key.speechModelRepo: s.qwenModelRepo,
         ]
 
         let stamp = ISO8601DateFormatter()
@@ -266,14 +264,6 @@ enum SettingsBackup {
         return true
     }
 
-    /// 导入进来的识别语言必须是本版认得的代码（或 "" = 自动检测）。
-    /// 认不出就忽略：脏代码会让本机引擎收到一句「language 某个乱码」，比没有语言设置更糟。
-    static func isAcceptableRecognitionLanguage(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return true }
-        return RecognitionLanguages.all.contains { $0.code == trimmed }
-    }
-
     /// WorkspaceId 会被拼进**主机名第一段**（{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com），
     /// 所以这道闸和 base URL 那道是同一个理由：别人发来的文件不该能把你的音频指到别的主机去。
     /// 只放行主机名标签允许的字符。
@@ -282,17 +272,6 @@ enum SettingsBackup {
         if trimmed.isEmpty { return true }   // 空 = 不用专属主机，是合法状态
         guard trimmed.count <= 63 else { return false }
         return trimmed.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
-    }
-
-    /// 模型仓库 ID 只接受 "owner/name" 这种形状：它会被拼成本地目录名，也会被拿去拼下载地址。
-    static func isAcceptableModelRepo(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.count <= 128, !trimmed.contains("..") else { return false }
-        let parts = trimmed.split(separator: "/", omittingEmptySubsequences: false)
-        guard parts.count == 2, parts.allSatisfy({ !$0.isEmpty }) else { return false }
-        return trimmed.allSatisfy {
-            $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "." || $0 == "/")
-        }
     }
 
     /// 把文档应用到设置上（合并语义）。抛错只发生在「这压根不是一份 MicType 设置文件」。
@@ -416,7 +395,8 @@ enum SettingsBackup {
 
         // Key.hotkey 故意不导入：Mac 上快捷键永远是右 Option（见 Settings.hotkey）。
         // 它在 Key.all 里，所以老文件里的这一项不会被报成"不认识的键"，只是不起作用。
-        enumValue(Key.polishLevel) { (v: PolishLevel) in Settings.shared.polishLevel = v }
+        // Key.legacyIgnored 里那十几条同理（见那张表的注释）。
+        //
         // 服务商换了 = 从此刻起 Key 和听写文本发给另一家。和识别引擎同一条纪律：当面念出来，
         // 只报一句"导入成功"等于把最该被看见的一条藏起来了。
         enumValue(Key.llmProvider, notable: true) { (v: LLMProvider) in Settings.shared.llmProvider = v }
@@ -426,24 +406,6 @@ enum SettingsBackup {
         string(Key.aboutMe) { Settings.shared.aboutMe = $0 }
         string(Key.customPolishRules) { Settings.shared.customPolishRules = $0 }
         baseURL(Key.openaiBaseURL) { Settings.shared.openaiBaseURL = $0 }
-        baseURL(Key.deepseekBaseURL) { Settings.shared.deepseekBaseURL = $0 }
-        // 自定义端点的地址走同一道闸（https + 有主机名）：它决定钥匙串里的 Key 发给谁。
-        // 空串先滤掉——那只是"导出方没用这一档"，不是一个坏地址，不该记进被忽略的键里。
-        if let raw = settings[Key.customBaseURL] as? String,
-           !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            baseURL(Key.customBaseURL) { Settings.shared.customBaseURL = $0 }
-        }
-        string(Key.openaiPolishModel, notable: true) { Settings.shared.chatModel = $0 }
-        string(Key.openaiCommandModel, notable: true) { Settings.shared.openaiCommandModel = $0 }
-        string(Key.deepseekPolishModel, notable: true) { Settings.shared.deepseekModel = $0 }
-        string(Key.deepseekCommandModel, notable: true) { Settings.shared.deepseekCommandModel = $0 }
-        nonEmptyString(Key.qwenPolishModel, notable: true) { Settings.shared.qwenModel = $0 }
-        nonEmptyString(Key.qwenCommandModel, notable: true) { Settings.shared.qwenCommandModel = $0 }
-        nonEmptyString(Key.customPolishModel, notable: true) { Settings.shared.customModel = $0 }
-        nonEmptyString(Key.customCommandModel, notable: true) { Settings.shared.customCommandModel = $0 }
-        nonEmptyString(Key.localPolishModel, notable: true) { Settings.shared.localModel = $0 }
-        nonEmptyString(Key.localCommandModel, notable: true) { Settings.shared.localCommandModel = $0 }
-        enumValue(Key.localRuntime) { (v: LLMCatalog.LocalRuntime) in Settings.shared.localRuntime = v }
 
         number(Key.polishTemperature, range: 0...1.5) { Settings.shared.polishTemperature = $0 }
         number(Key.commandTemperature, range: 0...1.5) { Settings.shared.commandTemperature = $0 }
@@ -452,16 +414,9 @@ enum SettingsBackup {
             Settings.shared.autoStopSilenceSeconds = ($0 > 0 && $0 < 1) ? 1 : $0
         }
 
-        // 识别引擎要当面念出来：这一项决定录音会不会离开这台 Mac，是整份文件里最该被看见的一条。
+        // Key.recognitionEngine 5.0.0 起只认不写：用哪一家识别由 llmProvider 推出来，
+        // 而那一条上面已经当面念过了。
         //
-        // 「识别也用云端」那个**意愿**（4.3.1 起的 cloudRecognitionWanted）**不进设置文件**，
-        // 导入时由引擎推出来：导出的一直是实际引擎，一份 4.3.0 或更早的文件里压根没有这个键。
-        // 不推的话，收下一份 cloudAlibaba 的文件之后，音频在上传而开关显示"关"；
-        // 反过来单独收一个意愿键又会凭空打开一个按秒计费的开关。
-        enumValue(Key.recognitionEngine, notable: true) { (v: RecognitionEngineChoice) in
-            Settings.shared.recognitionEngine = v
-            Settings.shared.cloudRecognitionWanted = AISetup.cloudRecognitionWanted(fromEngine: v)
-        }
         // 这一项决定云端识别打的是哪个模型（也就是按什么价钱计费），和模型名同一条纪律
         enumValue(Key.cloudAlibabaModel, notable: true) { (v: AlibabaASRModel) in
             Settings.shared.cloudAlibabaModel = v
@@ -484,14 +439,8 @@ enum SettingsBackup {
         enumValue(Key.qwenRegion, notable: true) { (v: LLMCatalog.QwenRegion) in
             Settings.shared.qwenRegion = v
         }
-        checkedString(Key.recognitionLanguage, isValid: isAcceptableRecognitionLanguage) {
-            Settings.shared.recognitionLanguage = $0
-        }
         checkedString(Key.qwenWorkspaceId, notable: true, isValid: isAcceptableWorkspaceID) {
             Settings.shared.qwenWorkspaceID = $0
-        }
-        checkedString(Key.speechModelRepo, notable: true, isValid: isAcceptableModelRepo) {
-            Settings.shared.qwenModelRepo = $0
         }
 
         bool(Key.livePreview) { Settings.shared.livePreview = $0 }
@@ -500,13 +449,9 @@ enum SettingsBackup {
         // 这条走的是"要不要记录"这个偏好，历史内容本身照旧不进备份文件
         bool(Key.keepHistory) { Settings.shared.keepHistory = $0 }
 
-        // 2.5) 收下之后立刻把两条合并规则重新套一遍（4.1.1）：
-        //   • 文件里可能还带着老的「关于我」——界面上已经没有那个框了，不并进规则就是静默丢失；
-        //   • 文件里可能带着分开设的润色/指令型号——界面上也已经没有分开设的入口，
-        //     留着就是一条改不动的设置（下拉显示「自定义…」，指令跑的却是另一个型号）；
-        // 与启动时那几条同一份实现，不各写一遍。
+        // 2.5) 收下之后把「关于我」重新并一次（4.1.1）：文件里可能还带着它，
+        // 而界面上已经没有那个框了——不并进规则就是静默丢失。与启动时那条同一份实现。
         Settings.shared.normalizePersonalFields()
-        Settings.shared.normalizeModelPair()
 
         // 3) 不认识的键：只计数，绝不写进任何地方（API Key 就算被手工塞进来也止步于此）
         for key in settings.keys where !Key.all.contains(key) {
@@ -629,16 +574,11 @@ extension SettingsBackup {
                 // 4.3.1 起「接入地址」那一栏又在屏幕上了，所以这句话指回它——而且要说清楚
                 // **它不会被自动换掉**（那条"失败就丢掉重试"的规矩已经撤了）：
                 // 收下一份别人的设置之后，音频落在哪台服务器上必须是他自己能看见、能改的。
-                lines.append(tr("这份文件带来一个百炼接入地址：润色与云端识别会改发到那台服务器（可能是另一个司法辖区）。不是自己要的就到「云端 AI → 接入地址」清空它，交回自动探测。",
-                                "This file brings its own Model Studio endpoint: polish and cloud recognition will go to that server, possibly in a different jurisdiction. Clear it under Cloud AI → API host to hand the job back to auto-detection if you did not want it."))
+                lines.append(tr("这份文件带来一个百炼接入地址：识别与润色会改发到那台服务器（可能是另一个司法辖区）。不是自己要的就在「设置」里把 API Host 清空，交回自动探测。",
+                                "This file brings its own Model Studio endpoint: recognition and polish will go to that server, possibly in a different jurisdiction. Clear API Host in Settings to hand the job back to auto-detection if you did not want it."))
             }
-            // 引擎被文件改成云端 = 从此每段录音都会上传。这句重话必须说
-            if summary.notableChanges.contains(where: {
-                $0.hasPrefix(Key.recognitionEngine) && !$0.hasSuffix(RecognitionEngineChoice.local.rawValue)
-            }) {
-                lines.append(tr("这份文件把识别引擎改成了云端：以后每段录音都会上传给服务商，并按秒计费。不是自己选的请在「云端 AI」页把「识别也用云端」关掉。",
-                                "This file switched recognition to a cloud engine: every recording will be uploaded to that provider and billed by the second. Turn off Also recognize speech in the cloud under Settings → Cloud AI if you did not choose it."))
-            }
+            // 「这份文件把识别改成云端了」那一句 5.0.0 删掉：识别本来就只有云端一条路，
+            // 而服务商换没换已经由上面那句 llmProvider 的话说过了。
         }
         if !summary.ignoredKeys.isEmpty {
             lines.append(tr("忽略 \(summary.ignoredKeys.count) 项（不认识或格式不对）",
@@ -650,8 +590,8 @@ extension SettingsBackup {
         }
         // 4.1 起设置里没有标签页了（概览 + 编辑页），所以英文这边也不能再说 "tab"——
         // 指路一律写成 Settings → Cloud AI，和其它深链那几句同一个说法
-        lines.append(tr("API Key 从不导出、也从不导入——请在「云端 AI」页单独填写。",
-                        "API keys are never exported or imported — enter them under Settings → Cloud AI."))
+        lines.append(tr("API Key 从不导出、也从不导入——请在「设置」里单独填写。",
+                        "API keys are never exported or imported — enter yours in Settings."))
 
         let alert = NSAlert()
         alert.alertStyle = .informational

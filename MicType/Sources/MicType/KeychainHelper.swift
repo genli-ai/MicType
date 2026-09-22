@@ -25,7 +25,7 @@ enum KeychainHelper {
     /// 读取的替身。**App 里永远是 nil**，只有单测会装上它。
     ///
     /// 为什么值得一条生产代码里的缝：设置页的快照测试要渲染「云端 AI」那一页，而那一页
-    /// 一登场就问"这一档有没有 Key"（KeyEntryView.load / CloudEditor.hasStoredKey）。
+    /// 一登场就问"这一档有没有 Key"（KeyEntryView.load / MainSettingsPage.hasStoredKey）。
     /// 在 xctest 进程里问系统钥匙串是两种坏结果之一：要么拿到 nil（那这组截图就永远只有
     /// "还没填 Key"那个状态），要么弹一个授权框把整轮测试挂在那儿。
     /// 返回的字符串**只用来判"有没有"**，测试里塞的是一串假值。

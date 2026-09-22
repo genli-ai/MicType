@@ -219,14 +219,15 @@ final class KeyVerifier: ObservableObject {
         case .cloudASR(let cloudProvider):
             // 识别页：直接打识别端点，1 秒合成音。阿里云那一档还要先把接入主机试出来、
             // 模型 404 时自动换 qwen3-asr-flash（见 CloudASRSetup）。
-            guard var config = CloudASRSettings.currentConfig(), config.provider == cloudProvider else {
-                // 走到这里只可能是识别引擎在这半秒里被改回了本地档。
+            var config = CloudASRSettings.currentConfig()
+            guard config.provider == cloudProvider else {
+                // 走到这里只可能是生效服务商在这半秒里被换掉了。
                 // 这一支不经过 settle，所以日志要自己记：用户看得见的每一句失败都要落盘，
                 // 否则他抄着这句话来问，日志里一个字都找不到（4.0.1 立的规矩）。
                 Log.warn("API key verification skipped provider=\(provider.rawValue) "
-                         + "reason=cloud recognition not on this provider")
-                status = .failed(reason: tr("云端识别没有开在这一档上，请先在 设置 → 云端 AI 里打开",
-                                            "Cloud recognition is not set to this provider — turn it on first under Settings → Cloud AI"),
+                         + "reason=effective provider changed mid-flight")
+                status = .failed(reason: tr("服务商刚被改过，请再粘一次这把 Key",
+                                            "The provider just changed — paste this key again"),
                                  keptPrevious: hadPrevious)
                 return
             }
@@ -303,6 +304,10 @@ struct KeyEntryView: View {
     /// 它一变就拿同一把 Key 对着新地址重验一次：**那是整页唯一的手动测试**，
     /// 所以结果就显示在下面这行 Key 状态行上，用户不必再去找第二个地方看。
     var hostChangeTick: Int = 0
+    /// 验通那一行末尾再补一句（空串 = 不补）。**只在成功那一档补**：
+    /// 失败那一行本来就长（服务商的原话在里面），再挂一句价钱等于把最该读的原因往后推。
+    /// 补什么由调用方定——设置页补「一小时多少钱」，引导 ③ 补「一句话多少钱」（见 CloudSetupCore）。
+    var connectedNote: String = ""
     /// 验证结束时通知外面（true = 通过）。菜单栏的「配置 AI…」之类要据此刷新。
     var onStatusChange: ((KeyVerifier.Status) -> Void)? = nil
 
@@ -318,6 +323,14 @@ struct KeyEntryView: View {
     /// 而粘贴正是 99% 的真实输入方式——等他失焦再验证会让人以为这一步没反应。
     private static let pasteJump = 12
 
+    /// 验通那一行末尾要不要挂上调用方给的那半句（纯函数，单测钉住"只挂在成功那一档"）。
+    /// 挂错地方的后果不是难看，是把失败原因挤下去——而那一行恰恰是用户唯一能照着做事的字。
+    static func connectedSuffix(_ status: KeyVerifier.Status, note: String) -> String {
+        guard case .connected = status else { return "" }
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "" : " · " + trimmed
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if provider.requiresAPIKey {
@@ -332,16 +345,15 @@ struct KeyEntryView: View {
                 // 4.3.2 删掉了原来常驻在这儿的那行费用说明——它并进了上面那颗 ⓘ，
                 // 因为它一天要被同一个人读一百遍，而它说的事一个月也用不上一次。
                 if let text = KeyVerifier.statusText(verifier.status) {
-                    Text(text)
+                    Text(text + Self.connectedSuffix(verifier.status, note: connectedNote))
                         .font(.caption)
                         .foregroundColor(KeyVerifier.statusColor(verifier.status))
                         .lineLimit(3)
                         .textSelection(.enabled)
                 }
-            } else {
-                // 本机模型：没有 Key 不是"还没配好"，是这一档的正常状态
-                Caption(SettingsCopy.localModelNeedsNoKey)
             }
+            // 5.0.0 起没有"这一档不需要 Key"的分支了（本机大模型那一档删掉了），
+            // 但 requiresAPIKey 这道闸留着：它是「有没有 Key 可验」的唯一判据。
         }
         .onAppear { load() }
         .onChange(of: provider) { _, _ in load() }

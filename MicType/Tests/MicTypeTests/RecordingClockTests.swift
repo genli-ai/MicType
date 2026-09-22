@@ -44,8 +44,7 @@ final class RecordingClockTests: XCTestCase {
     /// 设置 → 录音 那句说明里的数字**必须来自常量**（写死的数字迟早和代码对不上，
     /// 而这行字是用户唯一能查到上限的地方）
     func testRecordingCopyReadsTheConstants() {
-        let flows: [DictationController.RecordingFlow] = [.progressiveLocal, .cloudStreaming,
-                                                          .cloudUpload]
+        let flows: [DictationController.RecordingFlow] = [.cloudStreaming, .cloudUpload]
         for language in AppLanguage.allCases {
             let saved = L10n.shared.language
             L10n.shared.language = language
@@ -56,9 +55,9 @@ final class RecordingClockTests: XCTestCase {
                     DictationController.maxRecordingSeconds)), "\(language) \(flow): \(copy)")
                 XCTAssertTrue(copy.contains(DictationController.secondsLabel(
                     DictationController.preFinishWarningSeconds)), "\(language) \(flow): \(copy)")
-                // 段长只有**真的分段**的那两条路才说：实时那条不分段，写个段长就是假话
+                // 段长只有**真的分段**的那条路才说：实时那条不分段，写个段长就是假话
                 XCTAssertEqual(copy.contains(DictationController.secondsLabel(
-                    AudioSegmenter.targetSeconds)), flow != .cloudStreaming,
+                    CloudSegmentLimits.alibaba.targetSeconds)), flow != .cloudStreaming,
                                "\(language) \(flow): \(copy)")
             }
             // 当前设置那一版（界面真正渲染的就是它）同样要说全上限与预警
@@ -68,27 +67,24 @@ final class RecordingClockTests: XCTestCase {
         }
     }
 
-    /// 三条路三句话，一句都不能互相抄：本机是录音中就转，云端实时是边说边传、整段一次出，
+    /// 两条路两句话，不能互相抄：云端实时是边说边传、整段一次出，
     /// 云端整段上传是松手之后才分段传。写混了，用户就会去等一个不会出现的逐段进度
     func testRecordingCopyDistinguishesEveryFlow() {
         for language in AppLanguage.allCases {
             let saved = L10n.shared.language
             L10n.shared.language = language
             defer { L10n.shared.language = saved }
-            let local = DictationController.recordingLimitCopy(flow: .progressiveLocal)
             let streaming = DictationController.recordingLimitCopy(flow: .cloudStreaming)
             let upload = DictationController.recordingLimitCopy(flow: .cloudUpload)
-            XCTAssertEqual(Set([local, streaming, upload]).count, 3, "\(language)：三档必须各说各的")
-            // ⓘ 的预算是中文 ≤ 120 字，而这三句前面还挂着"草稿只在悬浮窗里"那一句
+            XCTAssertNotEqual(streaming, upload, "\(language)：两档必须各说各的")
+            // ⓘ 的预算是中文 ≤ 120 字
             if language == .zh {
-                for copy in [local, streaming, upload] {
+                for copy in [streaming, upload] {
                     XCTAssertLessThanOrEqual(copy.count, 100, copy)
                 }
             }
         }
         L10n.shared.language = .en
-        XCTAssertTrue(DictationController.recordingLimitCopy(flow: .progressiveLocal)
-            .contains("transcribed while you speak"))
         // 云端整段上传那一档不能承诺录音过程中就在传，更不能承诺在转
         XCTAssertFalse(DictationController.recordingLimitCopy(flow: .cloudUpload)
             .contains("as you speak"), "整段上传那一档不能承诺边说边传")
@@ -102,25 +98,22 @@ final class RecordingClockTests: XCTestCase {
             .contains("不分段"))
     }
 
-    /// 走哪条路由设置 + 这次运行的实时可用性决定（纯函数拿不到的那一半）
-    func testRecordingFlowFollowsTheEngineAndStreamingAvailability() {
-        let saved = Settings.shared.recognitionEngine
+    /// 走哪条路由**生效服务商**（5.0.0 起识别引擎跟着它走）+ 这次运行的实时可用性决定
+    func testRecordingFlowFollowsTheProviderAndStreamingAvailability() {
+        let saved = Settings.shared.llmProvider
         defer {
-            Settings.shared.recognitionEngine = saved
+            Settings.shared.llmProvider = saved
             CloudStreamingAvailability.resetForTesting()
         }
         CloudStreamingAvailability.resetForTesting()
-        Settings.shared.recognitionEngine = .local
-        XCTAssertEqual(DictationController.currentRecordingFlow(), .progressiveLocal)
         // 4.2.2 起 OpenAI 官方接口也有实时这条路
-        Settings.shared.recognitionEngine = .cloudOpenAI
+        Settings.shared.llmProvider = .openai
         XCTAssertEqual(DictationController.currentRecordingFlow(), .cloudStreaming)
         CloudStreamingAvailability.markUnsupported(provider: .openai, host: "api.openai.com",
                                                    reason: "test")
         XCTAssertEqual(DictationController.currentRecordingFlow(), .cloudUpload)
         CloudStreamingAvailability.resetForTesting()
-        Settings.shared.recognitionEngine = .cloudAlibaba
-        Settings.shared.recognitionEngine = .cloudAlibaba
+        Settings.shared.llmProvider = .qwen
         XCTAssertEqual(DictationController.currentRecordingFlow(), .cloudStreaming)
         // 这台主机这次运行里被判过"实时用不了"：那句话得换回整段上传那一版
         let s = Settings.shared
@@ -138,17 +131,15 @@ final class RecordingClockTests: XCTestCase {
     /// 胶囊/菜单项的字与 cancel() 的行为必须由同一个判据决定——
     /// 这条判据一旦和文案脱节，用户点的就是一颗写着"取消"、点下去却往文档里打字的按钮
     func testEscFinishesEarlyOnlyWhenSomethingCanBeDelivered() {
-        // 已经转出段落 / 录音中预转写过 → 第一次 Esc 是"收尾并输入"
-        XCTAssertTrue(DictationController.escFinishesEarly(
-            completedSegments: 2, hasLiveParts: false, isSkillSession: false))
-        XCTAssertTrue(DictationController.escFinishesEarly(
-            completedSegments: 0, hasLiveParts: true, isSkillSession: false))
+        // 已经转出段落 → 第一次 Esc 是"收尾并输入"
+        XCTAssertTrue(DictationController.escFinishesEarly(completedSegments: 2,
+                                                           isSkillSession: false))
         // 手上什么都没有 → 就是普通取消
-        XCTAssertFalse(DictationController.escFinishesEarly(
-            completedSegments: 0, hasLiveParts: false, isSkillSession: false))
+        XCTAssertFalse(DictationController.escFinishesEarly(completedSegments: 0,
+                                                            isSkillSession: false))
         // 指令会话永远不部分交付：半句指令绝不能拿去执行
-        XCTAssertFalse(DictationController.escFinishesEarly(
-            completedSegments: 3, hasLiveParts: true, isSkillSession: true))
+        XCTAssertFalse(DictationController.escFinishesEarly(completedSegments: 3,
+                                                            isSkillSession: true))
     }
 
     func testDurationLabels() {
@@ -162,15 +153,6 @@ final class RecordingClockTests: XCTestCase {
         XCTAssertEqual(DictationController.secondsLabel(45), "45 秒")
     }
 
-    // MARK: 每段的 token 预算
-
-    /// 秒数 × 8 + 64（实测峰值出字速率 3.5 字/秒，两倍余量）。
-    /// 库的默认 4096 会让密集语音在约 3.4 分钟处**静默截断**，所以每段都必须显式传。
-    func testSegmentTokenBudget() {
-        XCTAssertEqual(QwenModels.segmentMaxTokens(seconds: 45), 424)
-        XCTAssertEqual(QwenModels.segmentMaxTokens(seconds: 0), 64)
-        XCTAssertEqual(QwenModels.segmentMaxTokens(seconds: -3), 64)
-        // 比库内部那条上限（秒数 × 20 + 64）更紧：跑飞的那一段烧不了多久
-        XCTAssertLessThan(QwenModels.segmentMaxTokens(seconds: 45), Int(ceil(45 * 20)) + 64)
-    }
+    // 「每段的 token 预算」那条测试随本机引擎一起删掉（5.0.0）：
+    // 云端那一路的分段预算在 CloudSegmentPlanner 里，由 CloudASRTests 钉着。
 }

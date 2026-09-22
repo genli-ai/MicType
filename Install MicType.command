@@ -39,7 +39,9 @@ bold "╚═══════════════════════�
 ARCH=$(uname -m)
 [ "$ARCH" = "arm64" ] || fail "$(t "需要 Apple Silicon" "Apple Silicon required")"
 
-# ── 1. Xcode & Metal toolchain ─────────────────────
+# ── 1. Xcode ───────────────────────────────────────
+# 5.0.0 起没有本机 Qwen3-ASR 了（识别全在云端），所以这里不再需要 Metal 工具链、
+# 也不再需要那份分词器——首次编译从 5–15 分钟降到一分钟以内。
 step "1/4 $(t "检查 Xcode" "Checking Xcode")"
 DEV_DIR=$(xcode-select -p 2>/dev/null || echo "")
 if [[ "$DEV_DIR" != *"Xcode.app"* ]]; then
@@ -51,15 +53,10 @@ if [[ "$DEV_DIR" != *"Xcode.app"* ]]; then
     fi
 fi
 xcodebuild -version >/dev/null 2>&1 || fail "$(t "xcodebuild 不可用" "xcodebuild unavailable")"
-if ! xcrun metal --version >/dev/null 2>&1; then
-    echo "  $(t "下载 Metal 工具链（一次性，约 2-4GB）…" "Downloading the Metal toolchain (one-time, ~2-4 GB)…")"
-    xcodebuild -downloadComponent MetalToolchain || fail "$(t "Metal 工具链下载失败" "Metal toolchain download failed")"
-fi
-[ -f "Resources/QwenTokenizer/tokenizer.json" ] || fail "$(t "缺少分词器：先运行 scripts/Generate Qwen Tokenizer.command" "Tokenizer missing — run scripts/Generate Qwen Tokenizer.command first")"
 green "  ✓ $(t "构建环境就绪" "Build environment ready")"
 
 # ── 2. Build ───────────────────────────────────────
-step "2/4 $(t "编译 MicType（首次 5-15 分钟）" "Building MicType (first build takes 5-15 min)")"
+step "2/4 $(t "编译 MicType" "Building MicType")"
 DERIVED=".xcbuild"
 if xcodebuild -scheme MicType \
     -configuration Release \
@@ -82,14 +79,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/MicType"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
-# MLX/tokenizer resource bundles (incl. Metal shaders) must ship with the app
-if compgen -G "$PRODUCTS/*.bundle" > /dev/null; then
-    for B in "$PRODUCTS"/*.bundle; do
-        ditto "$B" "$APP/Contents/Resources/$(basename "$B")"
-    done
-fi
-mkdir -p "$APP/Contents/Resources/QwenTokenizer"
-cp "Resources/QwenTokenizer/tokenizer.json" "$APP/Contents/Resources/QwenTokenizer/"
+# 5.0.0 起没有第三方依赖，也就没有要随包带走的 .bundle 与分词器了。
 
 # 自带的 4 个提示音（替掉系统的 Pop/Glass/Basso/Bottle）。
 # 缺了 App 会退回系统音，所以这里不让它阻断安装。
@@ -98,11 +88,7 @@ if [ -d "Resources/Sounds" ]; then
     cp Resources/Sounds/*.wav "$APP/Contents/Resources/Sounds/"
 fi
 
-# 内置的模型目录（model-catalog.json）：断网 / 没缓存时的模型清单来源。
-# 缺了 App 会退回代码里的字面表，所以同样不阻断安装。
-if [ -f "Resources/model-catalog.json" ]; then
-    cp Resources/model-catalog.json "$APP/Contents/Resources/model-catalog.json"
-fi
+# 模型目录（model-catalog.json）5.0.0 随本机模型一起删掉了。
 
 # App icon: Icon Composer source -> Assets.car + icns (macOS 26 otherwise shows a grey tile)
 bash ../scripts/build-app-icon.sh "$APP" || true

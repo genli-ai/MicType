@@ -506,12 +506,8 @@ enum LLMClient {
         if let temperature = temperature, !LLMCatalog.rejectsCustomTemperature(model) {
             body["temperature"] = temperature
         }
-        // DeepSeek 默认开思考且 effort=high：润色只是改写，多等几秒换不来任何质量 → 显式关掉。
-        // 指令那边**不发**这个字段，保留服务商默认的思考能力（低频、要质量）。
-        if provider == .deepseek, purpose == .polish {
-            body["thinking"] = ["type": "disabled"]
-        }
-        // 阿里云同理，字段名不同：qwen3.5 / 3.6 / 3.7 / 3.8 这几条线**默认开思考**
+        // DeepSeek 那条 `thinking: disabled` 5.0.0 起没有了（那一档服务商删掉了）。
+        // 阿里云这一条照旧，字段名不同：qwen3.5 / 3.6 / 3.7 / 3.8 这几条线**默认开思考**
         //（老的 qwen3-max / qwen-plus / qwen-flash 默认关，所以 4.1.1 之前没人注意到）。
         // 兼容模式上的开关是根级字段 `enable_thinking`，**润色和指令都关**：
         // - 润色（4.1.1 日志）：qwen3.8-max 润色 ~25 个字用掉 3889 ms / 8730 ms，更长的直接撞满 12 s 超时。
@@ -782,8 +778,10 @@ enum LLMClient {
         // Qwen 不会走到这里：它的接入地址由 MicType 自己试出来（见 AlibabaEndpoint）。
         guard !base.isEmpty else {
             DispatchQueue.main.async {
-                completion(nil, tr("这个服务商的接口地址还没填完（在 设置 → 云端 AI → 高级 里填）",
-                                   "This provider's endpoint is incomplete - fill it in under Settings → Cloud AI → Advanced"))
+                // 5.0.0 起地址不是用户填的（OpenAI 固定、阿里云自己试或粘一条 Host），
+                // 所以这一支只可能来自一份改坏了的导入设置——指回设置页那一行 API Host
+                completion(nil, tr("这一档的接口地址不完整，请检查「设置」里的 API Host",
+                                   "This provider's endpoint is incomplete - check API Host in Settings"))
             }
             return
         }

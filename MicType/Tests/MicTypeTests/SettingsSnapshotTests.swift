@@ -33,17 +33,6 @@ final class SettingsSnapshotTests: XCTestCase {
         SettingsKeys.customVocabulary,
         SettingsKeys.customPolishRules,
         SettingsKeys.llmProvider,
-        SettingsKeys.polishLevel,
-        SettingsKeys.recognitionEngine,
-        SettingsKeys.recognitionLanguage,
-        SettingsKeys.chatModel,
-        SettingsKeys.openaiCommandModel,
-        SettingsKeys.qwenModel,
-        SettingsKeys.qwenCommandModel,
-        SettingsKeys.webSearchEnabled,
-        // 4.3.1 起开关读的是**意愿**这条键，不是引擎档位——不摆它，照出来的云端识别
-        // 永远是关着的那一档（而开着那一档才有型号 · 边说边上传 · 单价那一行要看）
-        SettingsKeys.cloudRecognitionWanted,
     ]
 
     private var savedDefaults: [String: Any?] = [:]
@@ -62,20 +51,13 @@ final class SettingsSnapshotTests: XCTestCase {
         savedLanguage = L10n.shared.language
         let defaults = UserDefaults.standard
         for key in Self.touchedKeys { savedDefaults[key] = defaults.object(forKey: key) }
-        // 钥匙串的替身：OpenAI 与阿里云都"有 Key"，这样「云端 AI」页才会摆出
-        // 模型下拉与（阿里云那一档的）云端识别开关——没有 Key 的那半页什么都看不到
-        KeychainHelper.lookupOverride = { account in
-            account.contains("deepseek") ? nil : "sk-snapshot-placeholder"
-        }
-        // 开关开着的那一页一露面就会去真测云端识别——拿着假 Key 连真服务器，
-        // 照出来的还是一行 401。告诉它"已经测过了"，拍照就不出网
-        CloudASRProvider.allCases.forEach { CloudRecognitionCheckMemory.markChecked($0) }
+        // 钥匙串的替身：两家都"有 Key"，这样「云端 AI」页才是配好了的那一副样子
+        KeychainHelper.lookupOverride = { _ in "sk-snapshot-placeholder" }
         seedRepresentativeSettings()
     }
 
     override func tearDownWithError() throws {
         KeychainHelper.lookupOverride = nil
-        CloudRecognitionCheckMemory.resetForTesting()
         let defaults = UserDefaults.standard
         for (key, value) in savedDefaults {
             if let value = value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
@@ -93,9 +75,6 @@ final class SettingsSnapshotTests: XCTestCase {
                      forKey: SettingsKeys.customVocabulary)
         defaults.set("署名用 Gen；邮件偏正式；英文术语保留原文。",
                      forKey: SettingsKeys.customPolishRules)
-        defaults.set(PolishLevel.smart.rawValue, forKey: SettingsKeys.polishLevel)
-        defaults.set(RecognitionLanguages.autoCode, forKey: SettingsKeys.recognitionLanguage)
-        defaults.set(true, forKey: SettingsKeys.webSearchEnabled)
     }
 
     // MARK: - 拍照
@@ -106,46 +85,26 @@ final class SettingsSnapshotTests: XCTestCase {
             L10n.shared.language = language
             let tag = language == .zh ? "zh" : "en"
 
-            useProvider(.openai, cloudRecognition: false)
-            shoot(.overview, name: "overview-\(tag)")
-            shoot(.input, name: "input-\(tag)")
-            // 「写作偏好」那一段整个入画：这一页比窗口高，按窗口高度拍只看得到最上面两段
-            shoot(.input, name: "input-writing-preferences-\(tag)", fullHeight: true)
-            shoot(.recognition, name: "recognition-\(tag)")
-            // 关于页 4.3.3 起多了「设置备份」与「保存听写历史」两行（从「输入」页搬来），
-            // 它比窗口高，所以整页入画——要看的正是最下面隐私那一段
+            // 设置正页：两家各一张（阿里云比 OpenAI 多一行「API Host」，
+            // 5.0.0 之后两档在这一页上的差别就只剩它）
+            useProvider(.openai)
+            shoot(.overview, name: "settings-openai-\(tag)")
+            useProvider(.qwen)
+            shoot(.overview, name: "settings-alibaba-\(tag)")
+
+            useProvider(.openai)
+            // 写作偏好：两个文本框整个入画
+            shoot(.writing, name: "writing-preferences-\(tag)", fullHeight: true)
+            // 关于页比窗口高，所以整页入画——要看的正是最下面隐私那一段
             shoot(.about, name: "about-\(tag)", fullHeight: true)
-            shoot(.cloud, name: "cloud-openai-\(tag)")
-
-            useProvider(.qwen, cloudRecognition: true)
-            shoot(.cloud, name: "cloud-alibaba-\(tag)")
-
-            // 「只用本地」那一档：自定义规则下面那句「开启 AI 后生效」只有这时候才在屏幕上
-            UserDefaults.standard.set(PolishLevel.off.rawValue, forKey: SettingsKeys.polishLevel)
-            useProvider(.openai, cloudRecognition: false)
-            shoot(.input, name: "input-local-only-\(tag)", fullHeight: true)
-            // 同一档下的「云端 AI」页：4.3.3 之前这里会冒出一条「钥匙串里还存着 Key…」
-            // 加一颗「删掉这把 Key」——用户点名不要（快照夹具里有假 Key，正好能触发原来那条）
-            shoot(.cloud, name: "cloud-local-only-\(tag)")
-            UserDefaults.standard.set(PolishLevel.smart.rawValue, forKey: SettingsKeys.polishLevel)
         }
         print("[snapshot] PNGs written to \(outputDirectory.path)")
     }
 
-    /// 摆出"正在用这一档"的状态。云端识别开关只在**生效档是阿里云**时才渲染
-    private func useProvider(_ provider: LLMProvider, cloudRecognition: Bool) {
-        let defaults = UserDefaults.standard
-        defaults.set(provider.rawValue, forKey: SettingsKeys.llmProvider)
-        defaults.set(cloudRecognition, forKey: SettingsKeys.cloudRecognitionWanted)
-        defaults.set(cloudRecognition ? AISetup.engine(provider: provider,
-                                                       cloudRecognition: true).rawValue
-                                      : RecognitionEngineChoice.local.rawValue,
-                     forKey: SettingsKeys.recognitionEngine)
-        defaults.set(LLMCatalog.defaultModel(for: provider),
-                     forKey: provider == .qwen ? SettingsKeys.qwenModel : SettingsKeys.chatModel)
-        defaults.set(LLMCatalog.defaultModel(for: provider),
-                     forKey: provider == .qwen ? SettingsKeys.qwenCommandModel
-                                               : SettingsKeys.openaiCommandModel)
+    /// 摆出"正在用这一档"的状态。5.0.0 起这就是全部：一条 llmProvider
+    /// （识别引擎、型号、联网搜索全都由它推出来，不再是各自的设置）。
+    private func useProvider(_ provider: LLMProvider) {
+        UserDefaults.standard.set(provider.rawValue, forKey: SettingsKeys.llmProvider)
     }
 
     /// 一页 → 一张 PNG。两趟渲染：第一趟把页面自然高度量出来（和真窗口同一条路，

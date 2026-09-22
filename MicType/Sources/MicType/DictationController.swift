@@ -146,49 +146,23 @@ final class DictationController {
     /// 松手只剩「发完最后一截 + 一条 finish」——实测松手到终稿恒为 0.23–0.28 秒，与时长无关。
     /// nil = 这一轮走整段上传（本机档、别家云端、这台主机实时用不了，见 CloudStreamingSession.make）。
     private var cloudStreaming: CloudStreamingSession?
-    /// 这一轮实际用的引擎与它是不是云端。都在**开录这一刻**定格：录到一半去设置里改引擎，
+    /// 这一轮实际用的引擎。在**开录这一刻**定格：录到一半去设置里换服务商，
     /// 不该让正在录的这一段换一条链路（与 autoStopSilence 的快照同理）。
-    private var sessionEngine: SpeechEngine = QwenEngine.shared
-    private var sessionUsesCloud = false
+    /// 5.0.0 起它永远是云端的某一条（实时会话，或它背后那条整段上传）。
+    private var sessionEngine: SpeechEngine?
     /// 润色之前先落进历史的那一条（见 HistoryStore.addRaw）：交付时补成最终文字，
     /// 交付不成也留着识别原文。nil = 这一轮还没落过（指令模式永远是 nil）
     private var pendingHistoryID: UUID?
-    /// 伪流式预览（P13）的状态，全部只在主线程读写。
-    /// 纪律：草稿只进悬浮窗，永远不进目标应用；最终文字永远来自松手后那一遍完整识别。
-    private var previewEnabled = false
-    /// 在飞的那一遍预览解码（可取消：松手时立刻让出 GPU 给最终识别）
-    private var previewTask: Task<Void, Never>?
-    /// 下一次预览的最小间隔：按上一次实测耗时自适应，慢机器/长音频自动放慢，绝不堆积
-    private var previewInterval: Double = 1.5
-    /// 当前预览窗口在整段录音里的起始采样下标（窗口满了就往后滚，已定稿的文字留在 previewCommitted）
-    private var previewWindowStart = 0
-    private var previewCommitted = ""
-    /// 本轮跑成功的预览解码遍数（进性能指标：预览跑得越多，最终识别越可能在排队等 GPU）
-    private var partialCount = 0
-    /// 录音中的预转写（progressive）状态，全部只在主线程读写。
-    /// 一句话说清它在干什么：录满一段（AudioSegmenter.targetSeconds）就**立刻**把那一段转成
-    /// 最终文字，松手时只剩最后一小截要转——3 分钟口述的等待从约 10 s 掉到约 1 s，
-    /// 峰值内存永远只是"一段"。草稿归草稿（灰字预览），这里出来的是要进输入框的字。
-    private var liveParts: [String] = []
-    /// 已经交给预转写的采样数（下一段从这里开始）
-    private var liveConsumed = 0
-    /// 每 20 ms 一帧的电平（增量算，别每次都扫整条缓冲）与已经算成帧的采样数
-    private var liveFrames: [Float] = []
-    private var liveFramedSamples = 0
-    /// 在飞的那一段预转写（可取消：松手/取消时立刻让出 GPU）
-    private var liveTask: Task<Void, Never>?
-    /// 第一段检测出的语言（语言锁）；用户显式选过语言时从一开始就是它
-    private var liveLanguage: String?
-    /// 预转写这一轮还作不作数。任何一段失败就置 false 并丢掉已转的部分——
-    /// 松手后照老路子把整段重转一遍。宁可白跑一次 GPU，也不交付一段来路不明的拼接文本。
-    private var liveActive = false
-    /// 松手这一刻定格的"已经转好的前半段"（没开预转写就是空串）。留成字段只为一件事：
-    /// Esc 那条部分交付的路要能就地把它落进历史（见 cancel()）——那几分钟的字在 resolve
-    /// 回来之前没有任何持久化，用户再按一次 Esc 就全没了。
-    private var committedText = ""
-    /// 松手后那一遍识别**已经报上来的**最新草稿（onSegment 的全文快照）。同样只为 Esc 那条保底路：
-    /// 云端那一档没有预转写，能救的就是这些已经转完的段落。
+    // 伪流式预览（本机模型每隔一会儿解一遍当前窗口）与录音中的预转写（本机分段）
+    // 5.0.0 一起删掉：本机引擎没有了。录音中的灰字草稿改由云端实时的中间结果供给
+    // （CloudStreamingSession.onDraft，见 prepareSessionEngine），一行都不用本机跑。
+
+    /// 松手后那一遍识别**已经报上来的**最新草稿（onSegment 的全文快照）。只为 Esc 那条保底路：
+    /// 能救的就是这些已经转完的段落。
     private var deliveredDraft = ""
+    /// 这一轮已经用同步接口重试过一次了（见 CloudFallbackDecision）。
+    /// 每轮开录复位——它决定"再失败一次要不要还给他一句『没识别到，请重试』"。
+    private var cloudRetried = false
     /// 本轮的耗时草稿（P20 性能指标）：识别/润色各阶段算完填一格，插入完成时提交进 Metrics。
     /// 只在主线程读写。取消 / 识别失败的那些轮不提交——它们没有完整的一条耗时可记。
     private var pendingMetric: SessionMetricDraft?
@@ -234,24 +208,9 @@ final class DictationController {
     /// 留点余量按 0.35s 算——这段时间里用户几乎不可能已经说出第一个字。
     private static let startCueGateSeconds: Double = 0.35
 
-    /// 伪流式预览的节奏：窗口最多 20s（再长解码就拖沓，且对预览毫无意义），
-    /// 每段至少 1.5s 才值得跑一遍，基础间隔 1.5s，实测慢了就退到最多 5s 一次。
-    private static let previewWindowSeconds: Double = 20
-    private static let previewMinChunkSeconds: Double = 1.5
-    private static let previewBaseInterval: Double = 1.5
-    private static let previewMaxInterval: Double = 5.0
-    /// 两遍预览之间的最小空闲间隙，以及"按实测耗时成比例"的那条下限（半个解码时长）
-    private static let previewMinIdleSeconds: Double = 0.4
-    private static let previewIdleLatencyRatio: Double = 0.5
-
     /// 云端实时每次最多从录音缓冲里切多少秒。电平回调每约 85 ms 来一次，
     /// 正常一次只有一百来毫秒；这条上限只是"卡过一下之后别一口气切走十分钟"的保险绳。
     private static let streamChunkMaxSeconds: Double = 30
-
-    /// 预转写最早从什么时候开始：录音超过"该分段"的门槛（AudioSegmenter.segmentThresholdSeconds）
-    /// 才动手。90 s 以内的录音行为与分段之前**完全一致**（一次过，一个字不差），
-    /// 这条门槛就是那句承诺的实现方式。
-    private static var liveSegmentAfterSeconds: Double { AudioSegmenter.segmentThresholdSeconds }
 
     /// 「换回识别原文」的有效期：过了就忘掉。撤销依赖目标应用的 undo 栈，
     /// 时间一长用户早就编辑过别的东西了，那时候再 ⌘Z 会撤错东西。
@@ -340,7 +299,6 @@ final class DictationController {
         Sounds.playStart()
         armStartCueGate()
         overlay.showRecording(label: currentRecordingLabel())
-        startLivePreview(generation: generation)
     }
 
     /// 开一道开始音回声闸门。提示音关着就不用开：没有声音就没有回声，
@@ -498,10 +456,8 @@ final class DictationController {
             // （尾巴通常只有一段，handle.completedSegments 还是 0，但前面几分钟的字已经在手上了）
             if let handle = inflightTranscription, !handle.isCancelled,
                Self.escFinishesEarly(completedSegments: handle.completedSegments,
-                                     hasLiveParts: !liveParts.isEmpty,
                                      isSkillSession: skillSession) {
-                Log.info("Transcription stopped by user after \(handle.completedSegments) segment(s)"
-                         + " live=\(liveParts.count)")
+                Log.info("Transcription stopped by user after \(handle.completedSegments) segment(s)")
                 handle.cancel()
                 // 这一下之后再按 Esc 就是彻底丢弃了：胶囊得跟着改回「取消」
                 overlay.setCancelFinishes(false)
@@ -526,11 +482,10 @@ final class DictationController {
     /// 处理中按 Esc 到底是"收尾并输入"还是"彻底丢弃"——同一个键在这一刻有两个意思，
     /// 而用户看不见判据。纯函数抽出来只为一件事：cancel() 的行为和胶囊/菜单项上的字
     /// 由**同一个判据**决定，不会一边改了另一边没跟上（那正是"点了取消却被插入"的来源）。
-    static func escFinishesEarly(completedSegments: Int, hasLiveParts: Bool,
-                                 isSkillSession: Bool) -> Bool {
+    static func escFinishesEarly(completedSegments: Int, isSkillSession: Bool) -> Bool {
         // 半句指令绝不能拿去执行：指令会话一律走彻底取消
         guard !isSkillSession else { return false }
-        return completedSegments > 0 || hasLiveParts
+        return completedSegments > 0
     }
 
     /// 菜单栏「处理中」那一项该写什么——与胶囊、与 cancel() 同一个判据，
@@ -540,7 +495,6 @@ final class DictationController {
             return false
         }
         return Self.escFinishesEarly(completedSegments: handle.completedSegments,
-                                     hasLiveParts: !liveParts.isEmpty,
                                      isSkillSession: skillSession)
     }
 
@@ -548,7 +502,6 @@ final class DictationController {
     private func syncCancelAffordance() {
         let finishes = Self.escFinishesEarly(
             completedSegments: inflightTranscription?.completedSegments ?? 0,
-            hasLiveParts: !liveParts.isEmpty,
             isSkillSession: skillSession)
         overlay.setCancelFinishes(finishes && !(inflightTranscription?.isCancelled ?? true))
     }
@@ -559,7 +512,7 @@ final class DictationController {
     /// （用户明确不要历史，这里不是偷偷替他留一份的地方）。
     private func saveCancelSafetyHistory() {
         guard pendingHistoryID == nil else { return }
-        let salvaged = TextPostProcessor.joinSegments([committedText, deliveredDraft])
+        let salvaged = deliveredDraft
         guard !salvaged.isEmpty else { return }
         pendingHistoryID = HistoryStore.shared.addRaw(
             TextPostProcessor.applyVocabReplacements(salvaged))
@@ -567,18 +520,12 @@ final class DictationController {
                  + " kept=\(pendingHistoryID != nil)")
     }
 
-    /// 这一轮用哪个识别引擎。默认档直接是本机的 QwenEngine；选了云端就把 Settings + 钥匙串
-    /// 组装成一份配置交给 CloudASREngine（引擎自己永远不读设置）。
-    /// 配不出配置（设置在这半秒里被改回本地档）时退回本机：走到这里说明 engineReadiness
-    /// 已经放行过，宁可用本机跑一遍，也不能让这段录音掉在地上。
+    /// 这一轮用哪个识别引擎。5.0.0 起**永远是云端**：把 Settings + 钥匙串组装成一份配置
+    /// 交给 CloudASREngine（引擎自己永远不读设置），能开实时就再往前一步开实时。
     private func prepareSessionEngine() {
         cloudStreaming?.abandon()
         cloudStreaming = nil
-        guard let config = CloudASRSettings.currentConfig() else {
-            sessionEngine = QwenEngine.shared
-            sessionUsesCloud = false
-            return
-        }
+        let config = CloudASRSettings.currentConfig()
         let engine = cloudEngine ?? CloudASREngine(config: config)
         engine.update(config: config)
         // 「这台主机不让这把 Key 访问端点」（403）是换一台主机就能解决的失败，而那台主机
@@ -589,7 +536,6 @@ final class DictationController {
         }
         cloudEngine = engine
         sessionEngine = engine
-        sessionUsesCloud = true
         Log.info("Session engine=cloud provider=\(config.provider.rawValue) "
                  + "hints=\(config.languageHints.joined(separator: ","))")
         // 阿里云那一档再往前一步：能开实时就开。开不了（别家 / 没 Key / 这台主机实时用不了）
@@ -598,20 +544,16 @@ final class DictationController {
         guard let stream = CloudStreamingSession.make(config: config, fallback: engine) else { return }
         stream.onDraft = { [weak self] draft in
             guard let self = self, self.isCurrent(generation), self.phase == .recording else { return }
-            // 关了草稿的人一个字都不该看到（与预转写那条同一条纪律）。**不看 previewEnabled**：
-            // 那一位还要求本机模型已就绪，而只用云端的人根本没下过模型——
-            // 服务端的中间结果恰恰是他第一次能看到草稿的机会。
+            // 关了草稿的人一个字都不该看到
             guard Settings.shared.livePreview else { return }
             self.overlay.showDraft(draft)
         }
         stream.onStreamingLost = { [weak self] in
             guard let self = self, self.isCurrent(generation), self.phase == .recording else { return }
-            // 实时在松手前就断了：这一段照 4.1.6 整段上传（会话自己接手），
-            // 本机那遍灰字预览也重新打开——别让这一段录音一个字都看不见
-            self.startLivePreview(generation: generation)
-            // 从"现在"接着看，别把开头几十秒重解一遍：那段话云端的中间结果已经显示过了，
-            // 而本机预览的窗口只有 20 秒，从头来过等于用户盯着一段早就读完的旧草稿
-            self.previewWindowStart = self.recorder.recordedSampleCount
+            // 实时在松手前就断了：这一段改走整段上传（会话自己接手）。
+            // 5.0.0 起没有本机预览可以顶上，所以这一段录音从此刻起没有灰字草稿——
+            // 那是可以接受的：文字一个字都不会丢，只是看不见中间过程。
+            Log.info("Cloud stream lost while recording — drafts stop, the take is safe")
         }
         stream.start()
         cloudStreaming = stream
@@ -621,24 +563,22 @@ final class DictationController {
     /// 结束当前一轮：作废所有在途回调 + 掐断网络请求 + 清掉本轮上下文，状态回 idle
     private func endSession() {
         generation &+= 1
-        stopLivePreview()
         inflightRequest?.cancel()
         inflightRequest = nil
-        // 彻底取消时连后续段落也别跑了：结果反正会被代数挡掉，白占 GPU
+        // 彻底取消时连后续段落也别跑了：结果反正会被代数挡掉
         inflightTranscription?.cancel()
         inflightTranscription = nil
-        resetLiveSegments(active: false)
-        // 云端那一路还要把在飞的 HTTP 请求真的掐掉（取消之后引擎不再回调，与 LLMClient 同约定）：
+        // 在飞的 HTTP 请求要真的掐掉（取消之后引擎不再回调，与 LLMClient 同约定）：
         // 只叫停"后续段落"的话，用户按了 Esc 还得等当前这一段传完、转完
-        if sessionUsesCloud { cloudEngine?.cancel() }
+        cloudEngine?.cancel()
         // 实时那条 socket 直接断掉，**不发 finish**：用户按 Esc 就是不要这一段了。
         // 已经传出去的那几秒收不回来（隐私文案里当面写着这一点）
         cloudStreaming?.abandon()
         cloudStreaming = nil
         // 指针清掉，但**不动已经写进历史的那一条**——那正是"取消也不丢字"的落点
         pendingHistoryID = nil
-        committedText = ""
         deliveredDraft = ""
+        cloudRetried = false
         skillSession = false
         pressSession = false
         pressRevealed = false
@@ -651,7 +591,6 @@ final class DictationController {
         levelGateUntil = nil
         // 取消掉的这一轮不该留下半条耗时草稿给下一轮捡走
         pendingMetric = nil
-        partialCount = 0
         phase = .idle
     }
 
@@ -704,13 +643,11 @@ final class DictationController {
         return String(format: "%d:%02d", whole / 60, whole % 60)
     }
 
-    /// 长段口述这一路到底怎么变成文字。三条路的体验完全不同，写同一句话就一定有人被骗到：
-    ///   • 本机：录音中**边说边转**，每段约 45 秒，转完一段显示一段（QwenEngine 在跑）；
+    /// 长段口述这一路到底怎么变成文字。两条路的体验完全不同，写同一句话就一定有人被骗到：
     ///   • 云端实时：**边说边传**，松手后整段一次出结果，**不分段**
     ///     （实测按时间切 commit 会在每个接缝丢字，所以这条路上永远不分段）；
-    ///   • 云端整段上传：松手之后才按段上传（实时用不了时的那条退路，也就是 4.1.6 的行为）。
+    ///   • 云端整段上传：松手之后才按段上传（实时用不了时的那条退路）。
     enum RecordingFlow: Equatable {
-        case progressiveLocal
         case cloudStreaming
         case cloudUpload
     }
@@ -719,8 +656,7 @@ final class DictationController {
     /// 而地址按存着的那几项就拼得出来，够用来问"这条链路这次运行里被判过实时不可用吗"。
     static func currentRecordingFlow() -> RecordingFlow {
         let s = Settings.shared
-        let engine = s.recognitionEngine
-        guard let provider = engine.cloudProvider else { return .progressiveLocal }
+        let provider = s.recognitionEngine.cloudProvider
         // OpenAI 档指着第三方网关时没有实时这条路（实时地址是写死的官方域名）
         if provider == .openai, !CloudASRSettings.openAIUsesOfficialEndpoint { return .cloudUpload }
         let host: String
@@ -749,16 +685,14 @@ final class DictationController {
     static func recordingLimitCopy(flow: RecordingFlow) -> String {
         let limit = minutesLabel(maxRecordingSeconds)
         let warn = secondsLabel(preFinishWarningSeconds)
-        let segment = secondsLabel(AudioSegmenter.targetSeconds)
+        // 段长按阿里云那一档报（两家差 30 秒，而这句话只在实时用不了时才提到分段）
+        let segment = secondsLabel(CloudSegmentLimits.alibaba.targetSeconds)
         // Plan C 的 ⓘ 预算（中文 ≤ 120 字）把这三句都压短了一轮：数字一个没少，
         // 少掉的是"悬浮窗会显示已录时长与上限"这类屏幕上自己看得见的话
         let head = tr("单次录音上限 \(limit)，到点前 \(warn) 提醒一次。",
                       "A take is capped at \(limit), with a warning \(warn) before the end. ")
         let middle: String
         switch flow {
-        case .progressiveLocal:
-            middle = tr("长段口述边说边转，每段约 \(segment)，转完一段显示一段；",
-                        "Long dictation is transcribed while you speak, in segments of about \(segment); ")
         case .cloudStreaming:
             // 这一档**不提 45 秒**：它压根不分段，写个段长只会让人等一个不会出现的逐段进度
             middle = tr("长段口述边说边上传，松手后整段一次出结果，不分段；",
@@ -821,8 +755,6 @@ final class DictationController {
             softHintShown = true
             Log.info("Recording soft hint shown at \(Int(elapsed))s")
         }
-        // 录音中的预转写：够一段就转一段（闸门都在 updateLiveSegments 里）
-        updateLiveSegments()
         // 云端实时：把新录到的这一截交给那条 socket（闸门都在 pumpStreamingAudio 里）
         pumpStreamingAudio()
 
@@ -871,235 +803,9 @@ final class DictationController {
         cloudStreaming = nil
     }
 
-    // MARK: - 伪流式预览（录音中的灰字草稿）
-
-    /// 录音一开始就起的预览循环。三道闸门：用户开关、模型已就绪、录够 1.5s。
-    /// 任何一道不过就整轮不开——预览是锦上添花，绝不能拖慢或搅乱主流程。
-    private func startLivePreview(generation: Int) {
-        previewEnabled = false
-        previewTask = nil
-        previewInterval = Self.previewBaseInterval
-        previewWindowStart = 0
-        previewCommitted = ""
-        guard Settings.shared.livePreview else { return }
-        // 云端实时那一路的草稿由服务端的中间结果供给（见 prepareSessionEngine 里的 onDraft）：
-        // 同一段音频没必要在本机再解码一遍，GPU 和模型都留着万一要回落时用。
-        // 实时中途断了会走 onStreamingLost 再来调一次这里，那时这道闸门已经放开了。
-        guard cloudStreaming?.isLive != true else {
-            Log.info("Live preview served by the cloud stream")
-            return
-        }
-        // 模型还在加载（或刚换过模型）时不开：预览绝不能替用户去等十几秒的加载，
-        // 更不能和加载抢 GPU。这一轮就安静地按老样子走。
-        guard QwenEngine.shared.isModelReady else {
-            Log.info("Live preview skipped (model not ready)")
-            return
-        }
-        previewEnabled = true
-        scheduleNextPartial(after: Self.previewMinChunkSeconds, generation: generation)
-    }
-
-    /// 松手 / 取消 / 作废时都要调：先取消在飞的那一遍，最终识别才不用排在它后面。
-    private func stopLivePreview() {
-        guard previewEnabled || previewTask != nil else { return }
-        previewEnabled = false
-        // 解码循环里有 Task.checkCancellation()，取消后它会尽快让出 Qwen3ASRSTT 这个 actor
-        previewTask?.cancel()
-        previewTask = nil
-        previewWindowStart = 0
-        previewCommitted = ""
-    }
-
-    private func scheduleNextPartial(after delay: Double, generation: Int) {
-        guard previewEnabled, phase == .recording, isCurrent(generation) else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.runPartial(generation: generation)
-        }
-    }
-
-    /// 跑一遍预览解码。同一时刻只允许一遍在飞（previewTask != nil 就直接跳过），
-    /// 下一遍永远在上一遍回来之后才排——预览之间不会互相排队，也不会和最终识别并发。
-    private func runPartial(generation: Int) {
-        guard previewEnabled, phase == .recording, isCurrent(generation), previewTask == nil else { return }
-        // 还没听到过人声就别解码：对纯静音跑识别既浪费 GPU，又容易把热词上下文"复读"出来
-        guard speechDetected else {
-            scheduleNextPartial(after: Self.previewBaseInterval, generation: generation)
-            return
-        }
-        // 切片的尾巴钉死在窗口上限：缓冲永远比窗口多出"一个轮询间隔 + 上一遍耗时"，
-        // 不钉的话这一窗实际解码的是 20s + 间隔 + 耗时（白多两三成 GPU 时间，松手时
-        // 最终识别还得等它让出 actor）。截掉的是尾巴、留给下一窗，一个采样都不丢。
-        let chunk = recorder.snapshot(fromSampleIndex: previewWindowStart,
-                                      maxCount: Int(Self.previewWindowSeconds * 16000))
-        let chunkSeconds = Double(chunk.count) / 16000.0
-        guard chunkSeconds >= Self.previewMinChunkSeconds else {
-            scheduleNextPartial(after: Self.previewMinChunkSeconds - chunkSeconds + 0.1,
-                                generation: generation)
-            return
-        }
-        let consumed = chunk.count
-        let windowFull = chunkSeconds >= Self.previewWindowSeconds
-        // 发起时的窗口起点。预览和预转写是两条各自在飞的任务：这一遍还没回来时，预转写落一段
-        // 就会把 previewWindowStart / previewCommitted 换成权威文本，那之后这一遍算出来的
-        // 「窗口往后滚 consumed」和「接在 previewCommitted 后面」都是按旧窗算的（滚过头会跳过
-        // 一整窗草稿，拼接则让同一句话在灰字里出现两遍）。所以回来时先比对，对不上就只丢草稿。
-        let startedAt = previewWindowStart
-        previewTask = QwenEngine.shared.transcribePartial(samples: chunk) { [weak self] text, ms in
-            guard let self = self else { return }
-            self.previewTask = nil
-            guard self.previewEnabled, self.phase == .recording, self.isCurrent(generation) else { return }
-            Log.info("Timing partial=\(ms)ms audio=\(String(format: "%.1f", chunkSeconds))s"
-                     + " ok=\(text != nil) chars=\(text?.count ?? 0)")
-            self.partialCount += 1
-            // 这一遍占了多少 GPU 时间，下一遍就等多久（1.5 倍）：机器忙/音频长时自动放慢刷新，
-            // 宁可草稿更新得稀疏，也不能让预览拖慢松手后的最终识别。
-            let latency = Double(ms) / 1000.0
-            self.previewInterval = min(Self.previewMaxInterval,
-                                       max(Self.previewBaseInterval, latency * 1.5))
-            // 这一遍在飞期间预转写落了段（窗口已经被权威文本重排）：草稿作废，
-            // 窗口一动不动——下一遍预览会按新窗口重新解码，音频一个采样都不会丢。
-            guard self.previewWindowStart == startedAt else {
-                Log.info("Preview draft dropped (a live segment moved the window)")
-                self.scheduleNextPartial(after: Self.previewIdleDelay(interval: self.previewInterval,
-                                                                      latency: latency),
-                                         generation: generation)
-                return
-            }
-            if let text = text, !text.isEmpty {
-                let draft = self.joinDraft(self.previewCommitted, text)
-                self.overlay.showDraft(draft)
-                if windowFull { self.previewCommitted = draft }
-            }
-            if windowFull {
-                // 窗口满 20s：这一窗的文字（能拿到就）定稿成前缀，音频从这一窗的末尾接着往下看，
-                // 既不重复解码也不丢音频。拿不到文字也照样往前滚，免得窗口无限变长。
-                self.previewWindowStart += consumed
-                Log.info("Preview window rolled at \(String(format: "%.0f", chunkSeconds))s")
-            }
-            self.scheduleNextPartial(after: Self.previewIdleDelay(interval: self.previewInterval,
-                                                                  latency: latency),
-                                     generation: generation)
-        }
-        if previewTask == nil {
-            // 模型在这期间被卸载/换掉了：安静收摊，这一轮不再重试
-            previewEnabled = false
-            Log.info("Live preview stopped (model no longer ready)")
-        }
-    }
-
-    /// 两遍预览之间该空多久。规矩：空闲间隙**随实测耗时增长**，机器越慢草稿越稀疏。
-    /// 之所以要单独算：previewInterval 是"周期"且被 previewMaxInterval 封顶，直接拿
-    /// 「周期 − 耗时」当间隙的话，耗时一过 3.3s 间隙反而越来越短、到 4.6s 就钉死在下限——
-    /// 最该节流的慢机器上节流正好失效。所以再加一条按耗时成比例的下限（半个解码时长）。
-    static func previewIdleDelay(interval: Double, latency: Double) -> Double {
-        let proportional = max(latency, 0) * previewIdleLatencyRatio
-        return max(previewMinIdleSeconds, max(interval - latency, proportional))
-    }
-
-    /// 拼接已定稿前缀与新一窗的草稿：中文直接接，英文之间补一个空格
-    private func joinDraft(_ prefix: String, _ text: String) -> String {
-        guard !prefix.isEmpty else { return text }
-        let needsSpace = (prefix.last?.isLetter == true && prefix.last?.isASCII == true)
-            && (text.first?.isLetter == true && text.first?.isASCII == true)
-        return prefix + (needsSpace ? " " : "") + text
-    }
-
-    // MARK: - 录音中的预转写（progressive）
-
-    /// 每一轮录音开始时复位。是否真的会跑还要看 updateLiveSegments 里那三道闸门。
-    private func resetLiveSegments(active: Bool) {
-        liveTask?.cancel()
-        liveTask = nil
-        liveParts = []
-        liveConsumed = 0
-        liveFrames = []
-        liveFramedSamples = 0
-        // 用户显式选了语言就从第一段开始锁着它；"自动"那一档由第一段的检测结果来填
-        liveLanguage = Settings.shared.recognitionModelLanguage
-        liveActive = active
-    }
-
-    /// 预转写这一轮作废：已经转好的部分全部丢掉，松手后按老路子整段重转。
-    private func abandonLiveSegments(_ reason: String) {
-        guard liveActive || !liveParts.isEmpty else { return }
-        Log.warn("Live segmentation abandoned (\(reason)) parts=\(liveParts.count)")
-        liveTask?.cancel()
-        liveTask = nil
-        liveActive = false
-        liveParts = []
-        liveConsumed = 0
-    }
-
-    /// 录音电平回调里顺手调一次（主线程，约每 85 ms）。够一段就切一段送去转写。
-    ///
-    /// 三道闸门，缺一不可：
-    ///   1. 这一轮开了预转写（本机引擎 + 纯听写 + 模型已就绪）；
-    ///   2. 录音已经过了"该分段"的门槛——90 s 以内一次过，行为和分段之前一模一样；
-    ///   3. 目标点之后的整个搜索窗口都已经录进来了（AudioSegmenter.nextLiveCut 判的就是这个），
-    ///      所以切点永远落在不会再变的音频上。
-    /// 同一时刻只允许一段在飞：GPU 由 Qwen3ASRSTT 这个 actor 串行，排队只会让松手等得更久。
-    private func updateLiveSegments() {
-        guard liveActive, phase == .recording, !skillSession, liveTask == nil else { return }
-        guard recorder.recordedDuration >= Self.liveSegmentAfterSeconds else { return }
-        // 帧电平照常增量累计（只算新录进来的那几帧，很便宜），模型一就绪就能立刻下刀。
-        updateLiveFrames()
-        // 第一道闸门里"模型已就绪"那一条。少了它，模型没加载时 transcribeLiveSegment 每次都
-        // 返回 nil、liveConsumed 永不推进，于是每次电平回调（约 85 ms）都白做一遍
-        // 45 s 片段的拷贝 + nextLiveCut 里的两次全量 sorted()，一直烧到松手为止。
-        // 这里不动 liveActive：这是"还没开跑"，不是"跑失败了"（失败由 abandonLiveSegments 收口），
-        // 模型加载完这一轮照样能接着切段。
-        guard QwenEngine.shared.isModelReady else { return }
-        guard let range = AudioSegmenter.nextLiveCut(frameRMS: liveFrames,
-                                                     consumed: liveConsumed,
-                                                     available: liveFramedSamples) else { return }
-        let chunk = recorder.snapshot(fromSampleIndex: range.lowerBound, maxCount: range.count)
-        guard chunk.count == range.count else { return }
-        let generation = self.generation
-        let previous = TextPostProcessor.joinSegments(liveParts)
-        liveTask = QwenEngine.shared.transcribeLiveSegment(
-            samples: chunk, language: liveLanguage, previousText: previous) { [weak self] text, detected in
-            guard let self = self else { return }
-            self.liveTask = nil
-            guard self.liveActive, self.phase == .recording, self.isCurrent(generation) else { return }
-            guard let text = text else {
-                // 一段没转出来就整轮作废：拼接文本里少一段是用户看不见的丢字，
-                // 比"松手后多等几秒重转一遍"严重得多
-                self.abandonLiveSegments("segment failed")
-                return
-            }
-            self.liveConsumed = range.upperBound
-            self.liveParts.append(text)
-            // 语言锁：第一段检测出什么，后面几段就按那个转（防漂移 → 翻译 → 复读）
-            if self.liveLanguage == nil, let detected = detected {
-                self.liveLanguage = detected
-                Log.info("Live segmentation language locked to \(detected)")
-            }
-            Log.info("Live segment landed parts=\(self.liveParts.count)"
-                     + " consumed=\(String(format: "%.0f", Double(self.liveConsumed) / 16000.0))s")
-            // 灰字预览接着从这一段的末尾往后看，已定稿的部分换成预转写的权威文本，
-            // 免得草稿把同一句话显示两遍。**关了草稿的人一个字都不该看到**：
-            // 预转写是为了快，不是偷偷把他关掉的东西打开（previewEnabled 才是那个开关的结论）。
-            guard self.previewEnabled else { return }
-            self.previewWindowStart = self.liveConsumed
-            self.previewCommitted = TextPostProcessor.joinSegments(self.liveParts)
-            self.overlay.showDraft(self.previewCommitted)
-        }
-        // 模型还没加载好（或刚被换掉）：这一段等下一次电平回调再试。切点不会变（永远是
-        // consumed + 目标段长），所以重试是幂等的；始终等不到就按老路子在松手后整段转。
-    }
-
-    /// 增量算帧电平：只对"新录进来的整帧"算一遍 RMS，绝不每次都扫整条缓冲
-    /// （10 分钟录音有 960 万个采样，每 85 ms 扫一遍主线程就别想干别的了）。
-    private func updateLiveFrames() {
-        let available = recorder.recordedSampleCount
-        let wholeFrames = (available - liveFramedSamples) / AudioSegmenter.frameSamples
-        guard wholeFrames > 0 else { return }
-        let count = wholeFrames * AudioSegmenter.frameSamples
-        let chunk = recorder.snapshot(fromSampleIndex: liveFramedSamples, maxCount: count)
-        guard chunk.count == count else { return }
-        liveFrames.append(contentsOf: AudioSegmenter.frameRMS(chunk))
-        liveFramedSamples += count
-    }
+    // 「伪流式预览」与「录音中的预转写」两整段 5.0.0 删掉（本机引擎没有了）。
+    // 录音中的灰字草稿改由云端实时的中间结果供给（见 prepareSessionEngine 里的 onDraft），
+    // 一行本机解码都不跑；松手后的等待由实时协议本身消掉（实测 0.23–1.0 秒，与时长无关）。
 
     // MARK: - 换回识别原文（P9）
 
@@ -1255,7 +961,7 @@ final class DictationController {
             LLMClient.prewarm()
             // 云端识别同理：UAE → 云端这条链路上，预热能省下 0.5–1.5s 的首包延迟。
             // 与 LLMClient.prewarm 一样**不带 Key**，只热 DNS/TLS。
-            if self.sessionUsesCloud { self.cloudEngine?.prewarm() }
+            self.cloudEngine?.prewarm()
             self.recorder.onLevel = { [weak self] level in
                 DispatchQueue.main.async {
                     guard let self = self else { return }
@@ -1274,11 +980,8 @@ final class DictationController {
             // 「按下即录」是唯一的例外：按下这一刻还不知道用户是要说话还是只把热键当修饰键用，
             // 所以开始音推迟到 revealPressSession()（手势确认之后）。
             if !fromPress { Sounds.playStart() }
-            // 设置里的「测试麦克风」可能正开着另一路录音（两路 AVAudioEngine 抢同一只麦克风）。
-            // 用户按热键就是要说话，自检让位
-            if MicTest.yieldToDictation() {
-                Log.info("Mic test stopped — dictation takes the microphone")
-            }
+            // 「测试麦克风」那条自检 5.0.0 随 MicCheck 一起删掉了（设置页上没有麦克风那一段了），
+            // 所以这里不再需要为它让路。
             do {
                 try self.recorder.start()
             } catch {
@@ -1295,11 +998,8 @@ final class DictationController {
             self.lastClockSecond = -1
             self.speechDetected = false
             self.lastLoudAt = nil
-            self.partialCount = 0
             self.pendingMetric = nil
-            // 录音中的预转写：只给本机引擎开（云端那一路有它自己的分段与计费口径，
-            // 录音中就开始上传会把"按秒计费"变成用户没预期的样子）。
-            self.resetLiveSegments(active: !self.sessionUsesCloud)
+            self.cloudRetried = false
             // 上面刚响过的开始音会被这只麦克风录进去 → 开一道回声闸门。
             // 「按下即录」的那一声推迟到 revealPressSession()，闸门也在那里开。
             self.levelGateUntil = nil
@@ -1313,31 +1013,16 @@ final class DictationController {
             // （pressTapConfirm / holdPromote）。菜单等其它入口是用户的明确动作，立刻显示。
             guard !fromPress else { return }
             self.overlay.showRecording(label: self.recordingLabel)
-            // 伪流式预览：录音期间每隔一会儿把"到目前为止"的音频解码一遍，灰字贴在波形下面。
-            // 纯粹是给眼睛看的，永远不会插入到任何地方。
-            self.startLivePreview(generation: self.generation)
         }
     }
 
     private func finishRecording() {
         guard phase == .recording else { return }
         let samples = recorder.stop()
-        // 先掐预览再往下走：最终那一遍识别要用的 GPU（actor）就在预览手上，
-        // 越早取消，用户松手后等得越短
-        stopLivePreview()
-        // 预转写同样就地封口：在飞的那一段作废（它的音频原样留在尾巴里，一个采样都不丢），
-        // liveActive 立刻置 false，已经排到主队列上的回调据此安静退场。
-        // **必须在下面那几条 early return 之前做**，否则一条迟到的回调会在 .idle 状态下
-        // 往悬浮窗上画草稿、还把 liveConsumed 推到尾巴后面去。
-        liveTask?.cancel()
-        liveTask = nil
-        let liveWasActive = liveActive
-        liveActive = false
         recordingStartedAt = nil
         // 录音已结束，这一段再也不会被"当成修饰键用"而作废了
         pressSession = false
-        // 上一轮的保底快照绝不带进这一轮（Esc 那条路会拿它们去落历史）
-        committedText = ""
+        // 上一轮的保底快照绝不带进这一轮（Esc 那条路会拿它去落历史）
         deliveredDraft = ""
         let duration = Double(samples.count) / 16000.0
 
@@ -1354,7 +1039,6 @@ final class DictationController {
         case .tooShort:
             // 太短当作误触
             Log.info("Recording stop discarded \(levelLog) (<0.4s)")
-            resetLiveSegments(active: false)
             // 这一段不送识别 → 实时那条 socket 也别发 finish，直接掐掉
             //（行为与今天一致；已经传出去的那几秒收不回来，见隐私文案）
             abandonStreaming()
@@ -1370,7 +1054,6 @@ final class DictationController {
         case .silent:
             // 几乎无声（误触或没说话）：不送识别——空音频会诱发模型把热词上下文"复读"成识别结果
             Log.info("Recording stop silence-gated \(levelLog)")
-            resetLiveSegments(active: false)
             abandonStreaming()
             phase = .idle
             // 有故障附注（设备被拔/切走、到最长时长自动收尾）＝真出了事，必须出声——
@@ -1393,56 +1076,42 @@ final class DictationController {
 
         Log.info("Recording stop \(levelLog) gate=\(decision.rawValue)")
         phase = .processing
-        overlay.showProcessing(Self.transcribingLabel(usesCloud: sessionUsesCloud))
-        // 冷启动只对本机模型有意义（它决定粘贴时序要不要放宽）：云端那一档没有"模型还没加载"
-        // 这回事，硬填 true 只会让每次插入都白等一段保守时序
-        let isColdStart = sessionUsesCloud ? false : !QwenEngine.shared.isModelReady
+        overlay.showProcessing(Self.transcribingLabel())
+        // 「冷启动」这一位 5.0.0 起恒为 false：它原本是"本机模型还没加载完，粘贴时序放宽些"，
+        // 而云端这条路上没有模型加载这回事。留着参数是因为 deliver 那层按它决定粘贴时序。
+        let isColdStart = false
         let tASR = DispatchTime.now()
         let generation = self.generation
         // 这一轮的耗时草稿从这里开始攒：模式在松手这一刻就定了（skillSession 还没被清），
         // 时长/预览遍数/冷启动也都已成定局，剩下三段耗时各自算完填进来
         pendingMetric = SessionMetricDraft(mode: skillSession ? .command : .dictation,
                                            audioSeconds: duration,
-                                           partialCount: partialCount,
+                                           partialCount: 0,
                                            cold: isColdStart)
 
-        // 录音中已经转好的那些段落在这里收口：松手后只剩最后一小截要转。
-        // 任何一环不对劲（预转写作废 / 下标越界）都退回"整段重转"，绝不交付来路不明的拼接。
-        var pending = samples
-        var committed = ""
-        // 尾巴要显式按"预转写已经锁定的语言"转。这一截通常只有十几秒，是整条链路上最短、
-        // 最容易被判错语言的一段，而前面几分钟已经锁在某个语言上了——接缝处断掉语言锁，
-        // 模型就会从这里开始把口述"翻译"成另一种语言，再被复读截断收尾（3.3 之前的失败）。
-        var tailLanguage: String?
-        if liveWasActive, !liveParts.isEmpty, liveConsumed > 0, liveConsumed < samples.count {
-            committed = TextPostProcessor.joinSegments(liveParts)
-            pending = Array(samples[liveConsumed...])
-            tailLanguage = liveLanguage
-            Log.info("Live segmentation delivered parts=\(liveParts.count)"
-                     + " tail=\(String(format: "%.1f", Double(pending.count) / 16000.0))s"
-                     + " chars=\(committed.count) language=\(tailLanguage ?? "auto")")
+        // 走到这里 sessionEngine 一定有值（prepareSessionEngine 在开录那一刻装好了）。
+        // 万一没有，宁可当场报错也不能拿一段录音去撞一个 nil——那是静默丢字。
+        guard let engine = sessionEngine else {
+            Log.error("No session engine at release — the take cannot be transcribed")
+            phase = .idle
+            overlay.flashError(CloudFallbackDecision.retryExhausted)
+            Sounds.playError()
+            return
         }
-        // Esc 那条部分交付的路要能立刻把它落进历史（见 saveCancelSafetyHistory）
-        committedText = committed
-
-        startTranscription(engine: sessionEngine, usesCloud: sessionUsesCloud, samples: pending,
-                           committed: committed, language: tailLanguage,
+        startTranscription(engine: engine, samples: samples,
                            faintAudio: faintAudio, isColdStart: isColdStart,
                            tASR: tASR, generation: generation)
     }
 
-    /// 悬浮窗上"处理中"那句话。云端那一档必须当面写明音频正在上传——
-    /// 同一句"识别中…"既盖住本机也盖住云端的话，用户永远不知道自己刚才把录音发出去了。
-    private static func transcribingLabel(usesCloud: Bool) -> String {
-        usesCloud ? tr("云端识别中…", "Transcribing in the cloud…")
-                  : tr("识别中…", "Transcribing…")
+    /// 悬浮窗上"处理中"那句话。**必须当面写明音频正在上传**：
+    /// 写一句笼统的"识别中…"，用户永远不知道自己刚才把录音发出去了。
+    private static func transcribingLabel() -> String {
+        tr("云端识别中…", "Transcribing in the cloud…")
     }
 
-    private static func segmentLabel(usesCloud: Bool, done: Int, total: Int) -> String {
-        usesCloud ? tr("云端识别中…（第 \(done)/\(total) 段）",
-                       "Transcribing in the cloud… (part \(done) of \(total))")
-                  : tr("识别中…（第 \(done)/\(total) 段）",
-                       "Transcribing… (part \(done) of \(total))")
+    private static func segmentLabel(done: Int, total: Int) -> String {
+        tr("云端识别中…（第 \(done)/\(total) 段）",
+           "Transcribing in the cloud… (part \(done) of \(total))")
     }
 
     /// 把这段音频交给某个引擎跑一遍。抽出来是为了云端失败之后能**原样再跑一遍本地引擎**
@@ -1452,8 +1121,7 @@ final class DictationController {
     ///   拿到的都是全文），以及作为 previousText 给引擎当跨段上下文的种子（尾巴的第一段
     ///   因此不再是"从零开始的一句话"）。
     /// - language: 已经锁定的识别语言（英文全名）；nil = 按设置走。
-    private func startTranscription(engine: SpeechEngine, usesCloud: Bool, samples: [Float],
-                                    committed: String = "", language: String? = nil,
+    private func startTranscription(engine: SpeechEngine, samples: [Float],
                                     faintAudio: Bool, isColdStart: Bool, tASR: DispatchTime,
                                     generation: Int) {
         // 长音频一段一段来：每完成一段就把已识别的文字贴到悬浮窗上（用户看得见进度），
@@ -1461,8 +1129,6 @@ final class DictationController {
         // 彻底取消仍然靠"丢结果"：正在解码的那一段停不下来，代数对不上就当这轮没发生过。
         inflightTranscription = engine.transcribe(
             samples: samples,
-            language: language,
-            previousText: committed,
             onSegment: { [weak self] draft, done, total in
                 guard let self = self, self.isCurrent(generation) else { return }
                 // Esc 那条保底路要的是"到此为止已经转出来的字"，和进度条显不显示无关
@@ -1470,12 +1136,10 @@ final class DictationController {
                 // 手上有段落可交付了：Esc 这会儿是"收尾并输入"，胶囊必须当场改口
                 self.overlay.setCancelFinishes(
                     Self.escFinishesEarly(completedSegments: done,
-                                          hasLiveParts: !self.liveParts.isEmpty,
                                           isSkillSession: self.skillSession))
                 guard total > 1 else { return }
-                self.overlay.updateProcessing(
-                    label: Self.segmentLabel(usesCloud: usesCloud, done: done, total: total),
-                    draft: draft)
+                self.overlay.updateProcessing(label: Self.segmentLabel(done: done, total: total),
+                                              draft: draft)
             }) { [weak self] outcome in
             guard let self = self, self.isCurrent(generation) else { return }
             // 「用户已经按过 Esc」这件事必须在清指针**之前**取出来（清完再读永远是 nil）：
@@ -1484,40 +1148,38 @@ final class DictationController {
             self.inflightTranscription = nil
             // 识别这一段结束了，后面是润色/指令：那里按 Esc 是真取消，胶囊改回「取消」
             self.overlay.setCancelFinishes(false)
-            // 云端炸了先想退路：本地模型在就整段重跑一遍本地识别，用户一个字都不丢。
-            // 判据是纯函数（CloudFallbackDecision），引擎自己不做这个决定。
-            // userStopped 让「用户停止」永远优先于「自动回落」：用户按了 Esc 之后在飞的那一段
-            // 才超时失败的话，把整段音频再本地重跑一遍（几十秒冷启动 + 整段插入）完全是无视他。
-            if usesCloud, let failure = outcome.failure, !outcome.cancelled, !userStopped {
-                switch CloudFallbackDecision.decide(partialText: outcome.text,
-                                                    localModelAvailable: QwenEngine.shared.isModelAvailable) {
-                case .retryLocally:
-                    Log.warn("Cloud transcription failed — retrying on the local engine")
-                    // 原因挂进本轮附注，交付时会并进结果提示：用户得知道这一段是本地转的
-                    self.addSessionNote(CloudFallbackDecision.fallbackNote(reason: failure.message))
-                    self.overlay.showProcessing(Self.transcribingLabel(usesCloud: false))
-                    self.startTranscription(engine: QwenEngine.shared, usesCloud: false,
-                                            samples: samples, committed: committed,
-                                            language: language,
-                                            faintAudio: faintAudio,
-                                            // 本地这一遍多半是冷的（云端用户不会预加载模型）
-                                            isColdStart: !QwenEngine.shared.isModelReady,
-                                            tASR: DispatchTime.now(), generation: generation)
-                    return
-                case .deliverPartial, .reportFailure:
-                    // 没有本地退路：已经转出来的段落照常交付、什么都没有就报错——
-                    // 这两件事 resolve() 本来就在做，不必在这里另起一套
-                    break
-                }
+            // 云端炸了先想退路：**整段录音还在内存里**，拿它再走一次同一家的同步接口。
+            // 判据是纯函数（CloudFallbackDecision），引擎自己不做这个决定。**只重试一次**——
+            // 再失败多半是 Key / 额度 / 网络本身的问题，第三趟只是让用户多等一轮。
+            // userStopped 让「用户停止」永远优先于「自动重试」：用户按了 Esc 之后在飞的那一段
+            // 才超时失败的话，再把整段音频传一遍完全是无视他。
+            if let failure = outcome.failure, !outcome.cancelled, !userStopped,
+               case .retryOnce = CloudFallbackDecision.decide(partialText: outcome.text,
+                                                              alreadyRetried: self.cloudRetried),
+               let retryEngine = self.cloudEngine {
+                self.cloudRetried = true
+                Log.warn("Cloud transcription failed — retrying once over the sync endpoint")
+                // 这一句进悬浮窗而不是本轮附注：用户正盯着它等，得知道为什么还在转
+                self.overlay.showProcessing(
+                    CloudFallbackDecision.retryNote(reason: failure.message))
+                self.startTranscription(engine: retryEngine, samples: samples,
+                                        faintAudio: faintAudio, isColdStart: isColdStart,
+                                        tASR: DispatchTime.now(), generation: generation)
+                return
             }
-            switch self.resolve(outcome, committed: committed) {
+            switch self.resolve(outcome) {
             case .failure(let error):
                 Log.error("Transcription failed: \(error.message)")
                 self.phase = .idle
                 // Esc 那一刻可能已经落过一条保底记录：记录本身留着（那正是"取消也不丢字"），
                 // 但指针到此为止——绝不能让下一轮口述去补全上一轮的那一条
                 self.pendingHistoryID = nil
-                self.overlay.flashError(error.message)
+                // 重试也没成：**不报技术细节**（他已经等了两趟，现在唯一有用的信息是"再说一次"）。
+                // 真正的原因照常在上面那两行日志里。被用户 Esc 掉的那一次不走这条——
+                // 那句「已取消」是他自己按出来的，换成"没识别到"只会让他以为出了故障。
+                self.overlay.flashError(
+                    self.cloudRetried && !outcome.cancelled
+                        ? CloudFallbackDecision.retryExhausted : error.message)
                 Sounds.playError()
             case .success(let transcribed):
                 let asrMs = Log.ms(since: tASR)
@@ -1592,16 +1254,11 @@ final class DictationController {
                 } else {
                     self.pendingHistoryID = HistoryStore.shared.addRaw(rawText)
                 }
-                let level = Settings.shared.polishLevel
-                if level != .off, LLMClient.isConfigured {
-                    self.overlay.showProcessing(tr("润色中…", "Polishing…"))
-                    self.startPolish(rawText: rawText, level: level, light: false,
-                                     spentMs: 0, isColdStart: isColdStart, generation: generation)
-                } else {
-                    self.deliver(raw: rawText, final: rawText,
-                                 note: tr("已输入", "Inserted"),
-                                 coldStart: isColdStart)
-                }
+                // 润色永远开着（5.0.0 起没有档位了）。Key 不在的话这一轮压根走不到这里
+                // ——识别本身就要那把 Key（RecognitionEngineReadiness 在按键那一刻就拦了）。
+                self.overlay.showProcessing(tr("润色中…", "Polishing…"))
+                self.startPolish(rawText: rawText, light: false,
+                                 spentMs: 0, isColdStart: isColdStart, generation: generation)
             }
         }
         // 录音中已经预转写好几分钟的那种会话：句柄刚拿到手，第一次 Esc 就已经是
@@ -1614,14 +1271,13 @@ final class DictationController {
     /// 核心规矩：**尾巴没转完不等于这一轮作废**。第 3 段炸了、或者用户在第 2 段之后按了 Esc，
     /// 前面那些段是用户实打实说过的话，照常交付，只在提示里说清尾巴没转。
     /// 两个例外：一个字都没有（和从前一样按失败处理）；指令模式（半条指令绝不能拿去执行）。
-    private func resolve(_ outcome: TranscriptionOutcome, committed: String = "") -> Result<String, MTError> {
+    private func resolve(_ outcome: TranscriptionOutcome) -> Result<String, MTError> {
         if skillSession, !outcome.isComplete {
             return .failure(outcome.failure
                             ?? MTError(tr("指令没说完就停了，请重新按住说一次",
                                           "The command was cut short — hold the key and say it again")))
         }
-        // 录音中预转写好的前半段 + 松手后转的尾巴。拼接规则与引擎内部分段逐字同源。
-        let text = TextPostProcessor.joinSegments([committed, outcome.text])
+        let text = outcome.text
         if text.isEmpty {
             if let failure = outcome.failure { return .failure(failure) }
             if outcome.cancelled { return .failure(MTError(tr("已取消", "Cancelled"))) }
@@ -1632,18 +1288,7 @@ final class DictationController {
             let done = outcome.completedSegments
             let total = outcome.totalSegments
             Log.warn("Partial transcript delivered segments=\(done)/\(total)"
-                     + " committed=\(committed.count)chars"
                      + " reason=\(outcome.cancelled ? "cancelled" : "failed")")
-            // 录音中已经转好了前面几段、只有尾巴没转出来：段号对用户毫无意义（他看到的是
-            // 一整段口述），说清"结尾那一小截没转出来"就够了
-            if !committed.isEmpty, done == 0 {
-                addSessionNote(outcome.cancelled
-                    ? tr("已停在结尾那一小段之前，最后一截没有转写",
-                         "Stopped before the final part - the tail was not transcribed")
-                    : tr("结尾那一小段识别失败，前面的内容已输入",
-                         "The final part failed to transcribe - everything before it was inserted"))
-                return .success(text)
-            }
             addSessionNote(outcome.cancelled
                 ? tr("已停在第 \(done)/\(total) 段，后面的没有转写",
                      "Stopped after part \(done) of \(total) — the rest was not transcribed")
@@ -1666,12 +1311,12 @@ final class DictationController {
     ///
     /// - light: 这一趟用轻清理提示词（用户不可见，没有对应的设置项）
     /// - spentMs: 上一趟已经花掉的毫秒。指标里两趟算**一次**等待——用户等的就是这么久。
-    private func startPolish(rawText: String, level: PolishLevel, light: Bool,
+    private func startPolish(rawText: String, light: Bool,
                              spentMs: Int, isColdStart: Bool, generation: Int) {
         let tPolish = DispatchTime.now()
         // 重试与首趟走**同一条路**：同一个 purpose / 模型 / 超时公式 / 0 次网络重试。
         // 句柄换成这一趟的，Esc（endSession）照样掐得断第二趟。
-        inflightRequest = PolishService.polish(rawText, level: level,
+        inflightRequest = PolishService.polish(rawText,
                                                light: light) { [weak self] polished, failure in
             guard let self = self, self.isCurrent(generation) else { return }
             self.inflightRequest = nil
@@ -1715,7 +1360,7 @@ final class DictationController {
                 }
                 Log.warn("Polish drift rejected: \(reason) -> light retry")
                 // 悬浮窗上仍是「润色中…」：这趟重试是 App 自己的事，用户不必知道有两趟
-                self.startPolish(rawText: rawText, level: level, light: true,
+                self.startPolish(rawText: rawText, light: true,
                                  spentMs: polishMs, isColdStart: isColdStart,
                                  generation: generation)
                 return

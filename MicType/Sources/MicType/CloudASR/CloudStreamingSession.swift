@@ -100,10 +100,6 @@ final class CloudStreamingSession: SpeechEngine {
     /// 松手**之前**就断掉的那次失败（主线程）：决定这一轮交给谁，见 route(afterLosing:)
     private var lostFailure: RealtimeFailure?
 
-    /// 本机模型文件在不在。写成闭包只为单测能钉死两条分支——
-    /// 真跑起来就是 QwenEngine.shared.isModelAvailable（与 CloudFallbackDecision 同一口径）。
-    var localModelAvailable: () -> Bool = { QwenEngine.shared.isModelAvailable }
-
     // MARK: 建
 
     /// 这一档实时链路的"地址"——记忆的键，也是日志里那个 host。
@@ -227,28 +223,9 @@ final class CloudStreamingSession: SpeechEngine {
         }
     }
 
-    // MARK: - 松手之前就断了，这一轮交给谁
-
-    /// 两条路（**纯函数**，单测钉死）。
-    ///
-    /// 为什么偶发断线优先本机，而不是再传一趟整段（用户 2026-09-21 拍板）：
-    /// 断线多半是网络本身出了问题，这时候再发一趟整段上传大概率也失败，而同步那条路的
-    /// 超时是 120 秒——用户要对着悬浮窗干等很久才轮到本机。本机模型在引导里是必装项，
-    /// 绝大多数人都有，一秒左右就出字。
-    /// 「这条链路不支持实时」是另一回事：链路好好的，只是没有实时接口，照常整段上传
-    /// （行为与 4.1.6 完全一致），本机反而是没必要的降级。
-    enum LostRoute: Equatable {
-        /// 现有的整段上传
-        case uploadWholeTake
-        /// 直接回落本机识别整段（由上层那条既有的「云端失败 → 回落本机」接手）
-        case localEngine
-    }
-
-    static func route(afterLosing failure: RealtimeFailure?,
-                      localModelAvailable: Bool) -> LostRoute {
-        guard let failure = failure, !failure.disablesStreaming else { return .uploadWholeTake }
-        return localModelAvailable ? .localEngine : .uploadWholeTake
-    }
+    // 「松手之前断了交给谁」5.0.0 只剩一条路：**整段上传同一家的同步接口**
+    // （LostRoute / route(afterLosing:) 一起删掉）。4.x 里偶发断线优先回落本机模型，
+    // 而本机模型已经没有了——音频一个采样都没丢，同步那条路是唯一也是正确的退路。
 
     // MARK: - SpeechEngine
 
@@ -277,25 +254,13 @@ final class CloudStreamingSession: SpeechEngine {
         }
 
         // 实时这条路在松手之前就断了（没连上 / 录音中掉线）：音频一个采样都没丢，
-        // 只剩"交给谁"这一个问题——判据是纯函数，见 route(afterLosing:)
+        // 整段交给同一家的同步接口重传一遍
         guard isLive else {
-            switch Self.route(afterLosing: lostFailure,
-                              localModelAvailable: localModelAvailable()) {
-            case .uploadWholeTake:
-                return forward(samples: samples, language: language, previousText: previousText,
-                               onSegment: onSegment, outer: outer, deliver: deliver)
-            case .localEngine:
-                let reason = Self.message(for: lostFailure ?? .transport("stream lost"),
-                                          provider: config.provider)
-                Log.warn("CloudASR stream lost before release — handing the take to the local engine")
-                // **不能同步交付**：调用方还在用返回值给 inflightTranscription 赋值，
-                // 同步收口会把刚清掉的那个指针又写成这一轮的句柄（与 CloudASREngine 同一条）
-                DispatchQueue.main.async {
-                    deliver(TranscriptionOutcome(text: "", completedSegments: 0, totalSegments: 1,
-                                                 failure: MTError(reason), cancelled: false))
-                }
-                return outer
+            if lostFailure != nil {
+                Log.warn("CloudASR stream lost before release — uploading the whole take instead")
             }
+            return forward(samples: samples, language: language, previousText: previousText,
+                           onSegment: onSegment, outer: outer, deliver: deliver)
         }
 
         outer.setCancelHandler { [weak self] in
@@ -338,7 +303,7 @@ final class CloudStreamingSession: SpeechEngine {
                                      outer: outer, deliver: deliver)
                     return
                 }
-                // 偶发失败（断线 / 报错 / 终稿超时）：交给现有那条「云端失败 → 回落本机」的路，
+                // 偶发失败（断线 / 报错 / 终稿超时）：交给上层那条「云端失败 → 同步接口重试一次」，
                 // 整段音频还在调用方手上，一个字都不会丢
                 deliver(TranscriptionOutcome(text: "", completedSegments: 0, totalSegments: 1,
                                              failure: MTError(Self.message(for: failure,
@@ -368,8 +333,8 @@ final class CloudStreamingSession: SpeechEngine {
 
     /// 实时那条路的失败 → 给用户看的一句话（纯函数）。
     ///
-    /// 它只有在**没有本机模型可回落**时才会真的出现在屏幕上：有本机模型的话，
-    /// DictationController 会整段重跑一遍本机，这句话进的是那条「已改用本地识别（…）」的附注。
+    /// 它只有在同步那条退路**也**没成的时候才会真的出现在屏幕上：
+    /// DictationController 会先拿整段音频再走一次同步接口（见 CloudFallbackDecision）。
     static func message(for failure: RealtimeFailure, provider: CloudASRProvider) -> String {
         let name = provider == .alibaba ? tr("阿里云", "Alibaba Cloud") : "OpenAI"
         switch failure {

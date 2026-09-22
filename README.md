@@ -1,8 +1,8 @@
 # MicType 🎤 — Speak to Type. Hold to Command.
 
-**Voice input for macOS that doubles as your AI entry point.** One key, two gestures: **tap** the hotkey and your speech becomes clean, punctuated text at the cursor — recognized on your own Mac by default. **Hold** the same key and your voice becomes an instruction to AI: rewrite the selection, draft a reply, compose an email, translate, ask anything — right where you're working, in any app.
+**Voice input for macOS that doubles as your AI entry point.** One key, two gestures: **tap** the hotkey and your speech becomes clean, punctuated text at the cursor. **Hold** the same key and your voice becomes an instruction to AI: rewrite the selection, draft a reply, compose an email, translate, ask anything — right where you're working, in any app.
 
-See a live draft while you are still speaking, dictate for up to ten minutes without losing a word, and set it up with one decision: local only, or local plus one AI provider.
+See a live draft while you are still speaking, and dictate for up to ten minutes without losing a word. Setup is one decision: which AI provider transcribes and polishes your speech — OpenAI or Alibaba Cloud.
 
 > **⬇️ Just want to use the app? [Download it from Releases](https://github.com/genli-ai/MicType/releases/latest) — no Xcode, no build step.**
 > The green "Code" button downloads the *source code*; building from source is for developers and requires full Xcode.
@@ -14,9 +14,9 @@ See a live draft while you are still speaking, dictate for up to ten minutes wit
 **Tap Right Option (⌥) = dictation.**
 
 ```
-Tap ⌥ → speak (a live grey draft shows what it hears) → tap ⌥ again
+Tap ⌥ → speak (a live grey draft shows what your provider is hearing) → tap ⌥ again
    ↓
-Local Qwen3-ASR transcription (on-device by default — see Recognition engines)
+Realtime cloud transcription (your chosen provider — see Recognition & Providers)
    ↓
 Optional adaptive AI polish (remove fillers, fix homophone errors,
 restructure long rambling speech into ready-to-use text)
@@ -31,48 +31,47 @@ Clean text appears at your cursor
 - *"based on this, write a congratulations message"* → **new text** is typed at your cursor, selection used as reference
 - Nothing selected → free-form AI at your cursor: draft an email, translate, or just ask a question
 
-Tap is always pure dictation (what you say is what gets typed), hold is always a command — that part is decided by gesture, never by guessing. Recording starts the moment you press the key, and Esc cancels at any point: while recording, and while MicType is transcribing, polishing or running a command.
+Tap is always pure dictation (what you say is what gets typed), hold is always a command — that part is decided by gesture, never by guessing. Recording starts the moment you press the key, and audio starts streaming to your provider right away. Esc cancels at any point — while recording, and while MicType is transcribing, polishing or running a command — but audio already sent to the provider can't be recalled.
 
 ## Why MicType
 
-- **See what it hears, as you say it** — a grey draft appears in the floating indicator while you are still talking. It never goes into your document: the inserted text is always the finished transcription.
-- **Local speech recognition by default** — Qwen3-ASR on Apple Silicon (MLX/Metal): ~30 languages, 22 Chinese dialects, strong Chinese–English mixed dictation, Arabic for Modern Standard Arabic. Your audio stays on your Mac unless you deliberately pick a cloud engine.
-- **Cloud recognition when you want it** — on-device Qwen3-ASR by default, or one switch that sends recognition to Alibaba Cloud instead, labelled with what it costs and where your audio goes. The speech model itself updates in one click and cleans up after itself.
-- **Never lose a word** — dictate for up to **ten minutes**: the take is transcribed in segments while you speak, and if anything fails — or you cancel — everything already transcribed is still delivered. Your clipboard (images, files, formatted text) is captured and restored around every insertion, and changing microphone mid-recording doesn't lose the take.
-- **Cancel at any point** — Esc, the menu bar, or a click on the indicator stops recording, transcription, polish or a running command; nothing is inserted afterwards.
+- **See what it hears, as you say it** — a grey draft appears in the floating indicator while you are still talking, built from your provider's own streaming results. It never goes into your document: the inserted text is always the finished transcription.
+- **Cloud speech recognition, streamed live** — every take is a realtime connection to your provider: audio goes up while you're still talking, so releasing the key returns a transcript almost instantly no matter how long you spoke. There is no on-device option in this version; your audio always leaves your Mac.
+- **Two providers, and that's the whole choice** — OpenAI (`gpt-live-transcribe` recognition, `gpt-5.6-luna` polish and commands) or Alibaba Cloud Bailian (`qwen3-asr-flash-realtime` recognition, `qwen3.8-flash` polish and commands). Pick one, paste one key, and MicType is fully set up.
+- **Never lose a word** — dictate for up to **ten minutes**, with a warning before the limit. Your clipboard (images, files, formatted text) is captured and restored around every insertion, and changing microphone mid-recording doesn't lose the take.
+- **Cancel at any point** — Esc, the menu bar, or a click on the indicator stops recording, transcription, polish or a running command; nothing already sent is inserted afterwards, and unsent audio simply never goes anywhere.
 - **Voice commands in any app** — the hold gesture works wherever your cursor is: chat, mail, docs, browser.
 - **Adaptive AI polish, with a safety net** — short phrases get light cleanup; long rambling speech is restructured into ready-to-use text. If the polished version drifts from what you said (numbers, negations), MicType inserts the raw transcript and tells you — and for a minute afterwards the menu bar can swap a polished insertion back to the raw transcript.
-- **Custom vocabulary as hotwords** — names, brands, and jargon are fed straight into the speech model and used by AI polish: the #1 lever for proper-noun accuracy. Add `wrong=right` (or `wrong1|wrong2=right`) for homophones that no model gets right.
+- **Custom vocabulary as hotwords** — names, brands, and jargon are fed into AI polish (and into recognition itself on OpenAI); the #1 lever for proper-noun accuracy. Add `wrong=right` (or `wrong1|wrong2=right`) for homophones that no model gets right. Lives in the menu bar under **Writing Preferences…**, alongside a free-text box for your standing instructions to the AI (*sign as Gen*, *keep English jargon untranslated*).
 - **Searchable history** — the last 200 dictations stay on your Mac (⌘Y): search raw and polished text, re-insert an old result at the cursor, or send a mis-heard word to your vocabulary. Turn it off or clear it any time.
-- **One key, named in full** — the hotkey is **Right Option (⌥)**. There is no picker to get wrong: every place MicType asks you to press a key names that one. Plus microphone selection and a level test.
-- **Setup is one decision** — *Local only* or *Local + AI*. With AI: one provider (OpenAI · DeepSeek · Alibaba Cloud), one key, one Model dropdown. Paste the key and it is verified on the spot; keys live in the macOS Keychain. No key? MicType still works fully offline as a dictation tool.
-- **Settings you can read in one glance** — Settings opens on three cards (Input · On-device recognition · Cloud AI), each one sentence of what is happening right now plus a **Change** button. A badge appears only when something needs doing; missing permissions are a banner, not a buried setting. Every caption is one line, with the details behind an ⓘ — a budget a unit test enforces.
-- **A first run that finishes the job** — a four-screen guide: welcome (the two gestures, on Right Option), permissions (the speech model downloads in the background while you grant them), how you'll use it, and a dictation you try on the spot. It is not over until dictation actually works: both permissions granted and the speech model ready. AI is optional and never blocks. You can walk through it again any time from the Settings footer — **About · Privacy · Check for Updates · Review the guide**. Settings → About → Check for Updates verifies, installs and relaunches the new version; export/import your settings to move them to another machine (API keys are never included).
-- **Bilingual UI** — English / 中文, switch instantly in Settings.
+- **One key, named in full** — the hotkey is **Right Option (⌥)**. There is no picker to get wrong: every place MicType asks you to press a key names that one.
+- **Setup is one decision** — pick **OpenAI** or **Alibaba Cloud**, paste a key, and it's verified on the spot; keys live in the macOS Keychain. An API key is required for MicType to work at all — recognition itself now runs on your chosen provider.
+- **Settings you can read in one glance** — Settings is a single page: provider, API key, and (for Alibaba Cloud) an optional API host. A permissions banner appears only when something's missing; a status line shows exactly what's connected and what it costs. Everything else — writing preferences, about, check for updates, review the guide — is one click away in the footer.
+- **A first run that finishes the job** — a five-screen guide: welcome (the two gestures, on Right Option), permissions, choose your AI (both providers side by side, with step-by-step instructions for getting a key and paste-to-verify), a dictation you try on the spot, and where to find MicType afterward. It is not over until dictation actually works: permissions granted and a verified provider. You can walk through it again any time from the Settings footer.
+- **Bilingual UI** — English / 中文, switch instantly from the menu bar.
 
 ## Quick Start (5 minutes)
 
 Everything downloads from one page: **[Releases · latest](https://github.com/genli-ai/MicType/releases/latest)**
 
-| | 🍎 macOS (Apple Silicon, macOS 15+) | 🪟 Windows (Win10 22H2+ / 11, x64 — beta) |
+| | 🍎 macOS (Apple Silicon, macOS 15+) | 🪟 Windows (Win10 22H2+ / 11, x64 — beta, still on-device) |
 |---|---|---|
 | **1. Download & run** | `MicType-{version}-arm64.zip` → unzip → drag `MicType.app` to Applications. If blocked: System Settings → Privacy & Security → **Open Anyway** | `MicType-{version}-win-x64.zip` → unzip → run `MicType.exe`. SmartScreen: **More info → Run anyway** |
-| **2. One-time setup** | A four-screen first-run guide does all of it: learn the two gestures on **Right Option (⌥)**, allow **Microphone** (with a live level meter) and enable **Accessibility** (System Settings → Privacy & Security) while the speech model downloads in the background, choose *Local only* or *Local + AI* (paste a key, it is verified there and then), and try a dictation on the spot — the text lands in the box on the page. The guide only finishes once dictation actually works; the AI decision can be skipped in one click | Right-click the tray icon → Settings → download the speech model (~250 MB) |
+| **2. One-time setup** | A five-screen first-run guide does all of it: learn the two gestures on **Right Option (⌥)**, allow **Microphone** (with a live level meter) and enable **Accessibility** (System Settings → Privacy & Security), choose OpenAI or Alibaba Cloud and paste a key (verified there and then), and try a dictation on the spot — the text lands in the box on the page. The guide only finishes once dictation actually works | Right-click the tray icon → Settings → download the speech model (~250 MB) |
 | **3. Speak** | **Tap Right Option (⌥)** → talk → tap again. Text appears at your cursor | **Tap Right Ctrl** → talk → tap again. Text appears at your cursor |
 
-Speech recognition runs on your device by default — audio leaves your Mac only if you deliberately choose a cloud engine. Optional: add an API key in Settings to unlock AI polish and **hold-to-command** (rewrite selection / draft replies / ask anything). Upgrades: Settings → About → **Check for Updates** — on macOS it verifies the new build, installs it in place and relaunches.
+Speech recognition streams to the provider you set up — there's no local recognition in this version, so audio always leaves your Mac. Settings → About → **Check for Updates** — on macOS it verifies the new build, installs it in place and relaunches.
 
 ## Install
 
-Requirements: **Apple Silicon + macOS 15+**. (Building from source additionally needs full Xcode — MLX compiles Metal shaders.)
+Requirements: **Apple Silicon + macOS 15+**. (Building from source additionally needs full Xcode.)
 
 **Prebuilt (recommended):** download `MicType-{version}-arm64.dmg` from [GitHub Releases](https://github.com/genli-ai/MicType/releases/latest), open it, and drag `MicType.app` to Applications. The DMG is **notarized by Apple — it opens with zero security warnings**. (A `.zip` is also attached — Developer ID signed but not notarized, so the first launch may need System Settings → Privacy & Security → **Open Anyway**.)
 
-**From source, three steps:**
+**From source, two steps:**
 
-1. Double-click `scripts/Generate Qwen Tokenizer.command` once to generate tokenizer resources.
-2. Double-click `Install MicType.command`. The first build takes 5–15 minutes and checks the Metal toolchain.
-3. Open the app → Settings → On-device recognition → download the model (~860 MB).
+1. Double-click `Install MicType.command`. There are no third-party dependencies to build, so the first compile takes under a minute.
+2. Open the app and follow the first-run guide, or paste an API key for OpenAI or Alibaba Cloud in Settings.
 
 ## First Launch Permissions
 
@@ -83,76 +82,57 @@ Requirements: **Apple Silicon + macOS 15+**. (Building from source additionally 
 
 If the hotkey still does not work after Accessibility appears enabled, remove MicType from the Accessibility list, add `/Applications/MicType.app` again, then quit and reopen MicType.
 
-## Recognition Engines
+## Recognition & Providers
 
-**On-device Qwen3-ASR is the default**, and it is the whole of Settings → **On-device recognition**: microphone, recognition language, the speech model and performance. Filler words (um, uh, 嗯, يعني…) are removed from every on-device transcript by a conservative built-in list — there is nothing to configure. Recognition runs on your Mac through MLX/Metal and your audio never leaves the machine. The model updates itself: when a better or newer one is published you get a single non-modal hint, one click downloads and verifies it, and the old weights are removed only after the new model has actually worked and you have restarted once.
+MicType has no on-device speech model. Every dictation and voice command runs through the AI provider you set up in Settings — pick **OpenAI** or **Alibaba Cloud (Model Studio / Bailian)**, paste one key, and that key covers recognition, polish and voice commands alike.
 
-**Cloud recognition is one switch**, and it lives with the rest of your AI setup: Settings → **Cloud AI** → pick **Alibaba Cloud** or **OpenAI** → *Also recognize speech in the cloud*. It is off by default, and the switch remembers what you chose: swap the provider you are using and it stays on, moving with you — the price beside it always names the provider you are on now, and MicType quietly re-checks the new one before relying on it. Useful when this Mac is slow, the takes are long, or you need a language the local model handles poorly. Two things are stated right next to the switch: **your audio streams up while you are still speaking**, and **that provider bills you by the second of audio** — with the price, the one-time enabling step and the provider's retention statement in the ⓘ beside the section title. Esc stops the upload at once, but the seconds already sent cannot be recalled, and the About → Privacy line says exactly that.
+- **The connection opens the moment you press the key.** Audio streams up in small frames while you're still talking, so releasing the key sends only a short "finish" signal — the final transcript comes back in well under a second, independent of how long you spoke. The grey live draft comes from the provider's own interim results, arriving roughly every couple of seconds.
+- **Two providers, genuinely different.** Alibaba Cloud (`qwen3-asr-flash-realtime`) is the faster, cheaper choice — but it does not honor your custom vocabulary during recognition, so proper nouns there are fixed afterward by AI polish (which always gets your vocabulary) and by `wrong=right` replacements. OpenAI (`gpt-live-transcribe`) costs more but does honor your vocabulary during recognition itself, which is the more reliable path for names, brands and jargon.
+- **Alibaba Cloud has an optional API Host field** (OpenAI does not) — leave it blank and MicType finds and remembers the fastest working endpoint for your key on its own, rechecking quietly about once a week; fill it in to pin MicType to exactly that host (from the address shown on the Model Studio API Key page) with no auto-switching.
+- **Falling back is silent.** If a connection has no realtime support or a request fails, MicType retries and, if needed, falls back to a whole-take upload instead of interrupting what you're saying.
+- **Verified in one action.** Pasting a key runs a real check against the provider; a key that doesn't verify is never saved, and the status line always reflects what's actually working.
 
-- **One key, one host, and MicType picks the fastest one.** Cloud recognition uses the same Model Studio key as polish and commands, and the same endpoint. MicType finds that endpoint itself: verifying the key asks every candidate host in parallel for a free model list, and among the hosts that accept the key it keeps **the fastest** — so there is no International/China picker to get wrong and nothing to press. This matters more than it sounds: one key is often accepted by several regional endpoints, and from the UAE the difference between two of them was 44.7 s and 6.9 s for the same recording. Because the chosen host can go stale — you move, the provider re-routes — MicType quietly re-runs that probe at launch once a week and keeps whichever host is fastest then. There is also an optional **API host** field under the Alibaba Cloud provider: paste the host shown on the API Key page of the Model Studio console and MicType uses only that one — for polish, commands, synchronous recognition and the real-time stream alike — with no probing, no weekly re-pick, and no switching away behind your back if it fails. It is worth knowing that the workspace id in the console is not the `sk-ws-…` fragment inside the key, so auto-detection can legitimately land on a different host than the one printed in your console; both work, and the field is there when you want to decide. The automatic probe also runs **during normal use** (never when you have filled that field in): if a request fails with 401, or the host cannot be reached at all, and that host was never confirmed, MicType resolves it right then — voice commands wait for the answer and retry once, while polish hands you the recognized text immediately and lets the probe fix the host for the next sentence. Everyday dictation never probes: it just uses the host that was chosen.
-- **Two providers, and they are genuinely different.** Alibaba Cloud (`qwen3-asr-flash-realtime`) returns the final transcript **0.23–0.28 s** after you let go and costs about **$0.13/hour**, but no amount of coaxing makes it honour your vocabulary. OpenAI (`gpt-live-transcribe`) takes **0.67–1.04 s** and costs about **$1/hour** — eight times more — and in exchange it **does** honour your vocabulary: in testing it fixed *MicType*, *Qwen 3.0* and *Gen* five times out of five, which is exactly where the cheap engine fails. Both numbers and both prices sit next to the switch, because that is the whole of the choice. OpenAI's realtime endpoint is the official `api.openai.com` one, so if you point the OpenAI provider at a gateway, the switch is not offered at all.
-- **The Alibaba Cloud path opens a WebSocket the moment you press the key.** Audio goes up in 100 ms frames while you are still talking, so releasing the key sends nothing but a one-line *finish*: the final transcript comes back in **0.23–0.28 s no matter how long you spoke** — measured identical at 4.5 s, 22 s, 71 s and 639 s. Uploading the whole take afterwards does not behave that way: on the same key it was 1.2 s, 3.0 s and 8.6 s for the first three lengths. A long take is **never cut into pieces** on this path; one continuous session runs to the 10-minute cap, because timed commits drop a character at every seam.
-- **The grey draft comes from the provider's own interim results.** They arrive about every two seconds, so the draft appears even if you never downloaded an on-device model. The on-device model stays installed purely as the fallback, and MicType does not decode the same audio twice.
-- **Falling back is silent, and it is remembered per provider and host.** If a link has no realtime support — the handshake is refused, the endpoint hands back a different model than the one asked for, or the key is rejected — MicType remembers that for the rest of the run and uses the older whole-take upload (`qwen3-asr-flash` or `gpt-transcribe`) instead, with no interruption to what you are saying. A one-off failure mid-recording falls back the same way; a failure after the final *finish* re-runs the whole recording on the on-device model, so nothing is lost either way.
-- **Verified before you rely on it, in one action.** Pasting the key sends one second of synthetic tone to the recognition endpoint, which also proves you have enabled the model once in Model Studio's Model Gallery. Turning the cloud-recognition switch on runs that same check by itself, plus a realtime handshake, and says which of the two you got — *it streams as you speak*, or *this key has no realtime support, so audio is sent after you finish*. If the check fails, the switch goes back off — a switch that is on always means it works.
-- **What travels with the audio differs by provider, and both choices are deliberate.** On OpenAI, your vocabulary goes along as `keywords` and your recognition-language setting goes along as a language hint — both were measured safe there, and a wrong hint still transcribes rather than translates. On Alibaba Cloud's realtime endpoint a language hint silently **translates** the audio instead of transcribing it, so MicType sends none and always lets it auto-detect. Its recognition also ignores your vocabulary entirely — measured against `vocabulary`, `hotwords`, `phrase_list`, `context`, `prompt` and `corpus.text`, none of them reach the transcript — so on that provider proper nouns are put right afterwards, by polish (which does carry your vocabulary) and by your `wrong=right` replacements. Pick OpenAI if you want the vocabulary honoured during recognition itself. Switch to a different AI provider and recognition returns to on-device.
-
-**Recognition language** is set under Settings → On-device recognition. Leave it on Auto, or pick a language — with a language chosen, every segment of a long dictation is locked to it, which prevents the model from drifting to another language mid-recording.
-
-**Arabic** is supported: Modern Standard Arabic works well. Gulf, Egyptian and other dialects are *not* promised — the setting says so rather than pretending. One tip that measurably matters: English brand and product names spoken inside Arabic come back written in Arabic letters, so **add them to your custom vocabulary** under Settings → Input → Writing preferences (`Microsoft Excel`, `Power BI`) — vocabulary entries go to the model as hotwords and fix exactly this. Arabic punctuation is mostly supplied by AI polish.
+**Arabic** is supported: Modern Standard Arabic works well; other dialects are not promised. English brand and product names spoken inside Arabic can come back written in Arabic letters — add them to your custom vocabulary under **Writing Preferences…** in the menu bar to fix this.
 
 ## Long Dictation
 
-A single take can run up to **ten minutes**. Anything under 90 seconds is transcribed in one pass, exactly as before; past that it is transcribed in 45-second segments *while you are still speaking*, each cut at a natural pause, so releasing the key finishes almost immediately however long you talked, and memory stays flat. If a segment fails, or you press Esc halfway, everything already transcribed is still inserted and written to history. When you reach the limit MicType wraps the take up and inserts **everything** you said — nothing is discarded at the limit.
+A single take can run up to **ten minutes**, with a warning before you reach the limit. Because audio streams to your provider continuously while you speak, releasing the key returns a transcript almost immediately regardless of length — there's no separate "long recording" processing step. Esc stops the recording at once, but audio already sent to the provider can't be recalled, so whatever was transcribed up to that point is what you get.
 
 ## AI: Polish, Commands, and Your Provider
 
-Menu bar 🎤 → Settings → **Cloud AI**. The page is one decision: **Local only** or **Local + AI**. Local only means polish off and recognition on-device — and nothing else is shown, because there is nothing else to decide.
+Menu bar 🎤 → Settings. The whole page is: **provider** (OpenAI or Alibaba Cloud), **API key** (verified as you paste it — Checking… / Connected ✓ / Failed, with the reason and what to do), and for Alibaba Cloud one more optional row, **API Host**. A status line under it names what's live and what it costs. There is nothing else to configure — model, polish behavior, and web search are fixed choices, not settings:
 
-With AI, the page is two cards and nothing else — every row carries its own label, and only three ⓘ buttons survive (API Key, cloud recognition, web search). Three decisions:
+- **One model per provider, already balanced for speed**: `gpt-5.6-luna` on OpenAI, `qwen3.8-flash` on Alibaba Cloud — both chosen because polish and commands run on every single utterance, and a model that thinks for several seconds is a worse experience than one that answers in two.
+- **Web search is always on** where the provider supports it, for hold-to-command only (tap-to-dictate polish never searches) — about $0.01 per search on OpenAI, billed at Alibaba Cloud's own rates there.
+- **OpenAI always runs on its Fast tier** — lower, steadier latency at roughly twice the per-token price, stated once under About → Privacy.
 
-- **One provider**: OpenAI, DeepSeek or Alibaba Cloud (Model Studio). Other OpenAI-compatible endpoints and a **local model** on your own machine (Ollama / LM Studio — no key needed, nothing leaves your computer) are configured through an imported settings file (Settings → About → Export / Import) rather than on-screen fields — the same file also carries the few behaviour switches that have no on-screen control any more (overlay position, sounds, clipboard restore, live draft, auto-stop on silence: they default sensibly, and a value you set stays honoured); whichever one you are actually using always stays visible in the picker, so you can always switch back. The live one is marked **In use ✓**; picking another only previews its key and model, and MicType switches over once that provider's key verifies.
-- **One key**, verified as you paste it (Checking… / Connected ✓ / Failed, with the reason and what to do). A key that does not verify is never written to the Keychain. There is no second key field anywhere in the app. Under Alibaba Cloud one more row appears right below it — **API Host** — empty by default (MicType picks the endpoint itself) and pinned to exactly what you paste otherwise; changing it re-verifies the key against that host.
-- **One Model dropdown** — polish and commands always run the same model, so this is the only model decision there is (the split fields are gone, and an older split pair is pulled back together once at launch). Defaults: `gpt-5.6-luna`, `deepseek-flash`, `qwen3.8-flash` — each provider's balanced, fast tier, because polish runs on every single sentence and a model that thinks for ten seconds is a worse default than one that answers in two. The flagship tiers are one click away in the same list, labelled as such. Pick *Custom…* to type any model name.
+**Writing Preferences…**, reached from the menu bar (or the Settings footer), is where you manage what's actually yours to configure:
 
-**Custom rules** is not on this page: it says how *your words* should be written, not which provider to call, so it lives with your vocabulary under Settings → **Input** → **Writing preferences**. One multi-line box, once in the whole app: long-standing preferences for the AI (*sign as Gen*, *keep English jargon untranslated*), carried by every polish and every voice command. With **Local only** it stays editable and says so in one line — *Takes effect once AI is on*.
+- **Custom vocabulary**: hotwords for names, brands and jargon — used by recognition on OpenAI, and always by AI polish on both providers, since polish is what fixes proper nouns on Alibaba Cloud.
+- **Custom rules**: a free-text box of standing instructions to the AI (*sign as Gen*, *keep English jargon untranslated*), applied to every polish and every voice command.
 
-**Web search** is on by default wherever the provider offers it, with the price beside the switch (about $0.01 per search on OpenAI; billed at your provider's own rates on Alibaba Cloud). It applies only to hold-to-command — the polish behind tap-to-dictate never searches — and where a provider has no web search there is no switch, just one line saying so.
-
-**The Fast tier is always on for OpenAI**, and there is no switch for it: every request to the official OpenAI API is sent with `service_tier: "fast"` — lower, steadier latency at about twice the token price, stated once under About → Privacy. An OpenAI base URL pointing at a third-party gateway never gets the field, and a model that rejects the tier is remembered for the rest of the run so it is asked only once.
-
-*Advanced* exists only for the two providers with no built-in model list (other OpenAI-compatible services and local models): the model-name field and **Refresh model list**. For OpenAI, DeepSeek and Alibaba Cloud the model comes from the dropdown and the key was verified when you pasted it, so the section is not shown at all.
-
-Polish modes:
-
-- **Transcribe only**: fully offline, fastest
-- **AI polish (adaptive)**: light cleanup for short phrases; full restructuring for long spoken paragraphs
-
-Voice commands use the same provider and key.
-
-Two kinds of vocabulary, not to confuse:
-
-- **Custom vocabulary**: hotwords you enter in Settings → Input → Writing preferences — stored locally, effective on the next transcription. On-device recognition and OpenAI cloud recognition take it as hotwords; Alibaba Cloud's recognizer does not (proper nouns there are fixed by polish, which always gets the vocabulary).
-- **Model tokenizer/vocab**: shipped with the Qwen model. If upstream updates it, run `scripts/Generate Qwen Tokenizer.command` again and reinstall.
+Polish modes: transcribe only (fastest, no AI) or AI polish (adaptive: light cleanup for short phrases, full restructuring for long spoken paragraphs) — selected automatically per utterance, not a setting you pick.
 
 ## Privacy
 
-- **Local by default.** Speech recognition runs on your Mac, and your audio leaves it **only if you turn on cloud recognition** in Settings → Cloud AI — one switch, off by default, labelled with its cost and where the audio goes.
-- Only when AI polish or a voice command runs is the recognized **text** (never audio) sent to the provider you configured. On OpenAI, MicType sends `store: false` on every request, so your text is not retained for the 30 days the API otherwise keeps it. Pick the local-model provider and even the text stays on your machine.
+- **Your audio streams to your chosen provider live, the moment you speak.** There is no local recognition in this version — this is a deliberate trade for the speed and quality of realtime cloud transcription, and it's stated plainly here rather than as a switch you have to find.
+- The recognized **text** is then sent to the same provider for AI polish or a voice command. On OpenAI, MicType sends `store: false` on every request, so your text is not retained for the 30 days the API otherwise keeps it.
 - API keys are stored in the macOS Keychain, not in plain-text files, and are never included in a settings export.
 - Transcript history is kept on your Mac only; you can switch it off or clear it at any time.
-- Web search is on by default where your provider offers it, and billed per search (roughly a cent) by that provider — the price is stated next to the switch, and only hold-to-command ever searches.
-- You pay your provider directly at their rates. MicType never proxies your requests and never adds a fee.
+- Web search is on by default where your provider offers it, billed per search by that provider — the price is stated next to it in Settings, and only hold-to-command ever searches.
+- You pay your provider directly at their rates, roughly **$0.2/hour** on Alibaba Cloud or **$1.1/hour** on OpenAI for recognition plus polish combined, billed by how much you actually spoke. MicType never proxies your requests and never adds a fee.
+
+## Upgrading from an earlier version
+
+If you're updating from a 4.x release, MicType removes the old on-device speech model files on first launch and tells you how much disk space that freed. If you were using DeepSeek or a local model, you'll land on the "choose your AI" screen of the first-run guide to pick OpenAI or Alibaba Cloud — everything else about your setup (hotkey, vocabulary, history) carries over unchanged.
 
 ## FAQ
 
 **Hotkey does not respond?** Check System Settings → Privacy & Security → Accessibility. If you build from source (ad-hoc signing), macOS usually requires removing the old permission entry and adding the app again after each rebuild; official notarized releases keep a stable identity, so upgrades don't need this.
 
-**Custom names or terms are wrong?** Add names, brands, products, and technical terms to Settings → Input → Writing preferences → Custom vocabulary. They are used as hotwords by on-device recognition and by OpenAI cloud recognition, and always as hints for AI polish (Alibaba Cloud's recognizer takes no hotwords, so there the polish step does the correcting). This is also the fix for English brand names spoken inside Arabic.
+**Custom names or terms are wrong?** Add names, brands, products, and technical terms to Writing Preferences… → Custom vocabulary (menu bar). It's used by recognition on OpenAI, and always by AI polish (Alibaba Cloud's recognizer doesn't take hotwords, so polish does the correcting there). This is also the fix for English brand names spoken inside Arabic.
 
-**Model download is slow?** MicType tries `hf-mirror.com` first and falls back to `huggingface.co`. Successfully downloaded files are kept, so retrying resumes by file.
-
-**AI polish failed?** Settings → Cloud AI shows the connection state next to your key — enough to tell a bad key from a wrong model name, an unsupported region, rate limiting or exhausted credit; the overview card says the same thing in one line without opening anything. Local transcription still works; MicType falls back to the raw transcript on polish failure.
+**AI polish failed, or MicType can't recognize speech at all?** Settings shows the connection state next to your key — enough to tell a bad key from a wrong region, rate limiting or exhausted credit. Since recognition itself now depends on your provider, a failed connection means dictation won't work either until the key is fixed.
 
 **Text was not inserted into the target app?** If you switch windows during processing, MicType tries to bring the original app back before pasting. If insertion still fails, click the latest item in Menu bar → Recent Transcripts to copy it. Some fields, such as password fields, block paste.
 
@@ -164,51 +144,51 @@ Double-click `Uninstall MicType.command`.
 
 ## Tech Stack
 
-Native Swift menu bar app with SwiftUI settings · Qwen3-ASR via MLX (on-device, segmented for long takes) · optional cloud recognition (Alibaba Cloud Model Studio, endpoint auto-detected) · OpenAI Responses API and OpenAI-compatible Chat Completions for polish & commands · macOS Keychain · bilingual in-line L10n.
+Native Swift menu bar app with SwiftUI settings · realtime cloud speech recognition (OpenAI `gpt-live-transcribe` / Alibaba Cloud `qwen3-asr-flash-realtime`, audio streamed as you speak, endpoint auto-detected for Alibaba Cloud) · OpenAI Responses API and Alibaba Cloud Chat Completions for polish & commands · macOS Keychain · bilingual in-line L10n.
 
 ```
 MicType/
-├── Package.swift                  # Swift Package definition (MLXASR)
+├── Package.swift                  # Swift Package definition (no third-party dependencies)
 ├── Sources/MicType/
 │   ├── main.swift                 # Entry point
-│   ├── AppDelegate.swift          # Menu bar app wiring
+│   ├── AppDelegate.swift          # App wiring, menu bar icon, Dock/menu-bar behavior
+│   ├── AppMenu.swift               # App/Edit menu (so ⌘C/⌘V/⌘Z work in MicType's own windows)
 │   ├── DictationController.swift  # Recording → transcription → polish/skills → insertion
 │   ├── HotkeyManager.swift        # Global hotkey: tap = dictate, hold = command, Esc cancel
 │   ├── AudioRecorder.swift        # 16 kHz recording and level monitoring
-│   ├── QwenEngine.swift           # Local Qwen3-ASR inference (MLX)
-│   ├── QwenModelDownloader.swift  # In-app model download, catalog-driven upgrade and cleanup
-│   ├── CloudASR/                  # Optional cloud recognition (endpoint detection, segmenting, WAV encoding)
-│   ├── LLMCatalog.swift           # Model ids, presets and per-model capabilities in one place
+│   ├── SpeechEngine.swift         # Recognition protocol implemented by the cloud engines
+│   ├── CloudASR/                  # OpenAI + Alibaba Cloud realtime clients, endpoint detection, WAV encoding
+│   ├── LLMCatalog.swift           # Model ids, pricing and per-provider capabilities in one place
 │   ├── PolishService.swift        # Adaptive AI polish
 │   ├── AgentService.swift         # LLM client + voice-command skills (intent-inferred selection commands / reply / free-form)
 │   ├── SkillRouter.swift          # Explicit reply-trigger fast path
 │   ├── SelectionReader.swift      # Read selected text via Accessibility (⌘C fallback)
 │   ├── TextInserter.swift         # Clipboard + ⌘V insertion, full clipboard snapshot/restore
+│   ├── OwnWindowInserter.swift    # Direct text insertion into MicType's own windows
 │   ├── Overlay.swift              # Floating indicator (live draft, elapsed time, cancel)
 │   ├── HistoryStore.swift         # Last 200 transcripts, raw + polished, on disk
 │   ├── HistoryWindow.swift        # History window: search, compare, re-insert, add to vocabulary
-│   ├── OnboardingWindow.swift     # First-run guide (four screens: welcome + gestures, permissions, how you'll use it, try it)
-│   ├── FirstRunEssentials.swift   # What the first run must finish: permissions, speech model
-│   ├── MicCheck.swift             # Microphone picker and level meter (Settings + onboarding)
+│   ├── OnboardingWindow.swift     # First-run guide (five screens: welcome, permissions, choose your AI, try it, where to find it)
+│   ├── FirstRunEssentials.swift   # What the first run must finish: permissions, a working provider
+│   ├── LocalModelCleanup.swift    # One-time cleanup of pre-5.0 on-device model files
 │   ├── UpdateChecker.swift        # Update check + verify, install and relaunch
 │   ├── SettingsBackup.swift       # Settings export / import (shared JSON with Windows)
-│   ├── Localization.swift         # In-line bilingual L10n (instant switch)
-│   ├── SettingsView.swift         # Settings window: overview ←→ focused editors
-│   ├── SettingsOverview.swift     # The three status cards and the permissions banner
-│   ├── SettingsSummary.swift      # The one sentence on each card (pure functions, unit-tested)
-│   ├── SettingsCopy.swift         # Every caption and ⓘ in Settings, under a budget a test enforces
-│   └── SettingsEditors.swift      # Input / On-device recognition / Cloud AI / About
-├── Resources/                     # Info.plist, icon, QwenTokenizer
-└── Package.resolved               # Locked dependency versions
+│   ├── Localization.swift         # In-line bilingual L10n (instant switch, from the menu bar)
+│   ├── SettingsView.swift         # Settings window sizing and routing
+│   ├── SettingsEditors.swift      # The single settings page + Writing Preferences + About
+│   ├── CloudAIFields.swift        # Provider/key/host controls shared by Settings and onboarding
+│   └── SettingsCopy.swift         # Every caption and ⓘ in Settings, under a budget a test enforces
+├── Resources/                      # Info.plist, app icon, notification sounds
+└── Package.resolved                # Locked dependency versions
 
-scripts/                       # Repair tools and tokenizer generator
-MicTypeWindows/                # Windows port (C# / .NET, public beta)
+scripts/                       # Repair tools
+MicTypeWindows/                # Windows port (C# / .NET, public beta — still on-device SenseVoice, not yet on 5.0)
 Install MicType.command       # One-click installer (build from source)
 Uninstall MicType.command     # Uninstaller
 ```
 
-> 🪟 **Windows (public beta):** download `MicType-{version}-win-x64.zip` from [Releases](https://github.com/genli-ai/MicType/releases/latest) — local SenseVoice recognition, tap Right Ctrl to dictate. Windows 10 22H2+ / 11 x64; first run downloads a ~250 MB speech model in Settings; SmartScreen will warn (unsigned beta) — More info → Run anyway. Upgrades are one click via Settings → About → Check for Updates. Details: [MicTypeWindows/](MicTypeWindows/)
-> **Windows 版（公开测试）**：从 [Releases](https://github.com/genli-ai/MicType/releases/latest) 下载 `MicType-{版本}-win-x64.zip`——本地 SenseVoice 识别，轻点右 Ctrl 听写。Win10 22H2+/11 x64；首次在设置里下载约 250MB 识别模型；SmartScreen 拦截时点「更多信息 → 仍要运行」。之后升级在 设置 → 关于 → 检查更新 一键完成。
+> 🪟 **Windows (public beta):** download `MicType-{version}-win-x64.zip` from [Releases](https://github.com/genli-ai/MicType/releases/latest) — local SenseVoice recognition, tap Right Ctrl to dictate. This build has not yet moved to the cloud-only architecture described above. Windows 10 22H2+ / 11 x64; first run downloads a ~250 MB speech model in Settings; SmartScreen will warn (unsigned beta) — More info → Run anyway. Upgrades are one click via Settings → About → Check for Updates. Details: [MicTypeWindows/](MicTypeWindows/)
+> **Windows 版（公开测试）**：从 [Releases](https://github.com/genli-ai/MicType/releases/latest) 下载 `MicType-{版本}-win-x64.zip`——本地 SenseVoice 识别，轻点右 Ctrl 听写。这一版尚未跟进上面说的云端化架构。Win10 22H2+/11 x64；首次在设置里下载约 250MB 识别模型；SmartScreen 拦截时点「更多信息 → 仍要运行」。之后升级在 设置 → 关于 → 检查更新 一键完成。
 
 ## Author
 
@@ -222,9 +202,9 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 
 # MicType 🎤 — 轻点听写，按住说指令
 
-**Mac 语音输入法，也是你的 AI 入口。** 一个键，两种手势：**轻点**快捷键，说话变成干净、带标点的文字出现在光标处——默认在你自己的 Mac 上识别；**按住**同一个键，说出的话就是给 AI 的指令——改写选中文字、草拟回复、写邮件、翻译、随口提问，在任何应用里、就在你正在打字的地方。
+**Mac 语音输入法，也是你的 AI 入口。** 一个键，两种手势：**轻点**快捷键，说话变成干净、带标点的文字出现在光标处；**按住**同一个键，说出的话就是给 AI 的指令——改写选中文字、草拟回复、写邮件、翻译、随口提问，在任何应用里、就在你正在打字的地方。
 
-说话过程中就看得见草稿，一口气说十分钟也不丢字，配置只有一个决定：只用本地，还是本地 + 一家 AI 服务商。
+说话过程中就看得见草稿，一口气说十分钟也不丢字，配置只有一个决定：识别与润色交给哪家 AI 服务商——OpenAI 还是阿里云。
 
 > **⬇️ 只是想用？[去 Releases 下载现成的 App](https://github.com/genli-ai/MicType/releases/latest)——不需要 Xcode、不需要编译。**
 > 绿色 "Code" 按钮下载的是*源代码*；从源码安装只面向开发者，需要完整 Xcode。
@@ -234,9 +214,9 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 **轻点 右 Option (⌥) = 听写**
 
 ```
-按 右⌥ → 说话（悬浮窗里灰字实时草稿，让你看见它听到了什么）→ 再按 右⌥
+按 右⌥ → 说话（悬浮窗里灰字实时草稿，来自服务商自己的中间结果）→ 再按 右⌥
    ↓
-本地 Qwen3-ASR 识别（默认在本机完成，MLX/Metal 加速——见「识别引擎」）
+实时云端识别（你选定的服务商——见「识别与服务商」）
    ↓
 可选自适应 AI 润色（去口头禅、修同音错字，
 长段混乱口述自动重构成可直接使用的成品文字）
@@ -251,48 +231,47 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 - 「根据这段写一条祝贺消息」→ **新内容**打在光标处，选中文字只作参考
 - 什么都没选 → 光标处的自由 AI：草拟邮件、翻译、或者直接问问题
 
-轻点永远是纯听写（说什么打什么），按住永远是指令——这一层靠手势区分，永不猜测。按下那一刻就开始录音；Esc 随时取消——录音中可以，识别中 / 润色中 / 执行指令中同样可以。
+轻点永远是纯听写（说什么打什么），按住永远是指令——这一层靠手势区分，永不猜测。按下那一刻就开始录音，音频也当场开始往服务商那边传。Esc 随时取消——录音中可以，识别中 / 润色中 / 执行指令中同样可以——但已经传出去的那部分音频收不回来。
 
 ## 为什么选 MicType
 
-- **边说边看**——说话过程中悬浮窗就显示灰字草稿。草稿绝不进入你的文档：真正插入的永远是完整识别的结果
-- **默认在本机识别**——Apple Silicon 上跑 Qwen3-ASR（MLX/Metal）：约 30 种语言 + 22 种中文方言，中英混说尤其强，阿拉伯语支持标准阿语（MSA）。除非你主动选了云端引擎，录音不会离开这台 Mac
-- **要云端识别时才用云端**——默认在本机识别；想上云只有一个开关（交给阿里云），旁边写清费用和音频去向。识别模型本身也能一键升级，升完自动清理旧文件
-- **一个字都不丢**——单次可以说到**十分钟**：录音期间就在分段识别，中途出错或你按了取消，已经识别出来的部分照样交付。每次插入前后完整快照并还原剪贴板（图片、文件、富文本都不会被吃掉）；录音中途换麦克风也不丢这一段
-- **任何阶段都能取消**——Esc、菜单栏、或者直接点悬浮窗：录音中、识别中、润色中、执行指令中都能停，停了之后一个字也不会插进来
+- **边说边看**——说话过程中悬浮窗就显示灰字草稿，来自服务商自己的实时中间结果。草稿绝不进入你的文档：真正插入的永远是完整识别的结果
+- **云端识别，边说边传**——每一次听写都是一条实时连接：你还在说的时候音频就在往上传，所以松手后几乎立刻拿到结果，与说了多久无关。这一版没有本地识别可选，录音一定会离开这台 Mac
+- **两家服务商，就这两家**——OpenAI（识别用 `gpt-live-transcribe`，润色与指令用 `gpt-5.6-luna`）或阿里云百炼（识别用 `qwen3-asr-flash-realtime`，润色与指令用 `qwen3.8-flash`）。选一家、贴一把 Key，MicType 就配好了
+- **一个字都不丢**——单次可以说到**十分钟**，到点前会提前提醒。每次插入前后完整快照并还原剪贴板（图片、文件、富文本都不会被吃掉）；录音中途换麦克风也不丢这一段
+- **任何阶段都能取消**——Esc、菜单栏、或者直接点悬浮窗：录音中、识别中、润色中、执行指令中都能停，已经传出去的不会再插进来，没传出去的干脆就没送到任何地方
 - **任何应用里都能下指令**——光标在哪，按住就在哪用：聊天、邮件、文档、浏览器
 - **自适应 AI 润色，带安全网**——短句轻清理；长段混乱口述重构成可直接使用的成品文字。润色结果若与原话出入过大（数字、否定词被改动）会自动改输出识别原文并明说；插入后一分钟内还能在菜单栏一键「换回识别原文」
-- **专有词汇表 = 热词**——人名、品牌、术语直接送入识别模型并参与润色纠错，是专有名词准确率的第一杠杆。完全同音的词可以写 `错写=正写`（一个正写挂多个错写：`错1|错2=正写`）
+- **专有词汇表 = 热词**——人名、品牌、术语送进 AI 润色（在 OpenAI 上还会直接参与识别），是专有名词准确率的第一杠杆。完全同音的词可以写 `错写=正写`（一个正写挂多个错写：`错1|错2=正写`）。这两样都收在菜单栏的**「写作偏好…」**里，旁边还有一个自由文本框，写给 AI 的长期偏好（「署名用 Gen」「英文术语保留原文」）
 - **可搜索的历史**——最近 200 条听写留在本机（⌘Y）：按识别原文和润色结果一起搜，重新插入到光标处，或把听错的词一键送进词汇表。随时可关、可清
-- **快捷键就一颗：右 Option (⌥)**——没有选择器可选错，凡是让你按键的地方写的都是它且写全名；麦克风可选、可测输入电平
-- **配置只有一个决定**——「只用本地」或「本地 + AI」。选了 AI：一家服务商（OpenAI · DeepSeek · 阿里云百炼）、一把 Key、一个「模型」下拉。粘贴 Key 就地验证，Key 存 macOS 钥匙串。不填 Key 也完全可用：纯离线听写
-- **设置一眼看完**——打开设置先看到三张卡：输入 · 本地识别 · 云端 AI，每张一句话说清现在是什么状态，外加一颗「更改」。有事要办才挂徽章；缺权限是顶上一条横幅，不是藏在某一页里的开关。每个控件至多一行说明，细则收在 ⓘ 里——这条预算由单测盯着
-- **引导不走到能听写不算完**——首次启动四屏：欢迎（两种手势，就在右 Option 上）→ 权限（授权的同时识别模型已在后台下载）→ 怎么用 → 就地试一句，文字直接落进那一屏的框里。两项权限都给了、识别模型就绪，这两件事办完才算走完；AI 是可选的，永远不拦人。想重走一遍，设置页底部的**关于 · 隐私 · 检查更新 · 重看引导**随时可以。设置 → 关于 → 检查更新 会验签、就地安装并自动重启；设置可导出导入，换机不用重配（API Key 从不进文件）
-- **中英双语界面**——设置里即时切换
+- **快捷键就一颗：右 Option (⌥)**——没有选择器可选错，凡是让你按键的地方写的都是它且写全名
+- **配置只有一个决定**——选 **OpenAI** 还是 **阿里云**，粘贴一把 Key 当场验证，Key 存 macOS 钥匙串。这把 Key 是必须的：识别本身现在就跑在你选的服务商上
+- **设置一眼看完**——设置就是一页：服务商、API Key、（阿里云的）可选接入地址。有事要办才出现权限横幅；一行状态文字写清此刻连的是谁、多少钱。写作偏好、关于、检查更新、重看引导都在页底一键可达
+- **引导不走到能听写不算完**——首次启动五屏：欢迎（两种手势，就在右 Option 上）→ 权限 → 选你的 AI（两家并排的卡片，带申请 Key 的步骤说明，粘贴即验证）→ 就地试一句 → 它在哪。两项权限都给了、一家服务商验证通过，这两件事办完才算走完，设置页底部随时能重走一遍
+- **中英双语界面**——菜单栏里即时切换
 
 ## 快速上手（5 分钟）
 
 所有下载都在一个页面：**[Releases · latest](https://github.com/genli-ai/MicType/releases/latest)**
 
-| | 🍎 macOS（Apple Silicon，macOS 15+） | 🪟 Windows（Win10 22H2+/11，x64，公测） |
+| | 🍎 macOS（Apple Silicon，macOS 15+） | 🪟 Windows（Win10 22H2+/11，x64，公测，仍是本地识别） |
 |---|---|---|
 | **1. 下载运行** | `MicType-{版本}-arm64.zip` → 解压 → 把 `MicType.app` 拖进应用程序。被拦时：系统设置 → 隐私与安全性 → **「仍要打开」** | `MicType-{版本}-win-x64.zip` → 解压 → 运行 `MicType.exe`。SmartScreen 拦截点 **「更多信息 → 仍要运行」** |
-| **2. 一次性设置** | 首次启动的四屏引导会带着走完：先在**右 Option（⌥）**上学会两种手势，允许**麦克风**（当场看电平条）、开启**辅助功能**（系统设置 → 隐私与安全性）——识别模型在这期间后台下载——然后选「只用本地」还是「本地 + AI」（粘贴 Key 当场验证），最后就地试说一句，文字直接落进那一屏的框里。引导要到**真的能听写**才算走完；AI 那个决定一键就能跳过，不影响听写 | 右键托盘图标 → 设置 → 下载识别模型（约 250MB） |
+| **2. 一次性设置** | 首次启动的五屏引导会带着走完：先在**右 Option（⌥）**上学会两种手势，允许**麦克风**（当场看电平条）、开启**辅助功能**（系统设置 → 隐私与安全性），选 OpenAI 或阿里云并粘贴 Key（当场验证），最后就地试说一句，文字直接落进那一屏的框里。引导要到**真的能听写**才算走完 | 右键托盘图标 → 设置 → 下载识别模型（约 250MB） |
 | **3. 开口说话** | **轻点右 Option（⌥）**→ 说话 → 再点一下，文字出现在光标处 | **轻点右 Ctrl** → 说话 → 再点一下，文字出现在光标处 |
 
-语音识别默认在本机运行，只有你主动选择云端引擎时录音才会离开这台 Mac。可选：在设置里配 API Key，解锁 AI 润色和**按住说指令**（改写选中文字 / 代拟回复 / 随口提问）。升级：设置 → 关于 → **检查更新**——Mac 端会验签后就地安装并自动重启。
+语音识别跑在你配好的服务商那边——这一版没有本地识别，录音一定会离开这台 Mac。升级：设置 → 关于 → **检查更新**——Mac 端会验签后就地安装并自动重启。
 
 ## 安装
 
-要求：**Apple Silicon + macOS 15+**（从源码编译另需完整 Xcode——MLX 要编译 Metal 着色器）。
+要求：**Apple Silicon + macOS 15+**（从源码编译另需完整 Xcode）。
 
 **预编译包（推荐）**：从 [GitHub Releases](https://github.com/genli-ai/MicType/releases/latest) 下载 `MicType-{版本}-arm64.dmg`，打开后把 `MicType.app` 拖进应用程序。DMG **已通过 Apple 公证，打开零拦截、零警告**。（同时附有 `.zip`：Developer ID 签名但未公证，首次打开可能需要到 系统设置 → 隐私与安全性 → **「仍要打开」**。）
 
-**源码安装三步**：
+**源码安装两步**：
 
-1. 双击 `scripts/Generate Qwen Tokenizer.command`（一次性生成 tokenizer 资源）
-2. 双击 `Install MicType.command`（首次编译 5-15 分钟，会自动检查 Metal 工具链）
-3. 打开 App → 设置 → 本地识别 → 下载模型（约 860 MB，国内镜像加速）
+1. 双击 `Install MicType.command`。没有第三方依赖要编译，首次编译不到一分钟。
+2. 打开 App，跟着首次启动引导走，或者直接在设置里为 OpenAI / 阿里云粘贴一把 Key。
 
 ## 首次启动授权
 
@@ -303,74 +282,57 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 
 如果系统设置里显示已开启但快捷键仍失效：在辅助功能列表中删除 MicType，重新添加 `/Applications/MicType.app`，然后退出并重新打开 MicType。
 
-## 识别引擎
+## 识别与服务商
 
-**本地 Qwen3-ASR 是默认**，也是 设置 → **本地识别** 这一页的全部内容：麦克风、识别语言、本机模型与性能。口水词（嗯 / 呃 / um / uh / يعني…）由一张保守的内置表在本机删掉，**没有任何开关要配**。识别通过 MLX/Metal 跑在你的 Mac 上，录音不出机。模型自己会升级：出现更好或更新的模型时只给**一条**非模态提示，点一下完成下载与校验；旧模型要等新模型真正成功识别过一次、并且你重启过一次之后才会被删掉。
+MicType 没有本机识别模型。听写和语音指令全都跑在你在设置里配好的那家 AI 服务商上——选 **OpenAI** 或 **阿里云百炼（Model Studio）**，贴一把 Key，识别、润色、语音指令共用这一把。
 
-**云端识别是一个开关**，而且和你的 AI 配置放在一起：设置 → **云端 AI** → 选「阿里云百炼」或「OpenAI」→「识别也用云端」。默认关着，而且**开关记着你的选择**：换一家生效服务商它照样开着、跟着换过去——旁边那个单价写的永远是你此刻这一家的价钱，而且换过去之前 MicType 会自己先验一次它能不能用。这台 Mac 慢、录音长、或者要识别本地模型不擅长的语言时才值得开。开关旁边就写着两件事：**你说话的同时音频就在往上传**、**该服务商按音频秒数向你计费**；单价、先开通模型那一步、留存口径与出错回落本机，都在这一段标题旁边那颗 ⓘ 里。按 Esc 会立刻停止上传，但已经传出去的那几秒收不回来——关于 → 隐私 里写的就是这句话。
+- **按下热键那一刻连接就建好了。** 你还在说话时音频就以小帧持续往上传，松手只再发一条简短的 *finish* 信号——终稿在一秒以内回来，与你说了多久无关。悬浮窗里的灰字草稿来自服务商自己的中间结果，大约每隔几秒来一次。
+- **两家真的不一样。** 阿里云（`qwen3-asr-flash-realtime`）更快也更便宜，但识别阶段不认你的词汇表，专有名词要靠 AI 润色（永远带着你的词汇表）和「错写=正写」事后纠正。OpenAI（`gpt-live-transcribe`）更贵，但识别本身就认你的词汇表，人名、品牌、术语更稳。
+- **只有阿里云多一个可选的「接入地址」输入框**（OpenAI 没有）——留空，MicType 会自己找到并记住这把 Key 能用的最快那台，大约每周悄悄复查一次；填了，就只用你填的那一台，不再自动换。
+- **回落是静默的。** 某条连接不支持实时，或者请求失败，MicType 会重试，需要时回退成整段上传，而不是打断你正在说的话。
+- **只有一个验证动作。** 粘贴 Key 就会对服务商发一次真实请求做验证；验证不过的 Key 不会被存下来，状态行永远如实反映当下能不能用。
 
-- **一把 Key、一台主机，而且挑最快的那台。** 云端识别用的就是润色与指令那把百炼 Key、那一台接入地址。地址由 MicType 自己试出来：验证 Key 时拿免费的型号清单请求**并发**问遍候选主机，在认这把 Key 的那几台里留下**最快**的一台——不再有「国际站 / 中国站」可以选错，也没有任何按钮要你点。这件事比听起来重要：同一把 Key 常常被好几个区域端点同时接受，而在 UAE 实测里，两台都"能用"的主机跑同一段录音是 44.7 秒对 6.9 秒。选定的那台会变旧（你换个地方住、服务商调链路），所以 MicType 每周在启动时悄悄重跑一次这套探测，留下当时最快的那台。阿里云这一档另有一个**可选**的「接入地址」输入框：把百炼控制台 API Key 页上那一条填进去，MicType 就只用这一台——润色、指令、同步识别、实时流全走它，不再探测、不被每周复查换掉，失败也不会背着你换一台。值得知道的是：控制台上的业务空间 ID 与 Key 里 `sk-ws-…` 那一段并不相同，所以自动探测完全可能落在另一台上——两台都能用，而这个框是留给"我要自己定"的时候的。自动探测在**正常使用中也会跑**（填了那一栏就一趟都不跑）：一趟请求吃了 401、或者主机压根连不上，而这台主机又从来没试通过时，MicType 当场就去试——**按住说指令会等结果并重发一次**，**润色不等**（立刻把识别原文交给你，探测在后台把主机记下来，下一句就对了）。日常听写一次都不探测，直接用选定的那台。
-- **两家，而且真的不一样。** 阿里云（`qwen3-asr-flash-realtime`）松手 **0.23–0.28 秒**出终稿、约 **$0.13/小时**，但**不认词汇表**，专名怎么救都救不回来。OpenAI（`gpt-live-transcribe`）松手 **0.67–1.04 秒**、约 **$1/小时**——贵八倍——换来的是**它认你的词汇表**：实测里 MicType / Qwen 3.0 / Gen 五次全对，而那恰恰是便宜那一档最常错的地方。两个数字、两个单价都摆在开关旁边，因为这就是这个选择的全部内容。OpenAI 的实时端点是官方的 `api.openai.com`，所以把 OpenAI 档指向第三方网关的人根本看不到这个开关。
-- **阿里云这条路按下热键就把 WebSocket 建好。** 你还在说的时候音频就以 100 毫秒一帧传上去了，松手只再发一行 *finish*：**终稿在 0.23–0.28 秒内回来，而且与你说了多久无关**——4.5 秒、22 秒、71 秒、639 秒实测是同一个数。录完再整段上传不是这样：同一把 Key 上前三档分别是 1.2 秒、3.0 秒、8.6 秒。这条路上长录音**永不分段**，一条会话一直跑到 10 分钟上限——按时间切 commit 会在每个接缝丢一个字。
-- **灰字草稿改由服务端的中间结果供给**，约每两秒来一簇，所以**没下过本机模型的人也第一次看得到草稿**。本机模型留着只为回落，同一段音频不会在本机再解码一遍。
-- **回落是静默的，而且按「服务商 + 主机」分别记。** 某条链路不支持实时（握手被拒、回显的模型不是我们点的那个、或者 Key 被拒），MicType 就在这次运行里记住它，改走原来的整段上传（`qwen3-asr-flash` 或 `gpt-transcribe`），你正在说的话不受任何打扰。录音中途的偶发断线同样退回整段上传；松手之后才失败的那种，则把整段录音交给本机模型重跑一遍——两条路都不丢字。
-- **先验过再用，而且只有一个动作**：粘贴 Key 会立刻发 1 秒合成音到识别端点，连「模型有没有在百炼『模型广场』开通过」一起验到；把「识别也用云端」开关拨开时同样会自己跑一次，外加一次实时握手，并当场告诉你拿到的是哪一种——「边说边传，松手就有结果」，还是「这把 Key 不支持实时，录完再传」。**测不通开关自动弹回关闭**，开着的开关永远意味着它真的能用。
-- **跟着音频一起走的东西两家不同，而且两边都是有意为之。** OpenAI 那条路上，你的词汇表作为 `keywords`、识别语言作为语言提示一起送过去——这两样在那边都实测安全，提示给错了它也只会照着打、不会翻译。阿里云的实时端点相反：给了语言提示它会**把音频翻译过去**而不是照着打，所以 MicType 一个字都不送，语言一律交给自动检测。它的识别**也完全不认词汇表**——`vocabulary` / `hotwords` / `phrase_list` / `context` / `prompt` / `corpus.text` 逐个实测，没有一条能进到识别结果里——所以这一档的专名由润色（润色 prompt 带着你的词汇表）和「错写=正写」硬替换事后纠回来。要识别时就认词汇表，选 OpenAI 那一档。换成别家 AI 服务商时，识别自动回到本机。
-
-**识别语言**在 设置 → 本地识别 里设置。保持「自动」即可；一旦指定语言，长录音的每一段都会锁住这个语言，杜绝录到一半漂到别的语言。
-
-**阿拉伯语**可用：标准阿语（MSA）表现不错；海湾、埃及等**方言不做承诺**——界面上就这么写，不粉饰。有一条实测有效的用法：阿语口述里夹的英文品牌 / 产品名会被写成阿拉伯字母，**请把它们加进专有词汇表**（设置 → 输入 → 写作偏好，如 `Microsoft Excel`、`Power BI`）——词汇表会作为热词直接送进模型，正好治这个。阿语的标点主要由 AI 润色补齐。
+**阿拉伯语**可用：标准阿语（MSA）表现不错，其他方言不做承诺。阿语口述里夹的英文品牌 / 产品名可能被写成阿拉伯字母——把它们加进菜单栏 **「写作偏好…」** 里的专有词汇表即可解决。
 
 ## 长录音
 
-单次录音最长 **10 分钟**。90 秒以内的录音一次过，和以前完全一样；超过之后，它是在你**还在说的时候**按 45 秒一段、在自然停顿处切开逐段识别的——所以不管说了多久，松手后几乎立刻出结果，内存也是平的。某一段失败、或者你说到一半按了 Esc，**已经识别出来的内容照样插入并写进历史**。到达上限时 MicType 会收尾并把你说的**全部**插入，不是丢弃。
+单次录音最长 **10 分钟**，到点前会提前提醒。因为音频在你说话的同时就持续传给服务商，松手后几乎立刻拿到结果，不管说了多久——不存在一段单独的「长录音处理」。按 Esc 会立刻停止录音，但已经传出去的音频收不回来，所以拿到的就是截至那一刻已经识别出来的部分。
 
 ## AI：润色、指令与服务商
 
-菜单栏 🎤 → 设置 → **云端 AI**。这一页只有一个决定：**只用本地** 还是 **本地 + AI**。「只用本地」= 润色关掉、识别在本机——然后下面一个控件都不摆，因为确实没有别的要决定了。
+菜单栏 🎤 → 设置。整页就是：**服务商**（OpenAI 或阿里云）、**API Key**（粘贴当下就验证：正在验证… / 已连通 ✓ / 连不上 + 原因与下一步），阿里云再多一行可选的 **API Host**。下面一行状态文字写清此刻连的是谁、大约多少钱。没有别的要配了——模型、润色行为、联网搜索都是写死的选择，不是设置项：
 
-选了 AI，整页就是**两张卡片**，再无其他——每一行自己带栏名，整页只剩三颗 ⓘ（API Key、云端识别、联网搜索）。三个决定：
+- **每家一个模型，均衡偏快**：OpenAI 用 `gpt-5.6-luna`，阿里云用 `qwen3.8-flash`——润色和指令是每句话都要跑一次的东西，一个想好几秒才答的模型不如两秒内答的用着顺手。
+- **联网搜索默认开着**（服务商支持的话），只在按住说指令时才可能用到（轻点听写的润色永远不联网）——OpenAI 每次约 $0.01，阿里云按它自己的价目计费。
+- **OpenAI 一律走 Fast 档**——更低更稳的延迟，代价是约两倍的 token 单价，这句话只在 关于 → 隐私 里出现一次。
 
-- **一家服务商**：OpenAI、DeepSeek 或阿里云百炼。其他 OpenAI 兼容接口、以及跑在你自己机器上的**本机模型**（Ollama / LM Studio——不用 Key，什么都不出本机）改由「导入设置…」（设置 → 关于 → 导出 / 导入）配置，界面上不再摆地址与型号输入框；同一个文件也管那几个界面上已经不再摆的行为开关（悬浮窗位置、提示音、恢复剪贴板、实时草稿、静音自动停止：默认值就是合理的，你设过的值照旧生效）；不过**你正在用的那一档永远摆在选择器上**，随时能切回去。生效的那一档旁边写着**「正在使用 ✓」**；点别的一档只是预览它的 Key 与模型，**验证通过才真的换过去**。
-- **一把 Key**，在粘贴的当下就会被验证（正在验证… / 已连通 ✓ / 连不上 + 原因与下一步）；验证不过的 Key 不会被写进钥匙串。全 App 没有第二个 Key 输入框。阿里云这一档紧挨着它多一行 **API Host**：默认留空（地址由 MicType 自己挑），填了就只用你填的那一台；一改它就拿同一把 Key 对着新地址重验一次。
-- **一个「模型」下拉**——润色和指令永远用同一个型号，所以模型这件事只有这一个决定（分开设的入口已经没有了，老配置里不一致的那一对会在启动时拉回一致）。默认分别是 `gpt-5.6-luna`、`deepseek-flash`、`qwen3.8-flash`——每家均衡偏快的那一档：润色是每句话都要跑一次的东西，一个想十秒才答的模型不是更好的默认值。想要旗舰就在同一个下拉里，那几项标着「旗舰」。选「自定义…」可以手填任意型号名。
+菜单栏（或设置页底部）的 **「写作偏好…」** 是你真正能管的那部分：
 
-**「自定义规则」**不在这一页：它讲的是**你的话该怎么被写出来**，不是「调用哪家」，所以和专有词汇表一起住在 设置 → **输入** → **写作偏好**。一个多行框，整个 App 里只有这一处：写给 AI 的长期偏好（「署名用 Gen」「英文术语保留原文」），每次润色和每条语音指令都会带上它。选「只用本地」时它照样能填能存，框下面会写一句「开启 AI 后生效」。
+- **专有词汇表**：人名、品牌、术语的热词——OpenAI 的识别会用到它，两家的 AI 润色永远会用到它（阿里云那一档专名正是靠润色纠回来的）。
+- **自定义规则**：一个自由文本框，写给 AI 的长期偏好（「署名用 Gen」「英文术语保留原文」），每次润色和每条语音指令都会带上它。
 
-**联网搜索默认开**（服务商支持的话），单价就写在开关旁边（OpenAI 每次约 $0.01；阿里云按服务商自己的价目计费）。它**只在按住说指令时**才可能联网——轻点听写的润色永远不联网；不支持的服务商连开关都不摆，只留一行说明。**「优先处理」**（多付 token 单价换更稳的延迟）**只在 OpenAI 档出现**，因为只有它有这个档位。
-
-**「高级」**整段只留给没有内置型号清单的那两档（其他 OpenAI 兼容服务 / 本机模型）：型号名输入框、**「刷新模型列表」**与**「测试模型」**。三家官方档的型号来自下拉、Key 在粘的时候就验过了，所以那三档连这一段都不出现。
-
-润色档位：
-
-- **仅识别**：完全不联网，最快
-- **AI 润色（自适应）**：短句轻清理；长段口述自动重构
-
-语音指令与润色共用同一个服务商和 Key。
-
-两类「词汇」要区分：
-
-- **专有词汇表**：你在 设置 → 输入 → 写作偏好 里填的热词，保存在本机，下次识别立即生效。本地识别与 OpenAI 云端识别把它当热词；阿里云的识别器不认热词（那一档的专名由润色纠正，润色永远带着词汇表）
-- **模型 tokenizer/vocab**：Qwen 模型自带的分词词表，上游更新后需重新运行 `scripts/Generate Qwen Tokenizer.command` 并重新安装
+润色档位：仅识别（最快，不联网）或 AI 润色（自适应：短句轻清理，长段口述自动重构）——按每句话自动选择，不是你要手动挑的设置。
 
 ## 隐私
 
-- **本地是默认。** 语音识别在你的 Mac 上完成，录音**只有在你自己到 设置 → 云端 AI 里打开「识别也用云端」时**才会离开这台机器——一个默认关着的开关，旁边写明了费用和音频去向。
-- 只有运行 AI 润色或语音指令时，识别出的**文本**（绝不是录音）才会发给你配置的服务商。OpenAI 侧每次请求都带 `store: false`，你的文本不会被留在服务端 30 天。选「本机模型」的话，连文本也不出这台机器。
+- **你说话的同时，音频就实时传给你选定的服务商。** 这一版没有本地识别——这是为了实时云端识别的速度与质量做出的有意取舍，直接写在这里，不是一个要你自己找的开关。
+- 识别出的**文本**随后会发给同一家服务商做 AI 润色或执行语音指令。OpenAI 侧每次请求都带 `store: false`，你的文本不会被留在服务端 30 天。
 - API Key 存放在 macOS 钥匙串，不落明文文件，导出设置时也从不包含。
 - 听写历史只存在本机，随时可以关闭或清空。
-- 联网搜索在支持的服务商上**默认开着**，由服务商**按次计费**（一次大约一美分）——单价就写在开关旁边，而且只有按住说指令那条路才会联网。
-- 费用由你直接结给服务商，按他们的标准价计。MicType 不代理你的请求，也不加价。
+- 联网搜索在支持的服务商上默认开着，由该服务商按次计费——单价就在设置里写着，而且只有按住说指令那条路才会联网。
+- 费用由你直接结给服务商，按他们的标准价计：阿里云识别加润色大约 **$0.2/小时**，OpenAI 大约 **$1.1/小时**，都按你实际说话的时长算。MicType 不代理你的请求，也不加价。
+
+## 从旧版本升级
+
+如果你是从 4.x 版本升级过来的，MicType 首次启动会自动删掉旧的本机识别模型文件，并告诉你释放了多少空间。如果你之前用的是 DeepSeek 或本机模型，引导会带你走到「选你的 AI」那一屏，重新选 OpenAI 或阿里云——快捷键、词汇表、历史记录这些照旧不受影响。
 
 ## 常见问题
 
 **按快捷键没反应？** 检查 系统设置 → 隐私与安全性 → 辅助功能。从源码自行编译（ad-hoc 签名）每次重装后通常需要删除旧授权条目再重新添加；官方公证版签名身份稳定，升级不需要这一步。
 
-**识别专有名词不准？** 把常用人名、品牌、产品、术语写进 设置 → 输入 → 写作偏好 → 专有词汇表。它是本地识别与 OpenAI 云端识别的热词，并且永远参与 AI 润色纠错（阿里云的识别器不认热词，那一档靠润色这一步纠回来）。阿语口述里夹的英文品牌名同样靠它。
+**识别专有名词不准？** 把常用人名、品牌、产品、术语写进菜单栏 「写作偏好…」→ 专有词汇表。OpenAI 的识别会用到它，AI 润色永远会用到它（阿里云的识别器不认热词，那一档靠润色这一步纠回来）。阿语口述里夹的英文品牌名同样靠它。
 
-**模型下载慢？** 默认先走 hf-mirror.com，失败后回退 huggingface.co；已下载成功的文件会保留，重试可按文件续传。
-
-**润色失败？** 设置 → 云端 AI 里 Key 旁边直接显示连接状态，能分清是 Key 无效、模型名写错、所在地区不支持、被限流还是余额不足；设置概览那张「云端 AI」卡也会一行说清，不用点进去。不影响本地识别，失败时自动输出识别原文。
+**润色失败，或者根本识别不出来？** 设置里 Key 旁边直接显示连接状态，能分清是 Key 无效、地区不支持、被限流还是余额不足。识别本身现在也跑在服务商那边，所以连不上时听写也一起不工作，把 Key 修好即可。
 
 **文字没有输入到目标应用？** 处理期间切走窗口的话，MicType 会自动把目标应用拉回前台再粘贴；如果还是丢了，菜单栏 → 最近记录 里点一下即可复制找回。个别输入框（如密码框）禁止粘贴。
 
@@ -382,7 +344,7 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 
 ## 技术栈
 
-原生 Swift（菜单栏 App，SwiftUI 设置界面）· Qwen3-ASR / MLX 本地推理（长录音分段）· 可选云端识别（阿里云百炼，接入地址自动探测）· OpenAI Responses 接口与 OpenAI 兼容 Chat Completions（润色与指令）· macOS 钥匙串 · 行内双语 L10n。
+原生 Swift（菜单栏 App，SwiftUI 设置界面）· 实时云端识别（OpenAI `gpt-live-transcribe` / 阿里云百炼 `qwen3-asr-flash-realtime`，边说边传，阿里云接入地址自动探测）· OpenAI Responses 接口与阿里云 Chat Completions（润色与指令）· macOS 钥匙串 · 菜单栏即时切换的双语 L10n。
 
 目录结构见上方英文版。
 

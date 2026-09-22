@@ -34,6 +34,25 @@ final class SettingsCopyBudgetTests: XCTestCase {
     private static let editorZhLimit = 200
     private static let boundaryZhLimit = 34
 
+    /// 页面开头那一整句走的是另一条线（中文 ≤ 60 字 / 英文 ≤ 200）：它回答的是
+    /// "这一页是干什么的"，装不进 16 字，而硬压成 16 字只会得到一句谁也看不懂的口号。
+    /// 和引导里那些整句说明同一条线（OnboardingCopy.paragraphs）。
+    func testPageIntrosUseTheParagraphBudget() {
+        L10n.shared.language = .zh
+        for line in SettingsCopy.pageIntros {
+            XCTAssertFalse(line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            XCTAssertFalse(line.contains("\n"), "开场白也只有一段：\(line)")
+            XCTAssertLessThanOrEqual(line.count, 60, "页面开场白超预算（中文 ≤ 60 字）：\(line)")
+            // 它不该混进控件说明那张表：混进去就会被 16 字那条线拦下，然后被压成口号
+            XCTAssertFalse(SettingsCopy.allCaptions.contains(line), line)
+        }
+        L10n.shared.language = .en
+        for line in SettingsCopy.pageIntros {
+            XCTAssertLessThanOrEqual(line.count, 200, line)
+            XCTAssertFalse(CJKSourceScanner.containsFlagged(line), line)
+        }
+    }
+
     func testEveryCaptionFitsOneLine() {
         L10n.shared.language = .zh
         for caption in SettingsCopy.allCaptions {
@@ -65,9 +84,8 @@ final class SettingsCopyBudgetTests: XCTestCase {
     func testEachEditorStaysUnderItsPageBudget() {
         L10n.shared.language = .zh
         let pages: [(String, [String])] = [
-            ("输入", SettingsCopy.inputCaptions),
-            ("本地识别", SettingsCopy.recognitionCaptions),
-            ("云端 AI", SettingsCopy.cloudCaptions),
+            ("写作偏好", SettingsCopy.writingCaptions),
+            ("设置", SettingsCopy.cloudCaptions),
             // 首启动引导走同一条线，而且该更紧：第一次打开 MicType 的人最没耐心读字
             ("引导", OnboardingCopy.captions),
         ]
@@ -97,25 +115,7 @@ final class SettingsCopyBudgetTests: XCTestCase {
         XCTAssertEqual(SettingsCopy.captionLimit, Self.captionEnLimit)
     }
 
-    /// 模型目录那一行说明直接渲染在选择器下面，所以内置那几条同样要过这条线。
-    /// （目录是远端可更新的，线上发一条长的我们拦不住——那一头由渲染时的截断兜着。）
-    func testModelCatalogNotesFitTheCaptionBudget() {
-        // 量的是**代码里那张字面表**（内置目录）：缓存下来的远端目录不进单测，
-        // 否则这条线量的是这台机器上碰巧缓存了什么
-        L10n.shared.language = .zh
-        for model in ModelCatalog.builtIn.models {
-            let note = model.languagesNote.localized
-            XCTAssertFalse(note.contains("\n"), note)
-            XCTAssertLessThanOrEqual(note.count, Self.captionZhLimit,
-                                     "模型目录那一行超预算：\(model.repo) \(note)")
-        }
-        L10n.shared.language = .en
-        for model in ModelCatalog.builtIn.models {
-            let note = model.languagesNote.localized
-            XCTAssertLessThanOrEqual(note.count, Self.captionEnLimit, note)
-            XCTAssertFalse(CJKSourceScanner.containsFlagged(note), note)
-        }
-    }
+    // 模型目录那条说明的预算测试随目录一起删掉（5.0.0）：没有本机模型了。
 
     /// 价格那几句不进 captions 表（它们是代价不是解释），但**仍然只有一行**：
     /// 开关旁边一行价钱换了行，下面所有控件都得往下挪一格
@@ -149,19 +149,16 @@ final class SettingsCopyBudgetTests: XCTestCase {
         XCTAssertFalse(en.contains("both boxes"), en)
     }
 
-    /// 4.1.6：「自定义规则」和「词汇表」搬去了「输入」页，那两颗 ⓘ 也跟着记在那一页头上。
+    /// 5.0.0：「词汇表」与「自定义规则」搬去了自己的「写作偏好」页，那两颗 ⓘ 也跟着记在那里。
     /// 说明**必须和控件在同一页**——留在旧页的预算表里，那一页就能在没人察觉的情况下
     /// 再长出两段字来，而这条预算量的正是"一页一共说了多少"。
     func testMovedCopyIsBudgetedOnThePageThatShowsIt() {
-        XCTAssertTrue(SettingsCopy.inputInfos.contains(SettingsCopy.vocabularyInfo))
-        XCTAssertTrue(SettingsCopy.inputInfos.contains(SettingsCopy.customRulesInfo))
-        XCTAssertFalse(SettingsCopy.recognitionInfos.contains(SettingsCopy.vocabularyInfo))
+        XCTAssertTrue(SettingsCopy.writingInfos.contains(SettingsCopy.vocabularyInfo))
+        XCTAssertTrue(SettingsCopy.writingInfos.contains(SettingsCopy.customRulesInfo))
         XCTAssertFalse(SettingsCopy.cloudInfos.contains(SettingsCopy.customRulesInfo))
 
-        XCTAssertTrue(SettingsCopy.inputCaptions.contains(SettingsCopy.vocabularyArabicTip))
-        XCTAssertTrue(SettingsCopy.inputCaptions.contains(SettingsCopy.customRulesPlaceholder))
-        XCTAssertTrue(SettingsCopy.inputCaptions.contains(SettingsCopy.rulesNeedAI))
-        XCTAssertFalse(SettingsCopy.recognitionCaptions.contains(SettingsCopy.vocabularyArabicTip))
+        XCTAssertTrue(SettingsCopy.writingCaptions.contains(SettingsCopy.vocabularyHardReplace))
+        XCTAssertTrue(SettingsCopy.writingCaptions.contains(SettingsCopy.customRulesPlaceholder))
         XCTAssertFalse(SettingsCopy.cloudCaptions.contains(SettingsCopy.customRulesPlaceholder))
     }
 
@@ -170,21 +167,12 @@ final class SettingsCopyBudgetTests: XCTestCase {
     func testPreviewHintNamesTheProviderStillInUse() {
         for language in AppLanguage.allCases {
             L10n.shared.language = language
-            XCTAssertTrue(SettingsCopy.providerNotSetUp(current: "DeepSeek").contains("DeepSeek"),
-                          SettingsCopy.providerNotSetUp(current: "DeepSeek"))
+            XCTAssertTrue(SettingsCopy.providerNotSetUp(current: "OpenAI").contains("OpenAI"),
+                          SettingsCopy.providerNotSetUp(current: "OpenAI"))
         }
     }
 
-    /// 联网搜索那颗 ⓘ 只说这个开关管到哪儿；**单价不许搬进来**——价格是代价不是解释，
-    /// 它的唯一出处是 LLMCatalog，摆在开关旁边
-    func testWebSearchInfoDoesNotRestateThePrice() {
-        for language in AppLanguage.allCases {
-            L10n.shared.language = language
-            XCTAssertFalse(SettingsCopy.webSearchInfo.contains("0.01"), SettingsCopy.webSearchInfo)
-            XCTAssertFalse(SettingsCopy.webSearchInfo.contains(LLMCatalog.webSearchPriceNote),
-                           SettingsCopy.webSearchInfo)
-        }
-    }
+    // 联网搜索那颗 ⓘ 的预算测试随那个开关一起删掉（5.0.0）。
 
     // MARK: - 两种语言
 
@@ -216,38 +204,10 @@ final class SettingsCopyBudgetTests: XCTestCase {
         }
     }
 
-    // MARK: - 云端识别的代价说全了没有
+    // MARK: - 云端识别的代价
 
-    /// 这颗 ⓘ 是用户点下「识别也用云端」之前唯一能读到的代价说明。
-    /// 每一家都要说全：音频会上传、怎么计费、出错会回落本机。
-    func testCloudRecognitionInfoStatesEveryCost() {
-        L10n.shared.language = .zh
-        for provider in CloudASRProvider.allCases {
-            let zh = SettingsCopy.cloudRecognitionInfo(provider: provider)
-            XCTAssertTrue(zh.contains("传给"), zh)
-            XCTAssertTrue(zh.contains("计费"), zh)
-        }
-        // OpenAI 那一档必须点名它贵得多——两家差着近八倍，这是选择的一部分
-        XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .openai).contains("数倍"))
-        // 词汇表这件事两家必须各说各的实话（2026-09-22 真 Key 实测）：
-        // 阿里云实时识别对 vocabulary / hotwords / corpus.text 等全部无效，只能靠润色纠正；
-        // OpenAI 那一档认。用户按这个开关之前有权知道自己会失去什么。
-        XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .alibaba).contains("不认词汇表"))
-        XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .alibaba).contains("润色"))
-        XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .openai).contains("词汇表"))
-        XCTAssertFalse(SettingsCopy.cloudRecognitionInfo(provider: .openai).contains("不认词汇表"))
-
-        L10n.shared.language = .en
-        for provider in CloudASRProvider.allCases {
-            let en = SettingsCopy.cloudRecognitionInfo(provider: provider).lowercased()
-            XCTAssertTrue(en.contains("streams to"), en)
-            XCTAssertTrue(en.contains("billed"), en)
-        }
-        XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .alibaba)
-            .lowercased().contains("ignores your vocabulary"))
-        XCTAssertTrue(SettingsCopy.cloudRecognitionInfo(provider: .openai)
-            .lowercased().contains("several times"))
-    }
+    // 「识别也用云端」那颗 ⓘ 的预算测试随那个开关一起删掉（5.0.0）：
+    // 两家的计费与留存口径现在由 PrivacyCopyTests 钉着。
 
     /// 云端识别的单价**只有一个出处**（LLMCatalog.cloudASRPriceNote），而且必须摆在
     /// 开关旁边而不是 ⓘ 里：两家差着近八倍，那是选择本身的一部分
@@ -283,11 +243,11 @@ final class SettingsCopyBudgetTests: XCTestCase {
         }
     }
 
-    /// 这一页只剩三颗 ⓘ（用户 2026-09-22：太冗余）。段标题连同它们各自那颗一起没了，
-    /// 所以这里钉的是"没人再把 ⓘ 悄悄加回来"。
-    func testCloudPageKeepsOnlyThreeInfoPopovers() {
-        // API Key（两档）+ 云端识别（两家）+ 联网搜索 + 高级（只在自定义/本机那两档出现）
-        XCTAssertEqual(SettingsCopy.cloudInfos.count, 6, "\(SettingsCopy.cloudInfos)")
+    /// 这一页只剩一颗 ⓘ（5.0.0：整页只有服务商 / Key / 接入地址三行）。
+    /// 这里钉的是"没人再把 ⓘ 悄悄加回来"。
+    func testCloudPageKeepsOnlyOneInfoPopover() {
+        // 5.0.0 起整页只有一颗 ⓘ：API Key（阿里云那一档多一句"接入地址在哪儿找"，所以是两份文案）
+        XCTAssertEqual(SettingsCopy.cloudInfos.count, 2, "\(SettingsCopy.cloudInfos)")
     }
 
     // MARK: - 隐私文案只在关于页与引导页出现
@@ -404,8 +364,10 @@ final class SettingsCopyBudgetTests: XCTestCase {
             }
         }
         // 扫不到东西的话上面那个交集永远是空的，这条测试就成了摆设——先证明它有活干
-        XCTAssertGreaterThan(allTitles.count, 3, "没扫到段标题，抓取方式该修了")
-        XCTAssertGreaterThan(allLabels.count, 5, "没扫到栏名，抓取方式该修了")
+        // 5.0.0 之后整个设置窗口只剩两个段标题（词汇表 / 自定义规则，都在写作偏好那一页）
+        // ——门槛跟着降；再低就说明抓取方式坏了，而不是界面又简化了
+        XCTAssertGreaterThanOrEqual(allTitles.count, 2, "没扫到段标题，抓取方式该修了")
+        XCTAssertGreaterThan(allLabels.count, 2, "没扫到栏名，抓取方式该修了")
         XCTAssertTrue(offenders.isEmpty, """
             段标题和它下面那一行的栏名逐字相同：\(offenders.joined(separator: "、"))
             —— 删掉段标题，把它那颗 ⓘ 搬到那一行的右端（4.3.2 的版式）。
@@ -413,13 +375,14 @@ final class SettingsCopyBudgetTests: XCTestCase {
     }
 
     /// 关于页仍然逐句摆着那几句——这条是上面那条的反面：收口不能收成"哪儿都不说了"。
-    /// 4.1.6 起是七句（多了 Fast 档那一条：界面上已经没有那个开关，多花的钱只剩这一处写着）
+    /// 5.0.0 起是八句（多了「听写历史只在本机」那一条：别的东西都上云之后，
+    /// 用户很容易以为历史也跟着上去了）
     func testAboutPanelStillRendersEveryPrivacyLine() throws {
         let source = try String(contentsOf: Self.sourcesDirectory.appendingPathComponent("SettingsEditors.swift"),
                                 encoding: .utf8)
         XCTAssertTrue(Self.stripComments(source).contains("PrivacyCopy.allLines"),
                       "关于页必须仍然把隐私文案逐句摆出来")
-        XCTAssertEqual(PrivacyCopy.allLines.count, 7)
+        XCTAssertEqual(PrivacyCopy.allLines.count, 8)
     }
 
     // MARK: - 工具
