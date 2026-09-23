@@ -35,6 +35,11 @@ struct MainSettingsPage: View {
     /// 选择器上**正在看**的那一档，不是生效的那一档（见 adoptIfUsable）
     @State private var pendingProvider = Settings.shared.llmProvider
 
+    /// 上半那张表量出来有多高、底栏有多高。两个数加起来才是这一页要报给窗口的高度
+    /// （底栏 5.0.3 起在表**外面**，见 body）
+    @State private var formHeight: CGFloat = 0
+    @State private var footerHeight: CGFloat = 0
+
     @State private var micOK = Permissions.microphoneGranted
     @State private var axOK = Permissions.isAccessibilityTrusted
     /// 权限轮询：用户是去系统设置里勾的，勾完不会回来通知我们。
@@ -66,45 +71,79 @@ struct MainSettingsPage: View {
         }
     }
 
+    /// 这一页要报给窗口的高度。
+    ///
+    /// **不许在两家之间跳**（用户 2026-09-23 拍板）：阿里云多一行「API Host」，
+    /// 于是点一下服务商选择器，整扇窗就矮下去 45 点又长回来——而那一下什么内容都没变，
+    /// 只是少了一行。所以取一个**够装下较高那一家**的地板（overviewContentHeight），
+    /// OpenAI 那一档多出来的空当留在表和底栏之间，底栏自己钉在窗底不动。
+    private var naturalHeight: CGFloat {
+        // +1：底栏上面那条 Divider
+        max(formHeight + footerHeight + 1, SettingsWindowSizing.overviewContentHeight)
+    }
+
     var body: some View {
-        // MeasuredFormPage：窗口高度跟着这一页的内容走（见 SettingsWindowSizing）
-        MeasuredFormPage(route: .overview) {
-            Form {
-                if !micOK || !axOK {
-                    Section { permissionsBanner }
+        VStack(spacing: 0) {
+            // 上半：控件。**滚动容器占满剩下的高度**，所以底栏永远贴着窗底
+            ScrollView {
+                Form {
+                    if !micOK || !axOK {
+                        Section { permissionsBanner }
+                    }
+                    // 服务商 → Key →（阿里云的）接入地址：与引导 ③ **同一个视图**
+                    // （CloudSetupCore），顺序、标题、说明、那颗 ⓘ 全都只写一处。
+                    CloudSetupCore(style: .settings,
+                                   selected: selected,
+                                   inUse: inUseProvider,
+                                   provider: providerBinding,
+                                   showsNotSetUpHint: !hasStoredKey,
+                                   onKeyStatus: { _ in
+                                       // 钥匙串不是 @AppStorage：验证通过之后这一页要自己重算，
+                                       // 并且立刻把这一档采纳为生效服务商
+                                       keychainTick &+= 1
+                                       adoptIfUsable(selected)
+                                   }) {
+                        providerNotices
+                    }
                 }
-                // 服务商 → Key →（阿里云的）接入地址：与引导 ③ **同一个视图**
-                // （CloudSetupCore），顺序、标题、说明、那颗 ⓘ 全都只写一处。
-                CloudSetupCore(style: .settings,
-                               selected: selected,
-                               inUse: inUseProvider,
-                               provider: providerBinding,
-                               showsNotSetUpHint: !hasStoredKey,
-                               onKeyStatus: { _ in
-                                   // 钥匙串不是 @AppStorage：验证通过之后这一页要自己重算，
-                                   // 并且立刻把这一档采纳为生效服务商
-                                   keychainTick &+= 1
-                                   adoptIfUsable(selected)
-                               }) {
-                    providerNotices
-                }
-                Section { footer }
+                .formStyle(.grouped)
+                .frame(width: SettingsWindowSizing.width)
+                // Form(.grouped) 自带一层滚动，不 fixedSize 的话问它"你多高"永远等于窗口那么高
+                .fixedSize(horizontal: false, vertical: true)
+                .background(GeometryReader { geo in
+                    Color.clear.onAppear { formHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { _, height in formHeight = height }
+                })
             }
-            .formStyle(.grouped)
-            // 回到这一页时选择器要停在**正在用**的那一档上（上一次可能只是预览到一半就走了）
-            .onAppear {
-                pendingProvider = inUseProvider
-                startPermissionPolling()
-            }
-            .onDisappear { stopPermissionPolling() }
-            // 关窗时这一页并不会被销毁（窗口复用），所以停轮询这件事只能由窗口来说
-            .onChange(of: windowState.isOpen) { _, open in
-                if open { startPermissionPolling() } else { stopPermissionPolling() }
-            }
-            // 从系统设置回来（刚勾完权限）时重问一次
-            .onReceive(NotificationCenter.default.publisher(
-                for: NSApplication.didBecomeActiveNotification)) { _ in refreshPermissions() }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxHeight: .infinity)
+
+            Divider()
+            footer
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .background(GeometryReader { geo in
+                    Color.clear.onAppear { footerHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { _, height in footerHeight = height }
+                })
         }
+        .frame(width: SettingsWindowSizing.width)
+        // 窗口高度走的还是原来那条路（SettingsPageHeightKey → SettingsView → 窗口），
+        // 只是这一页自己算这个数：表 + 底栏，再垫到那个地板上
+        .preference(key: SettingsPageHeightKey.self, value: [.overview: naturalHeight])
+        // 回到这一页时选择器要停在**正在用**的那一档上（上一次可能只是预览到一半就走了）
+        .onAppear {
+            pendingProvider = inUseProvider
+            startPermissionPolling()
+        }
+        .onDisappear { stopPermissionPolling() }
+        // 关窗时这一页并不会被销毁（窗口复用），所以停轮询这件事只能由窗口来说
+        .onChange(of: windowState.isOpen) { _, open in
+            if open { startPermissionPolling() } else { stopPermissionPolling() }
+        }
+        // 从系统设置回来（刚勾完权限）时重问一次
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in refreshPermissions() }
     }
 
     /// 服务商下面的边界状态。正常情况下这里一个字都不显示。
@@ -217,9 +256,13 @@ struct MainSettingsPage: View {
             .pickerStyle(.inline)
             .labelsHidden()
         } label: {
-            // 这一项在一排链接里，颜色得跟着它们走：Menu 不认 .buttonStyle(.link)，
-            // 不上色的话它在那一排里是唯一一个黑字，看着像个标题而不是能点的东西
+            // 5.0.3：和左右四条链接**完全一样的字**——字号、颜色都写在标签自己身上。
+            // Menu 不继承外面 HStack 上的 .font(.caption) 与 .buttonStyle(.link)
+            //（用户 2026-09-23：这一项比旁边大一号），而换成 .menuStyle(.button) 又会
+            // 给它画一个按钮底框，在一排纯链接里更扎眼。所以留 .borderlessButton（没有底框），
+            // 字号和颜色自己说。
             Text(tr("语言", "Language"))
+                .font(.caption)
                 .foregroundColor(.accentColor)
         }
         .menuStyle(.borderlessButton)

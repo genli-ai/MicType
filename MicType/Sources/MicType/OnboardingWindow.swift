@@ -299,8 +299,12 @@ enum OnboardingCopy {
 enum OnboardingWindowSizing {
     /// 宽度不变（整套文案的换行都是按它调的）
     static let width: CGFloat = 560
-    /// 下限：比这更矮的窗口里连底部那排按钮都摆不开
-    static let minContentHeight: CGFloat = 220
+    /// 下限。**5.0.3 从 220 提到 420**（用户 2026-09-23 实机反馈"重看引导打开的窗口太小"）：
+    /// 五屏的自然高度是 258–342，按内容给的话，第一次打开 MicType 的人看到的是一扇
+    /// 比设置窗口还矮的小框——"刚好装下"和"像回事"是两件事，而这扇窗是这个产品的门面。
+    /// 矮于内容的那一屏照常长高（这是地板不是天花板），多出来的高度留在内容下面，
+    /// 底部那排按钮仍然钉在窗底（见 OnboardingView 的 VStack）。
+    static let minContentHeight: CGFloat = 420
     /// 离屏幕可见区域上下各留的余量：窗口顶到菜单栏、底到程序坞边上，既难拖也难看
     static let screenMargin: CGFloat = 120
 
@@ -381,7 +385,11 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
 
     /// 真正改窗口的那一下。**顶边不动**（算术在 SettingsWindowSizing.frame 里，单测钉死）。
     /// 高度取整个 OnboardingView 的自然高度（fittingSize 已经含了上下留白和底部那排按钮）。
-    private func applyFittedHeight() {
+    ///
+    /// - immediately: 窗口还没露面，当场量、当场定尺寸（不排队、不做动画）。
+    ///   「重看引导」那条路非它不可：那一刻 hosting 刚建好、或者停在上一轮那一屏的高度上，
+    ///   等 0.05 秒那一跳的话，用户先看到的是一扇 420 的空窗然后才跳一下（5.0.2 的表现）。
+    private func applyFittedHeight(immediately: Bool = false) {
         guard let window = window, let hosting = hosting else { return }
         // 先按目标宽度排一遍版：换行是按宽度算的，不排就量不准
         hosting.view.setFrameSize(NSSize(width: OnboardingWindowSizing.width,
@@ -405,6 +413,11 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
         lastAppliedContentHeight = content
         let target = SettingsWindowSizing.frame(current: window.frame, frameHeight: frameHeight,
                                                 visible: visible)
+        // 还没露面：直接定好，别让用户看见窗口自己跳一下
+        guard !immediately else {
+            window.setFrame(target, display: false)
+            return
+        }
         guard !SettingsNavigator.reduceMotion else {
             window.setFrame(target, display: true)
             return
@@ -497,6 +510,11 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
             pageObserver = model.$page.sink { [weak self] _ in self?.scheduleRemeasure() }
         }
         window?.title = tr("欢迎使用 MicType", "Welcome to MicType")
+        // **先量再显示**（5.0.3）：窗口这会儿还是上一轮（或刚建出来的下限）那个高度，
+        // 而这一轮多半停在另一屏上。等那条 0.05 秒的防抖来改，用户会先看见一扇不对的窗。
+        // 排一次版再量一次——这条路和防抖那条走的是同一个函数，只是不排队、不做动画。
+        resizeWork?.cancel()
+        applyFittedHeight(immediately: true)
         // 「试一下」那一页的直接落字通道：窗口一开就挂上，关掉时摘下来。
         // 挂着期间 DictationController 交付前会先问一句 isOnTryItPage，
         // 所以停在别的页、或窗口没显示时行为和从前完全一样。
