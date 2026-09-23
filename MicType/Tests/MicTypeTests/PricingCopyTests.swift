@@ -168,6 +168,36 @@ final class PricingCopyTests: XCTestCase {
         }
     }
 
+    /// **两家都要有「去申请 Key ↗」**（5.0.4，用户 2026-09-23 实机反馈：阿里云那一档
+    /// 右边什么都没有）。阿里云给的是两个站的小菜单——和引导 ③ 第一步同两条链接、同两个名字，
+    /// 而且那两个名字中英一致（它们是站点自己的名字）。
+    func testBothProvidersOfferAKeyConsoleEntry() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            switch LLMCatalog.keyConsole(for: .openai) {
+            case .single(let url):
+                XCTAssertEqual(url, LLMCatalog.apiKeyConsoleURL(for: .openai))
+                XCTAssertTrue(url.hasPrefix("https://"), url)
+            case .choices(let links):
+                XCTFail("OpenAI 只有一条地址，不该弹菜单：\(links)")
+            }
+            switch LLMCatalog.keyConsole(for: .qwen) {
+            case .single(let url):
+                XCTFail("阿里云是两个站两套账号，不许替用户挑一个：\(url)")
+            case .choices(let links):
+                XCTAssertEqual(links.map(\.label), ["International", "China"])
+                XCTAssertEqual(links.map(\.url), [LLMCatalog.alibabaConsoleInternational,
+                                                  LLMCatalog.alibabaConsoleChina])
+                // 和引导 ③ 第一步是同两条链接（同一个事实只写一处）
+                XCTAssertEqual(links, LLMCatalog.consoleSteps(for: .qwen).first?.links)
+            }
+            XCTAssertFalse(LLMCatalog.getAKeyLabel.isEmpty)
+        }
+        L10n.shared.language = .en
+        XCTAssertFalse(CJKSourceScanner.containsFlagged(LLMCatalog.getAKeyLabel),
+                       LLMCatalog.getAKeyLabel)
+    }
+
     /// OpenAI 那三步各去各的页面：充值和建 Key 是两个地方，合成一个链接等于让人自己找
     func testOpenAIStepsPointAtDistinctPages() {
         let urls = LLMCatalog.consoleSteps(for: .openai).flatMap { $0.links.map(\.url) }

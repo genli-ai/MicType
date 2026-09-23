@@ -160,15 +160,42 @@ enum LLMCatalog {
 
     // MARK: - 去哪儿申请 Key / 固定的 Key 与费用说法
 
-    /// 「去申请 Key ↗」指向的页面。nil = 我们没有一条可以打包票的地址
-    /// （Qwen 的控制台随区域不同；自定义端点与本机模型压根不是一家服务商）——
-    /// 与 billingURL 同一条纪律：**宁可不给按钮，也不塞一个猜出来的链接**。
+    /// 「去申请 Key ↗」指向的页面。nil = 这一家没有**唯一**一条可以打包票的地址
+    /// （阿里云是两个站两套账号，见 keyConsole）。
     static func apiKeyConsoleURL(for provider: LLMProvider) -> String? {
         switch provider {
         case .openai: return "https://platform.openai.com/api-keys"
         case .qwen: return nil
         }
     }
+
+    /// Key 输入框右边那颗「去申请 Key ↗」点下去会怎样。
+    ///
+    /// 5.0.4 加的（用户 2026-09-23 实机反馈：阿里云那一档右边**什么都没有**）。
+    /// 4.x 起 `apiKeyConsoleURL` 对阿里云返回 nil，理由是"两个站我们不敢替他挑"——
+    /// 可结果不是"少一个猜出来的链接"，是**这一档的用户压根没有入口**，
+    /// 而他恰恰是最需要入口的那个（OpenAI 那一档的人多半已经有 Key 了）。
+    /// 不敢替他挑就让他挑：一颗按钮，点开两项，和引导 ③ 第一步是同两条链接。
+    enum KeyConsole {
+        /// 一个地址，点了直接开
+        case single(String)
+        /// 好几个入口，点开让他自己认（阿里云的两个站）
+        case choices([ConsoleStep.Link])
+    }
+
+    static func keyConsole(for provider: LLMProvider) -> KeyConsole {
+        switch provider {
+        case .openai:
+            return .single(apiKeyConsoleURL(for: .openai)!)
+        case .qwen:
+            // 和引导 ③ 第一步**同两条链接、同两个名字**（那两个名字中英一致，见 consoleSteps）
+            return .choices([.init(label: "International", url: alibabaConsoleInternational),
+                             .init(label: "China", url: alibabaConsoleChina)])
+        }
+    }
+
+    /// 那颗按钮上的字（设置页与引导 ③ 共用，只写一处）
+    static var getAKeyLabel: String { tr("去申请 Key ↗", "Get a key ↗") }
 
     // MARK: - 引导 ③ 的申请步骤（编号 + 每步一个「打开 ↗」）
 

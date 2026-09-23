@@ -222,8 +222,13 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, ObservableObje
 
     private var window: NSWindow?
     private var langObserver: AnyCancellable?
-    /// 最近一次量到的内容高度（顶栏 + 当前页）。nil = 还没量到过
-    private var pendingContentHeight: CGFloat?
+    /// 各页最近报上来的自然高度（**不含顶栏**）。
+    /// 存在控制器这一层而不是视图的 @State 里，是 5.0.4 的要害：视图那边
+    /// 「写进 @State 再当场读回来」读到的可能还是上一次的值（SwiftUI 不保证），
+    /// 于是窗口会按别的一页、甚至按上一次的高度去开（引导那边同一个坑，5.0.2 修过）。
+    private var pageHeights: [SettingsRoute: CGFloat] = [:]
+    /// 顶栏（返回 + 页名 + 分隔线）的高度。概览没有顶栏，它是 0
+    private var chromeHeight: CGFloat = 0
     /// 防抖：一次翻页会连着报好几个高度（旧页退场、新页登场、状态行冒出来），
     /// 每一条都跑一次动画的话，窗口会在半秒里抖三下
     private var resizeWork: DispatchWorkItem?
@@ -234,19 +239,41 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, ObservableObje
 
     // MARK: 高度跟着内容走
 
-    /// 当前这一页量出来的高度。视图层每次变化都会叫这里，具体改不改窗口由防抖那一跳决定。
-    func fitContentHeight(_ natural: CGFloat) {
-        guard natural > 0 else { return }
-        pendingContentHeight = natural
+    /// 某一页量出来的自然高度（视图层从 preference 的闭包参数里直接交过来，不经过 @State）
+    func report(pageHeight: CGFloat, for route: SettingsRoute) {
+        guard pageHeight > 0, pageHeights[route] != pageHeight else { return }
+        pageHeights[route] = pageHeight
+        scheduleApply()
+    }
+
+    /// 顶栏那一条的高度（同上，直接来自闭包参数）
+    func report(chromeHeight height: CGFloat) {
+        guard chromeHeight != height else { return }
+        chromeHeight = height
+        scheduleApply()
+    }
+
+    /// 翻页 / 内容变化之后重排一次窗口
+    func scheduleApply() {
         resizeWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.applyPendingHeight() }
+        let work = DispatchWorkItem { [weak self] in self?.applyHeight() }
         resizeWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
     }
 
-    /// 真正改窗口的那一下。**顶边不动**（算术在 SettingsWindowSizing.frame 里，单测钉死）。
-    private func applyPendingHeight() {
-        guard let window = window, let natural = pendingContentHeight else { return }
+    /// 真正改窗口的那一下。**顶边不动**（算术在 SettingsWindowSizing.frame 里，单测钉死），
+    /// **该缩就缩**——用户 2026-09-23 的实机截图里那扇 700 点高的空窗，就是"只长不缩"
+    /// 加上一个来路不明的初始尺寸（系统的窗口状态恢复把 4.x 那会儿的高度还了回来）。
+    ///
+    /// - immediately: 窗口还没露面（show 那一下）。当场定好、不做动画，
+    ///   免得用户先看见一扇高度不对的窗再跳一下。
+    private func applyHeight(immediately: Bool = false) {
+        guard let window = window else { return }
+        let route = SettingsNavigator.shared.route
+        // 这一页还没量过：概览有自己的地板，别拿下限去开（那是一扇矮得离谱的窗）
+        let page = pageHeights[route]
+            ?? (route == .overview ? SettingsWindowSizing.overviewContentHeight : 0)
+        let natural = page > 0 ? page + (route == .overview ? 0 : chromeHeight) : 0
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? window.frame
         let content = SettingsWindowSizing.contentHeight(natural: natural,
                                                          visibleScreenHeight: visible.height)
@@ -265,8 +292,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, ObservableObje
         // 半个点的差别不值一次动画（浮点测量每帧都会抖一点点）
         guard abs(target.height - window.frame.height) > 0.5
                 || abs(target.origin.y - window.frame.origin.y) > 0.5 else { return }
-        guard !SettingsNavigator.reduceMotion else {
-            window.setFrame(target, display: true)
+        guard !immediately, !SettingsNavigator.reduceMotion else {
+            window.setFrame(target, display: !immediately)
             return
         }
         NSAnimationContext.runAnimationGroup { context in
@@ -291,6 +318,12 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, ObservableObje
             let w = NSWindow(contentViewController: hosting)
             w.styleMask = [.titled, .closable, .miniaturizable]
             w.isReleasedWhenClosed = false
+            // **不许有第二个人决定这扇窗多高**（5.0.4）：系统的窗口状态恢复会把上一次
+            // （很可能是 4.x 那会儿的 520 / 760）的尺寸还回来，而这一版的窗口只在
+            // 内容变化时才动——两者一叠，用户打开设置看到的就是一扇 700 点高、
+            // 里面只有三行控件的空窗（2026-09-23 实机截图）。
+            w.isRestorable = false
+            w.setFrameAutosaveName("")
             // 关窗要有人知道：里面那一页不会跟着消失，得由这里告诉它停手
             w.delegate = self
             // 先按下限开着，量到真实高度立刻跟上（第一次测量会顺手居中一次）
@@ -304,6 +337,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, ObservableObje
             }
         }
         window?.title = tr("MicType 设置", "MicType Settings")
+        // **先定高度再露面**：这一刻窗口可能还停在上一次那一页的高度上（或者刚建出来的下限）。
+        // 等那条 0.05 秒的防抖来改，用户会先看见一扇不对的窗再跳一下。
+        resizeWork?.cancel()
+        applyHeight(immediately: true)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
         isOpen = true
@@ -321,10 +358,9 @@ struct SettingsView: View {
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var nav = SettingsNavigator.shared
 
-    /// 每一页最近报上来的自然高度。翻页时新旧两页都在报，所以按路由存
-    @State private var pageHeights: [SettingsRoute: CGFloat] = [:]
-    /// 顶栏 + 分隔线这一条的高度（概览没有顶栏，它是 0）
-    @State private var chromeHeight: CGFloat = 0
+    // 量到的高度**不在这一层存**（5.0.4）：它们直接从 preference 的闭包参数
+    // 交给窗口控制器（见下面那两个 onPreferenceChange）。存一份在 @State 里再读回来，
+    // 正是"窗口按上一页的高度开"那个坑。
     /// 这扇窗归不归我们管尺寸。快照测试直接把某一页塞进自己的 NSWindow 里渲染，
     /// 那时候没有设置窗口可改——**绝不能**让它去动一扇不属于这次渲染的窗口
     var resizesWindow: Bool = true
@@ -346,24 +382,24 @@ struct SettingsView: View {
         .frame(width: SettingsWindowSizing.width)
         // 滑动时别把半页画到窗口外面
         .clipped()
+        // **值直接从闭包参数交给控制器**（5.0.4）：先写 @State 再当场读回来那一步，
+        // SwiftUI 不保证读到的是刚写进去的值——引导那边同一个坑让窗口按上一屏开
+        //（5.0.2 修过），这一页的表现则是"打开设置是一扇高度不对的窗"。
         .onPreferenceChange(SettingsPageHeightKey.self) { heights in
-            pageHeights = heights
-            pushHeightToWindow()
+            guard resizesWindow else { return }
+            for (route, height) in heights {
+                SettingsWindowController.shared.report(pageHeight: height, for: route)
+            }
         }
         .onPreferenceChange(SettingsChromeHeightKey.self) { height in
-            chromeHeight = height
-            pushHeightToWindow()
+            guard resizesWindow else { return }
+            SettingsWindowController.shared.report(chromeHeight: height)
         }
         // 翻页这一下本身也要改窗口：目的页的高度可能早就量好了（它上一次来过）
-        .onChange(of: nav.route) { _, _ in pushHeightToWindow() }
-    }
-
-    /// 窗口该有多高 = 顶栏 + **目的页**的自然高度。
-    /// 按 nav.route 取而不是取最大值：滑动期间两页并存，取最大的话从长页退回概览时，
-    /// 窗口会卡在长页那个高度上不下来。
-    private func pushHeightToWindow() {
-        guard resizesWindow, let page = pageHeights[nav.route], page > 0 else { return }
-        SettingsWindowController.shared.fitContentHeight(chromeHeight + page)
+        .onChange(of: nav.route) { _, _ in
+            guard resizesWindow else { return }
+            SettingsWindowController.shared.scheduleApply()
+        }
     }
 
     @ViewBuilder

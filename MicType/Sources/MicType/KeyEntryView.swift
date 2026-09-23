@@ -394,16 +394,35 @@ struct KeyEntryView: View {
             .onSubmit { verifyNow() }
     }
 
-    /// 「去申请 Key ↗」：只有我们能打包票的那两家有（见 LLMCatalog.apiKeyConsoleURL）
+    /// 「去申请 Key ↗」。**两家都有**（5.0.4）：阿里云那一档点开是两个站的小菜单，
+    /// 因为那两个站是两套账号体系，我们无从得知他在哪一边（见 LLMCatalog.keyConsole）。
+    /// 5.0.4 之前阿里云这一档右边是空的——而最需要这个入口的正是他。
     @ViewBuilder
     private var consoleLink: some View {
-        if let url = LLMCatalog.apiKeyConsoleURL(for: provider) {
-            Button(tr("去申请 Key ↗", "Get a key ↗")) {
-                guard let link = URL(string: url) else { return }
-                NSWorkspace.shared.open(link)
+        switch LLMCatalog.keyConsole(for: provider) {
+        case .single(let url):
+            Button(LLMCatalog.getAKeyLabel) { open(url) }
+                .fixedSize()
+        case .choices(let links):
+            Menu {
+                ForEach(links, id: \.url) { link in
+                    Button(link.label) { open(link.url) }
+                }
+            } label: {
+                Text(LLMCatalog.getAKeyLabel)
             }
+            // 和左边那颗按钮长得一样（默认那一档就是普通按钮的样子），
+            // 只是点下去先问一句"哪个站"
+            .menuStyle(.button)
+            .menuIndicator(.hidden)
             .fixedSize()
         }
+    }
+
+    private func open(_ url: String) {
+        guard let link = URL(string: url) else { return }
+        Log.info("Key console opened host=\(link.host ?? "?")")
+        NSWorkspace.shared.open(link)
     }
 
     private func load() {
