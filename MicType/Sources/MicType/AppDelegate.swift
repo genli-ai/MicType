@@ -33,6 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// "找不到它在哪"这条反馈的根子就是它从来不在 Dock 里。不给开关（用户点名不要）。
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.startup()
+        // 5.0.5 起听写历史改成按天的纯文本（Logs/MicType/Transcripts）：旧的
+        // Application Support/history.json 再也没人读，留着只是一份没人记得的明文历史
+        HistoryStore.shared.removeLegacyJSONIfNeeded()
 
         // 主菜单：⌘C / ⌘V / ⌘A 的来路（用户 2026-09-22 反馈"Key 框不能粘贴"的根因，见 AppMenu）
         NSApp.mainMenu = AppMenu.build()
@@ -151,7 +154,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 自家已经有窗口开着：把它带到前台就够。
         // **问两个窗口控制器，不看系统给的 flag**：悬浮窗也是一扇窗，正在听写时
         // 它会让 flag 变成真，于是点 Dock 图标什么都不会发生。
-        //（历史窗口 5.0.2 整个删掉了：听写记录照常写 history.json，界面不再有它的窗口。）
+        //（历史窗口 5.0.2 整个删掉了：听写记录照常落盘（5.0.5 起是 Transcripts 里按天的
+        //  纯文本），界面不再有它的窗口。）
         let anyWindowOpen = OnboardingWindowController.shared.isOpen
             || SettingsWindowController.shared.isOpen
         guard !anyWindowOpen else {

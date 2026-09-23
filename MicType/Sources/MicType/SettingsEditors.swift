@@ -73,13 +73,15 @@ struct MainSettingsPage: View {
 
     /// 这一页要报给窗口的高度。
     ///
-    /// **不许在两家之间跳**（用户 2026-09-23 拍板）：阿里云多一行「API Host」，
-    /// 于是点一下服务商选择器，整扇窗就矮下去 45 点又长回来——而那一下什么内容都没变，
-    /// 只是少了一行。所以取一个**够装下较高那一家**的地板（overviewContentHeight），
-    /// OpenAI 那一档多出来的空当留在表和底栏之间，底栏自己钉在窗底不动。
+    /// **就是内容本身的高度，没有地板**（5.0.5）。5.0.3 在这里垫了个 320 的地板，
+    /// 理由是"换服务商时窗口不许跳"；那个数字是从快照量来的，而快照里两条权限横幅
+    /// 永远是亮的（离屏渲染拿不到这台机器的授权状态）。于是真机上——权限都给了、
+    /// 横幅不出现——这一页只有两三行控件，却被撑到 320，底栏上面空着一大块，
+    /// 正是用户 2026-09-23 截图里那扇窗。换服务商时矮 45 点再长回来是诚实的
+    /// （阿里云确实多一行），比常年空一块强。
     private var naturalHeight: CGFloat {
         // +1：底栏上面那条 Divider
-        max(formHeight + footerHeight + 1, SettingsWindowSizing.overviewContentHeight)
+        formHeight + footerHeight + 1
     }
 
     var body: some View {
@@ -224,10 +226,14 @@ struct MainSettingsPage: View {
                 SettingsNavigator.shared.go(to: .writing)
             }
             Button(tr("历史记录", "History")) {
-                // 日志目录（~/Library/Logs/MicType）：排错和翻记录是同一个动作的两半，
-                // 而关于页那颗「打开日志文件夹」5.0.2 删掉了——同一件事不做两个入口
-                Log.info("Open logs folder from settings footer")
-                NSWorkspace.shared.open(Paths.appSupportDir)   // history.json 就在这个目录里
+                // 5.0.5 起听写记录是 Logs/MicType/Transcripts 里按天的纯文本，
+                // 这颗按钮直接打开那个目录（不是它上一级的日志目录）：用户点「历史记录」
+                // 要的是记录本身，让他在一堆 mictype-*.log 里再找一次是多余的一步。
+                // 目录还没建（今天一次都没听写过）就先建再开，免得点了什么都不发生。
+                let dir = HistoryStore.shared.directory
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                Log.info("Open transcripts folder from settings footer")
+                NSWorkspace.shared.open(dir)
             }
             languageMenu
             Button(tr("重看引导", "Review the guide")) {

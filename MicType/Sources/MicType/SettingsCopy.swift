@@ -34,9 +34,9 @@ enum SettingsCopy {
 
     /// 「保存听写历史」那一行的 ⓘ。
     ///
-    /// **5.0.2 改短并接下了那句隐私陈述**：关于页的隐私段压到三句，而"存哪儿、几条、不上传"
-    /// 只在这个开关旁边说才有用。事实本身仍然只有一个出处（HistoryStore.storageNote，
-    /// 条数从那个常量现取），这里只在它后面补一句"关掉之后怎样"。
+    /// **5.0.2 改短并接下了那句隐私陈述**：关于页的隐私段压到三句，而"存哪儿、不上传"
+    /// 只在这个开关旁边说才有用。事实本身仍然只有一个出处（HistoryStore.storageNote），
+    /// 这里只在它后面补一句"关掉之后怎样"。
     static var behaviourInfo: String {
         HistoryStore.storageNote + tr("关掉即停止记录，已有的记录不动。",
                                       " Turning this off stops recording and leaves existing entries alone.")

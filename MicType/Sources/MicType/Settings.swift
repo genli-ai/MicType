@@ -605,7 +605,7 @@ final class Settings {
         set { d.set(newValue.rawValue, forKey: SettingsKeys.overlayPosition) }
     }
 
-    /// 是否把每次听写/指令的结果记进历史（Application Support/history.json，最多 200 条）。
+    /// 是否把每次听写/指令的结果记进历史（5.0.5 起是 Logs/MicType/Transcripts 下按天的纯文本）。
     /// 默认开——历史是菜单栏的一级功能。关掉后立即停止写入，已有的记录留着，
     /// 要清由用户自己点「清空记录」或在历史窗口里逐条删：这类事永远不替他做主。
     var keepHistory: Bool {

@@ -598,24 +598,6 @@ final class LLMClientTests: XCTestCase {
         XCTAssertEqual(LLMClient.parseURLCitations(annotations).count, 1)
     }
 
-    // MARK: - 历史里的来源
-
-    /// 老的 history.json 没有 citations 这个键：解不出来就等于 200 条历史全丢了
-    func testHistoryItemDecodesOldRecordsWithoutCitations() throws {
-        let legacy = """
-        {"id":"\(UUID().uuidString)","date":0,"raw":"a","polished":"b"}
-        """.data(using: .utf8)!
-        let item = try JSONDecoder().decode(HistoryItem.self, from: legacy)
-        XCTAssertEqual(item.polished, "b")
-        XCTAssertTrue(item.citations.isEmpty)
-    }
-
-    /// 新记录编码后再解回来，来源一条不少
-    func testHistoryItemRoundTripsCitations() throws {
-        let item = HistoryItem(date: Date(timeIntervalSince1970: 0), raw: "a", polished: "b",
-                               citations: [Citation(title: "T", url: "https://x.example/1")])
-        let data = try JSONEncoder().encode(item)
-        let back = try JSONDecoder().decode(HistoryItem.self, from: data)
-        XCTAssertEqual(back.citations, item.citations)
-    }
+    // 「历史里的来源」那两条 5.0.5 删掉：听写历史改成按天的纯文本，只记原文与成稿，
+    // Citation 不再有持久化格式（它只活在内存里）。
 }

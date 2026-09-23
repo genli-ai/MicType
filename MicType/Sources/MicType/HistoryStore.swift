@@ -1,187 +1,127 @@
 import Foundation
-import Combine
 
-struct HistoryItem: Identifiable, Codable, Equatable {
-    let id: UUID
-    let date: Date
-    let raw: String
-    let polished: String
-    /// 这一条是联网搜索出来的话，模型给的来源。空数组 = 没联网（或那个端点不回传来源）。
-    /// 存在历史里而不是只在悬浮窗上一闪：用户过后想核实"这个数字哪来的"，只能靠这里。
-    let citations: [Citation]
-
-    init(id: UUID = UUID(), date: Date, raw: String, polished: String,
-         citations: [Citation] = []) {
-        self.id = id
-        self.date = date
-        self.raw = raw
-        self.polished = polished
-        self.citations = citations
-    }
-
-    /// 键名写明白：这份 JSON 是落盘格式，字段名改一个字就读不回老记录了
-    private enum CodingKeys: String, CodingKey {
-        case id, date, raw, polished, citations
-    }
-
-    /// 自己写解码：citations 是 v4.0 才加的字段，老的 history.json 里压根没有这个键，
-    /// 合成的解码器遇到缺键会整份文件解不出来——**200 条历史不该因为加了一个字段全没了**。
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(UUID.self, forKey: .id)
-        date = try c.decode(Date.self, forKey: .date)
-        raw = try c.decode(String.self, forKey: .raw)
-        polished = try c.decode(String.self, forKey: .polished)
-        citations = try c.decodeIfPresent([Citation].self, forKey: .citations) ?? []
-    }
-
-    /// raw 与 polished 明显不同才值得给用户看"识别原文"——只差首尾空白不算
-    var rawDiffers: Bool {
-        let a = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let b = polished.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !a.isEmpty && a != b
-    }
-}
-
-/// 最近的听写记录（保留 200 条，持久化到 Application Support/history.json）
+/// 听写历史：**按天一个纯文本文件，像日志那样追加**
+/// （`~/Library/Logs/MicType/Transcripts/transcripts-yyyyMMdd.txt`）。
 ///
-/// 为什么从 UserDefaults 换成 JSON 文件：200 条长文本塞进 UserDefaults 会让 plist 越来越大、
-/// 每次改设置都要整份重写；历史是"数据"不是"偏好"，放文件里更合适，也方便以后导出。
-/// 旧版的 UserDefaults 数组在首次启动时自动迁移进来，迁完即删，用户无感。
-final class HistoryStore: ObservableObject {
+/// 5.0.5 之前它是 Application Support 里一个 200 条上限的 `history.json`：
+/// 结构化、可解析、还带来源链接，但没有任何界面读它（历史窗口 5.0.2 就删了），
+/// 于是那份 JSON 唯一的用途就是"用户自己打开来翻"——而那件事纯文本做得更好：
+/// 按天分文件天然不会长成一个大文件，所以**没有条数上限**，也就不会再有"说得多了旧的被挤掉"。
+/// 排错时它和日志躺在同一个目录下，翻记录和看日志是同一个动作的两半。
+///
+/// 目录选 Logs 而不是 Application Support：这是给人读的日志文件，不是 App 的数据。
+/// 注意 `Log.cleanupOldLogs` 只扫日志目录**本级**、且只删 `mictype-` 开头的文件，
+/// 所以 Transcripts 子目录不会被那条 7 天清理规则碰到（听写记录不该自己消失）。
+final class HistoryStore {
     static let shared = HistoryStore()
-    private let legacyKey = "history"
 
-    /// 保留多少条。**数字只写这一处**：关于页那句"最多 N 条"由 storageNote 从这里现取，
-    /// 4.1.0 之前关于页和「输入」页那颗 ⓘ 各自把 200 硬写了一遍，改一次就有两个答案。
-    static let maxCount = 200
-    private var maxCount: Int { Self.maxCount }
+    /// 落盘目录。默认跟着 `Log.logsDirectory` 走（跑在 XCTest 里时它已经是临时目录，
+    /// 单测不会写进用户真实的 ~/Library/Logs/MicType）。测试里还可以再注入一个专属目录。
+    let directory: URL
 
-    /// 听写历史存在哪儿、多少条、出不出这台 Mac——**全 App 唯一出处**（关于页渲染它）。
-    /// 这是一句隐私陈述，所以和 PrivacyCopy 那六句一样只在关于页出现；
-    /// 「输入」页那颗 ⓘ 只说怎么关、怎么清（SettingsCopy.behaviourInfo）。
+    /// 文件写入放后台队列：record() 发生在听写交付路径上，主线程一毫秒都不该浪费
+    private let ioQueue = DispatchQueue(label: "com.mictype.history.io", qos: .utility)
+
+    init(directory: URL = Log.logsDirectory.appendingPathComponent("Transcripts", isDirectory: true)) {
+        self.directory = directory
+    }
+
+    /// 听写历史存在哪儿、出不出这台 Mac——**全 App 唯一出处**（「保存听写历史」那颗 ⓘ 渲染它）。
     static var storageNote: String {
-        tr("听写历史以明文存在本机 Application Support 目录（history.json），最多 \(maxCount) 条，从不上传。",
-           "Transcripts are kept in plain text on this Mac, in Application Support (history.json), up to \(maxCount) entries, and are never uploaded.")
-    }
-    /// 文件写入放后台队列：add() 发生在听写交付路径上，主线程一毫秒都不该浪费
-    private let ioQueue = DispatchQueue(label: "com.mictype.history.io")
-
-    @Published private(set) var items: [HistoryItem] = []
-
-    private var fileURL: URL {
-        Paths.appSupportDir.appendingPathComponent("history.json")
+        tr("听写历史以纯文本按天存在本机日志目录（Transcripts），从不上传。",
+           "Transcripts are kept in plain text on this Mac, one file per day under the logs folder (Transcripts), and are never uploaded.")
     }
 
-    private init() {
-        load()
-    }
+    // MARK: - 写入
 
-    func add(raw: String, polished: String, citations: [Citation] = []) {
-        // 用户在设置里关掉了"保存听写历史"：这一条连内存都不进，更不写盘。
-        // 已有的记录不动——替用户删掉他没要求删的东西，比不记录更糟。
+    /// 记一条听写。**在交付成功之后调一次**（Esc 保底那条路例外，见 DictationController）。
+    /// final 与 raw 相同（没润色 / 润色被丢弃 / 保底记录）时只写一行。
+    func record(raw: String, final: String, date: Date = Date()) {
+        // 用户在设置里关掉了"保存听写历史"：一个字都不落盘。
+        // 已有的文件不动——替用户删掉他没要求删的东西，比不记录更糟。
         guard Settings.shared.keepHistory else { return }
-        items.insert(HistoryItem(date: Date(), raw: raw, polished: polished,
-                                 citations: citations), at: 0)
-        if items.count > maxCount {
-            items = Array(items.prefix(maxCount))
-        }
-        save()
-    }
-
-    /// **润色之前**先把识别原文落一条（brief §3.3「逐段落地」）。
-    /// 为什么：润色要等一次网络往返，插入还要等切前台——这中间任何一步失败、被 Esc 掐断、
-    /// 或者用户切走了窗口，在 3.3 之前都意味着刚说的那几分钟一个字都不剩。
-    /// 先落 raw，之后 complete(id:polished:) 把同一条补全，用户那边看到的永远只有一条。
-    /// 返回 nil = 用户关了历史记录（那就什么都别留，包括这条）。
-    @discardableResult
-    func addRaw(_ raw: String) -> UUID? {
-        guard Settings.shared.keepHistory else { return nil }
-        let item = HistoryItem(date: Date(), raw: raw, polished: raw)
-        items.insert(item, at: 0)
-        if items.count > maxCount {
-            items = Array(items.prefix(maxCount))
-        }
-        save()
-        return item.id
-    }
-
-    /// 把 addRaw 落下的那一条的**识别原文本身**改写成新的（polished 跟着回到同一份原文）。
-    /// 用在 Esc 部分交付那条路上：按下 Esc 的那一刻先落了一条保底记录（手上已有的几分钟文字），
-    /// 随后停不下来的那一段又转完了 —— 同一轮口述只该有一条记录，而它的原文必须是最终那一份，
-    /// 不是保底时的半截。条目已被删 / 被上限挤掉就什么都不做。
-    func replaceRaw(id: UUID, raw: String) {
-        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
-        let old = items[index]
-        guard old.raw != raw || old.polished != raw else { return }
-        items[index] = HistoryItem(id: old.id, date: old.date, raw: raw, polished: raw,
-                                   citations: old.citations)
-        save()
-    }
-
-    /// 把 addRaw 落下的那一条补成最终文字。条目已经被用户删掉 / 被 200 条上限挤掉就什么都不做。
-    /// citations：这一轮联网搜到的来源（只有自由指令 / 改选区那条路会有）。传空就保留原有的，
-    /// 不把已经记下的来源抹掉。
-    func complete(id: UUID, polished: String, citations: [Citation] = []) {
-        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
-        let old = items[index]
-        let merged = citations.isEmpty ? old.citations : citations
-        guard old.polished != polished || merged.count != old.citations.count else { return }
-        items[index] = HistoryItem(id: old.id, date: old.date, raw: old.raw, polished: polished,
-                                   citations: merged)
-        save()
-    }
-
-    /// 删掉单条。有了它，用户想抹掉一句含隐私内容的听写才不必把 200 条全清了。
-    func remove(id: UUID) {
-        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
-        items.remove(at: index)
-        save()
-    }
-
-    func clear() {
-        items = []
-        save()
-    }
-
-    // MARK: - 持久化
-
-    private func save() {
-        let snapshot = items
-        let url = fileURL
+        guard let entry = Self.entry(raw: raw, final: final, date: date) else { return }
+        let url = directory.appendingPathComponent(Self.fileName(for: date))
+        let dir = directory
         ioQueue.async {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted]
-            guard let data = try? encoder.encode(snapshot) else { return }
             do {
-                try data.write(to: url, options: .atomic)
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let data = Data(entry.utf8)
+                if let handle = try? FileHandle(forWritingTo: url) {
+                    defer { try? handle.close() }
+                    try handle.seekToEnd()
+                    try handle.write(contentsOf: data)
+                } else {
+                    try data.write(to: url)
+                }
             } catch {
-                Log.warn("History save failed: \(error.localizedDescription)")
+                // 写不进去绝不能打断听写：只留一行不含内容的 WARN
+                Log.warn("Transcript append failed: \(error.localizedDescription)")
             }
         }
     }
 
-    private func load() {
-        if let data = try? Data(contentsOf: fileURL),
-           let decoded = try? JSONDecoder().decode([HistoryItem].self, from: data) {
-            items = Array(decoded.prefix(maxCount))
-            return
-        }
-        migrateFromUserDefaults()
+    /// 等后台队列把已排队的写入做完。**只给单测用**：它要读回文件核对格式。
+    func waitForPendingWrites() {
+        ioQueue.sync { }
     }
 
-    /// 3.2.x 及更早版本把 20 条记录存在 UserDefaults["history"] 里，格式是 [[String: Any]]
-    private func migrateFromUserDefaults() {
-        guard let array = UserDefaults.standard.array(forKey: legacyKey) as? [[String: Any]] else { return }
-        items = array.compactMap { dict in
-            guard let t = dict["date"] as? Double,
-                  let raw = dict["raw"] as? String,
-                  let polished = dict["polished"] as? String else { return nil }
-            return HistoryItem(date: Date(timeIntervalSince1970: t), raw: raw, polished: polished)
+    // MARK: - 纯函数：一条记录长什么样
+
+    /// 这一天的文件名。与日志同一个命名风格（`mictype-yyyyMMdd.log`）。
+    static func fileName(for date: Date) -> String {
+        // 故意每次新建 DateFormatter：它不是线程安全的，而这个函数既在调用线程上跑
+        // （record 里算文件名）也在单测里直接被调。一次听写才建一个，开销无所谓。
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return "transcripts-\(f.string(from: date)).txt"
+    }
+
+    /// 一条记录格式化成什么（含行尾换行）。nil = 这一条没有内容，不该写。
+    ///
+    /// 键名固定用英文 `raw:` / `final:`、时间戳 `[HH:mm:ss]`：这是给人读的日志文件，
+    /// 不是界面，不跟界面语言走（跟着走的话同一个文件里会中英文混排，还没法 grep）。
+    /// 成稿与原文相同就省略 `final:` 那一行——相同的话第二行不带任何信息，只是噪音。
+    static func entry(raw: String, final: String, date: Date) -> String? {
+        let rawText = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalText = final.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 原文是空的（识别什么都没出来）就不记：一条只有时间戳的记录没有任何用处
+        guard !rawText.isEmpty || !finalText.isEmpty else { return nil }
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        let stamp = "[\(f.string(from: date))] "
+        // 续行缩进到与第一行的键名对齐，多行文本读起来才是一段而不是一堆碎片
+        let indent = String(repeating: " ", count: stamp.count)
+        var lines = [stamp + "raw:   " + inline(rawText, indent: indent + "       ")]
+        if !finalText.isEmpty, finalText != rawText {
+            lines.append(indent + "final: " + inline(finalText, indent: indent + "       "))
         }
-        guard !items.isEmpty else { return }
-        Log.info("History migrated from UserDefaults: \(items.count) items")
-        save()
-        UserDefaults.standard.removeObject(forKey: legacyKey)
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// 文本里自带的换行会把"一条记录一段"的结构冲散（下一行看起来像新的一条）：
+    /// 续行统一缩进对齐到键名后面。
+    private static func inline(_ text: String, indent: String) -> String {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+            .joined(separator: "\n" + indent)
+    }
+
+    // MARK: - 旧格式清理
+
+    /// 5.0.5 之前的 `Application Support/MicType/history.json`：**启动时一次性删掉**。
+    /// 它是一份明文历史，新版本再也不读它，留着只是隐私负担（用户以为历史都在
+    /// Transcripts 里，实际上另有一份 200 条的 JSON 谁也想不起来）。
+    func removeLegacyJSONIfNeeded() {
+        let legacy = Paths.appSupportDir.appendingPathComponent("history.json")
+        guard FileManager.default.fileExists(atPath: legacy.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: legacy)
+            Log.info("Legacy history.json removed")
+        } catch {
+            Log.warn("Legacy history.json removal failed: \(error.localizedDescription)")
+        }
     }
 }

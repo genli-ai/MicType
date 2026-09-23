@@ -38,8 +38,8 @@ final class LLMRequestHandle {
     }
 }
 
-/// 一条联网搜索来源。**这个形状会被写进 history.json**（HistoryItem.citations），
-/// 所以字段名等于持久化格式，改名要连带处理老文件的解码。
+/// 一条联网搜索来源。只活在内存里（悬浮窗提示、指标），5.0.5 起不再写进任何文件——
+/// 听写历史那份纯文本只记原文与成稿。
 struct Citation: Codable, Equatable, Identifiable {
     let title: String
     let url: String
@@ -478,7 +478,7 @@ enum LLMClient {
             // **故意不发 `include: ["web_search_call.action.sources"]`**：那个字段回的是搜索工具
             // 检索/打开过的页面，和 `annotations[].url_citation`（模型真正引用的来源）不是一回事。
             // 解析器只认 annotations，把 action.sources 并进去会让「联网搜索 · N 个来源」
-            // 连没被引用的页面一起算上，还写进 history.json——那就改掉了 citations 的含义。
+            // 连没被引用的页面一起算上——那就改掉了 citations 的含义。
             // 所以宁可不发：多要一份没人读的负载，只是让每次回包更大。
         }
         return body

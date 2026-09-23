@@ -153,9 +153,10 @@ final class DictationController {
     /// 不该让正在录的这一段换一条链路（与 autoStopSilence 的快照同理）。
     /// 5.0.0 起它永远是云端的某一条（实时会话，或它背后那条整段上传）。
     private var sessionEngine: SpeechEngine?
-    /// 润色之前先落进历史的那一条（见 HistoryStore.addRaw）：交付时补成最终文字，
-    /// 交付不成也留着识别原文。nil = 这一轮还没落过（指令模式永远是 nil）
-    private var pendingHistoryID: UUID?
+    /// Esc 部分交付那一刻已经落进历史的那段文字（见 saveCancelSafetyHistory）。
+    /// 记住它只为一件事：随后正常交付时如果内容一字不差，就别把同一段话再写一行。
+    /// nil = 这一轮还没落过保底记录（绝大多数情况）。
+    private var cancelSafetyRaw: String?
     // 伪流式预览（本机模型每隔一会儿解一遍当前窗口）与录音中的预转写（本机分段）
     // 5.0.0 一起删掉：本机引擎没有了。录音中的灰字草稿改由云端实时的中间结果供给
     // （CloudStreamingSession.onDraft，见 prepareSessionEngine），一行都不用本机跑。
@@ -474,7 +475,8 @@ final class DictationController {
                 // 手上这些字**立刻**落一条历史保底。当前这一段停不下来（MLX 一次解码到底），
                 // 「收尾中…」可能还要好几秒；用户以为没生效再按一次 Esc 就走 endSession()，
                 // 结果被代数挡掉——在这之前它们没有任何持久化，几分钟口述会一个字不剩。
-                // 落下的这一条随后由 resolve 那边补成完整原文（见 pendingHistoryID）。
+                // 落下的这一条是纯文本日志里的一行，随后那一轮正常交付会再记完整的一行
+                //（内容一字不差时不重复记，见 cancelSafetyRaw）。
                 saveCancelSafetyHistory()
                 overlay.updateProcessing(label: tr("收尾中…", "Wrapping up…"))
                 Sounds.playCancel()
@@ -516,18 +518,25 @@ final class DictationController {
         overlay.setCancelFinishes(finishes && !(inflightTranscription?.isCancelled ?? true))
     }
 
-    /// Esc 部分交付那一刻的保底记录：把此刻手上的文字（预转写好的前半段 + 已经报上来的段落）
-    /// 按纯听写的口径落进历史，并记住这一条的 id——之后 resolve 回来时就地补成完整原文，
-    /// 同一轮口述永远只有一条记录。keepHistory 关着时 addRaw 返回 nil，那就什么都不做
-    /// （用户明确不要历史，这里不是偷偷替他留一份的地方）。
+    /// Esc 部分交付那一刻的保底记录：把此刻手上的文字（已经报上来的段落）按纯听写的口径
+    /// **立刻**写进听写历史。当前这一段停不下来、「收尾中…」可能还要好几秒，
+    /// 用户这时候强杀进程的话，在这之前那几分钟一个字都不剩。
+    /// keepHistory 关着时 record 自己什么都不做（用户明确不要历史，这里不是偷偷替他留一份的地方）。
     private func saveCancelSafetyHistory() {
-        guard pendingHistoryID == nil else { return }
+        guard cancelSafetyRaw == nil else { return }
         let salvaged = deliveredDraft
         guard !salvaged.isEmpty else { return }
-        pendingHistoryID = HistoryStore.shared.addRaw(
-            TextPostProcessor.applyVocabReplacements(salvaged))
-        Log.info("Cancel safety history saved chars=\(salvaged.count)"
-                 + " kept=\(pendingHistoryID != nil)")
+        let text = TextPostProcessor.applyVocabReplacements(salvaged)
+        cancelSafetyRaw = text
+        HistoryStore.shared.record(raw: text, final: text)
+        Log.info("Cancel safety history saved chars=\(salvaged.count)")
+    }
+
+    /// 这一轮的听写历史写在这里收口。唯一的额外规矩：Esc 保底那一行已经写过一模一样的
+    /// 内容时不再写第二行（纯文本日志里同一段话连着出现两遍只是噪音）。
+    private func recordHistory(raw: String, final: String) {
+        if let safety = cancelSafetyRaw, safety == raw, final == raw { return }
+        HistoryStore.shared.record(raw: raw, final: final)
     }
 
     /// 这一轮用哪个识别引擎。5.0.0 起**永远是云端**：把 Settings + 钥匙串组装成一份配置
@@ -585,8 +594,8 @@ final class DictationController {
         // 已经传出去的那几秒收不回来（隐私文案里当面写着这一点）
         cloudStreaming?.abandon()
         cloudStreaming = nil
-        // 指针清掉，但**不动已经写进历史的那一条**——那正是"取消也不丢字"的落点
-        pendingHistoryID = nil
+        // 标记清掉，但**不动已经写进历史的那一行**——那正是"取消也不丢字"的落点
+        cancelSafetyRaw = nil
         deliveredDraft = ""
         cloudRetried = false
         skillSession = false
@@ -1183,9 +1192,9 @@ final class DictationController {
             case .failure(let error):
                 Log.error("Transcription failed: \(error.message)")
                 self.phase = .idle
-                // Esc 那一刻可能已经落过一条保底记录：记录本身留着（那正是"取消也不丢字"），
-                // 但指针到此为止——绝不能让下一轮口述去补全上一轮的那一条
-                self.pendingHistoryID = nil
+                // Esc 那一刻可能已经落过一行保底记录：那一行留着（正是"取消也不丢字"），
+                // 这一轮到此为止，不再补记（没有任何新文字可记）
+                self.cancelSafetyRaw = nil
                 // 重试也没成：**不报技术细节**（他已经等了两趟，现在唯一有用的信息是"再说一次"）。
                 // 真正的原因照常在上面那两行日志里。被用户 Esc 掉的那一次不走这条——
                 // 那句「已取消」是他自己按出来的，换成"没识别到"只会让他以为出了故障。
@@ -1207,7 +1216,7 @@ final class DictationController {
                                                  minHits: 1) {
                     Log.info("Faint audio vocab echo discarded chars=\(transcribed.count)")
                     self.phase = .idle
-                    self.pendingHistoryID = nil
+                    self.cancelSafetyRaw = nil
                     self.overlay.flashError(tr("声音太小，请靠近麦克风再试",
                                                "Too quiet — move closer to the microphone and try again"))
                     Sounds.playError()
@@ -1217,7 +1226,7 @@ final class DictationController {
                 let rawText = TextPostProcessor.applyVocabReplacements(transcribed)
                 guard !rawText.isEmpty else {
                     self.phase = .idle
-                    self.pendingHistoryID = nil
+                    self.cancelSafetyRaw = nil
                     // 这里和静音闸门不同：音频过了电平闸门、识别也真跑过一遍，却什么都没出来
                     // ——这不是误触，是实打实的一次失败，和其它失败出口一样要出声。
                     self.overlay.flashError(
@@ -1256,16 +1265,11 @@ final class DictationController {
                                          generation: generation)
                     return
                 }
-                // **润色之前**先把识别原文落进历史（brief §3.3）：接下来是一次网络往返 +
-                // 一次切前台粘贴，任何一步失败、被 Esc 掐断、或者用户切走了窗口，
-                // 从前都意味着刚说的那几分钟一个字都不剩。交付时 deliver 会把同一条补全。
-                // Esc 部分交付那一刻可能已经落过一条保底记录（saveCancelSafetyHistory）：
-                // 那就把它就地改写成完整原文，别让同一轮口述在历史里占两行。
-                if let id = self.pendingHistoryID {
-                    HistoryStore.shared.replaceRaw(id: id, raw: rawText)
-                } else {
-                    self.pendingHistoryID = HistoryStore.shared.addRaw(rawText)
-                }
+                // 5.0.5 起历史是一份按天追加的纯文本，一轮听写只在**交付之后**记一行
+                //（原文 + 成稿）。润色前不再预写一条：文本文件改不回去，预写的那行
+                // 之后只能再追加一行完整的，同一句话在文件里占两段。
+                // 真正"取消也不丢字"的那条路仍在：Esc 部分交付那一刻立刻写一行
+                //（saveCancelSafetyHistory），那是随时可能被强杀的时刻。
                 // 润色永远开着（5.0.0 起没有档位了）。Key 不在的话这一轮压根走不到这里
                 // ——识别本身就要那把 Key（RecognitionEngineReadiness 在按键那一刻就拦了）。
                 self.overlay.showProcessing(tr("润色中…", "Polishing…"))
@@ -1457,7 +1461,7 @@ final class DictationController {
                 let finalText = TextPostProcessor.applyVocabReplacements(result)
                 self.deliver(raw: raw, final: finalText,
                              note: Self.noteWithSources(tr("已输入指令结果", "Command result inserted"), usage),
-                             coldStart: isColdStart, citations: usage?.citations ?? [])
+                             coldStart: isColdStart)
             } else {
                 self.phase = .idle
                 self.overlay.flashError(tr("指令执行失败（", "Command failed (") + (failure ?? tr("未知", "unknown")) + tr("）", ")"))
@@ -1493,16 +1497,14 @@ final class DictationController {
             }
             // 词汇表硬替换在每个产出点各做一次；deliver / copyToClipboard 里不再做
             let finalText = TextPostProcessor.applyVocabReplacements(result)
-            let citations = usage?.citations ?? []
             switch Self.selectionDelivery(selectionEditable: editable) {
             case .replace:
                 self.deliver(raw: raw, final: finalText,
                              note: Self.noteWithSources(Self.selectionReplacedNote, usage),
-                             coldStart: isColdStart, citations: citations)
+                             coldStart: isColdStart)
             case .clipboard:
                 self.copyToClipboard(raw: raw, result: finalText,
-                                     note: Self.noteWithSources(Self.selectionCopiedNote, usage),
-                                     citations: citations)
+                                     note: Self.noteWithSources(Self.selectionCopiedNote, usage))
             }
         }
     }
@@ -1531,14 +1533,14 @@ final class DictationController {
     }
 
     /// 结果进剪贴板（不自动粘贴），记录历史并提示
-    private func copyToClipboard(raw: String, result: String, note: String,
-                                 citations: [Citation] = []) {
+    private func copyToClipboard(raw: String, result: String, note: String) {
         phase = .idle
         let tDeliver = DispatchTime.now()
         // 只做标点归一：词汇表硬替换已经在各产出点做过了。在这里再做一次的话，
         // 纯听写路径（final 就是已替换过的 rawText）会被替换两趟，链式词表串成链。
         let final = TextPostProcessor.fixMixedPunctuation(result)
-        HistoryStore.shared.add(raw: raw, polished: final, citations: citations)
+        recordHistory(raw: raw, final: final)
+        cancelSafetyRaw = nil
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(final, forType: .string)
@@ -1589,16 +1591,13 @@ final class DictationController {
             if let result = result {
                 // 词汇表硬替换在每个产出点各做一次；copyToClipboard 里不再做
                 let finalText = TextPostProcessor.applyVocabReplacements(result)
-                let citations = usage?.citations ?? []
                 switch Self.selectionDelivery(selectionEditable: editable) {
                 case .replace:
                     self.deliver(raw: raw, final: finalText,
-                                 note: Self.noteWithSources(Self.selectionReplacedNote, usage),
-                                 citations: citations)
+                                 note: Self.noteWithSources(Self.selectionReplacedNote, usage))
                 case .clipboard:
                     self.copyToClipboard(raw: raw, result: finalText,
-                                         note: Self.noteWithSources(Self.selectionCopiedNote, usage),
-                                         citations: citations)
+                                         note: Self.noteWithSources(Self.selectionCopiedNote, usage))
                 }
             } else {
                 self.phase = .idle
@@ -1691,20 +1690,15 @@ final class DictationController {
     }
 
     private func deliver(raw: String, final text: String, note: String, warning: Bool = false,
-                         coldStart: Bool = false, revertible: Bool = false,
-                         citations: [Citation] = []) {
+                         coldStart: Bool = false, revertible: Bool = false) {
         // 只做标点归一：词汇表硬替换已经在各产出点做过了（识别原文 / 润色结果 / 各技能结果），
         // 这里再做一趟等于对同一串文本替换两次，「萍果=苹果」+「苹果=Apple」会被串成链
         let finalText = TextPostProcessor.fixMixedPunctuation(text)
-        // 润色之前已经落过一条 raw（纯听写路径）就补全它，别再插一条新的——
-        // 用户看到的应该是一条"识别原文 + 最终文字"，不是同一句话的两行记录。
-        // 联网来源（自由指令 / 改选区那条路才有）跟着补全一起写进去，别在这里掉字。
-        if let id = pendingHistoryID {
-            HistoryStore.shared.complete(id: id, polished: finalText, citations: citations)
-            pendingHistoryID = nil
-        } else {
-            HistoryStore.shared.add(raw: raw, polished: finalText, citations: citations)
-        }
+        // 这一轮的历史就记在这里：原文 + 成稿一行。**记在插入之前**——底下那条插入是异步的，
+        // 前台切换 + 粘贴最长要等一秒多，插不进去（目标不收、密码框）时文字只剩剪贴板里那份，
+        // 历史反倒成了唯一的底稿。所以宁可记了没插上，也不能插不上就连记录都没有。
+        recordHistory(raw: raw, final: finalText)
+        cancelSafetyRaw = nil
         // 又插入了新东西 → 上一次的记忆立刻作废：⌘Z 撤的永远是"最后一次粘贴"，
         // 拿旧记忆去撤只会撤掉这一次的新文字
         revertCandidate = nil

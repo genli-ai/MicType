@@ -69,15 +69,14 @@ final class PrivacyCopyTests: XCTestCase {
         }
     }
 
-    /// 听写历史存哪儿、最多几条：**条数那个常量只有一个出处**（HistoryStore.storageNote）。
+    /// 听写历史存哪儿：**只有一个出处**（HistoryStore.storageNote）。
     ///
     /// 5.0.2 起这句话住在「保存听写历史」那个开关的 ⓘ 里，不在关于页那三句里——
-    /// 它讲的是这个开关的事，摆在开关旁边才有人读。行为不变：仍然只写一处，ⓘ 引用它。
+    /// 它讲的是这个开关的事，摆在开关旁边才有人读。
+    /// 5.0.5 起历史是按天的纯文本，没有条数上限了，这句话里也就不再有数字。
     func testHistoryStorageFactsHaveASingleSource() {
         for language in AppLanguage.allCases {
             L10n.shared.language = language
-            XCTAssertTrue(HistoryStore.storageNote.contains("\(HistoryStore.maxCount)"),
-                          HistoryStore.storageNote)
             XCTAssertTrue(SettingsCopy.behaviourInfo.hasPrefix(HistoryStore.storageNote),
                           SettingsCopy.behaviourInfo)
             // 关于页那三句里不再复述它

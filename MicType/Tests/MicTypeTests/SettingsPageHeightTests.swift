@@ -41,8 +41,9 @@ final class SettingsPageHeightTests: XCTestCase {
             for provider in LLMProvider.allCases {
                 UserDefaults.standard.set(provider.rawValue, forKey: SettingsKeys.llmProvider)
                 let reported = measure(hostHeight: 700)
-                XCTAssertGreaterThanOrEqual(reported, SettingsWindowSizing.overviewContentHeight,
-                                            "\(provider.rawValue)：低于地板")
+                // 5.0.5 起这一页没有地板：报的就是内容本身（两三行控件 + 底栏）。
+                // 只钉住"不是 0、也不是宿主的高度"这两头
+                XCTAssertGreaterThan(reported, 120, "\(provider.rawValue)：什么都没量到")
                 XCTAssertLessThan(reported, 500,
                                   "\(language.rawValue)/\(provider.rawValue)：页面把宿主的高度当成了自己的（报了 \(reported)）")
             }
@@ -60,17 +61,22 @@ final class SettingsPageHeightTests: XCTestCase {
         XCTAssertEqual(short, tall, accuracy: 1, "矮宿主 \(short) vs 高宿主 \(tall)")
     }
 
-    /// 两家之间不许跳：阿里云多一行 API Host，而换一档服务商不该让整扇窗抖一下
+    /// 两家都只报自己的内容高度：阿里云多一行「API Host」，所以比 OpenAI 高一行左右。
+    /// 5.0.3–5.0.4 这里钉的是"两家必须一样高"（靠一个 320 的地板），而那个地板正是
+    /// 真机上底栏之上那一大块空白的来路——权限都给了的机器根本没有那两条横幅。
     @MainActor
-    func testTheTwoProvidersReportTheSameHeight() {
+    func testEachProviderReportsItsOwnContentHeight() {
         for language in [AppLanguage.zh, .en] {
             L10n.shared.language = language
             UserDefaults.standard.set(LLMProvider.openai.rawValue, forKey: SettingsKeys.llmProvider)
             let openai = measure(hostHeight: 700)
             UserDefaults.standard.set(LLMProvider.qwen.rawValue, forKey: SettingsKeys.llmProvider)
             let qwen = measure(hostHeight: 700)
-            XCTAssertEqual(openai, qwen, accuracy: 1,
-                           "\(language.rawValue)：OpenAI \(openai) vs 阿里云 \(qwen)")
+            XCTAssertGreaterThan(qwen, openai,
+                                 "\(language.rawValue)：阿里云多一行，应该更高")
+            XCTAssertLessThan(qwen - openai, 80,
+                              "\(language.rawValue)：只该差一行（\(openai) vs \(qwen)）")
+            XCTAssertLessThan(qwen, 400, "\(language.rawValue)：这一页没那么多东西")
         }
     }
 
