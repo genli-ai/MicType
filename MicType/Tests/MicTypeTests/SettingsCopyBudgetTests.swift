@@ -250,21 +250,24 @@ final class SettingsCopyBudgetTests: XCTestCase {
         XCTAssertEqual(SettingsCopy.cloudInfos.count, 2, "\(SettingsCopy.cloudInfos)")
     }
 
-    // MARK: - 隐私文案只在关于页与引导页出现
+    // MARK: - 隐私文案只在关于页出现
 
     /// 「音频不出机 / 只发文字 / 不留存 / Key 在钥匙串 / 费用直付 / 搜索计费」这六句是
-    /// **关于页**的内容，外加引导第一屏那一句。它们一旦开始在设置页各处复述，就会出现
-    /// 两个问题：同一个承诺有了第二种措辞（改一处漏一处就自相矛盾），以及每天被读一百遍。
+    /// **关于页**的内容，别处一句都不复述。一旦开始在各处复述就会出现两个问题：
+    /// 同一个承诺有了第二种措辞（改一处漏一处就自相矛盾），以及每天被读一百遍。
+    ///
+    /// 5.0.1 起引导第一屏那一句也没了（用户 2026-09-22 拍板：那一屏只教两个手势）——
+    /// 所以这里数的是 0，而不是 1。
     ///
     /// 扫描器按"去掉注释之后还提不提 PrivacyCopy."判——注释里提它是好事（指路），
     /// 真正要拦的是渲染它。
-    func testPrivacyCopyIsOnlyRenderedInAboutAndOnboarding() throws {
+    func testPrivacyCopyIsOnlyRenderedInAbout() throws {
         let dir = Self.sourcesDirectory
         let files = Self.swiftFiles(under: dir)
         XCTAssertGreaterThan(files.count, 10, "源码目录没找对")
 
-        // AboutPanel 住在 SettingsEditors.swift 里；引导第一屏住在 OnboardingWindow.swift
-        let allowed: Set<String> = ["PrivacyCopy.swift", "SettingsEditors.swift", "OnboardingWindow.swift"]
+        // AboutPanel 住在 SettingsEditors.swift 里
+        let allowed: Set<String> = ["PrivacyCopy.swift", "SettingsEditors.swift"]
         var offenders: [String] = []
         var onboardingReferences = 0
         for file in files {
@@ -277,11 +280,11 @@ final class SettingsCopyBudgetTests: XCTestCase {
             if file == "OnboardingWindow.swift" { onboardingReferences = count }
         }
         XCTAssertTrue(offenders.isEmpty, """
-            隐私与费用文案只该出现在关于页和引导第一屏，这几处在复述它：\(offenders.joined(separator: "、"))
+            隐私与费用文案只该出现在关于页，这几处在复述它：\(offenders.joined(separator: "、"))
             —— 某个具体选择的代价，写在做那个选择的地方（例如 SettingsCopy.cloudRecognitionInfo）。
             """)
-        XCTAssertEqual(onboardingReferences, 1,
-                       "引导里只留一句隐私文案（第一屏的数据流向），现在有 \(onboardingReferences) 处")
+        XCTAssertEqual(onboardingReferences, 0,
+                       "引导里一句隐私文案都不留（5.0.1），现在有 \(onboardingReferences) 处")
     }
 
     /// 引导里那句隐私承诺只有第一屏那一条（PrivacyCopy.audioStaysLocal），而且它写清了边界：

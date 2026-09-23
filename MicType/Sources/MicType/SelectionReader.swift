@@ -26,7 +26,35 @@ enum SelectionReader {
     private static let copyDecideSeconds: Double = 0.35
     private static let copyWatchSeconds: Double = 1.5
 
+    /// 读到的选区 + 它**能不能被原地改写**。
+    ///
+    /// 5.0.1 起这一位决定语音指令的结果往哪儿送（用户 2026-09-22 拍板，取代模型自己判的
+    /// MODIFY / REPLY / NEW 标签）：可编辑 → ⌘V 原地替换，不可编辑 → 进剪贴板。
+    /// 让模型判"这段字能不能改"本来就是问错了人——它看不见那是网页、PDF 还是输入框，
+    /// 而判错的代价是把改写结果粘进一个只读的地方（什么都不会发生）或者反过来复读对方的消息。
+    struct Selection {
+        let text: String
+        let editable: Bool
+    }
+
+    /// 焦点元素的 role + 有没有选中文字 → 能不能原地改写。**纯函数**（单测钉住）。
+    ///
+    /// 三个 role 是 AppKit / UIKit / Electron 里真正能吃下 ⌘V 的那几种：AXTextField（单行框）、
+    /// AXTextArea（多行编辑区）、AXComboBox（带下拉的可编辑框）。网页正文是 AXGroup /
+    /// AXStaticText，PDF 是 AXScrollArea——它们都能"选中"，但没有一个吃得下粘贴。
+    /// **宁可判成不可编辑**：判错成"可编辑"会让 ⌘V 落空（用户眼里是结果凭空消失），
+    /// 判错成"不可编辑"只是多按一次 ⌘V。
+    static func roleIsEditable(_ role: String?, hasSelectedText: Bool) -> Bool {
+        guard hasSelectedText, let role = role else { return false }
+        return ["AXTextField", "AXTextArea", "AXComboBox"].contains(role)
+    }
+
     static func readSelectedText() -> String? {
+        readSelection()?.text
+    }
+
+    /// AX 那一条路：读到选区顺手把 role 也读了（同一个焦点元素，不多一次往返）
+    static func readSelection() -> Selection? {
         guard Permissions.isAccessibilityTrusted else { return nil }
 
         var focusedObj: CFTypeRef?
@@ -48,14 +76,25 @@ enum SelectionReader {
             return nil
         }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : text
+        guard !trimmed.isEmpty else { return nil }
+
+        var roleObj: CFTypeRef?
+        let role = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString,
+                                                 &roleObj) == .success
+            ? roleObj as? String : nil
+        return Selection(text: text,
+                         editable: roleIsEditable(role, hasSelectedText: true))
     }
 
     /// 异步读取选区：先试 AX；失败则模拟 ⌘C 兜底（保存并恢复原剪贴板）。
     /// 适用于微信/QQ 等无障碍接口残缺的应用。completion 在主线程回调。
-    static func readSelectedTextWithClipboardFallback(completion: @escaping (String?) -> Void) {
-        if let text = readSelectedText() {
-            DispatchQueue.main.async { completion(text) }
+    ///
+    /// **⌘C 兜底拿到的选区一律算不可编辑**（5.0.1）：走到这条路上说明目标应用的 AX 里
+    /// 压根没有"焦点文本元素"这回事（网页正文、PDF、Electron 的自绘编辑器、微信聊天记录），
+    /// 我们既不知道它是什么、也没法确认 ⌘V 会落在哪里——那就不往它身上粘。
+    static func readSelectedTextWithClipboardFallback(completion: @escaping (Selection?) -> Void) {
+        if let selection = readSelection() {
+            DispatchQueue.main.async { completion(selection) }
             return
         }
         guard Permissions.isAccessibilityTrusted else {
@@ -93,7 +132,7 @@ enum SelectionReader {
     ///   待恢复的任务还会因为 changeCount 对不上而判成"用户复制了新东西"一起放弃。
     private static func pollAfterCopy(pb: NSPasteboard, snapshot: ClipboardSnapshot,
                                       oldCount: Int, elapsed: Double,
-                                      completion: ((String?) -> Void)?) {
+                                      completion: ((Selection?) -> Void)?) {
         var pending = completion
 
         if pb.changeCount != oldCount {
@@ -105,10 +144,11 @@ enum SelectionReader {
                 Log.warn("Selection fallback: late copy landed on our own paste — leaving it to the insert session")
                 return
             }
-            var result: String? = nil
+            var result: Selection? = nil
             if let copied = pb.string(forType: .string),
                !copied.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                result = copied
+                // 兜底拿到的选区一律不可编辑（见 readSelectedTextWithClipboardFallback 的注释）
+                result = Selection(text: copied, editable: false)
             }
             // 恢复原剪贴板，不留痕迹
             let after = snapshot.restore(to: pb)

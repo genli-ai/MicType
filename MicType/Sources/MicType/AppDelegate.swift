@@ -97,11 +97,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotkeys.onBusyGesture = { [weak self] in self?.dictation.gestureWhileBusy() }
         hotkeys.start()
 
-        // 5.0.0 的一次性清理：本机模型目录整棵删掉，并把释放了多少空间记下来
-        // （那个数会出现在这一次启动的悬浮窗提示里）
-        let freedBytes = LocalModelCleanup.runIfNeeded()
+        // 5.0.0 的一次性清理：本机模型目录整棵删掉。
+        // 释放了多少 5.0.1 起**只进日志**——用户要知道的是"它在跑、按哪颗键"，不是磁盘数字
+        LocalModelCleanup.runIfNeeded()
         let onboardingShowing = routeFirstLaunch()
-        announceLaunch(onboardingShowing: onboardingShowing, freedBytes: freedBytes)
+        announceLaunch(onboardingShowing: onboardingShowing)
     }
 
     /// 每次启动都要交代的两件事：**上次升级成没成**，以及**它现在在哪、下一步按什么**。
@@ -112,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     ///
     /// 成功那一档不再单独闪："已更新到 x.y.z" 和 4.3.4 新加的那句"它在菜单栏里"合成一条
     /// （LaunchNotice）——同一时刻闪两条只会互相盖掉。
-    private func announceLaunch(onboardingShowing: Bool, freedBytes: Int64 = 0) {
+    private func announceLaunch(onboardingShowing: Bool) {
         UpdateChecker.cleanupStaleStages()
         var updatedTo: String?
         switch UpdateChecker.consumePreviousInstallResult() {
@@ -137,7 +137,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 摆在"已更新到 4.1.1"旁边正好把话说反
         LaunchNotice.flash(LaunchNotice.decide(updatedTo: updatedTo,
                                                onboardingShowing: onboardingShowing),
-                           freedBytes: freedBytes,
                            after: UpdateChecker.installedNoticeDelay)
     }
 
@@ -250,111 +249,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// 菜单栏那份菜单 5.0.1 起**只有三项**（用户 2026-09-22 拍板）：设置 / 检查更新 / 退出。
+    ///
+    /// 砍掉的都是"在菜单里做事"的入口：顶行那句操作说明（引导第一屏已经把它教完了）、
+    /// 「开始听写」（这个产品的全部意义就是不用去点菜单）、「最近记录」子菜单
+    /// （**不再把听写内容列进菜单**——那是一条会当着别人的面展开的隐私）、
+    /// 「写作偏好」「界面语言」「打开日志文件夹」（分别搬到设置底栏那排小字与「关于」页）。
+    ///
+    /// 这份菜单从此是静态的，所以也不再有随录音状态变化的那几项：录音中停止靠再轻点一次、
+    /// 取消靠 Esc，两者都在引导里教过，而菜单要点开才看得见——正在说话的人不会去点它。
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-
-        // 键名写全（「轻点 右 Option 听写」）：菜单栏第一行是很多人唯一会读的说明书，
-        // 4.0.0 那里写的是 R⌥ —— 用户实测反馈没人看得懂那是哪颗键
-        let hotkeyName = Settings.shared.hotkey.plainName
-        let modeHint = tr("轻点 ", "Tap ") + hotkeyName + tr(" 听写 · 按住说指令", " to dictate · hold to command")
-        let titleItem = NSMenuItem(title: modeHint, action: nil, keyEquivalent: "")
-        titleItem.isEnabled = false
-        menu.addItem(titleItem)
-
-        switch dictation.phase {
-        case .idle:
-            menu.addItem(makeItem(tr("开始听写", "Start Dictation"), #selector(toggleDictation)))
-        case .recording:
-            menu.addItem(makeItem(tr("停止并输出", "Stop & Insert"), #selector(toggleDictation)))
-            menu.addItem(makeItem(tr("取消录音（Esc）", "Cancel Recording (Esc)"), #selector(cancelDictation)))
-        case .processing:
-            let item = NSMenuItem(title: tr("处理中…", "Processing…"), action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
-            // 分段识别到一半时这一项其实是"停掉后面、把已经转好的插入"——写成「取消」
-            // 就是在骗人（点它会往文档里打字）。判据与悬浮窗胶囊、与 cancel() 同源。
-            menu.addItem(makeItem(
-                dictation.escFinishesEarlyNow
-                    ? tr("收尾并输入（Esc）", "Finish & Insert (Esc)")
-                    : tr("取消（Esc）", "Cancel (Esc)"),
-                #selector(cancelDictation)))
-        }
-
-        // 「换回识别原文」（P9）：只在刚插入过一次被润色改动的听写、且还在 60 秒内时出现。
-        // 目标应用不在前台就灰着并说清要切回哪儿——不自作主张替用户切窗口去撤销。
-        if let offer = dictation.revertOffer() {
-            let item = makeItem(tr("换回识别原文（撤销润色）", "Use raw transcript instead"),
-                                #selector(revertToRaw))
-            if !offer.ready {
-                // NSMenu 默认自动启用：去掉 action 才是真的灰掉
-                item.action = nil
-                item.isEnabled = false
-                item.toolTip = tr("请先切回 ", "Switch back to ") + offer.appName
-                    + tr(" 再撤销", " first")
-            }
-            menu.addItem(item)
-        }
-
-        menu.addItem(.separator())
-
-        // 「润色档位」子菜单 5.0.0 删掉：润色永远开着，那个菜单里没有第二个答案可选。
-
-        // 历史记录：菜单里只留最近 5 条速览（复制），完整的搜索/原文对照/重新插入在历史窗口里
-        let historyItem = NSMenuItem(title: tr("最近记录", "Recent Transcripts"), action: nil, keyEquivalent: "")
-        let historyMenu = NSMenu()
-        let items = HistoryStore.shared.items
-        if items.isEmpty {
-            let empty = NSMenuItem(title: tr("（暂无）", "(empty)"), action: nil, keyEquivalent: "")
-            empty.isEnabled = false
-            historyMenu.addItem(empty)
-        } else {
-            for item in items.prefix(5) {
-                var title = item.polished.replacingOccurrences(of: "\n", with: " ")
-                if title.count > 36 {
-                    title = String(title.prefix(36)) + "…"
-                }
-                let mi = NSMenuItem(title: title, action: #selector(copyHistory(_:)), keyEquivalent: "")
-                mi.target = self
-                mi.representedObject = item.polished
-                mi.toolTip = tr("点击复制全文", "Click to copy")
-                historyMenu.addItem(mi)
-            }
-        }
-        historyMenu.addItem(.separator())
-        let openHistoryItem = makeItem(tr("打开历史记录…", "Open History…"), #selector(openHistory))
-        openHistoryItem.keyEquivalent = "y"
-        openHistoryItem.keyEquivalentModifierMask = .command
-        historyMenu.addItem(openHistoryItem)
-        if !items.isEmpty {
-            historyMenu.addItem(makeItem(tr("清空记录", "Clear History"), #selector(clearHistory)))
-        }
-        historyItem.submenu = historyMenu
-        menu.addItem(historyItem)
-
-        menu.addItem(.separator())
-
-        // 「升级识别模型」与「释放模型内存」5.0.0 一并删掉：没有本机模型了。
-
-        // 没配 Key 时给一条看得见的入口（配好就消失）。3.3 之前菜单栏对"AI 没配"
-        // 一个字都不说，用户只有在按住说完话之后才在悬浮窗看到一句错误。
-        // 5.0.0 起没有 Key 连听写都不能用，所以这一条比从前更该在。
-        if !LLMClient.isConfigured {
-            menu.addItem(makeItem(tr("配置 AI…", "Set up AI…"), #selector(openAISettings)))
-        }
 
         let settingsItem = makeItem(tr("设置…", "Settings…"), #selector(openSettings))
         settingsItem.keyEquivalent = ","
         settingsItem.keyEquivalentModifierMask = .command
         menu.addItem(settingsItem)
-        // 「写作偏好…」直接摆在菜单里（5.0.0）：它是设置窗口底部那排小字里的一页，
-        // 而往词汇表里补一个听错的名字，是这个产品第二常做的事——不该要两次点击
-        menu.addItem(makeItem(tr("写作偏好…", "Writing Preferences…"),
-                              #selector(openWritingPreferences)))
-        // 界面语言：设计文档第 1 节写的是"界面语言跟系统，菜单栏可切"——设置页上没有
-        // 这一项了（一辈子点一次的东西不该占那一页），但它必须还够得着
-        menu.addItem(languageItem())
         menu.addItem(makeItem(tr("检查更新…", "Check for Updates…"), #selector(openAppUpdate)))
-        menu.addItem(makeItem(tr("打开日志文件夹", "Open Logs Folder"), #selector(openLogsFolder)))
 
         menu.addItem(.separator())
 
@@ -364,23 +275,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(quitItem)
     }
 
-    /// 界面语言子菜单。当前那一档打勾——不打勾的话，两项并排看不出现在是哪一种
-    /// （尤其界面正是他看不懂的那一种语言时）
-    private func languageItem() -> NSMenuItem {
-        let item = NSMenuItem(title: tr("界面语言", "Language"), action: nil, keyEquivalent: "")
-        let submenu = NSMenu()
-        for language in AppLanguage.allCases {
-            let mi = NSMenuItem(title: language.displayName, action: #selector(setLanguage(_:)),
-                                keyEquivalent: "")
-            mi.target = self
-            mi.representedObject = language.rawValue
-            mi.state = (language == L10n.shared.language) ? .on : .off
-            submenu.addItem(mi)
-        }
-        item.submenu = submenu
-        return item
-    }
-
     private func makeItem(_ title: String, _ action: Selector) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
@@ -388,71 +282,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - 动作
-
-    @objc private func toggleDictation() {
-        dictation.toggle()
-    }
-
-    @objc private func cancelDictation() {
-        dictation.cancel()
-    }
-
-    @objc private func revertToRaw() {
-        dictation.revertToRaw()
-    }
-
-    @objc private func setLanguage(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let language = AppLanguage(rawValue: raw) else { return }
-        L10n.shared.language = language
-    }
-
-    @objc private func copyHistory(_ sender: NSMenuItem) {
-        guard let text = sender.representedObject as? String else { return }
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(text, forType: .string)
-        // 复制完菜单一收，屏幕上什么都没变，用户只能靠再点一次来确认——所以给一句和
-        // 历史窗口「已复制」一致的反馈。但绝不能抢占录音/处理中的悬浮窗：
-        // flash() 会 endProcessing() 并清掉草稿，等于把「正在听…」或计时擦了（见 Overlay.swift）。
-        switch dictation.phase {
-        case .idle:
-            dictation.overlay.flashSuccess(tr("已复制", "Copied"))
-        case .processing:
-            dictation.overlay.flashOverProcessing(tr("已复制", "Copied"))
-        case .recording:
-            // 录音中只记日志：波形比这句提示重要得多，也不该在录音里插一声提示音
-            Log.info("History copied while recording — overlay left untouched")
-        }
-    }
-
-    @objc private func clearHistory() {
-        let count = HistoryStore.shared.items.count
-        guard count > 0 else { return }
-        // 破坏性且不可逆：clear() 立刻覆盖 history.json，没有撤销、也不在设置导出的备份里。
-        // 单条删除走历史窗口，这里问一次是最后一道闸。
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = tr("清空 \(count) 条记录？", "Clear \(count) transcripts?")
-        alert.informativeText = tr("此操作无法撤销，历史文件会被立即覆盖。想只删其中一条，请在历史记录窗口里删。",
-                                   "This cannot be undone — the history file is overwritten immediately. To remove a single entry, use the History window.")
-        let clearButton = alert.addButton(withTitle: tr("清空", "Clear"))
-        clearButton.hasDestructiveAction = true
-        alert.addButton(withTitle: tr("取消", "Cancel"))
-        // 这条路是从菜单栏那份菜单点进来的，MicType 多半不在前台：不激活的话
-        // 弹窗可能落在别的窗口后面
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else {
-            Log.info("Clear history cancelled by user")
-            return
-        }
-        Log.info("History cleared count=\(count)")
-        HistoryStore.shared.clear()
-    }
-
-    @objc private func openHistory() {
-        HistoryWindowController.shared.show()
-    }
 
     /// 主菜单里的「设置…」也走这里（AppMenu 用 #selector 指过来，所以不能是 private）
     @objc func openSettings() {
@@ -464,23 +293,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         SettingsWindowController.shared.show(tab: .about)
     }
 
-    @objc private func openAISettings() {
-        SettingsWindowController.shared.show()
-    }
-
-    /// 菜单栏的「写作偏好…」：直接落到那一页，不必先开设置再点底下那排小字
-    @objc private func openWritingPreferences() {
-        SettingsWindowController.shared.show(tab: .writing)
-    }
-
-    /// 菜单栏的「检查更新…」：进关于页并当场开查（他点的就是这个动作）
-    @objc private func openAppUpdate() {
+    /// 「检查更新…」：进关于页并当场开查（他点的就是这个动作）。
+    /// 菜单栏那份菜单和主菜单的 App 菜单都指这里（AppMenu 用 #selector 指过来，不能是 private）
+    @objc func openAppUpdate() {
         SettingsWindowController.shared.show(tab: .about, intent: .checkUpdate)
-    }
-
-    @objc private func openLogsFolder() {
-        Log.info("Open logs folder")
-        NSWorkspace.shared.open(Log.logsDirectory)
     }
 
     @objc private func quit() {

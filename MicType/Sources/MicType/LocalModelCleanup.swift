@@ -11,8 +11,8 @@ import Foundation
 ///     一个路径都不拼用户目录以外的东西；
 ///   • **只跑一次**（一条 UserDefaults 标记），删不掉就记一行 WARN 走人——
 ///     磁盘满、权限怪、文件被占着，都不该让 App 启动失败；
-///   • 释放了多少**要报给用户**：这是升级当天唯一一件他能感知到的好事，
-///     那句话由 LaunchNotice 闪在悬浮窗上。
+///   • 释放了多少**只进日志**（5.0.1 起）：那句「释放 1.2 GB」原先闪在升级后的悬浮窗上，
+///     可用户从没要过这个数——他要知道的只是"它在跑、按哪颗键"。清理照做，不邀功。
 enum LocalModelCleanup {
 
     /// 只跑一次的标记
@@ -24,7 +24,7 @@ enum LocalModelCleanup {
         guard !defaults.bool(forKey: doneKey) else { return 0 }
         defaults.set(true, forKey: doneKey)
         let freed = removeAll(at: staleDirectories())
-        Log.info("Local model cleanup done freed=\(freed) bytes (\(gigabytesLabel(freed)))")
+        Log.info("Local model cleanup done freed=\(freed) bytes")
         return freed
     }
 
@@ -86,15 +86,6 @@ enum LocalModelCleanup {
         return total
     }
 
-    /// 「1.2 GB」/「860 MB」。**纯函数**：这串会出现在升级那一刻的悬浮窗上，
-    /// 而那一句是用户对这次升级的全部印象，不能写成 "0.8 GB" 或 "1234567890 bytes"。
-    /// 小于 1 GB 按 MB 说（860 MB 比 0.84 GB 好读），1 GB 以上保留一位小数。
-    /// 0 返回空串——没释放出空间就不该有这半句话。
-    static func gigabytesLabel(_ bytes: Int64) -> String {
-        guard bytes > 0 else { return "" }
-        let gb = Double(bytes) / 1_000_000_000
-        if gb >= 1 { return String(format: "%.1f GB", gb) }
-        let mb = Int((Double(bytes) / 1_000_000).rounded())
-        return "\(max(mb, 1)) MB"
-    }
+    // gigabytesLabel（「1.2 GB」/「860 MB」）5.0.1 删掉：它唯一的读者是升级那一刻悬浮窗上
+    // 那半句「释放 X GB」，而那句话已经不说了（见文件头第三条）。
 }

@@ -54,62 +54,9 @@ final class OnboardingCopyTests: XCTestCase {
         }
     }
 
-    // MARK: - 最后一屏两种收尾
-
-    /// 有 Key：点名「按住 + 快捷键 + 一句真能照着说的话」
-    func testDoneStatusWithAKeyNamesTheHoldGesture() {
-        L10n.shared.language = .zh
-        let zh = OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥")
-        XCTAssertTrue(zh.contains("按住"), zh)
-        XCTAssertTrue(zh.contains("⌥"), zh)
-
-        L10n.shared.language = .en
-        let en = OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥")
-        XCTAssertTrue(en.contains("hold ⌥"), en)
-        XCTAssertTrue(en.lowercased().contains("more formal"), en)
-        XCTAssertFalse(containsCJKOrFullWidth(en), en)
-    }
-
-    /// 没 Key：必须指路 设置 → 云端 AI。
-    /// 5.0.0 起**不能**再说"现在这样也完整可用"——识别也在云端，没 Key 一个字都打不出来。
-    func testDoneStatusWithoutAKeyPointsAtSettings() {
-        L10n.shared.language = .zh
-        let zh = OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")
-        XCTAssertTrue(zh.contains("设置"), zh)
-        XCTAssertFalse(zh.contains("按住"), zh)
-
-        L10n.shared.language = .en
-        let en = OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")
-        XCTAssertTrue(en.contains("Settings"), en)
-        XCTAssertFalse(en.contains("on-device"), "没有本机那一档了，别再承诺它：\(en)")
-        XCTAssertFalse(containsCJKOrFullWidth(en), en)
-    }
-
-    /// 两种收尾不能串台（复制粘贴写错一处就会一模一样）。
-    /// 5.0.0 起只剩两种：润色不再有开关，「配齐了但润色关着」那一档不存在了。
-    func testDoneStatusVariantsDiffer() {
-        for language in [AppLanguage.zh, .en] {
-            L10n.shared.language = language
-            let all = [OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥"),
-                       OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")]
-            XCTAssertEqual(Set(all).count, 2, "\(all)")
-        }
-    }
-
-    /// 没配 Key 那一档必须说清**听写也用不了**（5.0.0 起识别也在云端）——
-    /// 4.x 那句"你现在是纯本机听写，完整可用"照抄过来就是骗人
-    func testDoneStatusWithoutAKeySaysDictationNeedsIt() {
-        L10n.shared.language = .zh
-        let zh = OnboardingCopy.doneAIStatus(status: .off, hotkey: "右 Option")
-        XCTAssertTrue(zh.contains("听写"), zh)
-        XCTAssertTrue(zh.contains("Key"), zh)
-
-        L10n.shared.language = .en
-        let en = OnboardingCopy.doneAIStatus(status: .off, hotkey: "Right Option")
-        XCTAssertTrue(en.lowercased().contains("dictation"), en)
-        XCTAssertTrue(en.contains("API key"), en)
-        XCTAssertFalse(containsCJKOrFullWidth(en), en)
-    }
+    // 最后一屏那三条测试（有 Key / 没 Key / 两种不串台）5.0.1 随 doneAIStatus 一起删掉：
+    // ⑤ 只回答"它在哪"，不再总结 AI 配到哪一步——没配 Key 的人在 ③ 已经被那条
+    // 写明代价的「先跳过」告知过了，而那一屏才是他能当场解决它的地方。
 
     /// 判据本身：凭据 + 拼得出来的地址 + 非空型号，三样齐了才算配好
     func testAIStatusNeedsCredentialAndEndpoint() {
@@ -124,21 +71,8 @@ final class OnboardingCopyTests: XCTestCase {
 
     // MARK: - 「怎么用」那一屏的文案
 
-    /// 那句解释必须把边界说清：**这一把 Key 管三件事**（听写、润色、指令），
-    /// 而且录音会离开这台 Mac。5.0.0 之前那句写的是"不填 Key 也能一直用"——
-    /// 照抄过来就是骗人（本机识别没有了）。
-    func testUsageExplanationStatesWhatAKeyBuys() {
-        L10n.shared.language = .zh
-        let zh = OnboardingCopy.usageExplanation
-        XCTAssertTrue(zh.contains("听写") && zh.contains("润色") && zh.contains("指令"), zh)
-        XCTAssertFalse(zh.contains("不填 Key"), zh)
-
-        L10n.shared.language = .en
-        let en = OnboardingCopy.usageExplanation
-        XCTAssertTrue(en.lowercased().contains("dictation"), en)
-        XCTAssertTrue(en.lowercased().contains("polish"), en)
-        XCTAssertFalse(en.contains("without a key"), en)
-    }
+    // usageExplanation（③ 开头那整段说明）5.0.1 删掉，这条测试跟着走：
+    // 那一屏开头再摆一段字，用户要往下翻才看得见真正要做的事（选一家、贴一把 Key）。
 
     /// 标题**不再写「可选」**（5.0.0）：没有 Key 这个产品一件事都干不了。
     /// 名字还得和设置页那一页对得上：同一个决定在两处叫两个名字，
@@ -181,52 +115,64 @@ final class OnboardingCopyTests: XCTestCase {
         }
     }
 
-    /// 最后一屏那句"以后还能再看一遍"必须指向**现在**那条链所在的地方：
-    /// 4.1.0 把它从「设置 → 输入」搬到了设置概览底下那排小字。
-    /// 指路的句子指向一个不存在的入口，比不指路更糟
-    func testReopenGuidePointsAtTheSettingsFooterLink() {
-        L10n.shared.language = .zh
-        let zh = OnboardingCopy.reopenGuide
-        XCTAssertTrue(zh.contains("重看引导"), zh)
-        XCTAssertFalse(zh.contains("输入"), zh)
-
-        L10n.shared.language = .en
-        let en = OnboardingCopy.reopenGuide
-        XCTAssertTrue(en.contains("Review the guide"), en)
-        XCTAssertFalse(en.contains("Settings → Input"), en)
-    }
+    // 「重看引导」那句（reopenGuide）与它的测试 5.0.1 一起删掉：⑤ 只剩三样东西，
+    // 而那句话说的是一个他此刻还没见过的窗口里的入口。
 
     // 模型下载那两条测试（「重试下载」的措辞与它的状态判据）随下载器一起删掉（5.0.0）。
 
     /// 引导里现在有文字的每一处（按钮、链接、那几行说明）
     private var everyLine: [String] {
-        [OnboardingCopy.usageHeadline, OnboardingCopy.usageExplanation,
-         OnboardingCopy.reopenGuide,
+        [OnboardingCopy.usageHeadline,
          OnboardingCopy.skipForNow, OnboardingCopy.dictationUnavailable,
          OnboardingCopy.permissionsStillMissing, OnboardingCopy.permissionsIntro,
-         OnboardingCopy.keyboardHint, OnboardingCopy.pasteKeyHere,
-         OnboardingCopy.keyMissingForTryIt,
-         OnboardingCopy.menuBarHome, OnboardingCopy.menuBarHolds,
-         OnboardingCopy.rarelyNeeded(hotkey: "⌥"), OnboardingCopy.launchAtLoginWhy,
-         OnboardingCopy.doneAIStatus(status: .ready, hotkey: "⌥"),
-         OnboardingCopy.doneAIStatus(status: .off, hotkey: "⌥")]
+         OnboardingCopy.hotkeyLine, OnboardingCopy.dictateCardDetail,
+         OnboardingCopy.commandCardNoSelection, OnboardingCopy.commandCardSelection,
+         OnboardingCopy.pasteKeyHere, OnboardingCopy.keyMissingForTryIt,
+         OnboardingCopy.tryItStepDictate(hotkey: "⌥"),
+         OnboardingCopy.tryItStepCommand(hotkey: "⌥"),
+         OnboardingCopy.menuBarHome, OnboardingCopy.launchAtLoginWhy]
     }
 
     // MARK: - 第一屏与第五屏（4.3.4）
 
-    /// 键盘示意图下面那一行必须提 alt：很多键帽上印的不是 option，
-    /// 只写"右 Option"的人对不上自己手底下那颗键（2026-09-22 反馈："到底按哪个键"）
-    func testKeyboardHintNamesTheAltKeycap() {
-        for language in [AppLanguage.zh, .en] {
-            L10n.shared.language = language
-            XCTAssertTrue(OnboardingCopy.keyboardHint.lowercased().contains("alt"),
-                          OnboardingCopy.keyboardHint)
-        }
+    /// 第一屏的两张卡片：**轻点那张说"说什么打什么"，按住那张必须把两种结果都说出来**
+    /// （有没有选中文字，结果落在完全不同的地方——见 DictationController.selectionDelivery）。
+    /// 5.0.1 之前按住那张只有一句笼统的"改写选中的文字、帮你起草回复、或直接下一条指令"，
+    /// 而用户真正会踩的坑是"我选中了网页上一段字，它怎么没改"。
+    func testWelcomeCardsSpellOutBothCommandOutcomes() {
         L10n.shared.language = .zh
-        XCTAssertTrue(OnboardingCopy.keyboardHint.contains("空格"), OnboardingCopy.keyboardHint)
+        XCTAssertTrue(OnboardingCopy.commandCardNoSelection.contains("没选中"),
+                      OnboardingCopy.commandCardNoSelection)
+        XCTAssertTrue(OnboardingCopy.commandCardSelection.contains("输入框"),
+                      OnboardingCopy.commandCardSelection)
+        XCTAssertTrue(OnboardingCopy.commandCardSelection.contains("剪贴板"),
+                      OnboardingCopy.commandCardSelection)
+        XCTAssertTrue(OnboardingCopy.hotkeyLine.contains("右 Option"), OnboardingCopy.hotkeyLine)
+
         L10n.shared.language = .en
-        XCTAssertTrue(OnboardingCopy.keyboardHint.lowercased().contains("space bar"),
-                      OnboardingCopy.keyboardHint)
+        XCTAssertTrue(OnboardingCopy.commandCardNoSelection.lowercased().contains("nothing selected"),
+                      OnboardingCopy.commandCardNoSelection)
+        XCTAssertTrue(OnboardingCopy.commandCardSelection.lowercased().contains("clipboard"),
+                      OnboardingCopy.commandCardSelection)
+        XCTAssertTrue(OnboardingCopy.hotkeyLine.contains("Right Option"), OnboardingCopy.hotkeyLine)
+    }
+
+    /// 「试一下」那两步：第一步必须让他**轻点两次**，第二步必须教他按住 + 选区改写。
+    /// 第二步是这个产品最不直觉的一步，而这一屏是他唯一会照着做的地方
+    func testTryItStepsTeachBothGestures() {
+        L10n.shared.language = .zh
+        let one = OnboardingCopy.tryItStepDictate(hotkey: "右 Option")
+        XCTAssertTrue(one.contains("轻点"), one)
+        XCTAssertTrue(one.contains("右 Option"), one)
+        let two = OnboardingCopy.tryItStepCommand(hotkey: "右 Option")
+        XCTAssertTrue(two.contains("按住"), two)
+        XCTAssertTrue(two.contains("选中"), two)
+
+        L10n.shared.language = .en
+        XCTAssertTrue(OnboardingCopy.tryItStepDictate(hotkey: "Right Option").lowercased()
+            .contains("tap right option"))
+        XCTAssertTrue(OnboardingCopy.tryItStepCommand(hotkey: "Right Option").lowercased()
+            .contains("hold right option"))
     }
 
     /// Key 框上面那句要把动作说全：从哪儿复制 + 用 ⌘V 贴到这里
@@ -237,33 +183,19 @@ final class OnboardingCopyTests: XCTestCase {
         }
     }
 
-    /// 最后一屏那两句：一句说**它在哪两处**、那两枚图标各管什么，一句说**平时不用去找它**。
-    /// 后面这句是这一屏真正的意思，漏了的话这一屏就成了"请记住去点那枚图标"。
-    /// 4.3.5 起 Dock 和菜单栏各有一枚图标（用户 2026-09-22 拍板常驻 Dock），
-    /// **两处都得点名**：只说其中一处，另一处那枚点下去就成了惊喜
-    func testLastPageSaysWhereItLivesAndThatYouRarelyNeedIt() {
+    /// 最后一屏只剩一句话：**它在哪两处**。4.3.5 起 Dock 和菜单栏各有一枚图标
+    /// （用户 2026-09-22 拍板常驻 Dock），两处都得点名——只说其中一处，
+    /// 另一处那枚点下去就成了惊喜。
+    /// 「菜单栏图标里有…」那句 5.0.1 删掉：那份菜单只剩三项，它念的那几样都不在里面了。
+    func testLastPageSaysWhereItLives() {
         L10n.shared.language = .zh
         XCTAssertTrue(OnboardingCopy.menuBarHome.contains("菜单栏"), OnboardingCopy.menuBarHome)
         XCTAssertTrue(OnboardingCopy.menuBarHome.contains("Dock"), OnboardingCopy.menuBarHome)
-        // 菜单里那几项 5.0.0 变了（没有「润色档位」了，多了「写作偏好」）：
-        // 这一句念的必须是菜单里真有的那几项，否则用户照着去找会找不到
-        XCTAssertTrue(OnboardingCopy.menuBarHolds.contains("最近记录"), OnboardingCopy.menuBarHolds)
-        XCTAssertTrue(OnboardingCopy.menuBarHolds.contains("写作偏好"), OnboardingCopy.menuBarHolds)
-        XCTAssertFalse(OnboardingCopy.menuBarHolds.contains("润色档位"), OnboardingCopy.menuBarHolds)
-        XCTAssertTrue(OnboardingCopy.menuBarHolds.contains("Dock"), OnboardingCopy.menuBarHolds)
-        let zh = OnboardingCopy.rarelyNeeded(hotkey: "右 Option")
-        XCTAssertTrue(zh.contains("轻点") && zh.contains("按住"), zh)
-        XCTAssertTrue(zh.contains("右 Option"), zh)
 
         L10n.shared.language = .en
         XCTAssertTrue(OnboardingCopy.menuBarHome.lowercased().contains("menu bar"),
                       OnboardingCopy.menuBarHome)
         XCTAssertTrue(OnboardingCopy.menuBarHome.contains("Dock"), OnboardingCopy.menuBarHome)
-        XCTAssertTrue(OnboardingCopy.menuBarHolds.contains("Dock"), OnboardingCopy.menuBarHolds)
-        let en = OnboardingCopy.rarelyNeeded(hotkey: "Right Option")
-        XCTAssertTrue(en.contains("tap Right Option"), en)
-        XCTAssertTrue(en.contains("hold Right Option"), en)
-        XCTAssertFalse(containsCJKOrFullWidth(en), en)
     }
 
     /// 这一屏的每一句在英文界面下都不许夹中文

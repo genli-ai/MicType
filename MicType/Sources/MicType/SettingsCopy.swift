@@ -39,8 +39,8 @@ enum SettingsCopy {
     /// （「history.json、200 条」）而关于页写的是另一版（「Application Support 目录、明文」），
     /// 条数一改就有两个答案。
     static var behaviourInfo: String {
-        tr("关掉即停止记录，已有的记录不动：清空在菜单栏「最近记录 → 清空记录」，逐条删在历史窗口（⌘Y）。",
-           "Turning this off stops recording immediately and leaves existing entries alone: clear them from the menu bar (Recent Transcripts → Clear History), or delete them one by one in the History window (⌘Y).")
+        tr("关掉即停止记录，已有的记录不动：清空与逐条删除都在设置底部的「历史记录」里。",
+           "Turning this off stops recording immediately and leaves existing entries alone: clear them or delete them one by one under History at the bottom of Settings.")
     }
 
     static var backupInfo: String {

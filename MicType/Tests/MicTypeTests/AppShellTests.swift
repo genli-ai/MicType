@@ -74,13 +74,14 @@ final class AppShellTests: XCTestCase {
         }
     }
 
-    /// App 菜单那三项（关于 / 设置… / 退出）都得有动作，⌘, 和 ⌘Q 都在
-    func testAppMenuHasAboutSettingsAndQuit() {
+    /// App 菜单那四项（关于 / 设置… / 检查更新… / 退出）都得有动作，⌘, 和 ⌘Q 都在。
+    /// 「检查更新…」5.0.1 补进来：菜单栏那份菜单只剩三项，这两处必须说同一件事
+    func testAppMenuHasAboutSettingsUpdateAndQuit() {
         guard let app = AppMenu.build().items.first?.submenu else {
             return XCTFail("没有 App 菜单")
         }
         let items = app.items.filter { !$0.isSeparatorItem }
-        XCTAssertEqual(items.count, 3)
+        XCTAssertEqual(items.count, 4)
         for item in items { XCTAssertNotNil(item.action, item.title) }
         XCTAssertTrue(items.contains { $0.keyEquivalent == "," && $0.keyEquivalentModifierMask == .command })
         XCTAssertTrue(items.contains { $0.keyEquivalent == "q" && $0.keyEquivalentModifierMask == .command })

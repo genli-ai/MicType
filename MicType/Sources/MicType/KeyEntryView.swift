@@ -385,7 +385,9 @@ struct KeyEntryView: View {
     /// Key 输入框本体。拆出来是为了让 body 的类型检查跑得动（整串修饰符写在 body 里
     /// 会让编译器直接放弃："unable to type-check this expression in reasonable time"）。
     private var secureField: some View {
-        SecureField(text: $key, prompt: Text(verbatim: "sk-…")) { Text("API Key") }
+        // 占位写**该做的动作**而不是 Key 长什么样（5.0.1）：「sk-…」是给认得 Key 的人看的，
+        // 而第一次走到这一步的人刚从控制台复制完，他要确认的是"贴这儿对不对"
+        SecureField(text: $key, prompt: Text(tr("粘贴到这里", "Paste it here"))) { Text("API Key") }
             .labelsHidden()
             .textFieldStyle(.roundedBorder)
             .focused($focused)

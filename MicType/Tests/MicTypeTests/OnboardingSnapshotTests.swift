@@ -94,8 +94,16 @@ final class OnboardingSnapshotTests: XCTestCase {
         model.axOK = false
         model.refreshAIReady()
 
-        let frame = NSRect(x: 0, y: 0, width: width, height: height)
         let host = NSHostingView(rootView: AnyView(OnboardingView(model: model)))
+        // **高度按这一屏的内容量**（5.0.1 起真窗口就是这么开的，见
+        // OnboardingWindowController.fitContentHeight）：写死 470 的话，短的那几屏
+        // 在图上底下空着一大块，而真窗口不会——那正是这一版要看的东西
+        host.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        host.layoutSubtreeIfNeeded()
+        let natural = host.fittingSize.height
+        let fitted = SettingsWindowSizing.contentHeight(natural: natural > 0 ? natural : height,
+                                                        visibleScreenHeight: 1_000)
+        let frame = NSRect(x: 0, y: 0, width: width, height: fitted)
         host.frame = frame
         let window = NSWindow(contentRect: frame, styleMask: [.titled],
                               backing: .buffered, defer: false)

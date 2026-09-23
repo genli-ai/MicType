@@ -37,8 +37,10 @@ enum AppMenu {
     }
 
     /// 第一个菜单（系统按应用名显示它，这里的标题只是占位）。
-    /// 三项都和菜单栏那份菜单里的同名项去同一个地方，措辞也逐字相同——
+    /// 每一项都和菜单栏那份菜单里的同名项去同一个地方，措辞也逐字相同——
     /// 同一件事在两处叫两个名字，用户会以为是两件事。
+    /// 5.0.1 起菜单栏那份只剩「设置… / 检查更新… / 退出」三项，这里跟着补上「检查更新…」
+    /// （「关于 MicType」留着：那是每个 macOS 应用的 App 菜单第一项，删掉反而奇怪）。
     private static func appSubmenu() -> NSMenu {
         let menu = NSMenu(title: "MicType")
         menu.addItem(item(tr("关于 MicType", "About MicType"),
@@ -46,6 +48,8 @@ enum AppMenu {
         menu.addItem(.separator())
         menu.addItem(item(tr("设置…", "Settings…"), #selector(AppDelegate.openSettings),
                           key: ",", modifiers: .command))
+        menu.addItem(item(tr("检查更新…", "Check for Updates…"),
+                          #selector(AppDelegate.openAppUpdate)))
         menu.addItem(.separator())
         menu.addItem(item(tr("退出 MicType", "Quit MicType"),
                           #selector(NSApplication.terminate(_:)),

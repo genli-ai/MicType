@@ -280,12 +280,42 @@ struct HistoryView: View {
                 .font(.caption)
                 .foregroundColor(status.isEmpty ? .secondary : .primary)
             Spacer()
+            // 「清空」5.0.1 从菜单栏搬到这里（那份菜单只剩三项）：唯一的入口就该在
+            // 这些记录自己所在的窗口里，而不是一个要先点开菜单、再点开子菜单的地方
+            if !store.items.isEmpty {
+                Button(tr("清空", "Clear")) { confirmClear() }
+                    .controlSize(.small)
+                    .foregroundColor(.red)
+            }
             Text(tr("按 ⎋ 关闭", "Press ⎋ to close"))
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    /// 清空要问一次：clear() 立刻覆盖 history.json，没有撤销，也不在设置导出的备份里。
+    /// 单条删除在每一行自己的「删除」上，所以这道闸只挡"一次全没"。
+    private func confirmClear() {
+        let count = store.items.count
+        guard count > 0 else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = tr("清空 \(count) 条记录？", "Clear \(count) transcripts?")
+        alert.informativeText = tr("此操作无法撤销，历史文件会被立即覆盖。想只删其中一条，用每条右边的「删除」。",
+                                   "This cannot be undone — the history file is overwritten immediately. To remove a single entry, use Delete on that row.")
+        let clearButton = alert.addButton(withTitle: tr("清空", "Clear"))
+        clearButton.hasDestructiveAction = true
+        alert.addButton(withTitle: tr("取消", "Cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            Log.info("Clear history cancelled by user")
+            return
+        }
+        Log.info("History cleared count=\(count)")
+        HistoryStore.shared.clear()
+        expanded.removeAll()
+        flash(tr("已清空历史记录", "History cleared"))
     }
 
     // MARK: 单行

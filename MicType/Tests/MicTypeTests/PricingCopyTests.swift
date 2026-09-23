@@ -117,13 +117,13 @@ final class PricingCopyTests: XCTestCase {
     // MARK: - 拿 Key 的那几步
 
     /// 每一步都要有话；链接一律 https（引导会把它直接交给 NSWorkspace 打开）；
-    /// **最后一步不带链接**——那一步是"回到这里粘贴"，给个按钮只会把人又送出去
+    /// **三步封顶**（5.0.1）——原先第四步是"回到这里粘贴"，而粘贴框就在这几行字底下
     func testConsoleStepsAreActionableAndSafe() {
         for language in AppLanguage.allCases {
             L10n.shared.language = language
             for provider in LLMProvider.allCases {
                 let steps = LLMCatalog.consoleSteps(for: provider)
-                XCTAssertEqual(steps.count, 4, provider.rawValue)
+                XCTAssertEqual(steps.count, 3, provider.rawValue)
                 for step in steps {
                     XCTAssertFalse(step.text.trimmingCharacters(in: .whitespaces).isEmpty)
                     for link in step.links {
@@ -131,20 +131,41 @@ final class PricingCopyTests: XCTestCase {
                         XCTAssertFalse(link.label.isEmpty)
                     }
                 }
-                XCTAssertTrue(steps.last?.links.isEmpty ?? false,
-                              "\(provider.rawValue)：最后一步是回到 MicType 粘贴，不该再给一颗按钮")
             }
         }
     }
 
-    /// 阿里云第一步必须给**两个**入口：国际站与中国站是两个账号体系，我们无从得知
-    /// 用户在哪一边——写死一个的结果是另一边的人点进去看到空页面
+    /// 阿里云第一步必须给**两个**入口：两个站是两套账号体系，我们无从得知用户在哪一边
+    /// ——写死一个的结果是另一边的人点进去看到空页面。
+    /// 按钮上只写站点自己的名字，**中英两侧一模一样**（用户 2026-09-22 拍板）
     func testAlibabaOffersBothConsoles() {
-        let first = LLMCatalog.consoleSteps(for: .qwen).first
-        XCTAssertEqual(first?.links.count, 2)
-        let urls = first?.links.map(\.url) ?? []
-        XCTAssertTrue(urls.contains(LLMCatalog.alibabaConsoleInternational))
-        XCTAssertTrue(urls.contains(LLMCatalog.alibabaConsoleChina))
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            let first = LLMCatalog.consoleSteps(for: .qwen).first
+            XCTAssertEqual(first?.links.count, 2)
+            let urls = first?.links.map(\.url) ?? []
+            XCTAssertTrue(urls.contains(LLMCatalog.alibabaConsoleInternational))
+            XCTAssertTrue(urls.contains(LLMCatalog.alibabaConsoleChina))
+            XCTAssertEqual(first?.links.map(\.label), ["International", "China"])
+        }
+    }
+
+    /// 引导 ③ 的文案里**一个字都不提「国内 / 国际站 / 中国站」**（用户 2026-09-22 拍板）：
+    /// 那是阿里云自己的账号体系，不是用户在这一刻要做的那个选择
+    func testNoStationWordingAnywhereInTheSteps() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            for provider in LLMProvider.allCases {
+                let lines = LLMCatalog.consoleSteps(for: provider).map(\.text)
+                    + [LLMCatalog.audienceNote(provider: provider),
+                       LLMCatalog.strengthNote(provider: provider)]
+                for line in lines {
+                    for banned in ["国内", "国际站", "中国站"] {
+                        XCTAssertFalse(line.contains(banned), line)
+                    }
+                }
+            }
+        }
     }
 
     /// OpenAI 那三步各去各的页面：充值和建 Key 是两个地方，合成一个链接等于让人自己找

@@ -131,24 +131,28 @@ enum LLMCatalog {
 
     // MARK: - 引导 ③ 的两张卡片（哪一家适合谁）
 
-    /// 卡片上第二行：**谁付得起、在哪儿用得了**。这是两家真正的分野——
-    /// 一个要海外信用卡，一个支付宝就能充。
+    /// 卡片上第三行：**怎么付钱**。这是两家真正的分野——一个要海外信用卡，一个支付宝就能充。
+    ///
+    /// 5.0.1 砍到 6 个字以内（用户 2026-09-22 拍板）：这两张卡片是并排的，
+    /// 每多一个字就多一次换行，而换行之后两张卡一高一矮，看着像其中一张更重要。
+    /// 「国内 / 国际站」那几个字一并去掉——它们要解释的是阿里云自己的账号体系，
+    /// 不是用户在这一刻要做的那个选择。
     static func audienceNote(provider: LLMProvider) -> String {
         switch provider {
         case .openai:
-            return tr("海外信用卡 · 全球可用", "Overseas card · works worldwide")
+            return tr("海外信用卡", "Overseas card")
         case .qwen:
-            return tr("支付宝 / 国内可用 · 也有国际站",
-                      "Alipay / works in China · international site too")
+            return tr("支付宝可用", "Alipay works")
         }
     }
 
-    /// 卡片上第三行：这一家**一句话的优势**。两句必须各说各的实话
+    /// 卡片上第二行：这一家**一句话的优势**。两句必须各说各的实话
     /// （2026-09-22 真 Key 实测：阿里云实时识别对词汇表热词全部无效，OpenAI 那一档认）。
+    /// 括号里那半句「识别时认词汇表」5.0.1 去掉：它是这句话的依据，不是这句话本身。
     static func strengthNote(provider: LLMProvider) -> String {
         switch provider {
         case .openai:
-            return tr("专名更准（识别时认词汇表）", "Better with names (honours your vocabulary)")
+            return tr("专名更准", "Better with names")
         case .qwen:
             return tr("更便宜、更快", "Cheaper and faster")
         }
@@ -185,45 +189,39 @@ enum LLMCatalog {
         }
     }
 
-    /// 阿里云百炼控制台：**国际站与中国站是两个账号体系**，我们无从得知用户在哪一边，
+    /// 阿里云百炼控制台：两个站是两套账号体系，我们无从得知用户在哪一边，
     /// 所以两颗按钮都摆出来让他自己认（写死一个的结果是另一边的人点进去看到空页面）。
+    /// **按钮上只写 International / China，中英两侧一模一样**（用户 2026-09-22 拍板）：
+    /// 那是两个站点自己的名字，译成「国际站 / 中国站」反而要用户先猜哪个对应哪个。
     static let alibabaConsoleInternational = "https://modelstudio.console.alibabacloud.com/"
     static let alibabaConsoleChina = "https://bailian.console.aliyun.com/"
 
-    /// 拿 Key 的那几步（纯函数，单测钉住"每一步都有话、链接都是 https"）
+    /// 拿 Key 的那几步（纯函数，单测钉住"每一步都有话、链接都是 https"）。
+    ///
+    /// **三步封顶**（5.0.1）：原先最后一步是「回到这里粘贴」——粘贴框就在这几行字底下，
+    /// 光标都在那儿，用一整行告诉他"回来"是在凑步骤。
     static func consoleSteps(for provider: LLMProvider) -> [ConsoleStep] {
         switch provider {
         case .openai:
             return [
-                ConsoleStep(text: tr("注册或登录 OpenAI 平台", "Sign up or log in to the OpenAI platform"),
+                ConsoleStep(text: tr("注册", "Sign up"),
                             links: [.init(label: tr("打开", "Open"),
                                           url: "https://platform.openai.com/")]),
-                ConsoleStep(text: tr("Billing 里充值（最低 $5）", "Add credit under Billing (minimum $5)"),
+                ConsoleStep(text: tr("充值", "Add credit"),
                             links: [.init(label: tr("打开", "Open"),
                                           url: "https://platform.openai.com/settings/organization/billing/overview")]),
-                ConsoleStep(text: tr("API keys → Create new secret key → 复制",
-                                     "API keys → Create new secret key → copy it"),
+                ConsoleStep(text: tr("创建 API Key，复制", "Create an API key and copy it"),
                             links: [.init(label: tr("打开", "Open"),
                                           url: "https://platform.openai.com/api-keys")]),
-                ConsoleStep(text: tr("回到这里，⌘V 贴进下面的框",
-                                     "Come back here and paste it below with ⌘V"),
-                            links: []),
             ]
         case .qwen:
             return [
-                ConsoleStep(text: tr("注册 / 登录百炼控制台，开通模型服务",
-                                     "Sign in to the Model Studio console and enable the models"),
-                            links: [.init(label: tr("国际站", "International"),
-                                          url: alibabaConsoleInternational),
-                                    .init(label: tr("中国站", "China"),
-                                          url: alibabaConsoleChina)]),
-                ConsoleStep(text: tr("API-KEY 页创建一把，复制", "Create a key on the API-KEY page and copy it"),
+                ConsoleStep(text: tr("注册并开通", "Sign up and enable"),
+                            links: [.init(label: "International", url: alibabaConsoleInternational),
+                                    .init(label: "China", url: alibabaConsoleChina)]),
+                ConsoleStep(text: tr("创建 API Key，复制", "Create an API key and copy it"),
                             links: []),
-                ConsoleStep(text: tr("同一页上方「接入地址（apiHost）」也复制一份",
-                                     "Copy the API host shown at the top of that same page"),
-                            links: []),
-                ConsoleStep(text: tr("回到这里，Key 与接入地址各贴一格（接入地址可留空）",
-                                     "Come back here and paste both (the host may be left empty)"),
+                ConsoleStep(text: tr("复制接入地址（同一页）", "Copy the API host on the same page"),
                             links: []),
             ]
         }

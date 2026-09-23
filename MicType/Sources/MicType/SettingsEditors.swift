@@ -168,6 +168,12 @@ struct MainSettingsPage: View {
     /// 「重看引导」住在这里（用户 2026-09-20 拍板）：那份引导讲的是整个产品怎么用，
     /// 不是一条设置。「写作偏好」4.3.3 之前是「输入」页上的一段，5.0.0 起从这里点开
     /// ——它改得不勤，但改的是用户自己的文字，值一个自己的地方。
+    ///
+    /// 5.0.1 这排小字接下了菜单栏卸掉的两样（那份菜单只剩三项）：
+    ///   • 「历史记录」——原先是菜单里一个会当着别人的面展开听写内容的子菜单；
+    ///   • 「语言」——点一下就切，不做子菜单也不做下拉：一辈子点一次的东西，
+    ///     摆一个"当前是哪种"的勾选毫无意义（界面本身就是答案）。
+    /// 「检查更新」从这里挪走：它现在在菜单栏那三项里，而「关于」页上本来就有一颗。
     private var footer: some View {
         HStack(spacing: 16) {
             Button(tr("关于 MicType", "About MicType")) {
@@ -176,8 +182,14 @@ struct MainSettingsPage: View {
             Button(tr("写作偏好", "Writing preferences")) {
                 SettingsNavigator.shared.go(to: .writing)
             }
-            Button(tr("检查更新", "Check for Updates")) {
-                SettingsNavigator.shared.go(to: .about, intent: .checkUpdate)
+            Button(tr("历史记录", "History")) {
+                HistoryWindowController.shared.show()
+            }
+            Button(tr("语言", "Language")) {
+                // 只有两种语言，点一下就是"换另一种"（L10n 即时生效，整个界面当场重画）
+                let next: AppLanguage = L10n.shared.language == .zh ? .en : .zh
+                Log.info("UI language switched to=\(next.rawValue)")
+                L10n.shared.language = next
             }
             Button(tr("重看引导", "Review the guide")) {
                 OnboardingWindowController.shared.show()
@@ -387,6 +399,12 @@ struct AboutPanel: View {
                     diagnosticsCopied = false
                 }
             }
+            // 5.0.1 从菜单栏搬到这里：它和「复制诊断信息」是同一件事的两种深浅
+            //（一句摘要 vs 整份日志），而菜单栏那份菜单只剩三项
+            Button(tr("打开日志文件夹", "Open Logs Folder")) {
+                Log.info("Open logs folder")
+                NSWorkspace.shared.open(Log.logsDirectory)
+            }
         }
     }
 
@@ -450,8 +468,10 @@ struct AboutPanel: View {
             //（PrivacyCopy.historyStaysLocal 引用的就是 HistoryStore.storageNote），
             // 所以这里**只补"去哪儿清"**——5.0.0 之前这里把整句又渲染了一遍，
             // 同一件事在同一屏上出现两次
-            Text(tr("在菜单栏「最近记录」里可以清空或逐条删除。",
-                    "Clear them or delete them one by one from Recent Transcripts in the menu bar."))
+            // 5.0.1 指路改了：菜单栏那个「最近记录」子菜单没有了（它会当着别人的面
+            // 把听写内容摊在菜单里），清空与逐条删除都在设置底部那排小字的「历史记录」里
+            Text(tr("在设置底部的「历史记录」里可以清空或逐条删除。",
+                    "Clear them or delete them one by one under History at the bottom of Settings."))
             // 那个开关就摆在这几句话下面（4.3.3 从「输入」页搬来）：读完"存在哪儿、留多少条"
             // 紧接着就是"要不要存"，这是它唯一该在的位置
             SettingsToggleRow(label: tr("保存听写历史（仅本机）", "Keep transcript history (on this Mac)"),

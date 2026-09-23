@@ -114,9 +114,10 @@ struct QwenHostField: View {
         // 写在栏名里只是把每一行都拉长（用户 2026-09-22 点名了这两个字）。
         // 去哪儿找这一串写在占位文字里，不再单起一行说明。
         SettingsFieldRow(label: "API Host") {
+            // 占位把"可以不填"说掉（5.0.1）：栏名里不写「（可选）」，那句话得有个去处
             TextField(text: $text,
-                      prompt: Text(tr("百炼控制台里的接入地址",
-                                      "API host from the Model Studio console"))) {
+                      prompt: Text(tr("接入地址，可留空",
+                                      "API host, optional"))) {
                 Text("API Host")
             }
             .labelsHidden()
@@ -366,8 +367,8 @@ struct ConsoleStepsView: View {
 
 // MARK: - 引导 ③ 上半：两张并排的服务商卡片
 
-/// 每张三行：**每小时多少钱 / 适合谁 / 一句优势**。三行都从 LLMCatalog 取
-/// （价格是算出来的，不写死）。
+/// 每张三行：**每小时多少钱 / 一句优势 / 怎么付钱**。三行都从 LLMCatalog 取
+/// （价格是算出来的，不写死），每行 6 个汉字以内——两张卡并排，多一个字就多一次换行。
 ///
 /// 为什么是卡片而不是设置页那个分段选择器：这一刻用户对这两个名字**一无所知**，
 /// 而他要做的不是"换一档看看"，是第一次做一个会花他自己的钱的选择。
@@ -377,12 +378,19 @@ struct ProviderChoiceCards: View {
     /// 这一刻**真正生效**的那一档：验证通过之后卡片上要出现「正在使用 ✓」
     let inUse: LLMProvider
 
+    /// **阿里云在左**（用户 2026-09-22 拍板）：它便宜五倍，是大多数人该选的那一张，
+    /// 而并排两张卡片里左边那张就是默认答案。设置页那个分段选择器的顺序不跟着改
+    /// （LLMProvider.allCases 还有别的读者）。
+    private static let order: [LLMProvider] = [.qwen, .openai]
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            ForEach(LLMProvider.allCases, id: \.rawValue) { provider in
+            ForEach(Self.order, id: \.rawValue) { provider in
                 card(provider)
             }
         }
+        // 两张卡等高：一张比另一张矮时，看着像其中一张更重要
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func card(_ provider: LLMProvider) -> some View {
@@ -401,17 +409,17 @@ struct ProviderChoiceCards: View {
             // 价钱排在第一行：它是这两张卡片之间最大的差别（五倍）
             Text(LLMCatalog.hourlyCostNote(provider: provider))
                 .font(.caption)
-            Text(LLMCatalog.audienceNote(provider: provider))
+            Text(LLMCatalog.strengthNote(provider: provider))
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(LLMCatalog.strengthNote(provider: provider))
+            Text(LLMCatalog.audienceNote(provider: provider))
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8)
             .fill(Color.accentColor.opacity(picked ? 0.14 : 0))
             .overlay(RoundedRectangle(cornerRadius: 8)

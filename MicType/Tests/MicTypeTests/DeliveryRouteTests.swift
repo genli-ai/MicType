@@ -81,6 +81,51 @@ final class DeliveryRouteTests: XCTestCase {
         XCTAssertEqual(DictationController.DeliveryRoute.inserter.rawValue, "inserter")
     }
 
+    // MARK: - 选区指令的结果往哪儿送（5.0.1）
+
+    /// **一条规则，没有例外**：选区在输入框 / 编辑区里就原地替换，其余一律进剪贴板。
+    ///
+    /// 5.0.1 之前这件事由模型自己判（第一行输出 MODIFY / REPLY / NEW）。它判的是
+    /// "用户想干什么"，而真正决定能不能原地替换的是**那段字长在什么控件里**——
+    /// 那件事模型看不见。判错的代价还不对称：往只读的地方粘，用户眼里是结果凭空消失。
+    func testSelectionDeliveryFollowsEditabilityOnly() {
+        XCTAssertEqual(DictationController.selectionDelivery(selectionEditable: true), .replace)
+        XCTAssertEqual(DictationController.selectionDelivery(selectionEditable: false), .clipboard)
+    }
+
+    /// 能吃下 ⌘V 的就那几种 role。网页正文（AXGroup / AXStaticText）、PDF（AXScrollArea）
+    /// 都能"选中"，但没有一个吃得下粘贴——判成可编辑的话，改写结果会凭空消失
+    func testOnlyRealTextControlsCountAsEditable() {
+        for role in ["AXTextField", "AXTextArea", "AXComboBox"] {
+            XCTAssertTrue(SelectionReader.roleIsEditable(role, hasSelectedText: true), role)
+        }
+        for role in ["AXGroup", "AXStaticText", "AXScrollArea", "AXWebArea", "AXUnknown"] {
+            XCTAssertFalse(SelectionReader.roleIsEditable(role, hasSelectedText: true), role)
+        }
+        // role 读不出来（AX 接口残缺的应用）= 不可编辑，宁可让他多按一次 ⌘V
+        XCTAssertFalse(SelectionReader.roleIsEditable(nil, hasSelectedText: true))
+        // 没选中字就谈不上"原地替换"
+        XCTAssertFalse(SelectionReader.roleIsEditable("AXTextField", hasSelectedText: false))
+    }
+
+    /// 不可编辑那一档的提示必须说清**下一步按什么**：结果没出现在屏幕上，
+    /// 不说的话用户会以为这条指令什么都没发生
+    func testClipboardNoteTellsTheUserToPaste() {
+        let saved = L10n.shared.language
+        defer { L10n.shared.language = saved }
+
+        L10n.shared.language = .zh
+        XCTAssertTrue(DictationController.selectionCopiedNote.contains("⌘V"),
+                      DictationController.selectionCopiedNote)
+        let zhReplaced = DictationController.selectionReplacedNote
+
+        L10n.shared.language = .en
+        XCTAssertTrue(DictationController.selectionCopiedNote.contains("⌘V"),
+                      DictationController.selectionCopiedNote)
+        // 漏写一侧的典型表现：两种语言拿到同一串
+        XCTAssertNotEqual(zhReplaced, DictationController.selectionReplacedNote)
+    }
+
     // MARK: - 问过输入框之后，字真正落在哪儿
 
     private func outcome(_ route: DictationController.DeliveryRoute, accepted: Bool,

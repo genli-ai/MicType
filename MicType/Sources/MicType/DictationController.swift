@@ -71,6 +71,9 @@ final class DictationController {
     private var targetBundleID = ""
     /// 录音开始时的选中文本（V3 语音技能用；读不到为 nil）
     private var targetSelection: String?
+    /// 那段选区**能不能被原地改写**（AX 里焦点是输入框 / 编辑区 = 能；⌘C 兜底来的 = 不能）。
+    /// 5.0.1 起指令结果往哪儿送只看这一位，不再看模型自己判的意图标签（见 selectionDelivery）
+    private var targetSelectionEditable = false
     /// 本次录音是否为"指令模式"（按住快捷键满 0.6s 后就地升级）
     private var skillSession = false
     /// 本次录音是否由热键按下触发（按下即录）。只有这种会话才可能升级成指令模式，
@@ -391,14 +394,17 @@ final class DictationController {
         }
         // 选区也推迟到这里才读：轻点是纯听写，根本用不到选区；而且按下沿做同步 AX 读取
         // 会被 Electron / 挂起的应用卡住主线程几百毫秒——把热键当修饰键用时每按一次卡一次。
-        targetSelection = SelectionReader.readSelectedText()
-        Log.info("Hold promoted to command mode selection=\(targetSelection == nil ? "none" : "ax")")
+        let axSelection = SelectionReader.readSelection()
+        targetSelection = axSelection?.text
+        targetSelectionEditable = axSelection?.editable ?? false
+        Log.info("Hold promoted to command mode selection=\(axSelection == nil ? "none" : "ax")"
+                 + " editable=\(targetSelectionEditable)")
         // AX 读不到选区（浏览器/Gmail、VSCode 等 Electron、微信/QQ 都接口残缺）→ 现在才 ⌘C 兜底。
         // 判定成指令之后才做，纯听写路径一个字都不会碰用户的剪贴板。
         guard targetSelection == nil else { return }
         let generation = self.generation
         selectionProbeGeneration = generation
-        SelectionReader.readSelectedTextWithClipboardFallback { [weak self] text in
+        SelectionReader.readSelectedTextWithClipboardFallback { [weak self] selection in
             guard let self = self else { return }
             // 代数对不上说明这一轮已经被取消或换代了（endSession 会把它清空）
             guard self.selectionProbeGeneration == generation else { return }
@@ -406,7 +412,11 @@ final class DictationController {
             // 这里绝不能再要求 phase == .recording：用户完全可能在升级后不到 0.35s 就松手，
             // 那时 phase 已是 .processing，结果被丢掉 → 选区静默丢失，指令降级成自由指令
             // （3.2.18 修过的那类失败）。代数已经挡住了取消和新一轮，phase 这一条多余且有害。
-            if self.phase != .idle { self.targetSelection = text }
+            if self.phase != .idle {
+                self.targetSelection = selection?.text
+                // 兜底来的选区一律不可编辑（见 SelectionReader）
+                self.targetSelectionEditable = selection?.editable ?? false
+            }
             let waiters = self.selectionProbeWaiters
             self.selectionProbeWaiters = []
             waiters.forEach { $0() }
@@ -586,6 +596,7 @@ final class DictationController {
         selectionProbeGeneration = nil
         selectionProbeWaiters = []
         targetSelection = nil
+        targetSelectionEditable = false
         sessionNotes = []
         recordingStartedAt = nil
         levelGateUntil = nil
@@ -954,6 +965,7 @@ final class DictationController {
             // 按下这一刻永远先当听写：满 0.6s 才由 holdPromote 就地升级成指令模式
             self.skillSession = false
             self.targetSelection = nil
+            self.targetSelectionEditable = false
             self.sessionNotes = []
             // 这一轮用哪个引擎在开录这一刻定格（录到一半改设置不影响这一段）
             self.prepareSessionEngine()
@@ -1454,16 +1466,22 @@ final class DictationController {
         }
     }
 
-    /// 技能：有选区的指令——模型自判意图后按意图投递：
-    /// 改写 → 粘贴替换选区；回复 → 草稿进剪贴板；新写 → 粘贴到光标处；
-    /// 意图解析失败 → 结果进剪贴板（绝不误覆盖选区）
+    /// 技能：有选区的指令。
+    ///
+    /// **结果往哪儿送是一条确定性规则，不再问模型**（用户 2026-09-22 拍板，5.0.1）：
+    /// 选区在输入框 / 编辑区里（AX 认得出）→ ⌘V 原地替换；其余一律进剪贴板。
+    /// 4.x 那套「模型第一行输出 MODIFY / REPLY / NEW」判的是"用户想干什么"，
+    /// 可真正决定能不能原地替换的是**那段字长在什么控件里**——那件事模型看不见，
+    /// 而我们看得见。判错的代价不对称：往只读的地方粘，用户眼里是结果凭空消失。
     private func runSelectionCommand(selection: String, instruction: String, raw: String,
                                      isColdStart: Bool, generation: Int) {
         overlay.showProcessing(tr("执行指令中…", "Running command…"))
-        // 微信/QQ 的选区是消息记录（对方的话），物理上不存在"原地改写"——把这个事实告诉模型
+        // 微信/QQ 的选区是消息记录（对方的话）：这一位现在**只**作为背景事实进提示词，
+        // 不再影响投递（投递由 targetSelectionEditable 决定，而聊天记录本来就不可编辑）
         let chatContext = Self.poorAXApps.contains(targetBundleID)
+        let editable = targetSelectionEditable
         let tModel = DispatchTime.now()
-        inflightRequest = AgentService.runOnSelection(selection, instruction: instruction, chatContext: chatContext) { [weak self] action, result, failure in
+        inflightRequest = AgentService.runOnSelection(selection, instruction: instruction, chatContext: chatContext) { [weak self] result, failure in
             guard let self = self, self.isCurrent(generation) else { return }
             self.inflightRequest = nil
             let usage = self.noteCommandLatency(since: tModel, ok: result != nil)
@@ -1476,26 +1494,40 @@ final class DictationController {
             // 词汇表硬替换在每个产出点各做一次；deliver / copyToClipboard 里不再做
             let finalText = TextPostProcessor.applyVocabReplacements(result)
             let citations = usage?.citations ?? []
-            switch action {
-            case .modify:
+            switch Self.selectionDelivery(selectionEditable: editable) {
+            case .replace:
                 self.deliver(raw: raw, final: finalText,
-                             note: Self.noteWithSources(tr("已替换选中文本", "Selection replaced"), usage),
+                             note: Self.noteWithSources(Self.selectionReplacedNote, usage),
                              coldStart: isColdStart, citations: citations)
-            case .new:
-                self.deliver(raw: raw, final: finalText,
-                             note: Self.noteWithSources(tr("已输入指令结果", "Command result inserted"), usage),
-                             coldStart: isColdStart, citations: citations)
-            case .reply:
+            case .clipboard:
                 self.copyToClipboard(raw: raw, result: finalText,
-                                     note: Self.noteWithSources(tr("回复草稿已复制——点到输入框按 ⌘V", "Reply draft copied — click the input field and press ⌘V"), usage),
-                                     citations: citations)
-            case nil:
-                // 意图行没解析出来：进剪贴板最安全，不碰选区
-                self.copyToClipboard(raw: raw, result: finalText,
-                                     note: Self.noteWithSources(tr("结果已复制到剪贴板——按 ⌘V 粘贴", "Result copied — press ⌘V to paste"), usage),
+                                     note: Self.noteWithSources(Self.selectionCopiedNote, usage),
                                      citations: citations)
             }
         }
+    }
+
+    /// 选区指令的结果往哪儿送。**纯函数**（单测钉住）：它只有一条判据，
+    /// 而那条判据一旦被"顺手加个例外"就会重新变成 4.x 那种猜。
+    enum SelectionDelivery: String {
+        /// 选区在输入框 / 编辑区里 → ⌘V 原地替换
+        case replace
+        /// 其余（网页、PDF、聊天记录、⌘C 兜底来的）→ 进剪贴板，由用户自己决定粘到哪儿
+        case clipboard
+    }
+
+    static func selectionDelivery(selectionEditable: Bool) -> SelectionDelivery {
+        selectionEditable ? .replace : .clipboard
+    }
+
+    static var selectionReplacedNote: String {
+        tr("已替换选中文本", "Selection replaced")
+    }
+
+    /// 不可编辑那一档的提示。**必须说清下一步按什么**：结果没出现在屏幕上，
+    /// 不说的话用户会以为这条指令什么都没发生
+    static var selectionCopiedNote: String {
+        tr("已复制，⌘V 粘贴到你要放的地方", "Copied - press ⌘V where you want it")
     }
 
     /// 结果进剪贴板（不自动粘贴），记录历史并提示
@@ -1522,30 +1554,32 @@ final class DictationController {
     }
 
     /// 技能：帮我回复——基于选中的对方消息草拟回复。
-    /// 安全策略：不自动粘贴（焦点通常在消息区而非输入框），复制到剪贴板由用户 ⌘V。
+    /// 投递走**和选区指令同一条规则**（5.0.1）：选区在输入框里就原地替换，
+    /// 其余进剪贴板。实际上几乎永远是后者（对方发来的消息不可编辑），
+    /// 但规则只有一条这件事本身值钱——两条规则迟早会打架。
     private func runReplyDraft(instruction: String, raw: String, generation: Int) {
         if let context = targetSelection {
-            executeReplyDraft(context: context, instruction: instruction, raw: raw,
-                              generation: generation)
+            executeReplyDraft(context: context, editable: targetSelectionEditable,
+                              instruction: instruction, raw: raw, generation: generation)
             return
         }
         // AX 没读到：此刻焦点仍在目标应用、选区还在，用 ⌘C 兜底再试一次
         overlay.showProcessing(tr("读取选中内容…", "Reading selection…"))
-        SelectionReader.readSelectedTextWithClipboardFallback { [weak self] context in
+        SelectionReader.readSelectedTextWithClipboardFallback { [weak self] selection in
             guard let self = self, self.isCurrent(generation) else { return }
-            guard let context = context else {
+            guard let selection = selection else {
                 self.phase = .idle
                 self.overlay.flashError(tr("读不到选中内容：请重新选中要回复的消息再试", "Could not read selection — reselect the message and try again"))
                 Sounds.playError()
                 return
             }
-            self.executeReplyDraft(context: context, instruction: instruction, raw: raw,
-                                   generation: generation)
+            self.executeReplyDraft(context: selection.text, editable: selection.editable,
+                                   instruction: instruction, raw: raw, generation: generation)
         }
     }
 
-    private func executeReplyDraft(context: String, instruction: String, raw: String,
-                                   generation: Int) {
+    private func executeReplyDraft(context: String, editable: Bool, instruction: String,
+                                   raw: String, generation: Int) {
         overlay.showProcessing(tr("草拟回复中…", "Drafting reply…"))
         let tModel = DispatchTime.now()
         inflightRequest = AgentService.replyDraft(context: context, instruction: instruction) { [weak self] result, failure in
@@ -1555,9 +1589,17 @@ final class DictationController {
             if let result = result {
                 // 词汇表硬替换在每个产出点各做一次；copyToClipboard 里不再做
                 let finalText = TextPostProcessor.applyVocabReplacements(result)
-                self.copyToClipboard(raw: raw, result: finalText,
-                                     note: Self.noteWithSources(tr("回复草稿已复制——点到输入框按 ⌘V", "Reply draft copied — click the input field and press ⌘V"), usage),
-                                     citations: usage?.citations ?? [])
+                let citations = usage?.citations ?? []
+                switch Self.selectionDelivery(selectionEditable: editable) {
+                case .replace:
+                    self.deliver(raw: raw, final: finalText,
+                                 note: Self.noteWithSources(Self.selectionReplacedNote, usage),
+                                 citations: citations)
+                case .clipboard:
+                    self.copyToClipboard(raw: raw, result: finalText,
+                                         note: Self.noteWithSources(Self.selectionCopiedNote, usage),
+                                         citations: citations)
+                }
             } else {
                 self.phase = .idle
                 self.overlay.flashError(tr("草拟失败（", "Draft failed (") + (failure ?? tr("未知", "unknown")) + tr("）", ")"))

@@ -2,8 +2,10 @@ import Foundation
 
 // MARK: - 语音技能路由（V3）
 // 意图区分靠手势而不靠内容：轻点 = 纯输入（永不解析指令），按住 = 指令模式。
-// 指令模式内部：显式回复触发词是直通捷径（说了必走回复，不经过模型判断）；
-// 其余有选区的指令由模型自判意图（见 AgentService.runOnSelection）。
+// 指令模式内部：显式回复触发词是直通捷径（说了必走"起草回复"这条专用提示词）；
+// 其余有选区的指令走通用入口（见 AgentService.runOnSelection）。
+// **结果往哪儿送不由这里、也不由模型决定**（5.0.1）：两条路都按「选区能不能被原地改写」
+// 这一条确定性规则投递（DictationController.selectionDelivery）。
 
 enum SkillRouter {
 

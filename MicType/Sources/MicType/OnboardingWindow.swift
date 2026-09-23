@@ -147,21 +147,35 @@ enum OnboardingCopy {
     // 而窗口高度写死 470——每加一句话都在往 ScrollView 里塞，谁也看不出这一屏一共说了多少字。
     // 收进来之后由 `paragraphs` 逐条量（见 SettingsCopyBudgetTests）。
 
-    /// 欢迎屏两张手势卡的正文。
-    /// 「识别在本机」**不在这里说**：这一屏底下那句 PrivacyCopy.audioGoesToProvider 已经把它说全了，
-    /// 而且说得比这里准（它写清了"选了云端引擎才会上传"这条边界）。
+    // MARK: 第一屏（5.0.1 重做）
+
+    /// 这一屏只回答三件事：按哪颗键、轻点做什么、按住做什么。
+    /// 5.0.1 拿掉了键盘示意图（画出来的那一排键帽和用户手底下的键盘未必一样，
+    /// 而"右 Option"这四个字配上 ⌥ 符号已经够认）、隐私那一句（它在「关于 → 隐私」里，
+    /// 那是唯一出处）和「两种手势泾渭分明」（那是我们的设计原则，不是他此刻要学的动作）。
+
+    /// 快捷键那一行。键名走 HotkeyChoice（只有右 Option 一颗），绝不在这里手写
+    static var hotkeyLine: String {
+        tr("快捷键：\(HotkeyChoice.rightOption.displayName)",
+           "Hotkey: \(HotkeyChoice.rightOption.displayName)")
+    }
+
+    /// 轻点那张卡的正文
     static var dictateCardDetail: String {
-        tr("说什么，打什么。", "Exactly what you said, typed out.")
+        tr("轻点开始，说话，再轻点结束；文字落在光标处。",
+           "Tap to start, speak, tap again to stop; the text lands at your cursor.")
     }
 
-    static var commandCardDetail: String {
-        tr("改写选中的文字、帮你起草回复、或直接下一条指令；松手执行。",
-           "Rewrite the selection, draft a reply, or just give an instruction; release to run.")
+    /// 按住那张卡的两条。**分两条写**是因为它们的结果真的不一样，而这正是 5.0.1
+    /// 把投递改成确定性规则之后，用户必须提前知道的那件事（见 DictationController.selectionDelivery）
+    static var commandCardNoSelection: String {
+        tr("没选中文字：说你要什么，结果落在光标处。",
+           "Nothing selected: say what you want, the result lands at the cursor.")
     }
 
-    static var twoGesturesNeverGuessed: String {
-        tr("两种手势泾渭分明——MicType 从不猜你想要哪一种。",
-           "Two gestures, no guessing — MicType never infers which one you meant.")
+    static var commandCardSelection: String {
+        tr("选中了文字：在输入框里 → 原地改写；在别处 → 复制到剪贴板",
+           "Text selected: in a text field → rewritten in place; elsewhere → copied to the clipboard")
     }
 
     /// 权限页两条权限各自的用途
@@ -185,10 +199,17 @@ enum OnboardingCopy {
            "MicType switches over only once a key is verified, and keeps using \(current)")
     }
 
-    /// 第四屏：怎么试一次
-    static func tryItInstruction(hotkey: String) -> String {
-        tr("光标已经在下面的框里。轻点 \(hotkey)，说一句话，再轻点一次结束。",
-           "The cursor is already in the box below. Tap \(hotkey), speak, then tap again to finish.")
+    /// 第四屏的两步。**编号写出来**（5.0.1）：这一屏要他真的动手做两件事，
+    /// 而第二件（选中刚打出来的字、按住说指令）是这个产品最不直觉、也最值钱的一步——
+    /// 4.3.6 之前它只是底下一条 tip，几乎没人会照着做。
+    static func tryItStepDictate(hotkey: String) -> String {
+        tr("轻点 \(hotkey)，说一句话，再轻点 → 文字出现在上面",
+           "Tap \(hotkey), say something, tap again → the text appears above")
+    }
+
+    static func tryItStepCommand(hotkey: String) -> String {
+        tr("选中上面的文字，按住 \(hotkey) 说「翻译成英文」，松手 → 原地改写",
+           "Select the text above, hold \(hotkey) and say \"translate to English\", release → rewritten in place")
     }
 
     /// 「试一下」那一页：Key 还没配好，现在轻点是说不出字的（5.0.0 起识别也要那把 Key）
@@ -197,38 +218,11 @@ enum OnboardingCopy {
            "No API key yet, so tapping now will not produce any text - go back a screen and paste one.")
     }
 
-    static var escCancels: String {
-        tr("录音中按 Esc 可以取消。", "Press Esc while recording to cancel.")
-    }
-
-    static func holdToCommandTip(hotkey: String) -> String {
-        tr("按住 \(hotkey) 说指令，松手执行。",
-           "Hold \(hotkey) to speak a command, release to run it.")
-    }
-
-    // menuBarTip（「菜单栏的麦克风图标里有历史记录、润色档位和设置」）4.3.4 删掉了：
-    // 最后一屏用同一句话配着那枚图标的真图说了一遍（menuBarHolds），
-    // 而它原来挂在 ④ ——连着两屏说同一件事，还各说各的措辞。
-
-    /// 5.0.0 起「写作偏好」是自己的一页，从设置底部那排小字或菜单栏直接点开，
-    /// 指路也跟着改——指着一个已经不存在的「输入」页，用户会以为功能没了
-    static var vocabularyTip: String {
-        tr("人名、术语老是听错？在菜单栏「写作偏好…」的词汇表里填「错写=正写」，一次搞定。",
-           "Names or jargon misheard? Add \"wrong=right\" to the vocabulary under Writing Preferences in the menu bar.")
-    }
-
-    static var reopenGuide: String {
-        tr("随时可以在 设置 底部的「重看引导」打开这份引导。",
-           "You can reopen this guide any time from \"Review the guide\" at the bottom of Settings.")
-    }
-
-    /// 第一屏键盘示意图下面那行：**说的是哪一颗键**，不是它叫什么。
-    /// 很多键帽上印的是 alt 而不是 option（非 Apple 键盘、以及一部分地区的 Apple 键盘），
-    /// 只写"右 Option"的人对不上自己手底下那颗键（2026-09-22 的反馈原话：「到底按哪个键」）
-    static var keyboardHint: String {
-        tr("空格键右侧第二颗；有的键帽印着 alt",
-           "Second key to the right of the space bar; some keycaps say alt")
-    }
+    // escCancels / holdToCommandTip / vocabularyTip / reopenGuide / keyboardHint
+    // 5.0.1 一并删掉。它们都是"顺便再说一句"堆出来的：
+    //   • Esc 取消、按住说指令、词汇表怎么填 —— ④ 只留那两条编号步骤，其余进不了那一屏；
+    //   • 「重看引导」那句写在最后一屏，而那一屏现在只剩三样东西；
+    //   • 键盘示意图连同它下面那行说明一起没了（画出来的键帽和用户手底下的键盘未必一样）。
 
     /// 第三屏 Key 输入框上面那一行。只在引导里出现——设置页那一处的用户早就贴过一次了。
     /// 4.3.4 之前 ⌘V 在自家窗口里是坏的（没有主菜单，见 AppMenu），用户只能右键粘贴，
@@ -247,16 +241,9 @@ enum OnboardingCopy {
         tr("它在 Dock 和菜单栏里", "It lives in the Dock and the menu bar")
     }
 
-    static var menuBarHolds: String {
-        tr("点 Dock 图标打开设置；菜单栏图标里有最近记录、写作偏好和设置。",
-           "Click the Dock icon to open Settings; the menu bar icon holds recent transcripts, writing preferences and settings.")
-    }
-
-    /// 这一屏真正要讲的那句：平时**不用**去找那枚图标
-    static func rarelyNeeded(hotkey: String) -> String {
-        tr("平时不用找它：在任何输入框里轻点 \(hotkey) 就能听写，按住 \(hotkey) 说指令。",
-           "You will rarely need it: tap \(hotkey) in any text field to dictate, hold \(hotkey) to give a command.")
-    }
+    // menuBarHolds（「菜单栏图标里有…」）与 rarelyNeeded（「平时不用找它…」）5.0.1 删掉：
+    // 前者念的那几项 5.0.1 已经不在菜单里了（那份菜单只剩三项），后者说的事前四屏都教过。
+    // 这一屏只剩：那枚图标 + 「它在 Dock 和菜单栏里」 + 开机自启 + 「完成」。
 
     /// 开机自启这一行的说明。默认开（用户 2026-09-22 拍板）：不开的话第二天开机
     /// MicType 根本没在跑，而他只会觉得"昨天装的那个东西没了"
@@ -283,15 +270,11 @@ enum OnboardingCopy {
     /// 这张表存在的理由和设置页那三张一样：窗口高度写死 470，一句一句加下去谁也不觉得自己是
     /// "那一句"，而加到装不下只会变成默默多出一段滚动，没有任何测试会红。
     static var paragraphs: [String] {
-        [usageExplanation,
-         dictateCardDetail, commandCardDetail, twoGesturesNeverGuessed, keyboardHint,
+        [hotkeyLine, dictateCardDetail, commandCardNoSelection, commandCardSelection,
          permissionsIntro, microphonePurpose, accessibilityPurpose, permissionsStuckHint,
          providerNotAdoptedYet(current: "OpenAI"), pasteKeyHere,
-         tryItInstruction(hotkey: "⌥"), keyMissingForTryIt, escCancels,
-         holdToCommandTip(hotkey: "⌥"), vocabularyTip, reopenGuide,
-         menuBarHome, menuBarHolds, rarelyNeeded(hotkey: "⌥"), launchAtLoginWhy,
-         doneAIStatus(status: .ready, hotkey: "⌥"),
-         doneAIStatus(status: .off, hotkey: "⌥")]
+         tryItStepDictate(hotkey: "⌥"), tryItStepCommand(hotkey: "⌥"), keyMissingForTryIt,
+         menuBarHome, launchAtLoginWhy]
     }
 
     /// 第三屏的标题。这一屏就是设置页那一页的首配版本，名字必须和那里一致。
@@ -300,26 +283,43 @@ enum OnboardingCopy {
         tr("选你的 AI", "Choose your AI")
     }
 
-    /// 一句话说清这把 Key 买到什么、以及为什么非填不可。
-    /// 写清边界比写得漂亮重要：4.x 的这句话写的是"不填 Key 也能一直用"——
-    /// 5.0.0 之后那是一句假话（本机识别没有了），照抄过来就是骗人。
-    static var usageExplanation: String {
-        tr("听写、润色、语音指令都用这一把 Key：录音边说边传给你选的服务商，费用直接结给他们。",
-           "One key covers dictation, polish and voice commands: your voice streams to the provider you pick, and you pay them directly.")
+    // usageExplanation（「听写、润色、语音指令都用这一把 Key…」）5.0.1 删掉：
+    // 那一屏开头再摆一整段说明，用户要往下翻才看得见真正要做的事（选一家、贴一把 Key），
+    // 而两张卡片和那三步申请说明本来就把这件事说全了。费用与隐私在「关于 → 隐私」。
+    //
+    // doneAIStatus（最后一屏那句 AI 收尾）同样删掉：最后一屏只回答"它在哪"。
+    // 没配 Key 的人在 ③ 已经被那条「先跳过」明确告知过代价了。
+}
+
+// MARK: - 窗口高度跟着这一屏的内容走（5.0.1）
+
+/// 这一屏有多高。**带着页码一起报**：翻页动画期间新旧两页同时活着，各报各的，
+/// 而窗口要按**当前那一页**定尺寸（同 SettingsPageHeightKey 的理由）。
+struct OnboardingPageHeightKey: PreferenceKey {
+    static var defaultValue: [OnboardingPage: CGFloat] = [:]
+
+    static func reduce(value: inout [OnboardingPage: CGFloat],
+                       nextValue: () -> [OnboardingPage: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
     }
+}
 
+/// 底部那条（分隔线 + 导航）有多高。它每一屏都一样，但字号跟着系统走，不许猜一个数字
+struct OnboardingChromeHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
 
-    /// 最后一屏按「AI 配好了没有」给**两种**收尾（LLMCatalog.aiStatus 判，纯函数）。
-    /// 5.0.0 起没有第三种了：润色不再有开关，"配好了但润色关着"这一档不存在。
-    static func doneAIStatus(status: LLMCatalog.AIStatus, hotkey: String) -> String {
-        switch status {
-        case .ready:
-            return tr("都就绪了：轻点 \(hotkey) 听写，按住 \(hotkey) 说「把这段写正式一点」。",
-                      "Everything is ready. Tap \(hotkey) to dictate, or hold \(hotkey) and say \"make this more formal\".")
-        case .off:
-            return tr("还差一把 API Key：听写、润色、语音指令都要用它。去「设置」补上。",
-                      "One thing is missing: an API key. Dictation, polish and voice commands all need it - add one in Settings.")
-        }
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+extension View {
+    /// 量这一屏的自然高度（贴在每一屏 ScrollView 里那个 VStack 上）
+    func measuresOnboardingPage(_ page: OnboardingPage) -> some View {
+        background(GeometryReader { geo in
+            Color.clear.preference(key: OnboardingPageHeightKey.self,
+                                   value: [page: geo.size.height])
+        })
     }
 }
 
@@ -336,6 +336,56 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
     private var window: NSWindow?
     private var langObserver: AnyCancellable?
     private let model = OnboardingModel()
+    /// 最近一次量到的内容高度（当前这一屏 + 底部导航）。nil = 还没量到过
+    private var pendingContentHeight: CGFloat?
+    /// 防抖：一次翻页会连着报好几个高度（旧页退场、新页登场、状态行冒出来）
+    private var resizeWork: DispatchWorkItem?
+    /// 这扇窗还没按内容摆过位置：第一次量到高度时居中一次，之后一律保住顶边
+    private var needsInitialPlacement = true
+
+    // MARK: 高度跟着内容走（5.0.1，算术与设置窗口共用 SettingsWindowSizing）
+
+    /// 当前这一屏量出来的高度。视图层每次变化都会叫这里，具体改不改窗口由防抖那一跳决定。
+    ///
+    /// 为什么引导也要这一套：五屏的内容差了将近一倍（权限页两行、③ 整套 Key 控件），
+    /// 而窗口高度一直写死 470——短的那几屏底下空出小半扇窗，长的那屏还要滚。
+    func fitContentHeight(_ natural: CGFloat) {
+        guard natural > 0 else { return }
+        pendingContentHeight = natural
+        resizeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.applyPendingHeight() }
+        resizeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+    }
+
+    /// 真正改窗口的那一下。**顶边不动**（算术在 SettingsWindowSizing.frame 里，单测钉死）
+    private func applyPendingHeight() {
+        guard let window = window, let natural = pendingContentHeight else { return }
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? window.frame
+        let content = SettingsWindowSizing.contentHeight(natural: natural,
+                                                         visibleScreenHeight: visible.height)
+        let frameHeight = window.frameRect(forContentRect:
+            NSRect(x: 0, y: 0, width: SettingsWindowSizing.width, height: content)).height
+        guard needsInitialPlacement == false else {
+            window.setContentSize(NSSize(width: SettingsWindowSizing.width, height: content))
+            window.center()
+            needsInitialPlacement = false
+            return
+        }
+        let target = SettingsWindowSizing.frame(current: window.frame, frameHeight: frameHeight,
+                                                visible: visible)
+        guard abs(target.height - window.frame.height) > 0.5
+                || abs(target.origin.y - window.frame.origin.y) > 0.5 else { return }
+        guard !SettingsNavigator.reduceMotion else {
+            window.setFrame(target, display: true)
+            return
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.2
+            context.allowsImplicitAnimation = true
+            window.animator().setFrame(target, display: true)
+        }
+    }
 
     /// 打开引导。startAt 用于"模型缺失"这类定点跳转（落到权限那一屏，模型在那里开始下）。
     ///
@@ -394,9 +444,10 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
             w.titleVisibility = .hidden
             w.isMovableByWindowBackground = true
             w.isReleasedWhenClosed = false
-            // 高度 470：第三屏（使用方式 + 服务商 + Key + 模型 + 成本声明）最挤，
-            // 其余各页靠 Spacer 自然留白，看不出变化
-            w.setContentSize(NSSize(width: 560, height: 470))
+            // 先按下限开着，量到真实高度立刻跟上（第一次测量会顺手居中一次）。
+            // 5.0.1 之前这里写死 470：短的那几屏底下空出小半扇窗
+            w.setContentSize(NSSize(width: SettingsWindowSizing.width,
+                                    height: SettingsWindowSizing.minContentHeight))
             w.center()
             w.delegate = self
             window = w
@@ -503,6 +554,11 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
 struct OnboardingView: View {
     @ObservedObject var model: OnboardingModel
     @ObservedObject private var l10n = L10n.shared
+
+    /// 每一屏最近报上来的自然高度。翻页时新旧两屏都在报，所以按页码存
+    @State private var pageHeights: [OnboardingPage: CGFloat] = [:]
+    /// 底部导航那一条的高度（含它上面那条 Divider）
+    @State private var chromeHeight: CGFloat = 0
     var body: some View {
         VStack(spacing: 0) {
             Group {
@@ -522,9 +578,39 @@ struct OnboardingView: View {
             // 模型下载条 5.0.0 删掉：没有本机模型可下了。
             Divider()
             footer
+                // 底部这一条的高度进窗口那笔账：它不是常数（字号跟着系统走）
+                .background(GeometryReader { geo in
+                    Color.clear.preference(key: OnboardingChromeHeightKey.self,
+                                           // +1：上面那条 Divider
+                                           value: geo.size.height + 1)
+                })
         }
-        .frame(width: 560, height: 470)
+        // 高度**不再写死 470**（5.0.1）：窗口按当前这一屏量出来的高度伸缩，
+        // 算术与设置窗口共用（SettingsWindowSizing）
+        .frame(width: SettingsWindowSizing.width)
+        .onPreferenceChange(OnboardingPageHeightKey.self) { heights in
+            pageHeights = heights
+            pushHeightToWindow()
+        }
+        .onPreferenceChange(OnboardingChromeHeightKey.self) { height in
+            chromeHeight = height
+            pushHeightToWindow()
+        }
+        // 翻页这一下本身也要改窗口：目的屏的高度可能早就量好了（它上一次来过）
+        .onChange(of: model.page) { _, _ in pushHeightToWindow() }
     }
+
+    /// 窗口该有多高 = 这一屏的自然高度 + 上下留白 + 底部导航。
+    /// 按 model.page 取而不是取最大值：翻页期间两屏并存，取最大的话从长屏退回短屏时
+    /// 窗口会卡在长屏那个高度上不下来。
+    private func pushHeightToWindow() {
+        guard let page = pageHeights[model.page], page > 0 else { return }
+        OnboardingWindowController.shared.fitContentHeight(page + Self.pageVerticalPadding
+                                                           + chromeHeight)
+    }
+
+    /// 每一屏上下那两块留白（.padding(.top, 30) + .padding(.bottom, 8)）
+    private static let pageVerticalPadding: CGFloat = 38
 
     // MARK: 底部导航
 
@@ -625,92 +711,107 @@ struct OnboardingView: View {
     }
 }
 
-// MARK: - 1. 欢迎
+// MARK: - 1. 欢迎（5.0.1 重做）
 
+/// 这一屏只回答三件事：**按哪颗键、轻点做什么、按住做什么**。
+///
+/// 5.0.1 拿掉的都是"顺便说一句"：键盘示意图（画出来的键帽排布和用户手底下那块键盘
+/// 未必一样，而且它把两张卡挤到了第二屏）、「两种手势泾渭分明」（那是我们的设计原则，
+/// 不是他此刻要学的动作）、以及底下那句隐私（唯一出处是「关于 → 隐私」）。
+///
+/// 右上角那对语言按钮是这一屏**唯一**的控件：界面语言跟系统走，跟错了的话
+/// 这个人从第一屏起就在读他看不懂的字——而设置窗口里的那个入口他还没见过。
 private struct WelcomePage: View {
     @ObservedObject private var l10n = L10n.shared
 
-    /// 这一屏（以及后面每一句操作说明）念出来的那颗键。只有一颗，不用问设置
+    /// 这一屏念出来的那颗键。只有一颗，不用问设置
     private var key: String { HotkeyChoice.rightOption.displayName }
 
     var body: some View {
-        // ScrollView 是保险绳（与后面三屏同一个理由）：英文界面下两张手势卡各要三行，
-        // 窗口高度是写死的 470——挤爆时宁可能滚，也不要把底部那句隐私文案裁掉。
+        // ScrollView 是保险绳（与后面三屏同一个理由）：英文界面下两张手势卡更高，
+        // 挤爆时宁可能滚，也不要把卡片底下那行裁掉
         ScrollView {
-            VStack(spacing: 16) {
-                Image(systemName: "mic.circle.fill")
-                    .font(.system(size: 40))
-                    .foregroundColor(.accentColor)
+            VStack(spacing: 14) {
+                HStack {
+                    Spacer()
+                    languagePicker
+                }
                 Text(tr("用一个键说话，文字直接落在光标处。",
                         "Press one key, speak, and the text lands at your cursor."))
                     .font(.system(size: 16, weight: .medium))
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-
-                // 键盘示意图（4.3.4 加）：光写"右 Option (⌥)"对不上很多人手底下那颗印着
-                // alt 的键——这一屏要回答的第一个问题就是"到底按哪个键"（用户 2026-09-22 反馈）
-                KeyboardHintView()
+                Text(OnboardingCopy.hotkeyLine)
+                    .font(.system(size: 13))
+                    .foregroundColor(.secondary)
 
                 // 4.1.0 之前这里摆着一个三选一的热键选择器。拿掉它（用户 2026-09-20 拍板）：
                 // 这是他打开 MicType 的第一分钟，还一次都没听写过，凭什么在这时候挑键？
-                // 两张手势卡直接把键名写出来就够了——这一屏要教的本来就是"按哪儿"，不是"选哪颗"。
+                //
+                // **两张卡等高等宽**：按住那张有两条、轻点那张只有一条，不对齐的话
+                // 看着像其中一张更重要——而这两个手势是这个产品的全部
                 HStack(alignment: .top, spacing: 14) {
-                    GestureCard(symbol: "hand.tap",
-                                gesture: tr("轻点 \(key)", "Tap \(key)"),
-                                // 5.0.0 起识别在云端，「本地听写」那个标题是句假话
-                                title: tr("语音输入", "Dictate"),
-                                detail: OnboardingCopy.dictateCardDetail)
-                    GestureCard(symbol: "hand.tap.fill",
-                                gesture: tr("按住 \(key) 说", "Hold \(key)"),
-                                title: tr("语音指令", "Command"),
-                                detail: OnboardingCopy.commandCardDetail)
+                    GestureCard(gesture: tr("轻点", "Tap"),
+                                title: tr("听写", "Dictate"),
+                                lines: [OnboardingCopy.dictateCardDetail])
+                    GestureCard(gesture: tr("按住", "Hold"),
+                                title: tr("说指令，松手执行", "Speak a command, release to run"),
+                                lines: [OnboardingCopy.commandCardNoSelection,
+                                        OnboardingCopy.commandCardSelection])
                 }
-
-                Text(OnboardingCopy.twoGesturesNeverGuessed)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-
-                // 引导里**唯一**一句隐私文案（那几句只在关于页逐句摆出来，这里只说
-                // 第一次打开的人最该知道的那一条——5.0.0 起它变成了"录音会去服务商那边"，
-                // 而那正是他按下第一次热键之前有权先知道的事）。fixedSize：句子换行时必须
-                // 让它把高度撑开，否则窄窗口下后半句会被直接截掉。
-                Text(PrivacyCopy.audioGoesToProvider)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                // 两张卡的高度取这一行里最高的那张（fixedSize 先让每张按内容量高，
+                // maxHeight: .infinity 再把矮的那张撑到同一高度）
+                .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity)
+            .measuresOnboardingPage(.welcome)
         }
+    }
+
+    /// 「中文 | English」。两个名字各写各的语言（译过来反而要用户先猜哪个是哪个）
+    private var languagePicker: some View {
+        Picker("", selection: Binding(get: { l10n.language },
+                                      set: { next in
+                                          guard next != l10n.language else { return }
+                                          Log.info("UI language switched to=\(next.rawValue)")
+                                          l10n.language = next
+                                      })) {
+            ForEach(AppLanguage.allCases, id: \.rawValue) { language in
+                Text(language.displayName).tag(language)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .fixedSize()
     }
 }
 
 private struct GestureCard: View {
-    let symbol: String
+    /// 「轻点」/「按住」——卡片的帽子，就是那个手势本身
     let gesture: String
     let title: String
-    let detail: String
+    /// 正文，一条或两条（按住那张要分"有没有选中文字"两种结果说）
+    let lines: [String]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: symbol)
-                    .font(.system(size: 15))
-                    .foregroundColor(.accentColor)
-                Text(gesture)
-                    .font(.system(size: 13, weight: .semibold))
-            }
+            Text(gesture)
+                .font(.system(size: 13, weight: .semibold))
             Text(title)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(.secondary)
-            Text(detail)
-                .font(.caption)
-                .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            ForEach(lines, id: \.self) { line in
+                Text(line)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
         }
         .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // maxHeight: .infinity = 和这一行里最高的那张卡同高（见调用处）
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background(Color.secondary.opacity(0.08))
         .cornerRadius(8)
     }
@@ -774,6 +875,7 @@ private struct PermissionsPage: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .measuresOnboardingPage(.permissions)
         }
         .onAppear {
             // 进页时权限就已经齐了（老用户被模型缺失带过来、或者他点「上一步」回来看一眼）：
@@ -891,13 +993,11 @@ private struct HowYouUsePage: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text(OnboardingCopy.usageHeadline)
                     .font(.system(size: 16, weight: .semibold))
-                Text(OnboardingCopy.usageExplanation)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                // 开头那整段说明 5.0.1 删掉：它把真正要做的事（选一家、贴一把 Key）压到了
+                // 第二屏之外，而两张卡片和那三步申请说明本来就把这件事说全了
 
-                // 上半：两张并排的卡片（点一张选中）。每张三行：一小时多少钱 / 适合谁 /
-                // 一句优势——这一刻用户对这两个名字一无所知，一个只有两个词的分段选择器
+                // 上半：两张并排的卡片（点一张选中）。每张三行：一小时多少钱 / 一句优势 /
+                // 怎么付钱——这一刻用户对这两个名字一无所知，一个只有两个词的分段选择器
                 // 给不了他任何做这个选择的依据（设置页那一处不同：他早就选过了）。
                 ProviderChoiceCards(selection: providerBinding, inUse: inUseProvider)
 
@@ -921,6 +1021,7 @@ private struct HowYouUsePage: View {
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .measuresOnboardingPage(.howYouUse)
         }
         .onAppear {
             // 回头再走一遍引导的人：选择器要停在他**正在用**的那一档上
@@ -1045,16 +1146,19 @@ private struct TryItPage: View {
                     }
                     Spacer()
                 }
-                Text(OnboardingCopy.tryItInstruction(hotkey: key))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
                 TextEditor(text: $model.tryItText)
                     .font(.system(size: 13))
                     .focused($editorFocused)
                     .frame(height: 96)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.35)))
+
+                // 两条编号步骤，一条都不多（5.0.1）。第二条是这个产品最不直觉、也最值钱的
+                // 一步：选中刚打出来的字、按住说指令、它就地被改掉。4.3.6 之前它只是底下
+                // 一条灰色 tip，几乎没人会照着做——而这一屏是他唯一会照着做的地方。
+                VStack(alignment: .leading, spacing: 8) {
+                    NumberedStep(index: 1, text: OnboardingCopy.tryItStepDictate(hotkey: key))
+                    NumberedStep(index: 2, text: OnboardingCopy.tryItStepCommand(hotkey: key))
+                }
 
                 // Key 还没配好：现在轻点是说不出字的。上一屏就是配它的地方
                 if keyMissing {
@@ -1072,8 +1176,7 @@ private struct TryItPage: View {
                         .foregroundColor(.orange)
                 }
 
-                // 「完成」点不动的时候，这一行说为什么。模型那一件上面已经有自己的一行
-                // （还带一颗「下载模型」），所以这里只管另外两件
+                // 「完成」点不动的时候，这一行说为什么
                 if !model.skippedEssentials,
                    let reason = OnboardingCopy.finishBlockedReason(model.essentials()) {
                     Text(reason)
@@ -1082,12 +1185,9 @@ private struct TryItPage: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                HStack {
-                    Text(OnboardingCopy.escCancels)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    if !model.tryItText.isEmpty {
+                if !model.tryItText.isEmpty {
+                    HStack {
+                        Spacer()
                         Button(tr("清空", "Clear")) {
                             model.tryItText = ""
                             editorFocused = true
@@ -1096,21 +1196,10 @@ private struct TryItPage: View {
                     }
                 }
 
-                Divider()
-
-                // 这一页只留两条 tip。4.3.4 之前这里还挂着 AI 收尾句、菜单栏那条、
-                // 以及「重看引导」那一行——它们都是"最后一屏"该说的话，而最后一屏
-                // 现在是 ⑤（那里说得更全，还配着一张真图）。连着两屏说同一句，
-                // 用户只会以为自己漏看了什么新东西。
-                VStack(alignment: .leading, spacing: 8) {
-                    TipRow(symbol: "hand.tap.fill",
-                           text: OnboardingCopy.holdToCommandTip(hotkey: key))
-                    TipRow(symbol: "text.book.closed",
-                           text: OnboardingCopy.vocabularyTip)
-                }
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .measuresOnboardingPage(.tryIt)
         }
         // 上一屏可能刚粘好 Key，也可能用户中途去设置页配了——进这一屏现算一次
         .onAppear {
@@ -1175,15 +1264,6 @@ private struct DonePage: View {
                     .foregroundColor(.accentColor)
                 Text(OnboardingCopy.menuBarHome)
                     .font(.system(size: 16, weight: .semibold))
-                Text(OnboardingCopy.menuBarHolds)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(OnboardingCopy.rarelyNeeded(hotkey: key))
-                    .font(.system(size: 12))
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
 
                 VStack(alignment: .leading, spacing: 6) {
                     Toggle(tr("登录时自动启动", "Launch at login"), isOn: $launchAtLogin)
@@ -1206,28 +1286,14 @@ private struct DonePage: View {
                 .background(Color.secondary.opacity(0.08))
                 .cornerRadius(8)
 
-                // 三种收尾（按 AI 到底配到哪一步）：他离开引导时对"我现在有什么"的最后印象
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: model.aiReady ? "wand.and.stars" : "cpu")
-                        .font(.system(size: 12))
-                        .foregroundColor(.accentColor)
-                        .frame(width: 18)
-                    Text(OnboardingCopy.doneAIStatus(status: model.aiStatus, hotkey: key))
-                        .font(.system(size: 12))
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                }
-
-                // 「以后还想再看一遍」：4.3.4 起这句住在最后一屏（原来在 ④）。
-                // 它说的是"这扇窗以后从哪儿再打开"，那正是他此刻要关掉它的这一刻该知道的事
-                Text(OnboardingCopy.reopenGuide)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+                // AI 收尾句与「重看引导」5.0.1 删掉：这一屏只回答"它在哪"。
+                // 没配 Key 的人在 ③ 已经被那条「先跳过」明确告知过代价；
+                // 「重看引导」在设置底部那排小字里，而他此刻还没见过设置窗口——
+                // 这一刻记住一个以后才用得上的入口，只会把这一屏的三样东西冲淡
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity)
+            .measuresOnboardingPage(.done)
         }
         .onAppear {
             // 上一屏可能刚把 Key 配好，也可能他中途去设置页改了档位
@@ -1273,16 +1339,18 @@ private struct DonePage: View {
     }
 }
 
-private struct TipRow: View {
-    let symbol: String
+/// 「试一下」那一屏的一条编号步骤。编号用文字而不是列表符号：它要和右边那句话
+/// 在同一条基线上（同 ConsoleStepsView 的写法）
+private struct NumberedStep: View {
+    let index: Int
     let text: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: symbol)
-                .font(.system(size: 12))
-                .foregroundColor(.accentColor)
-                .frame(width: 18)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("\(index).")
+                .font(.system(size: 12).monospacedDigit())
+                .foregroundColor(.secondary)
+                .frame(width: 16, alignment: .trailing)
             Text(text)
                 .font(.system(size: 12))
                 .fixedSize(horizontal: false, vertical: true)

@@ -5,19 +5,8 @@ import XCTest
 /// 两件都只有纯函数部分能单测——真删磁盘那一半绝不在测试里跑（它会删这台机器上的真目录）。
 final class LocalModelCleanupTests: XCTestCase {
 
-    // MARK: - 释放了多少（这句话会闪在用户眼前）
-
-    /// 「1.2 GB」/「860 MB」。**0 返回空串**：没释放出空间就不该有这半句话
-    func testGigabytesLabelReadsLikeSomethingAHumanWrote() {
-        XCTAssertEqual(LocalModelCleanup.gigabytesLabel(0), "")
-        XCTAssertEqual(LocalModelCleanup.gigabytesLabel(-1), "")
-        // 小于 1 GB 按 MB 说：「860 MB」比「0.9 GB」好读，也更准
-        XCTAssertEqual(LocalModelCleanup.gigabytesLabel(862_000_000), "862 MB")
-        XCTAssertEqual(LocalModelCleanup.gigabytesLabel(1_240_000_000), "1.2 GB")
-        XCTAssertEqual(LocalModelCleanup.gigabytesLabel(3_000_000_000), "3.0 GB")
-        // 几个字节也不说「0 MB」：那看着像出了错
-        XCTAssertEqual(LocalModelCleanup.gigabytesLabel(512), "1 MB")
-    }
+    // 「释放了多少」那条测试 5.0.1 随 gigabytesLabel 一起删掉：那句话不说了
+    // （清理照做、只进日志），而一个没有读者的字符串不值得一条测试。
 
     /// 要删的东西**全部在 Application Support/MicType 下**——多拼一层用户目录就是一次
     /// 不可撤销的误删。这条测试盯的就是那个前缀。
