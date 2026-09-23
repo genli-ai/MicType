@@ -13,24 +13,25 @@ import Combine
 /// 那一层卡片就纯粹是多一次点击。
 ///
 /// 剩下两页都是**从底部那排小字点开的**，不是首页的一部分：
-///   • 写作偏好（词汇表 + 自定义规则）——改得不勤，但改的是用户自己的文字；
+///   • 专有词汇表（词汇表 + 自定义规则）——改得不勤，但改的是用户自己的文字；
 ///   • 关于（版本 / 更新 / 诊断 / 备份 / 隐私六句）。
 enum SettingsRoute: String, Hashable, CaseIterable {
     /// **这一页就是设置**：服务商 + Key +（阿里云的）接入地址 + 权限横幅 + 脚注四个链接
     case overview
-    /// 写作偏好：专有词汇表 + 自定义规则
+    /// 专有词汇表 + 自定义规则（5.0.2 之前这一页叫「写作偏好」）
     case writing
     /// 版本 / 更新 / 诊断 / 作者 + 隐私与费用（PrivacyCopy 在设置里**只**出现在这里）
     case about
 
     // `.input`（输入页）与 `.cloud`（云端 AI 页）5.0.0 合并进 `.overview`：
-    // 设置只剩一页之后，它们各自剩下的那点内容要么是这一页本身，要么进了「写作偏好」。
+    // 设置只剩一页之后，它们各自剩下的那点内容要么是这一页本身，要么进了「专有词汇表」。
 
     /// 子页顶栏的标题。设置正页没有顶栏（它就是首页，没有"返回"可言）
     var editorTitle: String? {
         switch self {
         case .overview: return nil
-        case .writing: return tr("写作偏好", "Writing preferences")
+        // 页名只写一处（脚注那条链接念的是同一串）
+        case .writing: return SettingsCopy.vocabularyPageTitle
         case .about: return tr("关于 MicType", "About MicType")
         }
     }

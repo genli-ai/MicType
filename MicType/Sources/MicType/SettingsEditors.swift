@@ -14,7 +14,7 @@ import Combine
 /// API Host  [百炼控制台里的接入地址]              ← 只有阿里云这一档
 /// 已连通 ✓ 阿里云 · qwen3.8-flash · 约 $0.2/小时   ← 状态行，只在有话说时出现
 /// ─────────────────────────────────────────────────────
-///            关于 · 写作偏好 · 检查更新 · 重看引导
+///            关于 · 专有词汇表 · 历史记录 · 语言 · 重看引导
 /// ```
 ///
 /// 4.x 拿掉了什么、为什么，见 SettingsRoute 的注释。这一页自己的三条纪律：
@@ -163,34 +163,34 @@ struct MainSettingsPage: View {
         axOK = Permissions.isAccessibilityTrusted
     }
 
-    // MARK: 脚注：四个链接，一颗按钮都没有
+    // MARK: 脚注：五个入口，一颗按钮都没有
 
     /// 「重看引导」住在这里（用户 2026-09-20 拍板）：那份引导讲的是整个产品怎么用，
-    /// 不是一条设置。「写作偏好」4.3.3 之前是「输入」页上的一段，5.0.0 起从这里点开
+    /// 不是一条设置。「专有词汇表」4.3.3 之前是「输入」页上的一段，5.0.0 起从这里点开
     /// ——它改得不勤，但改的是用户自己的文字，值一个自己的地方。
     ///
-    /// 5.0.1 这排小字接下了菜单栏卸掉的两样（那份菜单只剩三项）：
-    ///   • 「历史记录」——原先是菜单里一个会当着别人的面展开听写内容的子菜单；
-    ///   • 「语言」——点一下就切，不做子菜单也不做下拉：一辈子点一次的东西，
-    ///     摆一个"当前是哪种"的勾选毫无意义（界面本身就是答案）。
-    /// 「检查更新」从这里挪走：它现在在菜单栏那三项里，而「关于」页上本来就有一颗。
+    /// 5.0.2 的三处改动（用户 2026-09-23 拍板）：
+    ///   • 「写作偏好」改叫**「专有词汇表」**——那一页里就是一张词表加一段规则，
+    ///     「写作偏好」四个字听着像一整套排版设置；
+    ///   • 「历史记录」不再开一扇自己的窗（那扇窗整个删掉了），直接打开日志文件夹——
+    ///     要翻记录的人本来就是要去看文件的；
+    ///   • 「语言」点一下弹一个两项的小菜单、当前那项打勾，**选了才切**：
+    ///     原先点一下就当场换掉整个界面，误点一次的人要在他看不懂的界面里找回来。
     private var footer: some View {
         HStack(spacing: 16) {
             Button(tr("关于 MicType", "About MicType")) {
                 SettingsNavigator.shared.go(to: .about)
             }
-            Button(tr("写作偏好", "Writing preferences")) {
+            Button(SettingsCopy.vocabularyPageTitle) {
                 SettingsNavigator.shared.go(to: .writing)
             }
             Button(tr("历史记录", "History")) {
-                HistoryWindowController.shared.show()
+                // 日志目录（~/Library/Logs/MicType）：排错和翻记录是同一个动作的两半，
+                // 而关于页那颗「打开日志文件夹」5.0.2 删掉了——同一件事不做两个入口
+                Log.info("Open logs folder from settings footer")
+                NSWorkspace.shared.open(Paths.appSupportDir)   // history.json 就在这个目录里
             }
-            Button(tr("语言", "Language")) {
-                // 只有两种语言，点一下就是"换另一种"（L10n 即时生效，整个界面当场重画）
-                let next: AppLanguage = L10n.shared.language == .zh ? .en : .zh
-                Log.info("UI language switched to=\(next.rawValue)")
-                L10n.shared.language = next
-            }
+            languageMenu
             Button(tr("重看引导", "Review the guide")) {
                 OnboardingWindowController.shared.show()
             }
@@ -198,6 +198,33 @@ struct MainSettingsPage: View {
         }
         .buttonStyle(.link)
         .font(.caption)
+    }
+
+    /// 「语言」那一项。用内嵌 Picker 而不是两颗 Button：当前那一项要**打勾**，
+    /// 而勾是 Picker 自带的——自己画一个 checkmark 迟早和系统的样式对不上。
+    private var languageMenu: some View {
+        Menu {
+            Picker("", selection: Binding(get: { l10n.language },
+                                          set: { next in
+                                              guard next != l10n.language else { return }
+                                              Log.info("UI language switched to=\(next.rawValue)")
+                                              l10n.language = next
+                                          })) {
+                ForEach(AppLanguage.allCases, id: \.rawValue) { language in
+                    Text(language.displayName).tag(language)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            // 这一项在一排链接里，颜色得跟着它们走：Menu 不认 .buttonStyle(.link)，
+            // 不上色的话它在那一排里是唯一一个黑字，看着像个标题而不是能点的东西
+            Text(tr("语言", "Language"))
+                .foregroundColor(.accentColor)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
     }
 
     // MARK: 换服务商
@@ -228,7 +255,7 @@ struct MainSettingsPage: View {
     }
 }
 
-// MARK: - 写作偏好（从设置底部那排小字点开）
+// MARK: - 专有词汇表（从设置底部那排小字点开）
 
 /// 两个框：专有词汇表、自定义规则。**5.0.0 起它们住在自己的一页上**——
 /// 4.3.3 到 4.3.6 期间它们和快捷键、界面语言、开机自启挤在「输入」页里，
@@ -245,8 +272,8 @@ struct WritingPreferencesEditor: View {
         MeasuredFormPage(route: .writing) {
             Form {
                 Section {
-                    // 这一页开头唯一一句解释：它回答的是"这两个框是干什么的"
-                    Caption(SettingsCopy.writingPreferencesIntro)
+                    // 开头那句解释 5.0.2 删掉：它和词汇表那颗 ⓘ 说的是同一件事，
+                    // 只是把两个框往下推了一行
 
                     // ——— 词汇表
                     SectionHeader(title: tr("专有词汇表（逗号或换行分隔）",
@@ -399,12 +426,8 @@ struct AboutPanel: View {
                     diagnosticsCopied = false
                 }
             }
-            // 5.0.1 从菜单栏搬到这里：它和「复制诊断信息」是同一件事的两种深浅
-            //（一句摘要 vs 整份日志），而菜单栏那份菜单只剩三项
-            Button(tr("打开日志文件夹", "Open Logs Folder")) {
-                Log.info("Open logs folder")
-                NSWorkspace.shared.open(Log.logsDirectory)
-            }
+            // 「打开日志文件夹」5.0.2 删掉：设置底栏那条「历史记录」打开的就是同一个文件夹，
+            // 同一件事不做两个入口
         }
     }
 
@@ -464,22 +487,15 @@ struct AboutPanel: View {
             ForEach(PrivacyCopy.allLines, id: \.self) { line in
                 Text(line)
             }
-            // 「存哪儿、多少条、不上传」那一句本身已经在上面那几句里了
-            //（PrivacyCopy.historyStaysLocal 引用的就是 HistoryStore.storageNote），
-            // 所以这里**只补"去哪儿清"**——5.0.0 之前这里把整句又渲染了一遍，
-            // 同一件事在同一屏上出现两次
-            // 5.0.1 指路改了：菜单栏那个「最近记录」子菜单没有了（它会当着别人的面
-            // 把听写内容摊在菜单里），清空与逐条删除都在设置底部那排小字的「历史记录」里
-            Text(tr("在设置底部的「历史记录」里可以清空或逐条删除。",
-                    "Clear them or delete them one by one under History at the bottom of Settings."))
-            // 那个开关就摆在这几句话下面（4.3.3 从「输入」页搬来）：读完"存在哪儿、留多少条"
-            // 紧接着就是"要不要存"，这是它唯一该在的位置
+            // 「存哪儿、多少条、不上传」5.0.2 不在这三句里了：它是这个开关自己的事，
+            // 就写在开关那颗 ⓘ 里（SettingsCopy.behaviourInfo）
             SettingsToggleRow(label: tr("保存听写历史（仅本机）", "Keep transcript history (on this Mac)"),
                               isOn: $keepHistory, info: SettingsCopy.behaviourInfo)
                 .font(.callout)
                 .foregroundColor(.primary)
-            Text(tr("「复制诊断信息」只包含版本、系统、芯片、设置摘要、最近的耗时数字和今天的日志尾巴（日志里的路径和账户名已脱敏）——不含 API Key，也不含任何听写内容，可以放心贴给别人。",
-                    "“Copy diagnostics” includes only the version, system, chip, a settings summary, recent timings and today's log tail (paths and your account name in it are redacted) — never your API key and never any transcribed text, so it is safe to paste to someone."))
+            // 5.0.2 砍到一句：要说清的只有"贴出去安不安全"，而那取决于里面**没有**什么
+            Text(tr("「复制诊断信息」里不含 API Key，也不含任何听写内容，可以放心贴给别人。",
+                    "“Copy diagnostics” contains no API key and no transcribed text, so it is safe to paste to someone."))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .font(.caption)

@@ -30,14 +30,21 @@ final class SettingsCopyBudgetTests: XCTestCase {
 
     private static let captionZhLimit = 16
     private static let captionEnLimit = 60
-    private static let infoZhLimit = 120
+    /// 5.0.2 从 120 提到 180：关于页的隐私段压到三句，那两句讲**花钱**的话
+    /// （联网搜索、OpenAI 的 Fast 档）搬进了 Key 这颗 ⓘ——它本来就在说这一档一小时多少钱。
+    /// 屏幕上的字总量是减少的（六句常驻 → 三句常驻 + 两个半句藏在气泡里），
+    /// 但这颗气泡自己确实长了，所以这条线跟着松一格，而不是假装没发生。
+    private static let infoZhLimit = 180
     private static let editorZhLimit = 200
     private static let boundaryZhLimit = 34
 
     /// 页面开头那一整句走的是另一条线（中文 ≤ 60 字 / 英文 ≤ 200）：它回答的是
     /// "这一页是干什么的"，装不进 16 字，而硬压成 16 字只会得到一句谁也看不懂的口号。
     /// 和引导里那些整句说明同一条线（OnboardingCopy.paragraphs）。
+    /// 5.0.2 起一句开场白都没有了（「专有词汇表」那一页开头那句删掉了），
+    /// 这张表因此是空的——线还在，将来再有开场白它自动受约束
     func testPageIntrosUseTheParagraphBudget() {
+        XCTAssertTrue(SettingsCopy.pageIntros.isEmpty, "\(SettingsCopy.pageIntros)")
         L10n.shared.language = .zh
         for line in SettingsCopy.pageIntros {
             XCTAssertFalse(line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -84,7 +91,7 @@ final class SettingsCopyBudgetTests: XCTestCase {
     func testEachEditorStaysUnderItsPageBudget() {
         L10n.shared.language = .zh
         let pages: [(String, [String])] = [
-            ("写作偏好", SettingsCopy.writingCaptions),
+            ("专有词汇表", SettingsCopy.writingCaptions),
             ("设置", SettingsCopy.cloudCaptions),
             // 首启动引导走同一条线，而且该更紧：第一次打开 MicType 的人最没耐心读字
             ("引导", OnboardingCopy.captions),
@@ -238,8 +245,9 @@ final class SettingsCopyBudgetTests: XCTestCase {
             XCTAssertTrue(base.contains(LLMCatalog.keyStorageNote), base)
             XCTAssertTrue(base.contains(LLMCatalog.billingNote), base)
             let withHost = SettingsCopy.keyInfo(hostField: true)
-            XCTAssertGreaterThan(withHost.count, base.count)
             XCTAssertTrue(withHost.lowercased().contains("api host"), withHost)
+            // 反过来也要成立：OpenAI 那一档没有接入地址这回事，不许出现这一句
+            XCTAssertFalse(base.lowercased().contains("api host"), base)
         }
     }
 
@@ -367,7 +375,7 @@ final class SettingsCopyBudgetTests: XCTestCase {
             }
         }
         // 扫不到东西的话上面那个交集永远是空的，这条测试就成了摆设——先证明它有活干
-        // 5.0.0 之后整个设置窗口只剩两个段标题（词汇表 / 自定义规则，都在写作偏好那一页）
+        // 5.0.0 之后整个设置窗口只剩两个段标题（词汇表 / 自定义规则，都在「专有词汇表」那一页）
         // ——门槛跟着降；再低就说明抓取方式坏了，而不是界面又简化了
         XCTAssertGreaterThanOrEqual(allTitles.count, 2, "没扫到段标题，抓取方式该修了")
         XCTAssertGreaterThan(allLabels.count, 2, "没扫到栏名，抓取方式该修了")
@@ -378,14 +386,14 @@ final class SettingsCopyBudgetTests: XCTestCase {
     }
 
     /// 关于页仍然逐句摆着那几句——这条是上面那条的反面：收口不能收成"哪儿都不说了"。
-    /// 5.0.0 起是八句（多了「听写历史只在本机」那一条：别的东西都上云之后，
-    /// 用户很容易以为历史也跟着上去了）
+    /// 5.0.2 起是**三句**（用户 2026-09-23 拍板：关于页文字减半）——留存那句、
+    /// 两句讲钱的、听写历史那句各自搬到了它们该在的地方（见 PrivacyCopy 的注释）。
     func testAboutPanelStillRendersEveryPrivacyLine() throws {
         let source = try String(contentsOf: Self.sourcesDirectory.appendingPathComponent("SettingsEditors.swift"),
                                 encoding: .utf8)
         XCTAssertTrue(Self.stripComments(source).contains("PrivacyCopy.allLines"),
                       "关于页必须仍然把隐私文案逐句摆出来")
-        XCTAssertEqual(PrivacyCopy.allLines.count, 8)
+        XCTAssertEqual(PrivacyCopy.allLines.count, 3)
     }
 
     // MARK: - 工具

@@ -149,11 +149,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication,
                                        hasVisibleWindows flag: Bool) -> Bool {
         // 自家已经有窗口开着：把它带到前台就够。
-        // **问三个窗口控制器，不看系统给的 flag**：悬浮窗也是一扇窗，正在听写时
-        // 它会让 flag 变成真，于是点 Dock 图标什么都不会发生
+        // **问两个窗口控制器，不看系统给的 flag**：悬浮窗也是一扇窗，正在听写时
+        // 它会让 flag 变成真，于是点 Dock 图标什么都不会发生。
+        //（历史窗口 5.0.2 整个删掉了：听写记录照常写 history.json，界面不再有它的窗口。）
         let anyWindowOpen = OnboardingWindowController.shared.isOpen
             || SettingsWindowController.shared.isOpen
-            || HistoryWindowController.shared.isOpen
         guard !anyWindowOpen else {
             NSApp.activate(ignoringOtherApps: true)
             // 收进程序坞的窗口要自己弹回来：不然"点了 Dock 图标什么都没发生"照样成立，

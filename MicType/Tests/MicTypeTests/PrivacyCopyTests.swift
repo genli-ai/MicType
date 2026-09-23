@@ -19,48 +19,38 @@ final class PrivacyCopyTests: XCTestCase {
         super.tearDown()
     }
 
-    func testEightSentencesInFixedOrder() {
-        // 5.0.0 又多了一句：听写历史只在本机。别的东西都上云之后，
-        // 用户很容易以为历史也跟着上去了——不说清就是让他自己猜
-        XCTAssertEqual(PrivacyCopy.allLines.count, 8)
-        // 顺序是文案的一部分：先说数据去了哪，再说钱谁收，最后说什么留在了本机
+    /// **三句**（5.0.2，用户 2026-09-23 拍板：关于页文字减半）。
+    /// 八句摆在一屏上的结果是一句都没人读；留下的这三句各回答一个问题——
+    /// 录音去哪、还有什么跟着走、钱和 Key 归谁。
+    func testThreeSentencesInFixedOrder() {
+        XCTAssertEqual(PrivacyCopy.allLines.count, 3)
+        // 顺序是文案的一部分
         XCTAssertEqual(PrivacyCopy.allLines, PrivacyCopy.dataFlowLines + PrivacyCopy.keyAndCostLines)
         XCTAssertEqual(PrivacyCopy.dataFlowLines.count, 2)
-        XCTAssertEqual(PrivacyCopy.keyAndCostLines.count, 6)
+        XCTAssertEqual(PrivacyCopy.keyAndCostLines.count, 1)
     }
 
-    /// Fast 档那一句：单价只有 LLMCatalog 一个出处（引用，不复述），而且必须点名
-    /// "官方接口"——OpenAI 档的 Base URL 指向第三方网关时一个字段都不发
-    /// （判据就是 LLMClient.asksForFastTier 用的那一条）
-    func testFastTierSentenceQuotesTheSinglePriceSourceAndNamesTheOfficialAPI() {
+    /// Fast 档与联网搜索那两个半句 5.0.2 搬进了 Key 那一行的 ⓘ（关于页只剩三句）。
+    /// 它们讲的是**花钱**，而那颗 ⓘ 本来就在说"这一档一小时多少钱"。
+    /// 单价的唯一出处仍然是 LLMCatalog：这里守的就是"引用，不复述"。
+    func testMoneySentencesLiveInTheKeyPopoverNow() {
         for language in AppLanguage.allCases {
             L10n.shared.language = language
-            XCTAssertTrue(PrivacyCopy.fastTier.contains(LLMCatalog.fastTierPriceNote),
-                          PrivacyCopy.fastTier)
-            XCTAssertTrue(PrivacyCopy.allLines.contains(PrivacyCopy.fastTier))
-        }
-        L10n.shared.language = .zh
-        XCTAssertTrue(PrivacyCopy.fastTier.contains("官方"), PrivacyCopy.fastTier)
-        // 开关早就没了：这句话不许再写成"默认关闭"那一套
-        XCTAssertFalse(PrivacyCopy.fastTier.contains("默认关"), PrivacyCopy.fastTier)
-        L10n.shared.language = .en
-        XCTAssertTrue(PrivacyCopy.fastTier.lowercased().contains("official openai api"),
-                      PrivacyCopy.fastTier)
-        XCTAssertFalse(PrivacyCopy.fastTier.lowercased().contains("off by default"),
-                       PrivacyCopy.fastTier)
-        XCTAssertFalse(CJKSourceScanner.containsFlagged(PrivacyCopy.fastTier), PrivacyCopy.fastTier)
-    }
-
-    /// 联网搜索的单价只有一个出处：隐私那句必须原样引用 LLMCatalog 的那一句。
-    /// 以前两处各写各的价钱，改一次价就会有两句话打架，用户不知道哪句算数。
-    func testWebSearchPriceHasASingleSource() {
-        for language in AppLanguage.allCases {
-            L10n.shared.language = language
-            XCTAssertTrue(PrivacyCopy.webSearchBilled.contains(LLMCatalog.webSearchPriceNote),
-                          "\(language) 下隐私文案没有引用 LLMCatalog.webSearchPriceNote")
-            // 价钱只出现一次（引用而不是复述）
-            XCTAssertEqual(PrivacyCopy.webSearchBilled.components(separatedBy: "10").count - 1,
-                           LLMCatalog.webSearchPriceNote.components(separatedBy: "10").count - 1)
+            // OpenAI 那一档两句都在（Fast 档只对官方接口成立，所以只对 OpenAI 说）
+            let openai = SettingsCopy.keyInfo(hostField: false)
+            XCTAssertTrue(openai.contains(LLMCatalog.fastTierPriceNote), openai)
+            XCTAssertTrue(openai.contains(LLMCatalog.webSearchPriceNote), openai)
+            // 阿里云那一档没有 Fast 档这回事；搜索那句念的是它自己那一版
+            //（我们报不出阿里云的搜索单价，见 LLMCatalog.providerBilledSearchNote）
+            let qwen = SettingsCopy.keyInfo(hostField: true)
+            XCTAssertFalse(qwen.contains(LLMCatalog.fastTierPriceNote), qwen)
+            XCTAssertTrue(qwen.contains(LLMCatalog.providerBilledSearchNote), qwen)
+            // 关于页那三句里一个价钱都不出现了
+            for line in PrivacyCopy.allLines {
+                XCTAssertFalse(line.contains(LLMCatalog.fastTierPriceNote), line)
+                XCTAssertFalse(line.contains(LLMCatalog.webSearchPriceNote), line)
+                XCTAssertFalse(line.contains(LLMCatalog.providerBilledSearchNote), line)
+            }
         }
     }
 
@@ -70,28 +60,36 @@ final class PrivacyCopyTests: XCTestCase {
     func testKeyAndBillingPromisesHaveASingleSource() {
         for language in AppLanguage.allCases {
             L10n.shared.language = language
-            XCTAssertEqual(PrivacyCopy.keyInKeychain, LLMCatalog.keyStorageNote)
-            XCTAssertEqual(PrivacyCopy.youPayProvider, LLMCatalog.billingNote)
+            // 5.0.2 起两句并成一句，但两截仍然逐字来自 LLMCatalog
+            XCTAssertTrue(PrivacyCopy.keyAndBilling.contains(LLMCatalog.keyStorageNote),
+                          PrivacyCopy.keyAndBilling)
+            XCTAssertTrue(PrivacyCopy.keyAndBilling.contains(LLMCatalog.billingNote),
+                          PrivacyCopy.keyAndBilling)
+            XCTAssertTrue(SettingsCopy.keyInfo(hostField: false).contains(LLMCatalog.keyStorageNote))
         }
     }
 
-    /// 听写历史存哪儿、最多几条：关于页那一句和条数那个常量只有一个出处。
-    /// 「输入」页那颗 ⓘ 只说怎么关、怎么清——它再也不自己写一遍条数了
+    /// 听写历史存哪儿、最多几条：**条数那个常量只有一个出处**（HistoryStore.storageNote）。
+    ///
+    /// 5.0.2 起这句话住在「保存听写历史」那个开关的 ⓘ 里，不在关于页那三句里——
+    /// 它讲的是这个开关的事，摆在开关旁边才有人读。行为不变：仍然只写一处，ⓘ 引用它。
     func testHistoryStorageFactsHaveASingleSource() {
         for language in AppLanguage.allCases {
             L10n.shared.language = language
             XCTAssertTrue(HistoryStore.storageNote.contains("\(HistoryStore.maxCount)"),
                           HistoryStore.storageNote)
-            XCTAssertFalse(SettingsCopy.behaviourInfo.contains("\(HistoryStore.maxCount)"),
-                           SettingsCopy.behaviourInfo)
+            XCTAssertTrue(SettingsCopy.behaviourInfo.hasPrefix(HistoryStore.storageNote),
+                          SettingsCopy.behaviourInfo)
+            // 关于页那三句里不再复述它
+            for line in PrivacyCopy.allLines {
+                XCTAssertFalse(line.contains(HistoryStore.storageNote), line)
+            }
         }
-        L10n.shared.language = .zh
-        XCTAssertFalse(SettingsCopy.behaviourInfo.contains("从不上传"), SettingsCopy.behaviourInfo)
         L10n.shared.language = .en
-        XCTAssertFalse(SettingsCopy.behaviourInfo.lowercased().contains("never uploaded"),
-                       SettingsCopy.behaviourInfo)
         XCTAssertFalse(CJKSourceScanner.containsFlagged(HistoryStore.storageNote),
                        HistoryStore.storageNote)
+        XCTAssertFalse(CJKSourceScanner.containsFlagged(SettingsCopy.behaviourInfo),
+                       SettingsCopy.behaviourInfo)
     }
 
     func testEveryLineIsPresentAndDistinctInBothLanguages() {
@@ -152,8 +150,6 @@ final class PrivacyCopyTests: XCTestCase {
         XCTAssertTrue(PrivacyCopy.audioGoesToProvider.contains("Esc"))
         XCTAssertFalse(PrivacyCopy.audioGoesToProvider.lowercased().contains("on-device"),
                        "没有本机识别那一档了，别再承诺它")
-        // 听写历史仍然只在本机：别的东西都上云之后，这一句格外要紧
-        XCTAssertTrue(PrivacyCopy.historyStaysLocal.lowercased().contains("never uploaded"))
         // 指令模式会把**前台应用的选区原文**发出去（常常不是用户自己说的话），
         // 这句话必须把它点名说出来——以前写的"只有识别出的文字"在主路径上就不成立
         XCTAssertTrue(PrivacyCopy.onlyTextLeaves.lowercased().contains("recognized text"))
@@ -161,55 +157,22 @@ final class PrivacyCopyTests: XCTestCase {
         XCTAssertTrue(PrivacyCopy.onlyTextLeaves.lowercased().contains("vocabulary"))
         XCTAssertFalse(PrivacyCopy.onlyTextLeaves.lowercased().contains("only the recognized text"),
                        "这句话不能再声称只有识别文字出门")
-        XCTAssertTrue(PrivacyCopy.keyInKeychain.contains("Keychain"))
-        XCTAssertTrue(PrivacyCopy.youPayProvider.contains("pay the provider directly"))
-        // 单价那句由 LLMCatalog 提供（唯一出处），所以只认意思、不认大小写
-        // 4.1.1 起默认**开**（支持的服务商）：这句话跟着改，写着"默认关闭"而实际开着，
-        // 比不说更糟——用户按它判断自己有没有在花这笔钱
-        XCTAssertTrue(PrivacyCopy.webSearchBilled.lowercased().contains("always on"))
+        XCTAssertTrue(PrivacyCopy.keyAndBilling.contains("Keychain"))
+        XCTAssertTrue(PrivacyCopy.keyAndBilling.contains("pay the provider directly"))
 
         L10n.shared.language = .zh
         XCTAssertTrue(PrivacyCopy.audioGoesToProvider.contains("你选的服务商"))
         XCTAssertTrue(PrivacyCopy.audioGoesToProvider.contains("收不回来"))
         XCTAssertFalse(PrivacyCopy.audioGoesToProvider.contains("本机"), "没有本机识别那一档了")
         XCTAssertTrue(PrivacyCopy.onlyTextLeaves.contains("选中"))
-        XCTAssertTrue(PrivacyCopy.keyInKeychain.contains("钥匙串"))
-        XCTAssertTrue(PrivacyCopy.webSearchBilled.contains("永远开"))
-        XCTAssertTrue(PrivacyCopy.historyStaysLocal.contains("从不上传"))
+        XCTAssertTrue(PrivacyCopy.keyAndBilling.contains("钥匙串"))
+        XCTAssertTrue(PrivacyCopy.keyAndBilling.contains("不经手"))
     }
 
-    /// 「请求带 store:false」这句话只有在**真的会发 store:false 的那条路**上才许出现。
-    /// 代码里 `store: false` 只存在于 responsesBody，而那条路的判据就是
-    /// `provider == .openai && LLMClient.usesResponsesAPI(baseURL:)`——所以这条测试直接用同一个谓词。
-    func testRetentionSentenceTracksTheResponsesPath() {
-        L10n.shared.language = .en
-        let cases: [(LLMProvider, String)] = [
-            (.openai, "https://api.openai.com/v1"),
-            (.openai, "https://gateway.example.com/v1"),   // OpenAI 档改了 Base URL → 走 chat
-            (.qwen, "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
-        ]
-        for (provider, baseURL) in cases {
-            let line = PrivacyCopy.retention(provider: provider, baseURL: baseURL)
-            let onResponsesPath = provider == .openai && LLMClient.usesResponsesAPI(baseURL: baseURL)
-            XCTAssertEqual(line.contains("store:false"), onResponsesPath,
-                           "\(provider.rawValue) @ \(baseURL) 的留存文案和实际请求体对不上")
-            XCTAssertFalse(line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            XCTAssertFalse(CJKSourceScanner.containsFlagged(line), "英文侧混进了中文：\(line)")
-        }
-        // 阿里云那一档必须把留存交回给服务商的政策，不许留下任何"我们保证"的暗示
-        XCTAssertTrue(PrivacyCopy.retention(
-            provider: .qwen,
-            baseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
-                        .lowercased().contains("its own policy"))
-    }
-
-    /// 界面上那一句必须就是按当前生效服务商现算出来的那一句（不是一句写死的承诺）
-    func testKeyAndCostLinesUseTheLiveRetentionSentence() {
-        XCTAssertEqual(PrivacyCopy.keyAndCostLines.first, PrivacyCopy.retentionLine)
-        XCTAssertEqual(PrivacyCopy.retentionLine,
-                       PrivacyCopy.retention(provider: Settings.shared.llmProvider,
-                                             baseURL: Settings.shared.baseURL(for: Settings.shared.llmProvider)))
-    }
+    // 留存那两条测试（store:false 按生效档说、界面用现算的那一句）5.0.2 随
+    // PrivacyCopy.retention 一起删掉：关于页压到三句之后，它不在那三句里了。
+    // 行为没变（请求体照旧带 store:false，判据仍是 LLMClient.usesResponsesAPI），
+    // 只是界面上不再逐档解释留存政策。
 }
 
 // 「输入」页的段序测试（InputSectionOrderTests）5.0.0 删掉：设置只剩一页，

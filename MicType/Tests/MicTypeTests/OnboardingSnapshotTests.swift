@@ -24,9 +24,10 @@ import AppKit
 ///     不会去动系统登录项（见 DonePage.armLaunchAtLogin）。
 final class OnboardingSnapshotTests: XCTestCase {
 
-    /// 和真窗口一样的尺寸，否则量出来的换行都不算数
-    private let width: CGFloat = 560
-    private let height: CGFloat = 470
+    /// 和真窗口一样的宽度，否则量出来的换行都不算数（高度按内容现算，见 shoot）
+    private let width: CGFloat = OnboardingWindowSizing.width
+    /// 假装是一块 13 寸 MacBook Air 的可见高度：上限那条路（可见屏高 − 120）要真的被走一遍
+    private let screenHeight: CGFloat = 868
 
     private static let touchedKeys = [
         SettingsKeys.appLanguage,
@@ -95,14 +96,16 @@ final class OnboardingSnapshotTests: XCTestCase {
         model.refreshAIReady()
 
         let host = NSHostingView(rootView: AnyView(OnboardingView(model: model)))
-        // **高度按这一屏的内容量**（5.0.1 起真窗口就是这么开的，见
-        // OnboardingWindowController.fitContentHeight）：写死 470 的话，短的那几屏
-        // 在图上底下空着一大块，而真窗口不会——那正是这一版要看的东西
-        host.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        // **和真窗口同一条路**（OnboardingWindowController.applyFittedHeight）：
+        // 按目标宽度排一遍版 → 问 fittingSize → 过一遍 OnboardingWindowSizing。
+        // 写死 470 的话这组图既看不出留白也看不出裁切，而这一版要看的正是这两件事
+        host.frame = NSRect(x: 0, y: 0, width: width, height: OnboardingWindowSizing.minContentHeight)
         host.layoutSubtreeIfNeeded()
         let natural = host.fittingSize.height
-        let fitted = SettingsWindowSizing.contentHeight(natural: natural > 0 ? natural : height,
-                                                        visibleScreenHeight: 1_000)
+        let fitted = OnboardingWindowSizing.contentHeight(natural: natural,
+                                                          visibleScreenHeight: screenHeight)
+        // 图上看不出"差一点点"：裁掉两三个像素的截图和没裁的长得一样，所以这里断言一次
+        XCTAssertGreaterThanOrEqual(fitted, natural, "\(name)：窗口给的高度装不下这一屏")
         let frame = NSRect(x: 0, y: 0, width: width, height: fitted)
         host.frame = frame
         let window = NSWindow(contentRect: frame, styleMask: [.titled],
@@ -119,7 +122,7 @@ final class OnboardingSnapshotTests: XCTestCase {
 
         write(host: host, to: name)
         window.orderOut(nil)
-        print("[snapshot] \(name)")
+        print("[snapshot] \(name): natural=\(Int(natural)) window=\(Int(fitted))")
     }
 
     @MainActor

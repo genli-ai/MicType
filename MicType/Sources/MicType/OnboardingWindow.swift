@@ -291,10 +291,34 @@ enum OnboardingCopy {
     // 没配 Key 的人在 ③ 已经被那条「先跳过」明确告知过代价了。
 }
 
-// MARK: - 窗口高度跟着这一屏的内容走（5.0.1）
+// MARK: - 窗口高度跟着这一屏的内容走（5.0.1 起；5.0.2 改成直接量）
 
-/// 这一屏有多高。**带着页码一起报**：翻页动画期间新旧两页同时活着，各报各的，
-/// 而窗口要按**当前那一页**定尺寸（同 SettingsPageHeightKey 的理由）。
+/// 引导窗口的尺寸算术。**和设置窗口分开**（5.0.2）：设置那套有一条 760 的硬上限，
+/// 而引导 ③ 在英文界面下比 760 还高——夹在 760 上的结果正是用户 2026-09-23 报的那个
+/// "第 ②③④⑤ 屏都显示不全"。这里的上限只有一条：**可见屏高 − 120**。
+enum OnboardingWindowSizing {
+    /// 宽度不变（整套文案的换行都是按它调的）
+    static let width: CGFloat = 560
+    /// 下限：比这更矮的窗口里连底部那排按钮都摆不开
+    static let minContentHeight: CGFloat = 220
+    /// 离屏幕可见区域上下各留的余量：窗口顶到菜单栏、底到程序坞边上，既难拖也难看
+    static let screenMargin: CGFloat = 120
+
+    /// 这一屏该给多高。**纯函数**（单测钉住"够放下 + 不出屏"这两条）。
+    /// natural 是整个 OnboardingView 的自然高度（含上下留白与底部导航）。
+    static func contentHeight(natural: CGFloat, visibleScreenHeight: CGFloat) -> CGFloat {
+        let ceiling = max(minContentHeight, visibleScreenHeight - screenMargin)
+        guard natural.isFinite, natural > 0 else { return minContentHeight }
+        return min(max(natural.rounded(.up), minContentHeight), ceiling)
+    }
+}
+
+/// "这一屏的内容变了"的信号。
+///
+/// **5.0.2 起只当信号用，不再用它报上来的数字**：那条路上的高度要先经过 @State、
+/// 再在同一个闭包里被读出来（SwiftUI 不保证读到的是刚写进去的值），于是窗口会按
+/// **上一屏**的高度去开——用户看到的就是"②③④⑤ 都被裁掉一截"。
+/// 现在窗口高度由控制器直接问 NSHostingView 要（fittingSize），这里只负责说一句"该重量了"。
 struct OnboardingPageHeightKey: PreferenceKey {
     static var defaultValue: [OnboardingPage: CGFloat] = [:]
 
@@ -304,17 +328,9 @@ struct OnboardingPageHeightKey: PreferenceKey {
     }
 }
 
-/// 底部那条（分隔线 + 导航）有多高。它每一屏都一样，但字号跟着系统走，不许猜一个数字
-struct OnboardingChromeHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
 extension View {
-    /// 量这一屏的自然高度（贴在每一屏 ScrollView 里那个 VStack 上）
+    /// 量这一屏的自然高度（贴在每一屏 ScrollView 里那个 VStack 上）。
+    /// 内容一变就推一次信号：权限徽章变绿、Key 状态行冒出来、语言切换……都会走到这里
     func measuresOnboardingPage(_ page: OnboardingPage) -> some View {
         background(GeometryReader { geo in
             Color.clear.preference(key: OnboardingPageHeightKey.self,
@@ -334,48 +350,61 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
     @Published private(set) var isOpen = false
 
     private var window: NSWindow?
+    /// 装着 OnboardingView 的那个宿主。**窗口高度就是问它要的**（见 remeasure）
+    private var hosting: NSHostingController<OnboardingView>?
     private var langObserver: AnyCancellable?
+    private var pageObserver: AnyCancellable?
     private let model = OnboardingModel()
-    /// 最近一次量到的内容高度（当前这一屏 + 底部导航）。nil = 还没量到过
-    private var pendingContentHeight: CGFloat?
-    /// 防抖：一次翻页会连着报好几个高度（旧页退场、新页登场、状态行冒出来）
+    /// 防抖：一次翻页会连着报好几次变化（旧页退场、新页登场、状态行冒出来）
     private var resizeWork: DispatchWorkItem?
     /// 这扇窗还没按内容摆过位置：第一次量到高度时居中一次，之后一律保住顶边
     private var needsInitialPlacement = true
+    /// 上一次真正下发的内容高度。**动画期间要靠它判"还用不用再动"**：
+    /// 窗口在那 0.2 秒里每一帧都在变高，拿当前 frame 去比会把自己的动画打断
+    private var lastAppliedContentHeight: CGFloat?
 
-    // MARK: 高度跟着内容走（5.0.1，算术与设置窗口共用 SettingsWindowSizing）
+    // MARK: 高度跟着内容走（5.0.1 起；5.0.2 改成直接量）
 
-    /// 当前这一屏量出来的高度。视图层每次变化都会叫这里，具体改不改窗口由防抖那一跳决定。
+    /// "内容可能变了，该重新量一次了"。视图层每次变化、每次翻页都会叫它。
     ///
-    /// 为什么引导也要这一套：五屏的内容差了将近一倍（权限页两行、③ 整套 Key 控件），
-    /// 而窗口高度一直写死 470——短的那几屏底下空出小半扇窗，长的那屏还要滚。
-    func fitContentHeight(_ natural: CGFloat) {
-        guard natural > 0 else { return }
-        pendingContentHeight = natural
+    /// 5.0.1 是让视图把量到的高度**报上来**，结果那个数要先经过 @State、再在同一个闭包里
+    /// 被读回去——SwiftUI 不保证读到的是刚写进去的值，于是窗口常常按**上一屏**的高度开，
+    /// 短屏换长屏时内容就被裁掉一截（用户 2026-09-23 实机报的正是 ②③④⑤ 显示不全）。
+    /// 现在不再相信任何传上来的数字：到点了自己去问 NSHostingView 这一刻多高。
+    func scheduleRemeasure() {
         resizeWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.applyPendingHeight() }
+        let work = DispatchWorkItem { [weak self] in self?.applyFittedHeight() }
         resizeWork = work
+        // 一拍之后再量：翻页那一下 SwiftUI 还没把新页排完，当场量到的是旧页的高度
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
     }
 
-    /// 真正改窗口的那一下。**顶边不动**（算术在 SettingsWindowSizing.frame 里，单测钉死）
-    private func applyPendingHeight() {
-        guard let window = window, let natural = pendingContentHeight else { return }
+    /// 真正改窗口的那一下。**顶边不动**（算术在 SettingsWindowSizing.frame 里，单测钉死）。
+    /// 高度取整个 OnboardingView 的自然高度（fittingSize 已经含了上下留白和底部那排按钮）。
+    private func applyFittedHeight() {
+        guard let window = window, let hosting = hosting else { return }
+        // 先按目标宽度排一遍版：换行是按宽度算的，不排就量不准
+        hosting.view.setFrameSize(NSSize(width: OnboardingWindowSizing.width,
+                                         height: hosting.view.frame.height))
+        hosting.view.layoutSubtreeIfNeeded()
+        let natural = hosting.view.fittingSize.height
+        guard natural > 0 else { return }
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? window.frame
-        let content = SettingsWindowSizing.contentHeight(natural: natural,
-                                                         visibleScreenHeight: visible.height)
+        let content = OnboardingWindowSizing.contentHeight(natural: natural,
+                                                           visibleScreenHeight: visible.height)
         let frameHeight = window.frameRect(forContentRect:
-            NSRect(x: 0, y: 0, width: SettingsWindowSizing.width, height: content)).height
+            NSRect(x: 0, y: 0, width: OnboardingWindowSizing.width, height: content)).height
         guard needsInitialPlacement == false else {
-            window.setContentSize(NSSize(width: SettingsWindowSizing.width, height: content))
+            window.setContentSize(NSSize(width: OnboardingWindowSizing.width, height: content))
             window.center()
             needsInitialPlacement = false
+            lastAppliedContentHeight = content
             return
         }
+        guard abs((lastAppliedContentHeight ?? 0) - content) > 0.5 else { return }
+        lastAppliedContentHeight = content
         let target = SettingsWindowSizing.frame(current: window.frame, frameHeight: frameHeight,
                                                 visible: visible)
-        guard abs(target.height - window.frame.height) > 0.5
-                || abs(target.origin.y - window.frame.origin.y) > 0.5 else { return }
         guard !SettingsNavigator.reduceMotion else {
             window.setFrame(target, display: true)
             return
@@ -407,6 +436,8 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
             window.makeKeyAndOrderFront(nil)
             return
         }
+        // 重开这扇窗：高度要按新的那一屏重新量（上一轮留下的数字对这一屏不算数）
+        lastAppliedContentHeight = nil
         // 上一轮在最后一屏点开过的登录项开关，这一轮要重新来一次（见 DonePage.onAppear）
         model.launchAtLoginArmed = false
         var page = requested
@@ -437,6 +468,11 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
 
         if window == nil {
             let hosting = NSHostingController(rootView: OnboardingView(model: model))
+            // 尺寸由我们自己按内容算（见 applyFittedHeight）。放着不管的话，
+            // NSHostingController 会用 preferredContentSize 自己去改窗口大小——
+            // 那条路是**从左下角**长的，每翻一页标题栏跳一次（设置窗口那边同一条）
+            hosting.sizingOptions = []
+            self.hosting = hosting
             let w = NSWindow(contentViewController: hosting)
             // 无边框标题：内容自己撑满，只留一个关闭按钮
             w.styleMask = [.titled, .closable, .fullSizeContentView]
@@ -446,14 +482,19 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
             w.isReleasedWhenClosed = false
             // 先按下限开着，量到真实高度立刻跟上（第一次测量会顺手居中一次）。
             // 5.0.1 之前这里写死 470：短的那几屏底下空出小半扇窗
-            w.setContentSize(NSSize(width: SettingsWindowSizing.width,
-                                    height: SettingsWindowSizing.minContentHeight))
+            w.setContentSize(NSSize(width: OnboardingWindowSizing.width,
+                                    height: OnboardingWindowSizing.minContentHeight))
             w.center()
             w.delegate = self
             window = w
             langObserver = L10n.shared.$language.sink { [weak self] lang in
                 self?.window?.title = lang == .zh ? "欢迎使用 MicType" : "Welcome to MicType"
+                // 换一种语言等于换一整屏的字：行数会变，窗口得跟着重量一次
+                self?.scheduleRemeasure()
             }
+            // 翻页就重量。**订阅模型而不是等视图报数**：翻页是这扇窗里高度变化最大的一件事，
+            // 而 5.0.1 正是在这条路上把上一屏的高度用在了新一屏上
+            pageObserver = model.$page.sink { [weak self] _ in self?.scheduleRemeasure() }
         }
         window?.title = tr("欢迎使用 MicType", "Welcome to MicType")
         // 「试一下」那一页的直接落字通道：窗口一开就挂上，关掉时摘下来。
@@ -555,10 +596,6 @@ struct OnboardingView: View {
     @ObservedObject var model: OnboardingModel
     @ObservedObject private var l10n = L10n.shared
 
-    /// 每一屏最近报上来的自然高度。翻页时新旧两屏都在报，所以按页码存
-    @State private var pageHeights: [OnboardingPage: CGFloat] = [:]
-    /// 底部导航那一条的高度（含它上面那条 Divider）
-    @State private var chromeHeight: CGFloat = 0
     var body: some View {
         VStack(spacing: 0) {
             Group {
@@ -578,39 +615,15 @@ struct OnboardingView: View {
             // 模型下载条 5.0.0 删掉：没有本机模型可下了。
             Divider()
             footer
-                // 底部这一条的高度进窗口那笔账：它不是常数（字号跟着系统走）
-                .background(GeometryReader { geo in
-                    Color.clear.preference(key: OnboardingChromeHeightKey.self,
-                                           // +1：上面那条 Divider
-                                           value: geo.size.height + 1)
-                })
         }
-        // 高度**不再写死 470**（5.0.1）：窗口按当前这一屏量出来的高度伸缩，
-        // 算术与设置窗口共用（SettingsWindowSizing）
-        .frame(width: SettingsWindowSizing.width)
-        .onPreferenceChange(OnboardingPageHeightKey.self) { heights in
-            pageHeights = heights
-            pushHeightToWindow()
+        // 高度**不写死**（5.0.1 起）：窗口按这一屏的自然高度伸缩。
+        // 5.0.2 起这个数不再从这里报上去——控制器到点直接量 NSHostingView（见 scheduleRemeasure），
+        // 这里只在内容变了的时候推一声"该重量了"
+        .frame(width: OnboardingWindowSizing.width)
+        .onPreferenceChange(OnboardingPageHeightKey.self) { _ in
+            OnboardingWindowController.shared.scheduleRemeasure()
         }
-        .onPreferenceChange(OnboardingChromeHeightKey.self) { height in
-            chromeHeight = height
-            pushHeightToWindow()
-        }
-        // 翻页这一下本身也要改窗口：目的屏的高度可能早就量好了（它上一次来过）
-        .onChange(of: model.page) { _, _ in pushHeightToWindow() }
     }
-
-    /// 窗口该有多高 = 这一屏的自然高度 + 上下留白 + 底部导航。
-    /// 按 model.page 取而不是取最大值：翻页期间两屏并存，取最大的话从长屏退回短屏时
-    /// 窗口会卡在长屏那个高度上不下来。
-    private func pushHeightToWindow() {
-        guard let page = pageHeights[model.page], page > 0 else { return }
-        OnboardingWindowController.shared.fitContentHeight(page + Self.pageVerticalPadding
-                                                           + chromeHeight)
-    }
-
-    /// 每一屏上下那两块留白（.padding(.top, 30) + .padding(.bottom, 8)）
-    private static let pageVerticalPadding: CGFloat = 38
 
     // MARK: 底部导航
 

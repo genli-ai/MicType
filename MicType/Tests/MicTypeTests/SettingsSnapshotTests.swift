@@ -93,8 +93,8 @@ final class SettingsSnapshotTests: XCTestCase {
             shoot(.overview, name: "settings-alibaba-\(tag)")
 
             useProvider(.openai)
-            // 写作偏好：两个文本框整个入画
-            shoot(.writing, name: "writing-preferences-\(tag)", fullHeight: true)
+            // 专有词汇表（5.0.2 之前叫「写作偏好」）：两个文本框整个入画
+            shoot(.writing, name: "custom-vocabulary-\(tag)", fullHeight: true)
             // 关于页比窗口高，所以整页入画——要看的正是最下面隐私那一段
             shoot(.about, name: "about-\(tag)", fullHeight: true)
         }

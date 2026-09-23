@@ -436,13 +436,16 @@ enum LLMCatalog {
     /// 4.1.1 起默认**开着**（用户 2026-09-20 拍板：支持联网搜索的服务商一律默认开，
     /// 不支持的那几档连开关都不摆）。这句话跟着改：写着"默认关闭"而实际开着，
     /// 比不说更糟——用户按这句话判断自己有没有在花这笔钱。
-    static var webSearchPriceNote: String { tr("每次搜索约 $0.01（OpenAI 按 $10 / 1000 次计）外加 token 费用，默认开启。",
-                                       "About $0.01 per search (OpenAI bills $10 per 1000 calls) plus tokens. On by default.") }
+    /// 5.0.2 砍短：括号里那句「OpenAI 按 $10 / 1000 次计」是算给我们自己看的，
+    /// 「默认开启」也和引它的那句「永远开」重复。它现在只出现在 Key 那颗 ⓘ 里，
+    /// 而那颗气泡这一版刚接下了两句从关于页搬来的话——每个字都要付房租。
+    static var webSearchPriceNote: String { tr("每次约 $0.01 外加 token 费用。",
+                                       "about $0.01 per search plus tokens.") }
 
     /// 阿里云那一档的联网搜索价钱。**我们报不出一个准数**：DashScope 的搜索按它自己的
     /// 价目结算，随套餐和地区变——编一个数字比不给数字糟得多，所以只说"按服务商计费"。
-    static var providerBilledSearchNote: String { tr("联网搜索按服务商自己的价目计费，默认开启。",
-                                            "Web search is billed at your provider's own rates. On by default.") }
+    static var providerBilledSearchNote: String { tr("按服务商自己的价目计费。",
+                                            "billed at your provider's own rates.") }
 
     /// 这一档的开关旁边该摆哪句价钱。nil = 这个端点压根没有联网搜索（开关也不摆）。
     /// 纯函数：价钱与"有没有这个功能"必须同源，否则会出现"这家没有搜索"+"每次 $0.01"并排。

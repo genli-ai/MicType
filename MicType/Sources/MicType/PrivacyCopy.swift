@@ -45,81 +45,32 @@ enum PrivacyCopy {
            "Besides the audio, what also goes out is: the recognized text, any text you selected, your vocabulary and your custom rules.")
     }
 
-    /// 留存那一句。**必须按当前生效的那一档说**，因为 `store: false` 只存在于 Responses 的请求体里
-    /// （AgentService.responsesBody），而那条路只有「OpenAI 档 + 官方域名」才走
-    /// （LLMClient.usesResponsesAPI）。阿里云、以及把 Base URL 改指向第三方网关的 OpenAI 档，
-    /// 走的都是 chat/completions —— 那个请求体里一个留存字段都没有。
-    /// 对着这些用户说"请求带 store:false 发出"，就是承诺了一件代码没做的事。
+    /// 第三句：**Key 与钱**。5.0.2 把两句并成一句（用户 2026-09-23 拍板：关于页文字减半）——
+    /// 「Key 只在钥匙串」和「费用直付、MicType 不经手」说的是同一件事的两头：
+    /// 我们既不拿你的 Key，也不碰你的钱。
     ///
-    /// 纯函数版本供单测把三态钉死：判据必须和 `LLMClient.usesResponsesAPI` 同一个。
-    static func retention(provider: LLMProvider, baseURL: String) -> String {
-        if provider == .openai, LLMClient.usesResponsesAPI(baseURL: baseURL) {
-            return tr("请求带 store:false 发出，服务商不留存这些请求。",
-                      "Requests go out with store:false, so the provider keeps no copy.")
-        }
-        return tr("这一档没有「不留存」开关：这些请求留多久由这家服务商自己的政策决定。",
-                  "This provider has no no-retention switch: how long it keeps these requests is governed by its own policy.")
+    /// **两截都逐字引用 LLMCatalog**（全 App 唯一出处）：Key 输入框那颗 ⓘ 里念的是同一串，
+    /// 各写一版的结果是关于页说"不写进文件"、设置页说"加密、仅本机可读"。
+    static var keyAndBilling: String {
+        LLMCatalog.keyStorageNote + tr("", " ") + LLMCatalog.billingNote
     }
 
-    /// 当前这台机器上的那一句（界面用）
-    static var retentionLine: String {
-        let provider = Settings.shared.llmProvider
-        return retention(provider: provider, baseURL: Settings.shared.baseURL(for: provider))
-    }
+    // 5.0.2 删掉的三句（用户 2026-09-23 拍板，关于页文字减半）：
+    //   • 留存（retention / retentionLine）——它按生效服务商分三种说法，而用户在这一页
+    //     要的是"什么东西出了门"，不是每一家的留存政策；
+    //   • 联网搜索计费、OpenAI Fast 档——这两句讲的是**花钱**，它们的半句话搬进了
+    //     Key 那一行的 ⓘ（SettingsCopy.keyInfo：那里本来就在说这一档一小时多少钱）；
+    //   • 听写历史仅本机（historyStaysLocal）——它现在是「保存听写历史」那个开关自己的 ⓘ
+    //     （SettingsCopy.behaviourInfo），就在开关旁边，比在六句话里排第六管用。
 
-    /// Key 只在钥匙串里：不进设置文件、不随导出走（SettingsBackup 从不导出 Key）。
-    ///
-    /// **句子本身不在这里写**：同一件事在 Key 输入框那颗 ⓘ 里也要说，而那一处的唯一出处是
-    /// LLMCatalog.keyStorageNote。两边各写一版的结果是关于页说"不写进文件"、设置页说
-    /// "加密、仅本机可读"——改一处漏一处就自相矛盾。和 webSearchBilled 同一条做法：引用，不复述。
-    static var keyInKeychain: String { LLMCatalog.keyStorageNote }
-
-    /// 费用直付服务商：MicType 不代理请求。同上——Key 输入框下面那一行价格用的是同一个出处
-    /// （LLMCatalog.billingNote；4.3.2 起设置页里它住在 API Key 那颗 ⓘ 里）。
-    static var youPayProvider: String { LLMCatalog.billingNote }
-
-    /// 联网搜索 5.0.0 起**没有开关、永远开**（支持的服务商）。界面上既然没有那个开关，
-    /// 这一句就是它唯一的交代——所以它比从前更该在这儿。
-    /// **单价不在这里写**：出处只有 LLMCatalog.webSearchPriceNote 一个。
-    static var webSearchBilled: String {
-        tr("按住说指令时允许联网搜索（没有开关，永远开）：",
-           "Hold-to-command may search the web (always on, no switch): ") + LLMCatalog.webSearchPriceNote
-    }
-
-    /// Fast 档：4.1.6 起 OpenAI 官方接口的每一次请求都带 `service_tier:"fast"`，
-    /// 界面上没有开关（用户 2026-09-21 拍板）。**多花的钱必须有一处写着**——就是这一句。
-    ///
-    /// 三件事刻意这么写：
-    ///   • **单价不在这里写**：出处只有 LLMCatalog.fastTierPriceNote 一个（引用，不复述），
-    ///     和 webSearchBilled 同一条做法；
-    ///   • **点名"官方接口"**：把 OpenAI 档的 Base URL 指向第三方网关时一个字都不发
-    ///     （判据见 LLMClient.asksForFastTier），写成无条件的"OpenAI 的请求"就是假话；
-    ///   • **不按当前服务商分支**：这一句陈述的是 App 的行为（"OpenAI 走哪一档"），
-    ///     不是"你这台机器这会儿在花什么钱"——retention 那句才是按生效档现算的。
-    static var fastTier: String {
-        tr("OpenAI 官方接口的请求一律走 Fast 档：", "Requests to the official OpenAI API always use the Fast tier: ")
-            + LLMCatalog.fastTierPriceNote
-    }
-
-    /// 听写历史：**存在这台 Mac 上，不上传**。5.0.0 起这一句格外要紧——
-    /// 别的东西都去云端了，用户很容易以为历史也跟着上去了，所以它进了这张表。
-    ///
-    /// **句子本身不在这里写**：存哪儿、留多少条、上不上传的唯一出处是
-    /// HistoryStore.storageNote（条数就是那个常量）。和 keyInKeychain 引用
-    /// LLMCatalog.keyStorageNote 同一条做法：引用，不复述——4.3.6 之前关于页正是
-    /// 把它单独又渲染了一遍，于是同一件事在同一屏上出现两次、措辞还不一样。
-    static var historyStaysLocal: String { HistoryStore.storageNote }
-
-    /// 数据流向那两句：讲"东西去了哪里"，引导第一屏用
+    /// 数据流向那两句：讲"东西去了哪里"
     static var dataFlowLines: [String] { [audioGoesToProvider, onlyTextLeaves] }
 
-    /// Key 与费用那几句：讲"谁收你的钱、Key 放在哪、什么东西没出去"（关于页用）。
-    /// 第一句按当前生效的服务商现算（见 retention），不是一句放之四海的承诺。
-    static var keyAndCostLines: [String] {
-        [retentionLine, keyInKeychain, youPayProvider, webSearchBilled, fastTier, historyStaysLocal]
-    }
+    /// Key 与费用：5.0.2 起只有一句（见 keyAndBilling）
+    static var keyAndCostLines: [String] { [keyAndBilling] }
 
-    /// 完整八句，顺序固定（关于页用）。顺序本身是文案的一部分：
-    /// 先说数据去哪，再说钱谁收，最后说什么东西留在了本机
+    /// 完整**三句**，顺序固定（关于页用）。顺序本身是文案的一部分：
+    /// 先说录音去哪，再说还有什么跟着走，最后说钱和 Key。
+    /// 5.0.2 从八句压到三句：八句摆在一屏上，结果是一句都没人读。
     static var allLines: [String] { dataFlowLines + keyAndCostLines }
 }

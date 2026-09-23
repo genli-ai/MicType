@@ -30,17 +30,16 @@ enum SettingsCopy {
 
     // 「输入」页 5.0.0 整页没有了（设置只剩一页）：快捷键那一行、界面语言、开机自启
     // 三样连同它们的说明一起撤掉——键只有右 Option 一颗（引导第一屏教过）、语言在菜单栏切、
-    // 开机自启在引导 ⑤ 注册（要关去系统设置的登录项）。词汇表与自定义规则搬进「写作偏好」。
+    // 开机自启在引导 ⑤ 注册（要关去系统设置的登录项）。词汇表与自定义规则搬进「专有词汇表」。
 
-    /// 「保存听写历史」那一行的 ⓘ（4.3.3 起它和那个开关一起住在 关于 → 隐私）。
+    /// 「保存听写历史」那一行的 ⓘ。
     ///
-    /// 「存在哪儿、最多几条、不上传」那一句不在这里写：它是一句隐私陈述，出处只有一个
-    /// （HistoryStore.storageNote，就摆在这个开关上面那几行）。4.1.0 之前这里自己写了一版
-    /// （「history.json、200 条」）而关于页写的是另一版（「Application Support 目录、明文」），
-    /// 条数一改就有两个答案。
+    /// **5.0.2 改短并接下了那句隐私陈述**：关于页的隐私段压到三句，而"存哪儿、几条、不上传"
+    /// 只在这个开关旁边说才有用。事实本身仍然只有一个出处（HistoryStore.storageNote，
+    /// 条数从那个常量现取），这里只在它后面补一句"关掉之后怎样"。
     static var behaviourInfo: String {
-        tr("关掉即停止记录，已有的记录不动：清空与逐条删除都在设置底部的「历史记录」里。",
-           "Turning this off stops recording immediately and leaves existing entries alone: clear them or delete them one by one under History at the bottom of Settings.")
+        HistoryStore.storageNote + tr("关掉即停止记录，已有的记录不动。",
+                                      " Turning this off stops recording and leaves existing entries alone.")
     }
 
     static var backupInfo: String {
@@ -50,19 +49,17 @@ enum SettingsCopy {
 
     // rulesNeedAI 5.0.0 删掉：没有「只用本地」那一档了，自定义规则永远会被发出去。
 
-    /// 「写作偏好」那一页挂在**控件旁边**的说明行（16 字那条线量的就是它们）。
-    /// 页面开头那一整句不在这里：它不是挂在某个控件旁边的注脚，而是这一页的开场白，
-    /// 走 pageIntros 那条更宽的线（见那里）。
+    /// 「专有词汇表」那一页挂在**控件旁边**的说明行（16 字那条线量的就是它们）。
     static var writingCaptions: [String] {
         [vocabularyHardReplace, customRulesPlaceholder]
     }
 
-    /// 页面开头那一整句（目前只有「写作偏好」有）。**另算一条线**：
-    /// 它回答的是"这一页是干什么的"，装不进 16 字，而硬压成 16 字的结果是一句谁也看不懂的口号。
-    /// 量它的是与引导段落同一条线（中文 ≤ 60 字），见 SettingsCopyBudgetTests。
-    static var pageIntros: [String] { [writingPreferencesIntro] }
+    /// 页面开头那一整句。5.0.2 起**一句都没有了**（用户 2026-09-23 拍板）：
+    /// 那一页两个框各自带着栏名和一颗 ⓘ，开场白说的是同一件事，只是把控件往下推了一行。
+    /// 这张表留着是因为那条"整句说明"的预算线本身还在（将来再有开场白，它自动受约束）。
+    static var pageIntros: [String] { [] }
 
-    /// 「写作偏好」那一页的两颗 ⓘ（词汇表 / 自定义规则）
+    /// 「专有词汇表」那一页的两颗 ⓘ（词汇表 / 自定义规则）
     static var writingInfos: [String] {
         [vocabularyInfo, customRulesInfo]
     }
@@ -73,15 +70,19 @@ enum SettingsCopy {
         [behaviourInfo, backupInfo]
     }
 
-    // MARK: - 写作偏好（自己的一页，从设置底部那排小字点开）
+    // MARK: - 专有词汇表（自己的一页，从设置底部那排小字点开）
 
-    /// 这一页开头唯一一句解释：回答"这两个框是干什么的"。
-    /// **点名识别与润色都会参考**——词汇表在 OpenAI 那一档是识别时的热词，
-    /// 在阿里云那一档由润色纠正，两条路都用得上，写成"润色时参考"就少说了一半。
-    static var writingPreferencesIntro: String {
-        tr("人名、术语、写作习惯——识别与润色都会参考",
-           "Names, jargon, writing habits - used by both recognition and polish")
+    /// 这一页的名字。**只写一处**：脚注那条链接、子页顶栏的标题念的是同一串。
+    ///
+    /// 5.0.2 从「写作偏好 / Writing preferences」改名（用户 2026-09-23 拍板）：
+    /// 那一页里就是一张词表加一段规则，而「写作偏好」听着像一整套排版设置——
+    /// 用户按名字去找"怎么让它别听错我的名字"时，不会点进一个叫"写作偏好"的地方。
+    static var vocabularyPageTitle: String {
+        tr("专有词汇表", "Custom Vocabulary")
     }
+
+    // writingPreferencesIntro（页面开头那句「人名、术语、写作习惯——识别与润色都会参考」）
+    // 5.0.2 删掉：它说的和下面那颗 ⓘ 是同一件事，只是把两个框往下推了一行。
 
     static var vocabularyHardReplace: String {
         tr("也支持「错写=正写」硬替换", "Supports hard replacement, written as wrong=right")
@@ -160,7 +161,17 @@ enum SettingsCopy {
         let provider: LLMProvider = hostField ? .qwen : .openai
         let cost = tr("识别加润色\(LLMCatalog.hourlyCostNote(provider: provider))，按说话时长算。",
                       "Recognition plus polish: \(LLMCatalog.hourlyCostNote(provider: provider)) of speech.")
+        // 5.0.2 从 关于 → 隐私 搬来的两个半句（那一段压到三句，而这两句讲的是**花钱**，
+        // 这里本来就在说这一档一小时多少钱——单价的唯一出处仍是 LLMCatalog）：
+        //   • 按住说指令时的联网搜索没有开关、永远开；
+        //   • OpenAI 官方接口一律 Fast 档（第三方网关那一档不发，所以只对 OpenAI 说）。
+        let search = tr("按住说指令会联网搜索（永远开）：", "Hold-to-command searches the web (always on): ")
+            + LLMCatalog.webSearchPriceNote(style: hostField ? .qwenEnableSearch : .openaiResponsesTool)!
+        let fast = hostField ? "" : "\n" + tr("OpenAI 官方接口走 Fast 档：",
+                                              "The official OpenAI API runs in the Fast tier: ")
+            + LLMCatalog.fastTierPriceNote
         let base = LLMCatalog.keyStorageNote + "\n" + LLMCatalog.billingNote + "\n" + cost
+            + "\n" + search + fast
         guard hostField else { return base }
         return base + "\n" + tr("API Host 留空即自动找，填了就只用那一台。",
                                 "Leave API Host empty to find one automatically, or paste one to pin it.")
