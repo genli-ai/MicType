@@ -297,7 +297,7 @@ enum LegacyKeys {
         "recognitionLanguage", "recognitionEngine", "cloudRecognitionWanted",
         // 麦克风选择（跟随系统默认）
         "inputDeviceUID",
-        // 型号：5.0 起写死平衡档（LLMCatalog.defaultModel）
+        // 型号：5.0 起写死平衡档（LLMCatalog.polishDefault / commandDefault）
         "chatModel", "openaiCommandModel", "qwenModel", "qwenCommandModel",
         "deepseekModel", "deepseekCommandModel", "customModel", "customCommandModel",
         "localModel", "localCommandModel", "modelMigrationNotice",
@@ -363,7 +363,7 @@ final class Settings {
 
         // 4.x 那一长串型号迁移（migratedModelToMini2 / migratedSplitModels / migratedPolishTo55 /
         // migrationTo56 / migrationToBestDefault / migrationToFastDefault）5.0.0 起**全部删掉**：
-        // 型号不再是一条设置（写死平衡档，见 LLMCatalog.defaultModel），没有东西可迁。
+        // 型号不再是一条设置（写死平衡档，见 LLMCatalog.polishDefault），没有东西可迁。
         // 存着的那些型号键留在 UserDefaults 里不动（见 LegacyKeys 的三条纪律）。
 
         // 一次性迁移（4.0.1）：老设置里的「区域 + WorkspaceId」→ 试通主机缓存。
@@ -739,11 +739,12 @@ final class Settings {
     /// 当前服务商生效的 Base URL。
     var currentBaseURL: String { baseURL(for: llmProvider) }
 
-    /// 润色与指令**永远是同一个型号，而且是写死的那个**（5.0.0 起，用户 2026-09-22 拍板）。
+    /// 润色与指令的型号**是写死的**（5.0.0 起，用户 2026-09-22 拍板）。
     /// 4.x 里它是一条设置 + 一个下拉；而"挑型号"是一个用户没有依据、也不该被问的问题，
-    /// 默认值本来就是实测挑出来的速度/质量平衡点（见 LLMCatalog.defaultModel 的注释）。
-    var currentPolishModel: String { LLMCatalog.defaultModel(for: llmProvider) }
-    var currentCommandModel: String { LLMCatalog.defaultModel(for: llmProvider) }
+    /// 默认值本来就是实测挑出来的速度/质量平衡点（见 LLMCatalog.polishDefault 的注释）。
+    /// 5.0.6 起两者不再是同一个：OpenAI 润色 terra、指令 luna。
+    var currentPolishModel: String { LLMCatalog.polishDefault(for: llmProvider) }
+    var currentCommandModel: String { LLMCatalog.commandDefault(for: llmProvider) }
 
     /// 首启动引导是否已经走完。**只有两种情况会写真**：在最后一屏把三件必办的事都办完了，
     /// 或者用户点过「先跳过」。中途关窗口不算——关掉窗口的人多半正卡在某一步上，

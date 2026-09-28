@@ -298,7 +298,7 @@ struct MainSettingsPage: View {
         let hasKey = KeychainHelper.loadAPIKey(account: next.keychainAccount) != nil
         guard AISetup.adoptsProvider(current: inUseProvider, next: next,
                                      requiresKey: next.requiresAPIKey, hasKey: hasKey,
-                                     polishModel: LLMCatalog.defaultModel(for: next)) else { return }
+                                     polishModel: LLMCatalog.polishDefault(for: next)) else { return }
         provider = next.rawValue
         Log.info("AI provider adopted=\(next.rawValue) (recognition follows)")
     }

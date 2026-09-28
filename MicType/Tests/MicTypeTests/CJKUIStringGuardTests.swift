@@ -84,6 +84,19 @@ final class CJKUIStringGuardTests: XCTestCase {
         "Support.swift:fixMixedPunctuation",
         "Support.swift:isTrailingPunctuationScalar",   // 拼接时"标点前不加空格"的判据字符集
         "Support.swift:strippedOfPunctuation",         // 保真校验里要剥掉的阿语句读
+        // 5.0.6 润色保真闸门（否定范围 / 人名同音）的中文词表与判据：文本处理规则，不上界面
+        "PolishFidelity.swift:hanNegations",
+        "PolishFidelity.swift:chineseNumerals",
+        "PolishFidelity.swift:negationHeads",
+        "PolishFidelity.swift:scopeParticles",
+        "PolishFidelity.swift:scopePivots",
+        "PolishFidelity.swift:correctionMarkers",
+        "PolishFidelity.swift:negationIdioms",
+        "PolishFidelity.swift:scopeUnits",             // 数字内部的全角冒号 / 句点
+        "PolishFidelity.swift:lastCorrectionMarker",   // 单独成句的「不是，」
+        "PolishFidelity.swift:nameTitles",
+        "PolishFidelity.swift:nameIntroducers",
+        "PolishFidelity.swift:nonNameChars",
         // 语言名本身（「中文」这一项在英文界面下也必须写成「中文」，否则选不回来）
         "Localization.swift:displayName",
         // 窗口标题：这三处已经各自按 lang 参数分支（切语言的回调里拿到的就是新语言），

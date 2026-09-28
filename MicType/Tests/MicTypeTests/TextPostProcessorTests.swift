@@ -239,6 +239,16 @@ final class TextPostProcessorTests: XCTestCase {
         XCTAssertEqual(reason, "negation lost raw=1 polished=0")
     }
 
+    /// 5.0.6：「cannot」也是一个否定。原先两条分支都不中，「we can not ship it」→「We cannot ship it.」
+    /// 被数成 1→0、判成 negation lost——一次完全正确的润色被丢掉（iOS 2026-09-28 同一处）
+    func testCannotCountsAsOneNegation() {
+        for text in ["we cannot go", "we can not go", "we can't go", "we can’t go", "Cannot do it"] {
+            XCTAssertEqual(TextPostProcessor.negationCount(text), 1, text)
+        }
+        XCTAssertNil(TextPostProcessor.polishDriftCheck(raw: "we can not ship it", polished: "We cannot ship it."))
+        XCTAssertNotNil(TextPostProcessor.polishDriftCheck(raw: "we cannot ship it", polished: "We can ship it."))
+    }
+
     /// **刻意不做对称的那一条**：识别偶尔吞掉一个「不」，润色把它补回来是帮了忙——
     /// 0 → 1 拦下来等于把一次正确的修复丢进垃圾桶
     func testRestoredNegationIsNotRejected() {

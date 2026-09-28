@@ -1105,7 +1105,7 @@ private struct HowYouUsePage: View {
         let hasKey = KeychainHelper.loadAPIKey(account: provider.keychainAccount) != nil
         guard AISetup.adoptsProvider(current: Settings.shared.llmProvider, next: provider,
                                      requiresKey: provider.requiresAPIKey, hasKey: hasKey,
-                                     polishModel: LLMCatalog.defaultModel(for: provider)) else { return }
+                                     polishModel: LLMCatalog.polishDefault(for: provider)) else { return }
         Settings.shared.llmProvider = provider
         inUseProvider = provider
         Log.info("Onboarding adopted provider=\(provider.rawValue) (recognition follows)")

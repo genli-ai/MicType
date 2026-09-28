@@ -314,7 +314,7 @@ struct CloudSetupCore<ProviderNotices: View>: View {
     }
 
     private var keyField: some View {
-        KeyEntryView(provider: selected, model: LLMCatalog.defaultModel(for: selected),
+        KeyEntryView(provider: selected, model: LLMCatalog.polishDefault(for: selected),
                      probe: keyProbe,
                      hostChangeTick: hostChangeTick,
                      connectedNote: connectedNote,

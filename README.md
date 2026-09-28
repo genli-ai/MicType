@@ -37,7 +37,7 @@ Tap is always pure dictation (what you say is what gets typed), hold is always a
 
 - **See what it hears, as you say it** — a grey draft appears in the floating indicator while you are still talking, built from your provider's own streaming results. It never goes into your document: the inserted text is always the finished transcription.
 - **Cloud speech recognition, streamed live** — every take is a realtime connection to your provider: audio goes up while you're still talking, so releasing the key returns a transcript almost instantly no matter how long you spoke. There is no on-device option in this version; your audio always leaves your Mac.
-- **Two providers, and that's the whole choice** — OpenAI (`gpt-live-transcribe` recognition, `gpt-5.6-luna` polish and commands) or Alibaba Cloud Bailian (`qwen3-asr-flash-realtime` recognition, `qwen3.8-flash` polish and commands). Pick one, paste one key, and MicType is fully set up.
+- **Two providers, and that's the whole choice** — OpenAI (`gpt-live-transcribe` recognition, `gpt-5.6-terra` polish, `gpt-5.6-luna` commands) or Alibaba Cloud Bailian (`qwen3-asr-flash-realtime` recognition, `qwen3.8-flash` polish and commands). Pick one, paste one key, and MicType is fully set up.
 - **Never lose a word** — dictate for up to **ten minutes**, with a warning before the limit. Your clipboard (images, files, formatted text) is captured and restored around every insertion, and changing microphone mid-recording doesn't lose the take.
 - **Cancel at any point** — Esc, the menu bar, or a click on the indicator stops recording, transcription, polish or a running command; nothing already sent is inserted afterwards, and unsent audio simply never goes anywhere.
 - **Voice commands in any app** — the hold gesture works wherever your cursor is: chat, mail, docs, browser.
@@ -102,7 +102,7 @@ A single take can run up to **ten minutes**, with a warning before you reach the
 
 Menu bar 🎤 → Settings. The whole page is: **provider** (OpenAI or Alibaba Cloud), **API key** (verified as you paste it — Checking… / Connected ✓ / Failed, with the reason and what to do), and for Alibaba Cloud one more optional row, **API Host**. A status line under it names what's live and what it costs. There is nothing else to configure — model, polish behavior, and web search are fixed choices, not settings:
 
-- **One model per provider, already balanced for speed**: `gpt-5.6-luna` on OpenAI, `qwen3.8-flash` on Alibaba Cloud — both chosen because polish and commands run on every single utterance, and a model that thinks for several seconds is a worse experience than one that answers in two.
+- **Models are fixed, chosen by measurement**: on OpenAI, polish runs on `gpt-5.6-terra` (in a 144-call fidelity test it changed meaning 1–2 times vs 9 for `gpt-5.6-luna`, for about 0.2 s more) and voice commands on `gpt-5.6-luna` (terra made commands no better, just slower and pricier); Alibaba Cloud uses `qwen3.8-flash` for both. A model that thinks for several seconds on every utterance is a worse experience than one that answers in two.
 - **Web search is always on** where the provider supports it, for hold-to-command only (tap-to-dictate polish never searches) — about $0.01 per search on OpenAI, billed at Alibaba Cloud's own rates there.
 - **OpenAI always runs on its Fast tier** — lower, steadier latency at roughly twice the per-token price, stated once under About → Privacy.
 
@@ -120,7 +120,7 @@ Polish modes: transcribe only (fastest, no AI) or AI polish (adaptive: light cle
 - API keys are stored in the macOS Keychain, not in plain-text files, and are never included in a settings export.
 - Transcript history is kept on your Mac only; you can switch it off or clear it at any time.
 - Web search is on by default where your provider offers it, billed per search by that provider — the price is stated next to it in Settings, and only hold-to-command ever searches.
-- You pay your provider directly at their rates, roughly **$0.2/hour** on Alibaba Cloud or **$1.1/hour** on OpenAI for recognition plus polish combined, billed by how much you actually spoke. MicType never proxies your requests and never adds a fee.
+- You pay your provider directly at their rates, roughly **$0.2/hour** on Alibaba Cloud or **$1.4/hour** on OpenAI for recognition plus polish combined, billed by how much you actually spoke. MicType never proxies your requests and never adds a fee.
 
 ## Upgrading from an earlier version
 
@@ -237,7 +237,7 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 
 - **边说边看**——说话过程中悬浮窗就显示灰字草稿，来自服务商自己的实时中间结果。草稿绝不进入你的文档：真正插入的永远是完整识别的结果
 - **云端识别，边说边传**——每一次听写都是一条实时连接：你还在说的时候音频就在往上传，所以松手后几乎立刻拿到结果，与说了多久无关。这一版没有本地识别可选，录音一定会离开这台 Mac
-- **两家服务商，就这两家**——OpenAI（识别用 `gpt-live-transcribe`，润色与指令用 `gpt-5.6-luna`）或阿里云百炼（识别用 `qwen3-asr-flash-realtime`，润色与指令用 `qwen3.8-flash`）。选一家、贴一把 Key，MicType 就配好了
+- **两家服务商，就这两家**——OpenAI（识别用 `gpt-live-transcribe`，润色用 `gpt-5.6-terra`，指令用 `gpt-5.6-luna`）或阿里云百炼（识别用 `qwen3-asr-flash-realtime`，润色与指令用 `qwen3.8-flash`）。选一家、贴一把 Key，MicType 就配好了
 - **一个字都不丢**——单次可以说到**十分钟**，到点前会提前提醒。每次插入前后完整快照并还原剪贴板（图片、文件、富文本都不会被吃掉）；录音中途换麦克风也不丢这一段
 - **任何阶段都能取消**——Esc、菜单栏、或者直接点悬浮窗：录音中、识别中、润色中、执行指令中都能停，已经传出去的不会再插进来，没传出去的干脆就没送到任何地方
 - **任何应用里都能下指令**——光标在哪，按住就在哪用：聊天、邮件、文档、浏览器
@@ -302,7 +302,7 @@ MicType 没有本机识别模型。听写和语音指令全都跑在你在设置
 
 菜单栏 🎤 → 设置。整页就是：**服务商**（OpenAI 或阿里云）、**API Key**（粘贴当下就验证：正在验证… / 已连通 ✓ / 连不上 + 原因与下一步），阿里云再多一行可选的 **API Host**。下面一行状态文字写清此刻连的是谁、大约多少钱。没有别的要配了——模型、润色行为、联网搜索都是写死的选择，不是设置项：
 
-- **每家一个模型，均衡偏快**：OpenAI 用 `gpt-5.6-luna`，阿里云用 `qwen3.8-flash`——润色和指令是每句话都要跑一次的东西，一个想好几秒才答的模型不如两秒内答的用着顺手。
+- **模型写死，按实测挑**：OpenAI 润色用 `gpt-5.6-terra`（144 次保真评测里改意 1–2 次，`gpt-5.6-luna` 是 9 次，只慢约 0.2 秒），指令用 `gpt-5.6-luna`（terra 做指令不见更好、只是更慢更贵）；阿里云两样都用 `qwen3.8-flash`。每句话都要跑一次的东西，想好几秒才答的模型不如两秒内答的用着顺手。
 - **联网搜索默认开着**（服务商支持的话），只在按住说指令时才可能用到（轻点听写的润色永远不联网）——OpenAI 每次约 $0.01，阿里云按它自己的价目计费。
 - **OpenAI 一律走 Fast 档**——更低更稳的延迟，代价是约两倍的 token 单价，这句话只在 关于 → 隐私 里出现一次。
 
@@ -320,7 +320,7 @@ MicType 没有本机识别模型。听写和语音指令全都跑在你在设置
 - API Key 存放在 macOS 钥匙串，不落明文文件，导出设置时也从不包含。
 - 听写历史只存在本机，随时可以关闭或清空。
 - 联网搜索在支持的服务商上默认开着，由该服务商按次计费——单价就在设置里写着，而且只有按住说指令那条路才会联网。
-- 费用由你直接结给服务商，按他们的标准价计：阿里云识别加润色大约 **$0.2/小时**，OpenAI 大约 **$1.1/小时**，都按你实际说话的时长算。MicType 不代理你的请求，也不加价。
+- 费用由你直接结给服务商，按他们的标准价计：阿里云识别加润色大约 **$0.2/小时**，OpenAI 大约 **$1.4/小时**，都按你实际说话的时长算。MicType 不代理你的请求，也不加价。
 
 ## 从旧版本升级
 

@@ -38,7 +38,7 @@ final class PricingCopyTests: XCTestCase {
     }
 
     /// **阿里云必须明显更便宜**——那是引导 ③ 两张卡片之间最大的差别（设计文档第 3 节写的是
-    /// 约 $0.2 对约 $1.1）。这一条一旦反过来，卡片上那句「更便宜、更快」就成了假话。
+    /// 约 $0.2 对约 $1.1；5.0.6 OpenAI 润色换 terra 后是约 $1.4）。这一条一旦反过来，卡片上那句「更便宜、更快」就成了假话。
     func testAlibabaIsTheCheapOne() {
         XCTAssertLessThan(LLMCatalog.hourlyUSD(provider: .qwen),
                           LLMCatalog.hourlyUSD(provider: .openai))
@@ -46,18 +46,18 @@ final class PricingCopyTests: XCTestCase {
         XCTAssertGreaterThan(LLMCatalog.hourlyUSD(provider: .openai), 0.8)
     }
 
-    /// 「约 $1.1/小时」：**只留一位小数、永远带"约"**。给一个 $1.1234 的数字，
+    /// 「约 $1.4/小时」：**只留一位小数、永远带"约"**。给一个 $1.1234 的数字，
     /// 等于假装我们知道用户会说多久、说多密。
     func testHourlyNoteIsRoundedAndHedged() {
         L10n.shared.language = .zh
         XCTAssertEqual(LLMCatalog.hourlyCostNote(provider: .qwen), "约 $0.2/小时")
-        XCTAssertEqual(LLMCatalog.hourlyCostNote(provider: .openai), "约 $1.1/小时")
+        XCTAssertEqual(LLMCatalog.hourlyCostNote(provider: .openai), "约 $1.4/小时")
         L10n.shared.language = .en
         XCTAssertEqual(LLMCatalog.hourlyCostNote(provider: .qwen), "about $0.2/hour")
-        XCTAssertEqual(LLMCatalog.hourlyCostNote(provider: .openai), "about $1.1/hour")
+        XCTAssertEqual(LLMCatalog.hourlyCostNote(provider: .openai), "about $1.4/hour")
     }
 
-    /// 「每句话约 $0.003」：引导 ③ 验通之后念的就是它。一小时的数字对还没用过的人
+    /// 「每句话约 $0.004」：引导 ③ 验通之后念的就是它。一小时的数字对还没用过的人
     /// 没有概念，而"一句话"是他真正的计量单位。
     func testPerSentenceNoteFollowsTheHourlyPrice() {
         for provider in LLMProvider.allCases {
@@ -67,9 +67,9 @@ final class PricingCopyTests: XCTestCase {
         }
         L10n.shared.language = .zh
         XCTAssertEqual(LLMCatalog.perSentenceCostNote(provider: .qwen), "每句话约 $0.001")
-        XCTAssertEqual(LLMCatalog.perSentenceCostNote(provider: .openai), "每句话约 $0.003")
+        XCTAssertEqual(LLMCatalog.perSentenceCostNote(provider: .openai), "每句话约 $0.004")
         L10n.shared.language = .en
-        XCTAssertTrue(LLMCatalog.perSentenceCostNote(provider: .openai).hasPrefix("about $0.003"))
+        XCTAssertTrue(LLMCatalog.perSentenceCostNote(provider: .openai).hasPrefix("about $0.004"))
     }
 
     /// 价格串里**不许出现"分钱"**：中文的"分"既能读成人民币也能读成美分，

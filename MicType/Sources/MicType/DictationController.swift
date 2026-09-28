@@ -1359,10 +1359,15 @@ final class DictationController {
             // 不能放到 deliver 里做：那样纯听写路径会对同一串文本替换两趟，
             // 「萍果=苹果」+「苹果=Apple」这种链式词表会被串起来（applyVocabReplacements
             // 承诺的"单趟扫描不串链"只在一次调用内成立）。
-            let polishedText = TextPostProcessor.applyVocabReplacements(raw)
-            // 保真校验：数字被改 / 否定被吞 / 内容被砍掉 → 这一稿不要。
+            // 中英之间的空格照原文补回（第 12 条只是请求，模型偶尔照样吃掉）。放在保真校验之前，
+            // 首趟与轻清理重试都走这一处
+            let polishedText = TextPostProcessor.restoreLatinHanSpaces(
+                raw: rawText, polished: TextPostProcessor.applyVocabReplacements(raw))
+            // 保真校验：数字被改 / 否定被吞或挪了对象 / 内容被砍掉 / 翻译了 / 人名被同音替换 → 这一稿不要。
             // 纯机械比对，不花一次 LLM 往返；宁可少一次润色，也不让改错的稿子进输入框。
-            if let reason = TextPostProcessor.polishDriftCheck(raw: rawText, polished: polishedText) {
+            // 词汇表与提示词里那份同源：改成词汇表里的写法是照提示词办事，不算改名。
+            if let reason = TextPostProcessor.polishDriftCheck(raw: rawText, polished: polishedText,
+                                                               glossary: Settings.shared.vocabularyTerms) {
                 guard !light else {
                     // 轻清理都能被拦，说明模型这一趟确实动了不该动的东西：交原文。
                     // 走这条回退的结果本身就是识别原文，所以不开放「换回识别原文」（没得换）。

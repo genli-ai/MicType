@@ -11,7 +11,8 @@ enum LLMCatalog {
 
     // MARK: - 预设与默认
 
-    /// 各档服务商的**默认型号**。4.0.1 起只有一个默认值：润色和指令用同一个。
+    /// 各档服务商的**默认型号**。4.0.1–5.0.5 润色和指令用同一个；5.0.6 起 OpenAI 这一档
+    /// 润色单独换成 terra（见 openaiPolishModel），指令仍是 luna。
     ///
     /// **规矩（用户 2026-09-20 拍板，推翻 2026-09-19 那条「默认绝不能是便宜的那一档」）：
     /// 默认一律是这家「均衡偏快」的那一档，不是旗舰。**
@@ -21,27 +22,40 @@ enum LLMCatalog {
     /// 同一条链路上 qwen3.8-max 要 4–12 秒，还撞得上 12 秒的润色超时（撞上就是这句话白说）。
     /// 一个更聪明但慢三倍、偶尔整句丢掉的润色，不是更好的默认值，是更差的产品。
     /// 想要旗舰的人在「模型」下拉里一眼就能选到（那一档标着「旗舰」）。
-    static let openaiDefaultModel = "gpt-5.6-luna"
+    /// OpenAI 语音指令的型号。
+    static let openaiCommandModel = "gpt-5.6-luna"
+    /// OpenAI 润色的型号（5.0.6 起）。依据是 iOS 2026-09-28 的 144 次保真评测（iOS DECISIONS L38）：
+    /// 润色 terra 严格保真 80% vs luna 64%，意思级错误 1–2 次 vs 9 次，中位延迟只多 +180 ms。
+    /// 指令不跟着换：同一轮评测里 terra 做指令质量没有提升、价格约 8 倍，所以指令仍是 luna。
+    static let openaiPolishModel = "gpt-5.6-terra"
     static let qwenDefaultModel = "qwen3.8-flash"
 
-    /// 这一档服务商用哪个型号。**5.0.0 起这就是全部**：没有设置、没有下拉、没有输入框
+    /// 润色用哪个型号。**5.0.0 起这就是全部**：没有设置、没有下拉、没有输入框
     /// （用户 2026-09-22 拍板）。"挑型号"是一个用户没有依据、也不该被问的问题；
-    /// 而这两个值本来就是按实测挑出来的速度/质量平衡点（见上面那段注释）。
-    static func defaultModel(for provider: LLMProvider) -> String {
+    /// 这几个值本来就是按实测挑出来的速度/质量平衡点（见上面那段注释）。
+    ///
+    /// 验证 Key 也拿这个型号去探（KeyEntryView）：润色是每句话都要跑的那一趟，
+    /// Key 能用却开不了这个型号的话，用户说的第一句话就会失败。
+    static func polishDefault(for provider: LLMProvider) -> String {
         switch provider {
-        case .openai: return openaiDefaultModel
+        case .openai: return openaiPolishModel
         case .qwen: return qwenDefaultModel
         }
     }
 
-    /// 润色 / 指令永远是同一个型号。两个函数都留着，是因为调用方问的是两件不同的事，
-    /// 读起来比到处写 defaultModel 清楚。
-    static func polishDefault(for provider: LLMProvider) -> String { defaultModel(for: provider) }
-    static func commandDefault(for provider: LLMProvider) -> String { defaultModel(for: provider) }
+    /// 语音指令用哪个型号。
+    static func commandDefault(for provider: LLMProvider) -> String {
+        switch provider {
+        case .openai: return openaiCommandModel
+        case .qwen: return qwenDefaultModel
+        }
+    }
 
     // 「模型选单」5.0.0 整段删掉（ModelChoice / modelMenu / modelLabel / modelWrites /
     // selectedMenuModel / unifyModelWrites / modelKeys，以及 4.x 那三条型号迁移）：
-    // 型号不再是一条设置，defaultModel 就是唯一的答案。
+    // 型号不再是一条设置，polishDefault / commandDefault 就是唯一的答案。
+    // 5.0.6 删掉了原来的 `defaultModel(for:)`：润色与指令从这一版起不再是同一个型号，
+    // 留一个不说是哪件事的"默认型号"只会让调用方拿错。
 
     // MARK: - 配置齐了没有
 
@@ -94,10 +108,14 @@ enum LLMCatalog {
     }
 
     /// 每小时录音的**润色**费用（美元，估算，见上面那段注释）
+    ///
+    /// OpenAI 5.0.6 从 0.08 改成 0.40：润色换成 gpt-5.6-terra（Fast 档）。**估算**，出处是
+    /// iOS DECISIONS L38 的评测账单——terra Fast 档约 $1.1 / 千次润色 × sentencesPerHour 360 次
+    /// ≈ $0.40/小时。不是 Mac 上的实测账单。
     static func polishHourlyUSD(provider: LLMProvider) -> Double {
         switch provider {
         case .qwen: return 0.07
-        case .openai: return 0.08
+        case .openai: return 0.40
         }
     }
 
@@ -565,9 +583,10 @@ enum LLMCatalog {
     }
 
     /// `reasoning.effort: "none"`（最快、几乎不产生推理 token）是否可用。
-    /// gpt-6 线明确不支持 none（官方模型表），发了会 400 → 退到 "low"。
+    /// 只有 gpt-6-astra 不支持 none（发了会 400 → 退到 "low"）。5.0.5 以前整条 gpt-6 线都排除，
+    /// 5.0.6 按官方文档 + iOS 实测收窄：gpt-6-luna / gpt-6-sol 都接受 none。
     static func supportsEffortNone(_ model: String) -> Bool {
-        !model.lowercased().contains("gpt-6")
+        !model.lowercased().contains("gpt-6-astra")
     }
 
     /// 这次调用该发什么 effort：润色永远要最快的一档；指令要一点推理但不要多。

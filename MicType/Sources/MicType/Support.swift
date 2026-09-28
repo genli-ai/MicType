@@ -356,7 +356,13 @@ enum TextPostProcessor {
     ///     补标点正是润色在阿语上最主要的工作，不能被自己的保真校验判成跑飞；
     ///   • 阿语里"数字变成数字符号" → 放行。阿语数字是**词**（خمسة 而不是 5），ITN 只能由润色做，
     ///     所以纯新增数字算正常；但凡有一个数字被删或被改，照样拦（见 digitsOnlyAdded）。
-    static func polishDriftCheck(raw: String, polished: String) -> String? {
+    ///
+    /// 5.0.6 加了三道（判断本身在 PolishFidelity.swift，来历见那边的文件头）：文字系统翻转
+    /// （= 翻译了）、否定范围（否定数没变、否定的对象变了）、人名同音替换；另加「答非所问」的
+    /// 过长判据。顺序与 iOS `PolishGuard.rejection` 对齐：标点 → 文字 → 长度 → 数字 → 否定 → 人名。
+    /// - glossary: 与润色提示词同一份词汇表。模型把名字改成词汇表里的写法是在照提示词办事，
+    ///   不算改名；不传 = 没有这条豁免（只会更严，不会更松）。
+    static func polishDriftCheck(raw: String, polished: String, glossary: [String] = []) -> String? {
         let r = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let p = polished.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !r.isEmpty else { return nil }
@@ -364,6 +370,25 @@ enum TextPostProcessor {
 
         // 0) 去掉标点与空白之后一模一样 → 这次润色只动了标点，不可能是跑飞
         if strippedOfPunctuation(r) == strippedOfPunctuation(p) { return nil }
+
+        // 0b) 文字系统翻转 = 翻译了（铁律 1）。排在长度前面：一次翻译该被诊断成翻译，
+        //     而不是「太长 / 太短」。混排（10–60%）永不判。原因串只有百分比。
+        if let flipped = PolishFidelity.scriptFlipReason(raw: r, polished: p) { return flipped }
+
+        // 0c) 长度。列表两条都豁免：提示词第 8 条本来就会把长而乱的口述展开成「引出句 + 列表」，
+        //     也会把车轱辘话收成几条。
+        let isList = PolishFidelity.looksLikeList(p)
+        if !isList {
+            //  过长 = 模型在「回答」口述而不是润色它（iOS 2026-07-10 真机：47→95）
+            if p.count > Int(Double(r.count) * 1.5) + 10 {
+                return "too long raw=\(r.count) polished=\(p.count)"
+            }
+            //  过短：长输入被砍到三分之一以下 = 模型在"总结"而不是"润色"。
+            //  短输入不查——一两句话的轻清理本来就可能砍掉一半（全是语气词）。
+            if r.count > 40, Double(p.count) < Double(r.count) * 0.35 {
+                return "too short raw=\(r.count) polished=\(p.count)"
+            }
+        }
 
         // 1) 数字指纹：把两边的数字都**归一化成阿拉伯数字**之后比多重集，所以
         //    1,000 / 1000 / 1 000 视为一致，「一百零一」和「101」、「1.2万」和「一万二千」
@@ -403,24 +428,39 @@ enum TextPostProcessor {
         // 2) 否定词计数：允许少量增减（删口头重复、句式改写会动一两个），差太多说明语义被翻转。
         //    两边都先清洗过（negationCount 里摘掉 A 不 A 疑问句、「识别 / 特别 / 未来」这类
         //    非否定词，和独立成句的「不不 / 不对」这类口头自我纠正），否则润色做对了事反而被判跑飞。
+        //    润色一侧数两遍（5.0.6）：严口径摘掉独立成句的「没有，」「不，」「No,」，宽口径留着它们。
+        //    摘它们是为了原文里的口头纠正（「不不，云端的识别…」被润色删掉不算吞否定）；可润色里
+        //    **留下来的**「没有，但我可以帮你问问。」「不，我自己来就行。」那个词本身就是回答里的否定——
+        //    只用严口径的话，原文没标点照常数 1、润色数 0，一次正确的润色被判 negation lost
+        //    （iOS 同一批用例在 Mac 上被拦，5.0.6 移植时发现）。原文一侧口径不变。
         let rawNeg = negationCount(r)
-        let polNeg = negationCount(p)
+        let polStrict = negationCount(p)
+        let polLoose = negationCount(p, keepStandalone: true)
+        //    判「漂移」取离原文更近的那个口径：两种读法里只要有一种说得通就不算跑飞
+        let polNeg = abs(rawNeg - polLoose) < abs(rawNeg - polStrict) ? polLoose : polStrict
         //    2a) 否定被吞光：原文有否定、润色一个不剩。容差 `> max(1, raw/3)` 恰恰漏掉这一种——
         //    只有一个否定的句子把它丢了（「我不去」→「我去」、"don't send it"→"send it"），
         //    而那正是这道校验最该拦的、代价最高的一种错（raw ≥ 2 → 0 本来就拦得住）。
         //    **刻意不做对称的那一条（0 → ≥1）**：识别偶尔会吞掉一个「不」，润色把它补回来是
         //    帮了忙，拦下来等于把一次正确的修复丢进垃圾桶。
-        if rawNeg >= 1, polNeg == 0 {
+        //    「吞光」要两种口径都数到 0：润色里单独成句的否定词也算否定还在
+        if rawNeg >= 1, polStrict == 0, polLoose == 0 {
             return "negation lost raw=\(rawNeg) polished=0"
         }
         if abs(rawNeg - polNeg) > max(1, rawNeg / 3) {
             return "negation drift raw=\(rawNeg) polished=\(polNeg)"
         }
-        // 3) 长度比：长输入被砍到三分之一以下 = 模型在"总结"而不是"润色"。
-        //    短输入不查——一两句话的轻清理本来就可能砍掉一半（全是语气词）。
-        if r.count > 40, Double(p.count) < Double(r.count) * 0.35 {
-            return "too short raw=\(r.count) polished=\(p.count)"
+        //    2b) 否定范围（5.0.6，iOS C1）：数量对得上，再看每个否定管的是什么。
+        //    列表豁免：合并要点时否定跟着挪位置是正常的。原因串只有两个计数。
+        if !isList {
+            let scope = PolishFidelity.negationScopeVerdict(raw: r, polished: p)
+            if scope.unmatched > 0 || scope.overAffirmed > 0 {
+                return "negation scope changed unmatched=\(scope.unmatched) overAffirmed=\(scope.overAffirmed)"
+            }
         }
+        // 3) 人名同音替换（5.0.6，iOS C2）。**不做列表豁免**——排成列表没有理由改任何人的名字。
+        let changedNames = PolishFidelity.homophoneNameChanges(raw: r, polished: p, glossary: glossary)
+        if changedNames > 0 { return "person name changed to a homophone count=\(changedNames)" }
         return nil
     }
 
@@ -494,10 +534,15 @@ enum TextPostProcessor {
     /// 以及「不不」「不对」这类口头自我纠正全算成否定。前者用户几乎每句话都在说，
     /// 后者正是润色**该删**的东西——两边随便哪一类在润色里被动过，计数就凭空掉几格，
     /// 整段润色被判成"否定被吞"丢回原文（4.1.5 日志：raw=4 polished=0，一个否定都没丢）。
-    static func negationCount(_ text: String) -> Int {
-        let scrubbed = negationScrubbed(text)
+    ///
+    /// - keepStandalone: true = 跳过清洗第 ① 道（独立成句的口头纠正照样计数），②③ 照做。
+    ///   只给 polishDriftCheck 数润色一侧的宽口径用（见那边 2) 的注释）。
+    static func negationCount(_ text: String, keepStandalone: Bool = false) -> Int {
+        let scrubbed = negationScrubbed(text, keepStandalone: keepStandalone)
         var count = scrubbed.reduce(0) { $0 + ("不没无别未".contains($1) ? 1 : 0) }
-        if let regex = try? NSRegularExpression(pattern: "\\b(not|no|never)\\b|n['’]t",
+        // 5.0.6 加 cannot：它两条分支都不中，于是「we can not ship…」→「We cannot ship…」这次
+        // 正确的润色被数成 1→0、判成 negation lost 丢掉（iOS 2026-09-28 同一处刚修）
+        if let regex = try? NSRegularExpression(pattern: "\\b(not|no|never|cannot)\\b|n['’]t",
                                                 options: [.caseInsensitive]) {
             count += regex.numberOfMatches(in: scrubbed,
                                            range: NSRange(scrubbed.startIndex..., in: scrubbed))
@@ -549,12 +594,13 @@ enum TextPostProcessor {
 
     /// 计数前的清洗（三道，**顺序是有讲究的**）。纯函数，**绝不进日志**——
     /// 它带着用户说的原话（与 strippedOfPunctuation 同一条纪律）。
-    private static func negationScrubbed(_ text: String) -> String {
-        // ① 独立成句的口头纠正：按句读切开，整段等于表里的词才丢
+    private static func negationScrubbed(_ text: String, keepStandalone: Bool = false) -> String {
+        // ① 独立成句的口头纠正：按句读切开，整段等于表里的词才丢（keepStandalone 时一段都不丢，
+        //    只照样按句读切开再用空格拼回，免得两个口径在拼接上有差别）
         var kept: [String] = []
         for piece in text.components(separatedBy: fillerBreaks) {
             let trimmed = piece.trimmingCharacters(in: .whitespaces).lowercased()
-            if !trimmed.isEmpty, selfCorrectionFillers.contains(trimmed) { continue }
+            if !keepStandalone, !trimmed.isEmpty, selfCorrectionFillers.contains(trimmed) { continue }
             kept.append(piece)
         }
         // 用空格拼回去：两段的首尾字绝不能粘成一个新词（「…说不」+「过…」凑出一个「不过」
@@ -572,6 +618,86 @@ enum TextPostProcessor {
             out = out.replacingOccurrences(of: word, with: " ")
         }
         return out
+    }
+
+    // MARK: 中英之间的空格（照原文补回）
+
+    /// 润色把原文里「西文词 空格 汉字」之间的空格吃掉了，就照原文补回一个。
+    ///
+    /// 为什么要代码兜底（5.0.6）：提示词第 12 条只是请求。iOS 保真评测里每个模型每种配置都会吃掉
+    /// 0–5 次；Mac 5.0.6 live 评测 terra 3 轮里 1 次：「那个 QR code 怎么申请啊？」→「QR code怎么申请？」。
+    ///
+    /// 规则（只加不删，拿不准就不动）：
+    ///   • 只看润色里**西文字母**与汉字紧挨着的地方。词 = 连续的 ASCII 字母 / 数字 / . _ - +；
+    ///     词在贴着汉字那一侧的末字是数字就不管——数字与汉字之间不加空格是第 7 条（「3个」）。
+    ///   • 原文里同一个词（不分大小写）在**同一侧**是「空白 + 汉字」才补；原文本来就粘着写，润色也照样粘着。
+    ///   • 同一个词出现多次：两边次数一样就按顺序一一对应；次数对不上，就只在原文每一次都带空格时才补。
+    ///   • 阿语、假名等不是汉字，一律不碰；已有的空格一个都不删。
+    /// 纯函数；可重复调用（补过一次之后不再有紧挨着的地方）。
+    static func restoreLatinHanSpaces(raw: String, polished: String) -> String {
+        struct Run { let start: Int; let end: Int; let word: String }   // [start, end)
+        func isTokenChar(_ c: Character) -> Bool {
+            c.isASCII && (c.isLetter || c.isNumber || "._-+".contains(c))
+        }
+        func isLatinLetter(_ c: Character) -> Bool { c.isASCII && c.isLetter }
+        func isGap(_ c: Character) -> Bool { c.isWhitespace && !c.isNewline }
+        func runs(_ chars: [Character]) -> [Run] {
+            var out: [Run] = []
+            var i = 0
+            while i < chars.count {
+                guard isTokenChar(chars[i]) else { i += 1; continue }
+                var j = i
+                while j < chars.count, isTokenChar(chars[j]) { j += 1 }
+                out.append(Run(start: i, end: j, word: String(chars[i..<j]).lowercased()))
+                i = j
+            }
+            return out
+        }
+
+        let r = Array(raw), p = Array(polished)
+        let rawRuns = runs(r)
+        // 原文里每个词每一次出现：左侧 / 右侧是不是「空白 + 汉字」
+        func spacedLeft(_ run: Run) -> Bool {
+            var k = run.start - 1
+            guard k >= 0, isGap(r[k]) else { return false }
+            while k >= 0, isGap(r[k]) { k -= 1 }
+            return k >= 0 && PolishFidelity.isHan(r[k])
+        }
+        func spacedRight(_ run: Run) -> Bool {
+            var k = run.end
+            guard k < r.count, isGap(r[k]) else { return false }
+            while k < r.count, isGap(r[k]) { k += 1 }
+            return k < r.count && PolishFidelity.isHan(r[k])
+        }
+        var rawSides: [String: [(left: Bool, right: Bool)]] = [:]
+        for run in rawRuns { rawSides[run.word, default: []].append((spacedLeft(run), spacedRight(run))) }
+
+        let polishedRuns = runs(p)
+        var polishedCounts: [String: Int] = [:]
+        for run in polishedRuns { polishedCounts[run.word, default: 0] += 1 }
+        var insertAt: [Int] = []
+        var seen: [String: Int] = [:]
+        for run in polishedRuns {
+            let k = seen[run.word, default: 0]
+            seen[run.word] = k + 1
+            guard let sides = rawSides[run.word] else { continue }
+            let polishedCount = polishedCounts[run.word, default: 0]
+            func rawWantsSpace(_ pick: ((left: Bool, right: Bool)) -> Bool) -> Bool {
+                sides.count == polishedCount ? pick(sides[k]) : sides.allSatisfy(pick)
+            }
+            if run.start > 0, PolishFidelity.isHan(p[run.start - 1]), isLatinLetter(p[run.start]),
+               rawWantsSpace({ $0.left }) {
+                insertAt.append(run.start)
+            }
+            if run.end < p.count, PolishFidelity.isHan(p[run.end]), isLatinLetter(p[run.end - 1]),
+               rawWantsSpace({ $0.right }) {
+                insertAt.append(run.end)
+            }
+        }
+        guard !insertAt.isEmpty else { return polished }
+        var out = p
+        for index in insertAt.sorted(by: >) { out.insert(" ", at: index) }
+        return String(out)
     }
 
     // MARK: 空音频复读

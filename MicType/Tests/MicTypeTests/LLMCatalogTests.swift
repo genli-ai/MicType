@@ -23,9 +23,11 @@ final class LLMCatalogTests: XCTestCase {
     /// 默认一律是这家**均衡偏快**的那一档（用户 2026-09-20 拍板，推翻前一天那条"必须是旗舰"）。
     /// 润色是每句话都要跑一次的东西，它的全部价值是顺手：实测 qwen3.8-flash 1.8–3.6 秒，
     /// 而 qwen3.8-max 4–12 秒、还撞得上 12 秒的润色超时——那一次整句话就白说了。
-    /// 5.0.0 起这就是**唯一**的型号：界面上没有下拉，两家各一个值（用户 2026-09-22 拍板）。
+    /// 5.0.0 起这就是**唯一**的型号：界面上没有下拉（用户 2026-09-22 拍板）。
+    /// 5.0.6 起 OpenAI 润色单独换 terra（iOS 144 次评测：严格保真 80% vs 64%、中位只慢 180 ms），
+    /// 指令仍是 luna（terra 做指令不升质量、贵约 8 倍）。
     func testDefaultsAreTheBalancedFastTier() {
-        XCTAssertEqual(LLMCatalog.polishDefault(for: .openai), "gpt-5.6-luna")
+        XCTAssertEqual(LLMCatalog.polishDefault(for: .openai), "gpt-5.6-terra")
         XCTAssertEqual(LLMCatalog.commandDefault(for: .openai), "gpt-5.6-luna")
         XCTAssertEqual(LLMCatalog.polishDefault(for: .qwen), "qwen3.8-flash")
         XCTAssertEqual(LLMCatalog.commandDefault(for: .qwen), "qwen3.8-flash")
@@ -35,7 +37,8 @@ final class LLMCatalogTests: XCTestCase {
     /// 自己知道），而那正是整条链路上"看着配好了、每次调用都是空型号"的来源
     func testEveryProviderHasAModel() {
         for provider in LLMProvider.allCases {
-            XCTAssertFalse(LLMCatalog.defaultModel(for: provider).isEmpty, provider.rawValue)
+            XCTAssertFalse(LLMCatalog.polishDefault(for: provider).isEmpty, provider.rawValue)
+            XCTAssertFalse(LLMCatalog.commandDefault(for: provider).isEmpty, provider.rawValue)
         }
     }
 
@@ -57,11 +60,18 @@ final class LLMCatalogTests: XCTestCase {
 
     // MARK: - reasoning.effort
 
-    /// 润色要最快的一档；gpt-6-astra 不支持 none，发了会 400 → 必须退到 low
+    /// 润色要最快的一档；gpt-6-astra 不支持 none，发了会 400 → 必须退到 low。
+    /// 5.0.6 起只排除 astra：gpt-6-luna / gpt-6-sol 支持 none（官方文档 + iOS 实测）
     func testPolishUsesEffortNoneExceptOnAstra() {
         XCTAssertEqual(LLMCatalog.effort(purpose: .polish, model: "gpt-5.6-luna"), "none")
+        XCTAssertEqual(LLMCatalog.effort(purpose: .polish, model: "gpt-5.6-terra"), "none")
         XCTAssertEqual(LLMCatalog.effort(purpose: .polish, model: "gpt-5.5"), "none")
+        XCTAssertEqual(LLMCatalog.effort(purpose: .polish, model: "gpt-6-luna"), "none")
+        XCTAssertEqual(LLMCatalog.effort(purpose: .polish, model: "gpt-6-sol"), "none")
         XCTAssertEqual(LLMCatalog.effort(purpose: .polish, model: "gpt-6-astra"), "low")
+        XCTAssertEqual(LLMCatalog.effort(purpose: .polish, model: "GPT-6-Astra"), "low")
+        XCTAssertTrue(LLMCatalog.supportsEffortNone("gpt-6-luna"))
+        XCTAssertFalse(LLMCatalog.supportsEffortNone("gpt-6-astra"))
     }
 
     func testCommandsAlwaysUseLowEffort() {
