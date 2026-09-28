@@ -15,50 +15,27 @@ import Foundation
 // MARK: 配置
 
 struct CloudASRConfig {
-    var provider: CloudASRProvider = .alibaba
-    var alibabaModel: AlibabaASRModel = .qwen3Flash
-    /// 阿里云的接入主机名。界面上没有"区域"了——这台是 AlibabaHostResolver 试出来并
-    /// 记在 qwenResolvedHost 里的那台（或用户自己粘的接入地址）。见 AlibabaEndpoint。
-    var host: String = AlibabaEndpoint.defaultHost
-    /// 语言提示（阿里云最多 4 个；qwen3 只取第一个）
+    /// 5.1.0 起只有 OpenAI（阿里云整档删除）。留着这个字段是因为日志与可用性记忆按它取名
+    var provider: CloudASRProvider = .openai
+    /// 语言提示（OpenAI 的 languages[]，最多 4 个）
     var languageHints: [String] = []
-    /// 词汇表词条：阿里云走 parameters.vocabulary（权重 4），OpenAI 走 keywords[]
+    /// 词汇表词条：走 OpenAI 的 keywords[]
     var vocabulary: [String] = []
     var apiKey: String = ""
-    /// ITN（数字/单位规范化）只对中英有效，默认关（MicType 自己有润色层）
-    var enableITN: Bool = false
 
-    init(provider: CloudASRProvider = .alibaba,
-         alibabaModel: AlibabaASRModel = .qwen3Flash,
-         host: String = AlibabaEndpoint.defaultHost,
+    init(provider: CloudASRProvider = .openai,
          languageHints: [String] = [],
          vocabulary: [String] = [],
-         apiKey: String = "",
-         enableITN: Bool = false) {
+         apiKey: String = "") {
         self.provider = provider
-        self.alibabaModel = alibabaModel
-        self.host = host
         self.languageHints = languageHints
         self.vocabulary = vocabulary
         self.apiKey = apiKey
-        self.enableITN = enableITN
     }
 
-    /// 配置 → 对应供应商的客户端
+    /// 配置 → 客户端（整段上传那条路：gpt-transcribe）
     func makeClient() -> CloudTranscriptionProviding {
-        switch provider {
-        case .alibaba:
-            return AlibabaASRClient(apiKey: apiKey,
-                                    model: alibabaModel,
-                                    host: host,
-                                    vocabulary: vocabulary,
-                                    languageHints: languageHints,
-                                    enableITN: enableITN)
-        case .openai:
-            return OpenAITranscribeClient(apiKey: apiKey,
-                                          languages: languageHints,
-                                          keywords: vocabulary)
-        }
+        OpenAITranscribeClient(apiKey: apiKey, languages: languageHints, keywords: vocabulary)
     }
 }
 
@@ -68,7 +45,7 @@ struct CloudASRTranscription {
     var segmentCount: Int
     /// 云端回报的计费秒数合计（没有回报就是 nil）
     var billedSeconds: Double?
-    /// 第一段识别出的语言（阿里云 3.0 不返回）
+    /// 第一段识别出的语言
     var detectedLanguage: String?
 }
 
@@ -113,14 +90,6 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
                               completion: completion)
     }
 
-    /// 这一轮识别失败时，把**供应商给的原始失败**（状态码 + 错误码）报给上面一层。
-    ///
-    /// 引擎仍然什么都不决定（那三条纪律不变）：它只是把一件自己知道、而集成层再也看不到的事
-    /// 说出来——TranscriptionOutcome.failure 是 MTError，只剩一句人话，状态码与错误码全丢了。
-    /// 4.1.5 加这个钩子是为了认出「这台主机不让这把 Key 访问端点」那一档 403 并后台换一台
-    ///（见 CloudASRSettings.recoverIfEndpointDenied）。设不设都不影响识别本身。
-    var onProviderFailure: ((CloudASRFailure) -> Void)?
-
     init(config: CloudASRConfig = CloudASRConfig()) {
         self.config = config
     }
@@ -158,15 +127,7 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
     func prewarm() {
         let cfg = currentConfig
         guard cfg.makeClient().hasCredentials else { return }
-        let urlString: String
-        switch cfg.provider {
-        case .alibaba:
-            guard let url = AlibabaASRClient.endpoint(host: cfg.host) else { return }
-            urlString = url.absoluteString
-        case .openai:
-            urlString = OpenAITranscribeClient.endpointString
-        }
-        guard let url = URL(string: urlString) else { return }
+        guard let url = URL(string: OpenAITranscribeClient.endpointString) else { return }
         var request = URLRequest(url: url)
         request.timeoutInterval = 5
         URLSession.shared.dataTask(with: request).resume()
@@ -228,7 +189,7 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
 
         // Esc 立刻生效：**同步**掐掉在飞的那一次 HTTP（只有 CloudASRHandle 做得到），
         // 已经转好的段落照常交付。只在 onSegment 里查 outer 的老写法要等下一段转完才停得下来，
-        // 那一段照常上传、照常计费（阿里云单段 120s 起步，还可能退避重试一次）。
+        // 那一段照常上传、照常计费（单段 150s 起步，还可能退避重试一次）。
         outer.setCancelHandler {
             inner?.cancel()
             // 交付**不能**同步做：cancel() 是在 DictationController.cancel() 里调的，
@@ -264,9 +225,6 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
                     deliver(cancelledOutcome())
                     return
                 }
-                // 状态码与错误码到此为止（下面那个 outcome 里只剩一句人话），
-                // 所以在这里把原始失败报上去一次——集成层据此决定要不要做点别的
-                self.onProviderFailure?(failure)
                 deliver(TranscriptionOutcome(text: joined,
                                              completedSegments: outer.completedSegments,
                                              totalSegments: max(totalSegments, outer.completedSegments + 1),
@@ -287,8 +245,7 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
         -> CloudASRHandle {
         var cfg = currentConfig
         // 调用方给了显式语言（本机那边是"锁定的英文全名"）就按云端的口径换成 hints。
-        // 认不出来的名字 sanitize 会滤掉，那时宁可沿用设置里的 hints，也不送一个云端不认的码
-        // （阿里云会直接回 InvalidParameter）。
+        // 认不出来的名字 sanitize 会滤掉，那时宁可沿用设置里的 hints，也不送一个云端不认的码。
         if let name = language {
             let hints = CloudASRLanguage.sanitize(hints: [CloudASRLanguage.code(forName: name)])
             if !hints.isEmpty { cfg.languageHints = hints }
@@ -325,8 +282,7 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
             }
             let seconds = Double(samples.count) / Double(WAVEncoder.defaultSampleRate)
             Log.info("CloudASR start provider=\(cfg.provider.rawValue) "
-                     + "model=\(cfg.provider == .alibaba ? cfg.alibabaModel.rawValue : "gpt-transcribe") "
-                     + "host=\(cfg.provider == .alibaba ? AlibabaEndpoint.redacted(cfg.host) : "api.openai.com") "
+                     + "model=\(OpenAITranscribeClient.defaultModel) host=api.openai.com "
                      + "seconds=\(String(format: "%.1f", seconds)) segments=\(segments.count)")
             self.run(segmentIndex: 0, segments: segments, samples: samples,
                      config: cfg, client: client, texts: [], contextSeed: previousText,
@@ -369,21 +325,17 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
 
         let segment = segments[index]
         let slice = Array(samples[segment.range])
-        let wav = WAVEncoder.encode(samples: slice)
-        // 词表能走参数的（阿里云 3.0 的 parameters.vocabulary、OpenAI 的 keywords[]）就别再塞进上下文，
-        // 400 字的上下文额度留给"上一段的尾巴"
-        let vocabularyInContext = config.provider == .alibaba
-            && !config.alibabaModel.supportsInlineVocabulary
+        // 5.1.0 起发 AAC-LC 48 kbps 的 m4a（约 WAV 的 1/5 字节），编码失败退回 WAV（见 AACEncoder）
+        let audio = AACEncoder.uploadAudio(samples: slice)
+        // 词表走 keywords[]，不塞进上下文：400 字的上下文额度留给"上一段的尾巴"。
         // 第一段的上文是调用方给的种子（预转写好的前半段），之后每段接上一段的尾巴
         let previousText = texts.last ?? contextSeed
         let context = CloudASRContext.text(
-            vocabulary: config.vocabulary,
-            previousTail: CloudASRContext.tail(of: previousText, chars: Self.contextTailChars),
-            includeVocabulary: vocabularyInContext)
+            previousTail: CloudASRContext.tail(of: previousText, chars: Self.contextTailChars))
         Log.info("CloudASR seg=\(index + 1)/\(segments.count) "
-                 + "seconds=\(String(format: "%.1f", segment.seconds)) wavBytes=\(wav.count)")
+                 + "seconds=\(String(format: "%.1f", segment.seconds)) uploadBytes=\(audio.data.count)")
 
-        switch client.makeRequest(wav: wav, seconds: segment.seconds, context: context) {
+        switch client.makeRequest(audio: audio, seconds: segment.seconds, context: context) {
         case .failure(let failure):
             finish(.failure(failure))
         case .success(let request):

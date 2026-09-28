@@ -167,8 +167,7 @@ enum LLMClient {
                          networkRetries: Int = 1,
                          completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle {
         let handle = LLMRequestHandle()
-        if provider == .openai,
-           usesResponsesAPI(baseURL: Settings.shared.baseURL(for: provider)) {
+        if usesResponsesAPI(baseURL: Settings.shared.baseURL(for: provider)) {
             respond(system: system, user: user, purpose: purpose, temperature: temperature,
                     timeout: timeout, model: model, maxOutputTokens: maxOutputTokens,
                     provider: provider, handle: handle, apiKeyOverride: apiKeyOverride,
@@ -484,7 +483,7 @@ enum LLMClient {
         return body
     }
 
-    /// chat/completions 请求体（DeepSeek / Qwen / 自定义端点 / 本机模型）
+    /// chat/completions 请求体（OpenAI 档指向第三方兼容网关时走这条）
     /// - maxOutputTokens: `max_tokens`。**必须发**：不发就跑服务商自己的默认输出上限，
     ///   而 v4.0 的长口述（单次最长 600 s）润色出来的文本轻松越过那条线——这条路上没有
     ///   Responses 的 `status == "incomplete"` 可倚仗，截断的半截文本会被当成功插进用户文档。
@@ -506,37 +505,14 @@ enum LLMClient {
         if let temperature = temperature, !LLMCatalog.rejectsCustomTemperature(model) {
             body["temperature"] = temperature
         }
-        // DeepSeek 那条 `thinking: disabled` 5.0.0 起没有了（那一档服务商删掉了）。
-        // 阿里云这一条照旧，字段名不同：qwen3.5 / 3.6 / 3.7 / 3.8 这几条线**默认开思考**
-        //（老的 qwen3-max / qwen-plus / qwen-flash 默认关，所以 4.1.1 之前没人注意到）。
-        // 兼容模式上的开关是根级字段 `enable_thinking`，**润色和指令都关**：
-        // - 润色（4.1.1 日志）：qwen3.8-max 润色 ~25 个字用掉 3889 ms / 8730 ms，更长的直接撞满 12 s 超时。
-        // - 指令（4.1.2 日志）：4.1.2 照 DeepSeek 的政策给指令留着思考，结果一句十几个字的指令
-        //   两次都等满 25 s 超时，同一句话换 OpenAI 4.9 s 就回来了；阿里云控制台显示这几趟在
-        //   **服务端**平均就要约 17 s——慢的是思考，不是 UAE 这条链路。官方文档自己也写着思考
-        //   占输出 token 的六成以上、延迟"远高于"非思考模式。语音指令是人盯着悬浮窗等的一次调用，
-        //   等不到的质量等于没有质量。DeepSeek 那条政策不照搬：那边的指令实测等得到。
-        // purpose == nil 只有直接调 chatBody 的单测会出现（见 chat 的默认参数），一并关掉。
-        if provider == .qwen {
-            body["enable_thinking"] = false
-        }
-        // service_tier 是 OpenAI 的字段；别的服务商收到只会多一个它不认识的键（有的直接 400）
-        if fastTier, provider == .openai {
+        // 5.1.0 删掉了阿里云那一档专有的两个根级字段：`enable_thinking: false`
+        // （qwen3.5+ 默认开思考，润色与指令都得关）与联网搜索的 `enable_search: true`。
+        // service_tier 是 OpenAI 的字段；调用方只在官方接口上传 fastTier = true（见 asksForFastTier）
+        if fastTier {
             body["service_tier"] = "fast"
         }
         // 同一条铁律的第二道闸：润色路径一个搜索参数都不发
         switch purpose == .command ? searchStyle : .unsupported {
-        case .qwenEnableSearch:
-            // DashScope 兼容模式：**只发 enable_search 这一个字段**，策略一律用端点默认的 turbo。
-            // 4.1.1 这里硬写过 `search_options: {"search_strategy": "agent"}`，结果是整条指令直接 400：
-            // `The current model does not support the "agent" search strategy`。
-            // 文档写明 qwen3.8-max / -0902 / -flash / -2.4t-a95b / -27b 在 Chat Completions 上
-            // 都不吃 search_strategy 的 agent 值；agent 式的多步搜索（和来源链接）只在 DashScope 的
-            // Responses API（/compatible-mode/v1/responses + tools:[{"type":"web_search"}]）上有，
-            // 那是路线图项，不是这里能补的。指定任何策略都是在替用户赌他选的型号支持它，
-            // 赌输的代价是整条指令白掉——turbo 是每条模型线都认的那一档，所以什么都不指定。
-            // **这一档不回传来源**（OpenAI 兼容端点的限制），所以设置页要当面写清楚。
-            body["enable_search"] = true
         case .openrouterPlugin:
             body["plugins"] = [["id": "web"]]
         case .openaiResponsesTool, .unsupported:
@@ -591,7 +567,7 @@ enum LLMClient {
     /// chat/completions 回包里要拿的东西（纯函数，与 Responses 那条路对称）。
     /// 为什么也要一层：这条路原本**只**看 `message.content`，不看 `finish_reason`——
     /// 服务商撞上默认输出上限时照样回一段半截文本，于是同一份被 OpenAI 拒掉的截断结果
-    /// 在 DeepSeek / Qwen / 自建网关 / 本机模型上被当成功，直接插进用户的文档里。
+    /// 在兼容网关上被当成功，直接插进用户的文档里。
     struct ChatPayload: Equatable {
         let text: String?
         /// `finish_reason == "length"`：撞上输出上限。半截文本不能当成功交付
@@ -605,8 +581,7 @@ enum LLMClient {
     static func parseChatPayload(_ json: [String: Any]) -> ChatPayload {
         let choice = (json["choices"] as? [[String: Any]])?.first
         let message = choice?["message"] as? [String: Any]
-        // 兼容端点大多不报缓存；service_tier 与 annotations 有的会报（OpenRouter 回来源，
-        // Qwen 的兼容模式不回——那一档的设置文案已经当面说明了）
+        // 兼容端点大多不报缓存；service_tier 与 annotations 有的会报（OpenRouter 回来源）
         let citations = parseURLCitations((message?["annotations"] as? [[String: Any]]) ?? [])
         let tier = json["service_tier"] as? String
         guard let content = message?["content"] as? String else {
@@ -666,12 +641,9 @@ enum LLMClient {
     /// 形态很多：「Unknown parameter: 'text.verbosity'.」「Unsupported parameter: 'temperature' is not
     /// supported with this model.」「Unrecognized request argument supplied: prompt_cache_key」
     /// 「Unsupported value: 'reasoning.effort' does not support 'none'…」——统一抽出点路径式的参数名。
-    /// DashScope 还会把两个词粘在一起（`InternalError.Algo.InvalidParameter: enable_search …`），
-    /// 所以中间那道分隔是 `[\s.]*` 而不是 `\s+`：4.1.1 把联网搜索改成默认开之后，
-    /// 阿里云那一档的 enable_search / search_options 正是最可能被端点拒掉的字段，
-    /// 认不出参数名就没有"摘掉重发"，整条指令白掉。
-    /// 取不到返回 nil（不值得为一条看不懂的报错再发一趟）——阿里云那一档在这之后
-    /// 还有一道按话题摘的兜底（见 qwenExtrasFallback），因为 DashScope 的 400 常常一个参数名都不点。
+    /// 有的端点会把两个词粘在一起（`InternalError.Algo.InvalidParameter: xxx …`，4.1.1 在阿里云上
+    /// 见过），所以中间那道分隔是 `[\s.]*` 而不是 `\s+`——认不出参数名就没有"摘掉重发"。
+    /// 取不到返回 nil（不值得为一条看不懂的报错再发一趟）。
     static func unsupportedParameterName(in message: String) -> String? {
         let pattern = "(?i)(?:unknown|unsupported|unrecognized|invalid)[\\s.]*"
             + "(?:parameter|value|argument|request argument supplied|request argument)"
@@ -709,34 +681,7 @@ enum LLMClient {
         return out
     }
 
-    /// 阿里云那一档专用的第二道兜底：上面那条"按参数名摘"没摘到东西时才轮到它。
-    ///
-    /// 为什么非要多一条：DashScope 的 400 经常**一个参数名都不点**。4.1.1 的真实回包是
-    /// `The current model does not support the "agent" search strategy`——
-    /// 正则找不到参数名，于是没有重发，用户那条语音指令整个白掉。这类"这个型号不吃某个
-    /// 附加字段"的报错，按**话题**摘掉相关字段比按名字摘可靠得多：报错里提搜索就把搜索那两个
-    /// 字段一起拿掉，提思考就把思考开关拿掉，剩下的请求体是一个任何型号都认的最小集合。
-    /// 目标很明确：一个端点不认的搜索/思考字段，再也不许让用户整条指令白说。
-    ///
-    /// 两条规则都没摘掉任何字段就返回 nil = **不要重发**（UAE 这条链路每个往返都贵，
-    /// 原样再发一遍只会撞上同一堵墙）。
-    /// - Returns: (摘干净的请求体, 摘掉的字段名)。字段名只进日志，不含任何用户内容。
-    static func qwenExtrasFallback(message: String,
-                                   body: [String: Any]) -> (body: [String: Any], dropped: [String])? {
-        let lower = message.lowercased()
-        var out = body
-        var dropped: [String] = []
-        // 搜索：两个字段是一套，留一个下来照样可能被拒 → 一起摘
-        if lower.contains("search") {
-            for key in ["enable_search", "search_options"] where out.removeValue(forKey: key) != nil {
-                dropped.append(key)
-            }
-        }
-        if lower.contains("thinking"), out.removeValue(forKey: "enable_thinking") != nil {
-            dropped.append("enable_thinking")
-        }
-        return dropped.isEmpty ? nil : (out, dropped)
-    }
+    // qwenExtrasFallback（阿里云那一档"按话题摘掉搜索 / 思考字段"的第二道兜底）5.1.0 删掉。
 
     // MARK: - 发送
 
@@ -747,7 +692,6 @@ enum LLMClient {
                                  handle: LLMRequestHandle,
                                  apiKeyOverride: String? = nil,
                                  networkRetries: Int = 1,
-                                 hostResolveAttemptsLeft: Int = 1,
                                  completion: @escaping (String?, String?) -> Void) {
         // 这一趟开始了 → 先把用量沉淀点清空。它是"取走即清空"的一格，只有 send 的回调会填；
         // 下面这几条早退（取消 / 没凭据 / 模型名空 / 地址不完整）一个字都不写它，
@@ -773,15 +717,14 @@ enum LLMClient {
         var base = Settings.shared.baseURL(for: provider)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if base.hasSuffix("/") { base = String(base.dropLast()) }
-        // 地址不完整（自定义端点还没填）：宁可报错也不替用户换一个能连上的地址——
+        // 地址不完整：宁可报错也不替用户换一个能连上的地址——
         // 那等于把 Key 和听写文本发到他没选的地方去。
-        // Qwen 不会走到这里：它的接入地址由 MicType 自己试出来（见 AlibabaEndpoint）。
+        // Base URL 读出来空了会回退官方地址（Settings.openaiBaseURL），所以这一支几乎走不到；
+        // 5.0.x 这句话指着「API Host」那一栏，5.1.0 那一栏随阿里云删掉，只说事实本身。
         guard !base.isEmpty else {
             DispatchQueue.main.async {
-                // 5.0.0 起地址不是用户填的（OpenAI 固定、阿里云自己试或粘一条 Host），
-                // 所以这一支只可能来自一份改坏了的导入设置——指回设置页那一行 API Host
-                completion(nil, tr("这一档的接口地址不完整，请检查「设置」里的 API Host",
-                                   "This provider's endpoint is incomplete - check API Host in Settings"))
+                completion(nil, tr("这一档的接口地址不完整",
+                                   "This provider's endpoint is incomplete"))
             }
             return
         }
@@ -800,65 +743,20 @@ enum LLMClient {
         send(path: path, url: url, body: body, apiKey: apiKey, timeout: timeout, endpoint: endpoint,
              purpose: purpose, provider: provider,
              networkRetriesLeft: max(0, networkRetries), stripAttemptsLeft: 2,
-             hostResolveAttemptsLeft: max(0, hostResolveAttemptsLeft),
              handle: handle, completion: completion)
-    }
-
-    /// 接入地址已经定下来了吗（上一次**真的试通过**）。
-    /// 只有"还没定"的那台主机吃 401 / DNS 不通才值得再去试一圈——见 AlibabaHostRecovery。
-    ///
-    /// 光看 qwenResolvedHost 有没有值是不够的（4.1.1 的第一版就是这么写的）：那个键
-    /// 也可能是 4.0.1 迁移按老区域**种**下的，从没联过网。种子吃 401 恰恰是最该去试一圈的
-    /// 那一幕（北京站的种子 + 新加坡工作空间的 Key），所以这里认的是"验证过"那一位。
-    ///
-    /// **用户自己填的接入地址永远算"定下来了"**（4.3.1 起又是这样，用户 2026-09-21 拍板）：
-    /// 他给的是答案，探测一趟都不该跑。4.1.4–4.3.0 反过来算过——那是因为当时界面上
-    /// 没有这个输入框，一条死地址会把人困住；框回来之后，"替他换一台"就只是让日志
-    /// 和他看到的设置对不上。它不通就照常失败，屏幕上说清楚，改不改由他。
-    static var alibabaHostSettled: Bool {
-        let s = Settings.shared
-        if AlibabaEndpoint.normalizeHost(s.qwenAPIHost) != nil { return true }
-        return s.qwenHostVerified && AlibabaEndpoint.normalizeHost(s.qwenResolvedHost) != nil
-    }
-
-    /// 接入地址是**用户自己填的**吗。hostSettled 之外还要单独有这一位：
-    /// 「端点访问被拒」那一档会绕过 hostSettled 去自动换一台（4.1.5 加的），
-    /// 而填了地址的人恰恰不能被换（见 AlibabaHostRecovery.action）。
-    static var alibabaHostPinned: Bool {
-        AlibabaEndpoint.normalizeHost(Settings.shared.qwenAPIHost) != nil
-    }
-
-    /// 这一趟失败之后要不要先把接入地址试出来。抽出来是为了让 send 里那一段保持一句话长度。
-    /// code / message 要一路传进去：403 里认出"端点访问被拒"的那一档会绕过 hostSettled
-    /// （见 AlibabaHostRecovery.action 的注释与 4.1.5 那笔实测）。
-    private static func recoveryAction(provider: LLMProvider, purpose: Purpose?,
-                                       status: Int, code: String? = nil, message: String? = nil,
-                                       urlErrorCode: Int?,
-                                       attemptsLeft: Int) -> AlibabaHostRecovery.Action {
-        AlibabaHostRecovery.action(isAlibaba: provider == .qwen,
-                                   hostSettled: alibabaHostSettled,
-                                   hostPinned: alibabaHostPinned,
-                                   // 润色等不起那 30 秒：它的全部价值是"顺手"
-                                   canWaitForResolve: purpose != .polish,
-                                   status: status,
-                                   code: code,
-                                   message: message,
-                                   urlErrorCode: urlErrorCode,
-                                   attemptsLeft: attemptsLeft)
     }
 
     /// networkRetriesLeft：瞬时网络故障的重试次数。
     /// stripAttemptsLeft：「400 点名某参数 → 去掉它重发」的次数。留 2 是因为有两条独立的兜底
     /// （text.verbosity 的字段路径只有 cookbook 有据；推理模型拒 temperature），
     /// 而每次只摘一个参数——摘完一个还报另一个也不该让整次润色白掉。
-    /// hostResolveAttemptsLeft：阿里云那一档「先把接入地址试出来再重发」的次数（见 AlibabaHostRecovery）。
+    /// （阿里云那一档「先把接入地址试出来再重发」的 hostResolveAttemptsLeft 5.1.0 删掉。）
     /// didRetry：这一趟是不是某次重发——决定超时那句话后面要不要缀上「（已重试）」。
     /// 4.1.1 之前它是无条件缀上去的，而润色/指令现在都只发一次，那三个字就成了假话。
     private static func send(path: String, url: URL, body: [String: Any], apiKey: String,
                              timeout: TimeInterval,
                              endpoint: Endpoint, purpose: Purpose?, provider: LLMProvider,
                              networkRetriesLeft: Int, stripAttemptsLeft: Int,
-                             hostResolveAttemptsLeft: Int,
                              didRetry: Bool = false,
                              handle: LLMRequestHandle,
                              completion: @escaping (String?, String?) -> Void) {
@@ -897,51 +795,13 @@ enum LLMClient {
             }
 
             /// 摘掉某个参数之后原样重发一次（400 去参兜底的唯一出口）。
-            /// 抽成一个局部函数是因为下面有两条独立的"摘什么"的规则（按参数名 / 阿里云按话题），
-            /// 而"怎么重发"必须逐字一样——尤其是 stripAttemptsLeft - 1 这一格预算。
+            /// "怎么重发"必须逐字一样——尤其是 stripAttemptsLeft - 1 这一格预算。
             func resend(_ stripped: [String: Any]) {
                 send(path: path, url: url, body: stripped, apiKey: apiKey, timeout: timeout,
                      endpoint: endpoint, purpose: purpose,
                      provider: provider, networkRetriesLeft: networkRetriesLeft,
-                     stripAttemptsLeft: stripAttemptsLeft - 1,
-                     hostResolveAttemptsLeft: hostResolveAttemptsLeft, didRetry: didRetry,
+                     stripAttemptsLeft: stripAttemptsLeft - 1, didRetry: didRetry,
                      handle: handle, completion: completion)
-            }
-
-            /// 接入地址还没试对 → 先试出来（见 AlibabaHostRecovery）。
-            /// 返回 true 表示这一趟已经交给恢复流程了，调用处不要再往下走。
-            ///
-            /// **无论走哪条分支，completion 都恰好被调用一次**：探测失败、或者试出来还是同一台
-            /// 主机（重发只会撞同一堵墙）时，原样交出 failureText。漏掉这一路的话，
-            /// 悬浮窗会永远停在「润色中…」上，用户只剩 Esc 一条出路。
-            func recovered(_ action: AlibabaHostRecovery.Action,
-                           failureText: @escaping () -> String) -> Bool {
-                guard action != .none else { return false }
-                let waits = action == .resolveAndRetry
-                // 等探测的那一档（指令）要在悬浮窗上说清楚在等什么：探测最长 30 秒，
-                // 而屏幕上只有一个越走越大的「执行指令中… 40s」，看着就是卡住了。
-                if waits {
-                    DispatchQueue.main.async {
-                        AppDelegate.sharedOverlay?.pushProcessingStage(
-                            tr("正在探测接入地址…", "Finding the endpoint…"))
-                    }
-                }
-                AlibabaHostRecovery.resolveNow(apiKey: apiKey) { changed in
-                    if waits { AppDelegate.sharedOverlay?.popProcessingStage() }
-                    guard waits, !handle.isCancelled else { return }
-                    guard changed else {
-                        // 主机没变：原样再发一遍只会撞上同一堵墙，当面把原因说了
-                        finish(nil, failureText())
-                        return
-                    }
-                    // 走 dispatch 而不是 send——新主机要重新推一遍 Base URL 与那几道闸
-                    dispatch(path: path, body: body, endpoint: endpoint, timeout: timeout,
-                             purpose: purpose, provider: provider, handle: handle,
-                             apiKeyOverride: apiKey, networkRetries: 0,
-                             hostResolveAttemptsLeft: 0, completion: completion)
-                }
-                // 后台探测这一档：这一趟照常失败，别让用户等（润色的全部价值是顺手）
-                return waits
             }
 
             if let error = error {
@@ -952,22 +812,14 @@ enum LLMClient {
                         send(path: path, url: url, body: body, apiKey: apiKey, timeout: timeout,
                              endpoint: endpoint, purpose: purpose,
                              provider: provider, networkRetriesLeft: networkRetriesLeft - 1,
-                             stripAttemptsLeft: stripAttemptsLeft,
-                             hostResolveAttemptsLeft: hostResolveAttemptsLeft, didRetry: true,
+                             stripAttemptsLeft: stripAttemptsLeft, didRetry: true,
                              handle: handle, completion: completion)
                     }
                     return
                 }
-                let networkFailure: () -> String = {
-                    nsError.code == NSURLErrorTimedOut
-                        ? LLMCatalog.timeoutCopy(retried: didRetry).fullText
-                        : error.localizedDescription + (didRetry ? tr("（已重试）", " (retried)") : "")
-                }
-                let hostAction = recoveryAction(provider: provider, purpose: purpose, status: 0,
-                                                urlErrorCode: nsError.code,
-                                                attemptsLeft: hostResolveAttemptsLeft)
-                if recovered(hostAction, failureText: networkFailure) { return }
-                failure = networkFailure()
+                failure = nsError.code == NSURLErrorTimedOut
+                    ? LLMCatalog.timeoutCopy(retried: didRetry).fullText
+                    : error.localizedDescription + (didRetry ? tr("（已重试）", " (retried)") : "")
             } else if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                 let err = json?["error"] as? [String: Any]
                 let message = err?["message"] as? String
@@ -990,37 +842,11 @@ enum LLMClient {
                         resend(stripped)
                         return
                     }
-                    // 按名字没摘到东西（DashScope 的 400 常常一个参数名都不点，比如
-                    // 「does not support the "agent" search strategy」）→ 阿里云那一档按话题再摘一次。
-                    // 同一份 stripAttemptsLeft 预算，摘不到就不发（见 qwenExtrasFallback）。
-                    if provider == .qwen,
-                       let fallback = qwenExtrasFallback(message: message ?? "", body: body) {
-                        Log.warn("LLM 400 rejected \(fallback.dropped.joined(separator: ", "))"
-                                 + " — retrying without it")
-                        resend(fallback.body)
-                        return
-                    }
                 }
-                let hostAction = recoveryAction(provider: provider, purpose: purpose,
-                                                status: http.statusCode,
-                                                code: code.isEmpty ? nil : code, message: message,
-                                                urlErrorCode: nil,
-                                                attemptsLeft: hostResolveAttemptsLeft)
-                let httpFailure: () -> String = {
-                    // 接入地址还没试对时的 401：代码这一刻已经判定"多半是地址的事"，
-                    // 再说一句"API Key 无效"就是指错了方向——用户去重贴 Key，而下一句话
-                    // 恰好因为后台探测成功而好了，他会以为是重贴救了他（见 LLMCatalog）。
-                    if http.statusCode == 401, hostAction != .none {
-                        return LLMCatalog.qwenUnverifiedHost401(
-                            probing: hostAction == .resolveInBackground).fullText
-                    }
-                    return LLMCatalog.describeHTTPError(status: http.statusCode,
-                                                        provider: provider,
-                                                        code: code.isEmpty ? nil : code,
-                                                        message: message).fullText
-                }
-                if recovered(hostAction, failureText: httpFailure) { return }
-                failure = httpFailure()
+                failure = LLMCatalog.describeHTTPError(status: http.statusCode,
+                                                       provider: provider,
+                                                       code: code.isEmpty ? nil : code,
+                                                       message: message).fullText
             } else if let json = json {
                 switch endpoint {
                 case .responses:

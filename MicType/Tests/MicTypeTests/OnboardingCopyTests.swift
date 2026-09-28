@@ -64,7 +64,7 @@ final class OnboardingCopyTests: XCTestCase {
                                            polishModel: "gpt-5.6-luna"), .ready)
         XCTAssertEqual(LLMCatalog.aiStatus(hasCredential: false, baseURL: "https://api.openai.com/v1",
                                            polishModel: "gpt-5.6-luna"), .off)
-        // 地址拼不出来（阿里云区域端点缺 WorkspaceId）同样不算配好
+        // 地址拼不出来（被导入设置改成空串）同样不算配好
         XCTAssertEqual(LLMCatalog.aiStatus(hasCredential: true, baseURL: "",
                                            polishModel: "gpt-5.6-luna"), .off)
     }

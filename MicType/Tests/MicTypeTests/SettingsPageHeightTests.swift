@@ -61,22 +61,18 @@ final class SettingsPageHeightTests: XCTestCase {
         XCTAssertEqual(short, tall, accuracy: 1, "矮宿主 \(short) vs 高宿主 \(tall)")
     }
 
-    /// 两家都只报自己的内容高度：阿里云多一行「API Host」，所以比 OpenAI 高一行左右。
-    /// 5.0.3–5.0.4 这里钉的是"两家必须一样高"（靠一个 320 的地板），而那个地板正是
-    /// 真机上底栏之上那一大块空白的来路——权限都给了的机器根本没有那两条横幅。
+    /// 这一页只报自己的内容高度，没有地板。5.0.3–5.0.4 这里钉的是"两家必须一样高"
+    /// （靠一个 320 的地板），而那个地板正是真机上底栏之上那一大块空白的来路——
+    /// 权限都给了的机器根本没有那两条横幅。5.1.0 起只剩 OpenAI 一家（外加「实时草稿」一行），
+    /// 这里钉的是"没东西就别长那么高"。
     @MainActor
-    func testEachProviderReportsItsOwnContentHeight() {
+    func testThePageReportsItsOwnContentHeight() {
         for language in [AppLanguage.zh, .en] {
             L10n.shared.language = language
             UserDefaults.standard.set(LLMProvider.openai.rawValue, forKey: SettingsKeys.llmProvider)
-            let openai = measure(hostHeight: 700)
-            UserDefaults.standard.set(LLMProvider.qwen.rawValue, forKey: SettingsKeys.llmProvider)
-            let qwen = measure(hostHeight: 700)
-            XCTAssertGreaterThan(qwen, openai,
-                                 "\(language.rawValue)：阿里云多一行，应该更高")
-            XCTAssertLessThan(qwen - openai, 80,
-                              "\(language.rawValue)：只该差一行（\(openai) vs \(qwen)）")
-            XCTAssertLessThan(qwen, 400, "\(language.rawValue)：这一页没那么多东西")
+            let height = measure(hostHeight: 700)
+            XCTAssertGreaterThan(height, 100, "\(language.rawValue)：量到的高度不对（\(height)）")
+            XCTAssertLessThan(height, 400, "\(language.rawValue)：这一页没那么多东西（\(height)）")
         }
     }
 

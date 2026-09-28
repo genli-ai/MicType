@@ -145,9 +145,9 @@ final class DictationController {
     /// 云端识别引擎。**用到才建**：默认档的用户这辈子都不会创建它。
     /// 建一次就一直留着（内部只有一把锁和一条队列，不占资源），每轮开录前用 update(config:) 刷新配置。
     private var cloudEngine: CloudASREngine?
-    /// 这一轮的云端**实时**会话（阿里云档才可能有）。按下热键就建连，录音中边说边传，
-    /// 松手只剩「发完最后一截 + 一条 finish」——实测松手到终稿恒为 0.23–0.28 秒，与时长无关。
-    /// nil = 这一轮走整段上传（本机档、别家云端、这台主机实时用不了，见 CloudStreamingSession.make）。
+    /// 这一轮的云端**实时**会话。按下热键就建连，录音中边说边传，
+    /// 松手只剩「发完最后一截 + 收尾」——实测松手到终稿 0.67–1.04 秒，与时长无关。
+    /// nil = 这一轮走整段上传（没 Key、第三方网关、这次运行里实时用不了，见 CloudStreamingSession.make）。
     private var cloudStreaming: CloudStreamingSession?
     /// 这一轮实际用的引擎。在**开录这一刻**定格：录到一半去设置里换服务商，
     /// 不该让正在录的这一段换一条链路（与 autoStopSilence 的快照同理）。
@@ -547,17 +547,11 @@ final class DictationController {
         let config = CloudASRSettings.currentConfig()
         let engine = cloudEngine ?? CloudASREngine(config: config)
         engine.update(config: config)
-        // 「这台主机不让这把 Key 访问端点」（403）是换一台主机就能解决的失败，而那台主机
-        // 偏偏是"验证过"的——那个验证靠的是 GET /models，4.1.5 的实测证明它什么都不证明。
-        // 后台换掉它，本轮照常回落本机模型，用户一个字都不丢（判据是纯函数，见集成层）
-        engine.onProviderFailure = { failure in
-            CloudASRSettings.recoverIfEndpointDenied(failure)
-        }
         cloudEngine = engine
         sessionEngine = engine
         Log.info("Session engine=cloud provider=\(config.provider.rawValue) "
                  + "hints=\(config.languageHints.joined(separator: ","))")
-        // 阿里云那一档再往前一步：能开实时就开。开不了（别家 / 没 Key / 这台主机实时用不了）
+        // 再往前一步：能开实时就开。开不了（没 Key / 第三方网关 / 这次运行里实时用不了）
         // 时 make 返回 nil，这一轮原样走整段上传，行为与 4.1.6 逐字一致。
         let generation = self.generation
         guard let stream = CloudStreamingSession.make(config: config, fallback: engine) else { return }
@@ -675,22 +669,11 @@ final class DictationController {
     /// 当前设置下走哪条路。**不读钥匙串**——这句话每次渲染设置页都要算一遍，
     /// 而地址按存着的那几项就拼得出来，够用来问"这条链路这次运行里被判过实时不可用吗"。
     static func currentRecordingFlow() -> RecordingFlow {
-        let s = Settings.shared
-        let provider = s.recognitionEngine.cloudProvider
-        // OpenAI 档指着第三方网关时没有实时这条路（实时地址是写死的官方域名）
-        if provider == .openai, !CloudASRSettings.openAIUsesOfficialEndpoint { return .cloudUpload }
-        let host: String
-        switch provider {
-        case .alibaba:
-            host = CloudASRSettings.alibabaHost(pastedHost: s.qwenAPIHost,
-                                                resolvedHost: s.qwenResolvedHost,
-                                                workspace: s.qwenWorkspaceID,
-                                                legacyRegionSlug: s.qwenRegion.regionSlug,
-                                                apiKey: "")
-        case .openai:
-            host = "api.openai.com"
-        }
-        return CloudStreamingAvailability.isUnsupported(provider: provider, host: host)
+        let provider = Settings.shared.recognitionEngine.cloudProvider
+        // 指着第三方网关时没有实时这条路（实时地址是写死的官方域名）
+        guard CloudASRSettings.openAIUsesOfficialEndpoint else { return .cloudUpload }
+        return CloudStreamingAvailability.isUnsupported(provider: provider,
+                                                        host: CloudStreamingSession.streamHost)
             ? .cloudUpload : .cloudStreaming
     }
 
@@ -705,8 +688,8 @@ final class DictationController {
     static func recordingLimitCopy(flow: RecordingFlow) -> String {
         let limit = minutesLabel(maxRecordingSeconds)
         let warn = secondsLabel(preFinishWarningSeconds)
-        // 段长按阿里云那一档报（两家差 30 秒，而这句话只在实时用不了时才提到分段）
-        let segment = secondsLabel(CloudSegmentLimits.alibaba.targetSeconds)
+        // 段长来自整段上传那条路的分段上限（这句话只在实时用不了时才提到分段）
+        let segment = secondsLabel(CloudSegmentLimits.openai.targetSeconds)
         // Plan C 的 ⓘ 预算（中文 ≤ 120 字）把这三句都压短了一轮：数字一个没少，
         // 少掉的是"悬浮窗会显示已录时长与上限"这类屏幕上自己看得见的话
         let head = tr("单次录音上限 \(limit)，到点前 \(warn) 提醒一次。",
@@ -1174,6 +1157,13 @@ final class DictationController {
             // 再失败多半是 Key / 额度 / 网络本身的问题，第三趟只是让用户多等一轮。
             // userStopped 让「用户停止」永远优先于「自动重试」：用户按了 Esc 之后在飞的那一段
             // 才超时失败的话，再把整段音频传一遍完全是无视他。
+            // 混合转写（5.1.0）里整段那条通道已经跑过了：两条都失败就是真失败，
+            // 再把整段传一遍只是让用户多等一轮、多付一次钱——当作"已经重试过"
+            if outcome.failure != nil, !outcome.cancelled, !self.cloudRetried,
+               (engine as? CloudStreamingSession)?.ranBatchLane == true {
+                self.cloudRetried = true
+                Log.warn("Cloud transcription failed on both hybrid lanes — no extra upload")
+            }
             if let failure = outcome.failure, !outcome.cancelled, !userStopped,
                case .retryOnce = CloudFallbackDecision.decide(partialText: outcome.text,
                                                               alreadyRetried: self.cloudRetried),

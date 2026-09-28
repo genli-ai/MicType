@@ -9,31 +9,24 @@ import Combine
 /// 麦克风还没授权，录不到声音                    [打开麦克风设置]   ← 只在缺权限时出现
 /// 辅助功能没授权：热键和输入都无效              [打开辅助功能设置]
 ///
-/// 服务商    [OpenAI | 阿里云]                            正在使用 ✓
-/// API Key   [••••••••]  [去申请 Key ↗]                          ⓘ
-/// API Host  [百炼控制台里的接入地址]              ← 只有阿里云这一档
-/// 已连通 ✓ 阿里云 · qwen3.8-flash · 约 $0.2/小时   ← 状态行，只在有话说时出现
+/// OpenAI Key [••••••••]  [去申请 Key ↗]                          ⓘ
+/// 已连通 ✓ 云端·OpenAI · gpt-transcribe · …        ← 状态行，只在有话说时出现
+///
+/// 实时草稿                                          [关]    ⓘ
 /// ─────────────────────────────────────────────────────
 ///            关于 · 专有词汇表 · 历史记录 · 语言 · 重看引导
 /// ```
 ///
-/// 4.x 拿掉了什么、为什么，见 SettingsRoute 的注释。这一页自己的三条纪律：
-///   • **整页只有一颗 ⓘ**（API Key 那一行）：Key 存钥匙串、费用直付、这一家每小时大概
-///     多少钱、阿里云多一句"接入地址留空就自动找"。别的都不值得一颗要点开的气泡。
-///   • 服务商点一下只是**预览**，钥匙串里有 Key 才真正采纳（AISetup.adoptsProvider）——
-///     这条 4.1.1 起的规矩一个字没改：点着挨个看看的人不该把自己从一把好 Key 上换走。
+/// 4.x 拿掉了什么、为什么，见 SettingsRoute 的注释。这一页自己的纪律：
+///   • **5.1.0 起只有 OpenAI 一家**（用户 2026-09-28 拍板）：没有服务商那一行，栏名就叫「OpenAI Key」，
+///     用户在这一页只做一件事——贴 Key。选择器、「正在使用 ✓」、阿里云的接入地址都删了。
+///   • ⓘ 只挂在两行上：API Key（Key 存钥匙串、费用直付、每小时大概多少钱）与实时草稿。
 ///   • 权限横幅只在**缺项时**出现：两项都齐的时候，它每天占着首屏最贵的位置说一句"没事"。
 struct MainSettingsPage: View {
     @ObservedObject private var l10n = L10n.shared
-    @AppStorage(SettingsKeys.llmProvider) private var provider = LLMProvider.openai.rawValue
     @AppStorage(SettingsKeys.openaiBaseURL) private var baseURL = "https://api.openai.com/v1"
-    @AppStorage(SettingsKeys.qwenAPIHost) private var qwenAPIHost = ""
-    @AppStorage(SettingsKeys.qwenResolvedHost) private var qwenResolvedHost = ""
-    /// 钥匙串不是 @AppStorage，删掉一把 Key 之后这一页不会自己重算。
-    /// 这个计数器就是那一下"手动推一把"（只影响显示，不落盘）。
-    @State private var keychainTick = 0
-    /// 选择器上**正在看**的那一档，不是生效的那一档（见 adoptIfUsable）
-    @State private var pendingProvider = Settings.shared.llmProvider
+    /// 5.1.0 起默认关（见 Settings.livePreview）。这里的默认值必须和注册的默认值一致
+    @AppStorage(SettingsKeys.livePreview) private var livePreview = false
 
     /// 上半那张表量出来有多高、底栏有多高。两个数加起来才是这一页要报给窗口的高度
     /// （底栏 5.0.3 起在表**外面**，见 body）
@@ -47,29 +40,6 @@ struct MainSettingsPage: View {
     @State private var permissionPoll: AnyCancellable?
     @ObservedObject private var windowState = SettingsWindowController.shared
 
-    /// 选择器上看着的那一档
-    private var selected: LLMProvider { pendingProvider }
-    /// 真正生效的那一档（「正在使用 ✓」按它算）
-    private var inUseProvider: LLMProvider { LLMProvider(rawValue: provider) ?? .openai }
-
-    /// 选择器上**看着**的这一档钥匙串里有没有 Key。只用来判"这一档是不是还没配"。
-    private var hasStoredKey: Bool {
-        _ = keychainTick
-        return KeychainHelper.loadAPIKey(account: selected.keychainAccount) != nil
-    }
-
-    /// 某一档这一刻的 Base URL。**从 @AppStorage 的值推**而不是读 Settings.currentBaseURL：
-    /// 后者不是 @Published，改了接入地址界面不会重算。
-    private func effectiveBaseURL(for provider: LLMProvider) -> String {
-        switch provider {
-        case .openai: return baseURL
-        case .qwen:
-            // 接入地址是试出来的：粘了就用粘的，否则用试通的那台（见 AlibabaEndpoint）
-            let host = AlibabaEndpoint.normalizeHost(qwenAPIHost)
-                ?? AlibabaEndpoint.normalizeHost(qwenResolvedHost)
-            return host.map { AlibabaEndpoint.compatibleBaseURL(host: $0) } ?? Settings.shared.qwenBaseURL
-        }
-    }
 
     /// 这一页要报给窗口的高度。
     ///
@@ -77,8 +47,7 @@ struct MainSettingsPage: View {
     /// 理由是"换服务商时窗口不许跳"；那个数字是从快照量来的，而快照里两条权限横幅
     /// 永远是亮的（离屏渲染拿不到这台机器的授权状态）。于是真机上——权限都给了、
     /// 横幅不出现——这一页只有两三行控件，却被撑到 320，底栏上面空着一大块，
-    /// 正是用户 2026-09-23 截图里那扇窗。换服务商时矮 45 点再长回来是诚实的
-    /// （阿里云确实多一行），比常年空一块强。
+    /// 正是用户 2026-09-23 截图里那扇窗。
     private var naturalHeight: CGFloat {
         // +1：底栏上面那条 Divider
         formHeight + footerHeight + 1
@@ -92,20 +61,19 @@ struct MainSettingsPage: View {
                     if !micOK || !axOK {
                         Section { permissionsBanner }
                     }
-                    // 服务商 → Key →（阿里云的）接入地址：与引导 ③ **同一个视图**
-                    // （CloudSetupCore），顺序、标题、说明、那颗 ⓘ 全都只写一处。
-                    CloudSetupCore(style: .settings,
-                                   selected: selected,
-                                   inUse: inUseProvider,
-                                   provider: providerBinding,
-                                   showsNotSetUpHint: !hasStoredKey,
-                                   onKeyStatus: { _ in
-                                       // 钥匙串不是 @AppStorage：验证通过之后这一页要自己重算，
-                                       // 并且立刻把这一档采纳为生效服务商
-                                       keychainTick &+= 1
-                                       adoptIfUsable(selected)
-                                   }) {
+                    // Key：与引导 ③ **同一个视图**
+                    // （CloudSetupCore），顺序、说明、那颗 ⓘ 全都只写一处。
+                    CloudSetupCore(style: .settings) {
                         providerNotices
+                    }
+                    // 5.1.0 加的唯一一个开关（用户 2026-09-28 拍板）：默认关。
+                    // 自己一张卡片——它说的是"录音时看见什么"，不是"发给谁"
+                    Section {
+                        SettingsToggleRow(label: SettingsCopy.livePreviewLabel,
+                                          isOn: $livePreview, info: SettingsCopy.livePreviewInfo)
+                            .onChange(of: livePreview) { _, on in
+                                Log.info("Live draft toggled on=\(on)")
+                            }
                     }
                 }
                 .formStyle(.grouped)
@@ -133,11 +101,7 @@ struct MainSettingsPage: View {
         // 窗口高度走的还是原来那条路（SettingsPageHeightKey → SettingsView → 窗口），
         // 只是这一页自己算这个数：表 + 底栏，再垫到那个地板上
         .preference(key: SettingsPageHeightKey.self, value: [.overview: naturalHeight])
-        // 回到这一页时选择器要停在**正在用**的那一档上（上一次可能只是预览到一半就走了）
-        .onAppear {
-            pendingProvider = inUseProvider
-            startPermissionPolling()
-        }
+        .onAppear { startPermissionPolling() }
         .onDisappear { stopPermissionPolling() }
         // 关窗时这一页并不会被销毁（窗口复用），所以停轮询这件事只能由窗口来说
         .onChange(of: windowState.isOpen) { _, open in
@@ -154,8 +118,10 @@ struct MainSettingsPage: View {
         // OpenAI 的地址被老版本（或导入的设置文件）改过时必须看得见：
         // 看不见的自定义地址是查不出来的故障——而它还会让云端识别整条实时链路失效
         // （实时地址是写死的官方域名，见 CloudASRSettings.openAIUsesOfficialEndpoint）。
-        if selected == .openai, effectiveBaseURL(for: .openai) != LLMProvider.openai.defaultBaseURL {
-            BoundaryRow(text: SettingsCopy.endpointOverridden + effectiveBaseURL(for: .openai)) {
+        // 地址**从 @AppStorage 的值读**而不是读 Settings.currentBaseURL：后者不是 @Published，
+        // 点了「恢复官方地址」界面不会重算
+        if baseURL != LLMProvider.openai.defaultBaseURL {
+            BoundaryRow(text: SettingsCopy.endpointOverridden + baseURL) {
                 Button(tr("恢复官方地址", "Restore the official URL")) {
                     baseURL = LLMProvider.openai.defaultBaseURL
                 }
@@ -276,32 +242,8 @@ struct MainSettingsPage: View {
         .fixedSize()
     }
 
-    // MARK: 换服务商
-
-    /// **只换"正在看"的那一档**，真正生效要等 adoptIfUsable 认可。
-    private var providerBinding: Binding<LLMProvider> {
-        Binding(get: { selected },
-                set: { next in
-                    guard next != selected else { return }
-                    pendingProvider = next
-                    keychainTick &+= 1
-                    Log.info("AI provider previewed=\(next.rawValue)")
-                    // 钥匙串里已经有这一档的 Key（换回上一家、或早就配过）就当场生效，
-                    // 不必再逼他重粘一次
-                    adoptIfUsable(next)
-                })
-    }
-
-    /// 只有"这一档真的能用"才把它写成生效的服务商（判据是纯函数 AISetup.adoptsProvider，
-    /// 与引导 ③ 同一条）。换过去之后识别也跟着换家——那是 5.0.0 的推导，不是一条设置。
-    private func adoptIfUsable(_ next: LLMProvider) {
-        let hasKey = KeychainHelper.loadAPIKey(account: next.keychainAccount) != nil
-        guard AISetup.adoptsProvider(current: inUseProvider, next: next,
-                                     requiresKey: next.requiresAPIKey, hasKey: hasKey,
-                                     polishModel: LLMCatalog.polishDefault(for: next)) else { return }
-        provider = next.rawValue
-        Log.info("AI provider adopted=\(next.rawValue) (recognition follows)")
-    }
+    // 「换服务商」那一段（providerBinding / adoptIfUsable：预览一档、验证通过才采纳）
+    // 5.1.0 删掉：只剩 OpenAI 一家，没有第二档可换。
 }
 
 // MARK: - 专有词汇表（从设置底部那排小字点开）

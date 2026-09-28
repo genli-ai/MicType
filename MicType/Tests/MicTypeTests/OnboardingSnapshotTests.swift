@@ -51,8 +51,8 @@ final class OnboardingSnapshotTests: XCTestCase {
         let defaults = UserDefaults.standard
         for key in Self.touchedKeys { savedDefaults[key] = defaults.object(forKey: key) }
         KeychainHelper.lookupOverride = { _ in "sk-snapshot-placeholder" }
-        // 阿里云：第三屏这一档控件最全（服务商 / Key / 接入地址），OpenAI 那一档少一行
-        defaults.set(LLMProvider.qwen.rawValue, forKey: SettingsKeys.llmProvider)
+        // 5.1.0 起只有 OpenAI 一家（第三屏：标题「连接 OpenAI」+ 申请三步 + Key 框）
+        defaults.set(LLMProvider.openai.rawValue, forKey: SettingsKeys.llmProvider)
     }
 
     override func tearDownWithError() throws {

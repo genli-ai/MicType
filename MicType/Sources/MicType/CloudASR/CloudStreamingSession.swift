@@ -1,22 +1,21 @@
 import Foundation
 
-// MARK: - 云端实时识别的接线层（两家客户端 ↔ DictationController）
+// MARK: - 云端实时识别的接线层（OpenAI 实时客户端 ↔ DictationController）
 //
 // 协议客户端什么都不决定（见 RealtimeTransport.swift 顶部那段）。这里才是做决定的地方：
-// 这一轮开不开实时、用哪一家、草稿往哪送、松手时发到第几个采样、断了之后谁接手。
+// 这一轮开不开实时、草稿往哪送、松手时发到第几个采样、断了之后谁接手。
 //
 // 一句话说清这条路在干什么：**按下热键就把 socket 连上，录音期间边说边把新采样传上去，
-// 松手只剩"把最后一截发完 + 一条收尾"**。实测松手到终稿：阿里云 0.23–0.28 秒、
-// OpenAI 0.67–1.04 秒，都与录音长度无关；而整段上传那条路上同一把 Key 是
-// 4.5s→1.2s、22s→3.0s、71s→8.6s。
+// 松手只剩"把最后一截发完 + 一条收尾"**。实测松手到终稿 OpenAI 0.67–1.04 秒，
+// 与录音长度无关；而整段上传那条路上是 4.5s→1.2s、22s→3.0s、71s→8.6s（4.x 实测）。
+// 5.1.0 起只有 OpenAI 一家（阿里云整档删除）；上面的结构留着——下一步要在它上面做混合转写。
 
 // MARK: - 「这条链路的实时用不了」的记忆
 
-/// **内存态，键是「服务商 + 主机」**（4.2.2 起加上服务商：两家是两条完全独立的链路，
-/// 阿里云那台主机不支持实时，跟 OpenAI 支不支持毫无关系）。
+/// **内存态，键是「服务商 + 主机」**（4.2.2 起；5.1.0 起只剩 OpenAI 官方那一台，
+/// 键的形状留着不改，免得以后再接一条链路时重写这层）。
 ///
-/// 为什么不落盘：阿里云那台主机本来就是 MicType 自己试出来的（AlibabaHostResolver），它一换
-/// 这条记忆就该失效；而"服务商那边什么时候给这把 Key 开通实时"我们无从得知——
+/// 为什么不落盘："服务商那边什么时候给这把 Key 开通实时"我们无从得知——
 /// 落盘等于给用户留一条他看不见、也没地方清掉的坏设置。重启一次就重新试，代价只是一次握手。
 ///
 /// 被记住之后，这条链路上的每一句话都走整段上传，**行为与 4.1.6 完全一致**，
@@ -28,11 +27,6 @@ enum CloudStreamingAvailability {
 
     private static func key(provider: CloudASRProvider, host: String) -> String {
         provider.rawValue + "@" + host
-    }
-
-    /// 日志里的主机：阿里云那台的第一段是工作空间编号，要打码；OpenAI 是固定的官方域名，照写
-    static func loggable(provider: CloudASRProvider, host: String) -> String {
-        provider == .alibaba ? AlibabaEndpoint.redacted(host) : host
     }
 
     static func isUnsupported(provider: CloudASRProvider, host: String) -> Bool {
@@ -47,7 +41,7 @@ enum CloudStreamingAvailability {
         lock.unlock()
         guard isNew else { return }
         Log.warn("CloudASR streaming unavailable provider=\(provider.rawValue) "
-                 + "host=\(loggable(provider: provider, host: host)) reason=\(reason)")
+                 + "host=\(host) reason=\(reason)")
     }
 
     /// 刚刚真的跑通过一次（把开关拨开那一下的探针）：把旧记忆清掉
@@ -57,7 +51,7 @@ enum CloudStreamingAvailability {
         lock.unlock()
         if removed {
             Log.info("CloudASR streaming available again provider=\(provider.rawValue) "
-                     + "host=\(loggable(provider: provider, host: host))")
+                     + "host=\(host)")
         }
     }
 
@@ -74,9 +68,8 @@ enum CloudStreamingAvailability {
 ///
 /// 为什么让它实现 SpeechEngine：松手之后 DictationController 照常调一次
 /// `transcribe(samples:)`，这里只要把「还没发出去的那一截」补发完再收尾就行——
-/// 于是下游（交付、历史、云端失败回落本机、Esc 部分交付）一行都不用改，
-/// 整条链路仍然只有一套。两家客户端也只有这一个接口（RealtimeTranscriptionClient），
-/// 所以下面这些代码一个 if provider 都没有。
+/// 于是下游（交付、历史、云端失败重试、Esc 部分交付）一行都不用改，
+/// 整条链路仍然只有一套。客户端只经由 RealtimeTranscriptionClient 这一个接口被使用。
 final class CloudStreamingSession: SpeechEngine {
 
     private let config: CloudASRConfig
@@ -100,64 +93,47 @@ final class CloudStreamingSession: SpeechEngine {
     /// 松手**之前**就断掉的那次失败（主线程）：决定这一轮交给谁，见 route(afterLosing:)
     private var lostFailure: RealtimeFailure?
 
+    /// 这一句松手时跑过整段上传那条通道（混合转写，见 runHybrid）。
+    /// DictationController 据此不再做「失败 → 整段再传一次」：那一趟已经跑过、也已经失败了，
+    /// 再传一遍只是让用户多等一轮、多付一次钱。
+    private(set) var ranBatchLane = false
+
     // MARK: 建
 
-    /// 这一档实时链路的"地址"——记忆的键，也是日志里那个 host。
-    /// 阿里云是试出来的那台主机；OpenAI 是固定的官方域名（那边没有"选主机"这回事）。
-    static func streamHost(for config: CloudASRConfig) -> String? {
-        switch config.provider {
-        case .alibaba: return AlibabaEndpoint.normalizeHost(config.host)
-        case .openai: return "api.openai.com"
-        }
-    }
+    /// 实时链路的"地址"——记忆的键，也是日志里那个 host。OpenAI 是固定的官方域名
+    /// （没有"选主机"这回事，所以日志里照写、不用打码）。
+    static let streamHost = "api.openai.com"
 
-    /// 这一档实时用的是哪个模型（日志与界面都读它）
-    static func streamModel(for provider: CloudASRProvider) -> String {
-        switch provider {
-        case .alibaba: return AlibabaRealtimeClient.model
-        case .openai: return OpenAIRealtimeClient.model
-        }
-    }
+    /// 实时用的是哪个模型（日志与界面都读它）
+    static var streamModel: String { OpenAIRealtimeClient.model }
 
-    /// 这一轮开不开实时。四道闸门，缺一不可：
+    /// 这一轮开不开实时。三道闸门，缺一不可：
     ///   1. 钥匙串里有 Key；
-    ///   2. OpenAI 那一档必须是**官方接口**——把 Base URL 指向第三方网关的人没有这条路
+    ///   2. OpenAI 必须是**官方接口**——把 Base URL 指向第三方网关的人没有这条路
     ///      （判据与 PrivacyCopy 的留存那句同源：LLMClient.usesResponsesAPI）；
-    ///   3. 地址拼得出来；
-    ///   4. 这条链路这次运行里还没被判过「实时不可用」。
+    ///   3. 这条链路这次运行里还没被判过「实时不可用」。
     /// 任何一道不过就返回 nil —— 调用方照常走整段上传。
     static func make(config: CloudASRConfig, fallback: CloudASREngine,
                      officialOpenAI: Bool = CloudASRSettings.openAIUsesOfficialEndpoint)
         -> CloudStreamingSession? {
         guard !config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        if config.provider == .openai, !officialOpenAI { return nil }
-        guard let host = streamHost(for: config) else { return nil }
+        guard officialOpenAI else { return nil }
         guard !CloudStreamingAvailability.isUnsupported(provider: config.provider,
-                                                        host: host) else { return nil }
-        var normalized = config
-        normalized.host = host
-        return CloudStreamingSession(config: normalized, fallback: fallback)
+                                                        host: streamHost) else { return nil }
+        return CloudStreamingSession(config: config, fallback: fallback)
     }
 
-    /// 按服务商挑客户端。**这是全文件唯一一处 switch provider**——再往下所有动作两家同形。
+    /// 建实时客户端。**全文件唯一的构造点**：真会话与开关探针拿到的是同一份 session.update。
     static func makeClient(config: CloudASRConfig) -> RealtimeTranscriptionClient {
         let prefix = "CloudASR stream provider=\(config.provider.rawValue) "
-        switch config.provider {
-        case .alibaba:
-            return AlibabaRealtimeClient(
-                config: AlibabaRealtimeClient.Config(host: config.host, apiKey: config.apiKey),
-                log: { Log.info(prefix + $0) })
-        case .openai:
-            var options = OpenAIRealtimeClient.Options()
-            // 用户设置里有明确的识别语言就送（这边传错不会翻译，所以是安全的；
-            // 阿里云那边正相反，一个字都不许传）
-            options.languages = config.languageHints
-            // **词汇表在这一档真的管用**：实测专名五次里五次纠正
-            options.keywords = OpenAIRealtimeClient.keywords(from: config.vocabulary)
-            return OpenAIRealtimeClient(
-                config: OpenAIRealtimeClient.Config(apiKey: config.apiKey, options: options),
-                log: { Log.info(prefix + $0) })
-        }
+        var options = OpenAIRealtimeClient.Options()
+        // 有明确的识别语言提示就送（这边传错不会翻译，所以是安全的）
+        options.languages = config.languageHints
+        // **词汇表在这一档真的管用**：实测专名五次里五次纠正
+        options.keywords = OpenAIRealtimeClient.keywords(from: config.vocabulary)
+        return OpenAIRealtimeClient(
+            config: OpenAIRealtimeClient.Config(apiKey: config.apiKey, options: options),
+            log: { Log.info(prefix + $0) })
     }
 
     /// - client: 单测在这里塞一个装着假 socket 的客户端
@@ -171,11 +147,10 @@ final class CloudStreamingSession: SpeechEngine {
     // MARK: 录音期间
 
     /// 建连。**按下热键那一刻就调**（与 prewarm 同一时机），别等第一帧音频：
-    /// 握手阿里云约 0.3 秒、OpenAI 约 0.8 秒，等到有音频再连等于把它原样加在用户的等待上。
+    /// 握手约 0.8 秒，等到有音频再连等于把它原样加在用户的等待上。
     func start() {
-        let host = CloudStreamingAvailability.loggable(provider: config.provider, host: config.host)
         Log.info("CloudASR stream start provider=\(config.provider.rawValue) "
-                 + "model=\(Self.streamModel(for: config.provider)) host=\(host)")
+                 + "model=\(Self.streamModel) host=\(Self.streamHost)")
         client.onPartial = { [weak self] draft in self?.onDraft?(draft) }
         client.onFinish = { [weak self] result in self?.settle(result) }
         client.start()
@@ -205,9 +180,8 @@ final class CloudStreamingSession: SpeechEngine {
     ///   • 还在录音（没人等）→ 本轮另找出路，并把本机预览重新打开。
     private func settle(_ result: Result<RealtimeTranscript, RealtimeFailure>) {
         isLive = false
-        if case .failure(let failure) = result, failure.disablesStreaming,
-           let host = Self.streamHost(for: config) {
-            CloudStreamingAvailability.markUnsupported(provider: config.provider, host: host,
+        if case .failure(let failure) = result, failure.disablesStreaming {
+            CloudStreamingAvailability.markUnsupported(provider: config.provider, host: Self.streamHost,
                                                        reason: failure.logReason)
         }
         if let waiter = awaiting {
@@ -279,6 +253,12 @@ final class CloudStreamingSession: SpeechEngine {
             client.append(samples: tail)
         }
         let seconds = Double(queuedSampleCount) / Double(WAVEncoder.defaultSampleRate)
+        // 整段为准、实时兜底（5.1.0）：不超过 60 秒的句子，实时收尾的同时把整段再传一次，
+        // 谁的字进输入框由 HybridSelection 说了算。更长的句子照旧只等实时（整段只作失败退路）
+        if seconds <= HybridSelection.maxAudioSeconds {
+            return runHybrid(samples: samples, language: language, previousText: previousText,
+                             audioSeconds: seconds, outer: outer, deliver: deliver)
+        }
         awaiting = { [weak self] result in
             guard let self = self else { return }
             guard !outer.isCancelled else {
@@ -306,13 +286,182 @@ final class CloudStreamingSession: SpeechEngine {
                 // 偶发失败（断线 / 报错 / 终稿超时）：交给上层那条「云端失败 → 同步接口重试一次」，
                 // 整段音频还在调用方手上，一个字都不会丢
                 deliver(TranscriptionOutcome(text: "", completedSegments: 0, totalSegments: 1,
-                                             failure: MTError(Self.message(for: failure,
-                                                                           provider: self.config.provider)),
+                                             failure: MTError(Self.message(for: failure)),
                                              cancelled: false))
             }
         }
         client.finish(audioSeconds: seconds)
         return outer
+    }
+
+    // MARK: - 混合转写（整段为准、实时兜底）
+
+    /// 一句话的两条通道到这一刻的样子。只在主线程读写（两条通道的回调都回主线程）。
+    private final class HybridRace {
+        enum Winner { case batch, realtime, none }
+
+        let released = Date()
+        let audioSeconds: Double
+        var realtime: HybridSelection.Lane = .pending
+        var batch: HybridSelection.Lane = .pending
+        var realtimeText = ""
+        var batchText = ""
+        var realtimeFailure: MTError?
+        var batchFailure: MTError?
+        var realtimeAt: Date?
+        var batchAt: Date?
+        var winner: Winner?
+        var timer: DispatchWorkItem?
+        var batchHandle: TranscriptionHandle?
+
+        init(audioSeconds: Double) { self.audioSeconds = audioSeconds }
+
+        /// 某条通道落地时距松手多少毫秒；没落地是「-」（日志用）
+        func ms(_ at: Date?) -> String {
+            at.map { String(Int($0.timeIntervalSince(released) * 1000)) } ?? "-"
+        }
+    }
+
+    /// 松手这一刻两条通道同时出发：实时收尾 + 整段上传（同一个 fallback 引擎，已经是 m4a）。
+    /// 两条落地的文字都过同一套本地清理（实时那条在这里清，整段那条引擎按段清过了）。
+    private func runHybrid(samples: [Float], language: String?, previousText: String,
+                           audioSeconds: Double, outer: TranscriptionHandle,
+                           deliver: @escaping (TranscriptionOutcome) -> Void) -> TranscriptionHandle {
+        ranBatchLane = true
+        let race = HybridRace(audioSeconds: audioSeconds)
+
+        outer.setCancelHandler { [weak self] in
+            // Esc：两条都掐掉，谁都不再进输入框
+            race.timer?.cancel()
+            race.winner = race.winner ?? HybridRace.Winner.none
+            race.batchHandle?.cancel()
+            self?.abandon()
+            // 交付不能同步做（理由同上面那一支）
+            DispatchQueue.main.async {
+                deliver(TranscriptionOutcome(text: "", completedSegments: 0, totalSegments: 1,
+                                             failure: nil, cancelled: true))
+            }
+        }
+
+        race.batchHandle = fallback.transcribe(samples: samples, language: language,
+                                               previousText: previousText,
+                                               onSegment: nil) { [weak self] outcome in
+            guard !outcome.cancelled else { return }   // 只有我们自己掐的才会是取消
+            race.batchAt = Date()
+            if let failure = outcome.failure {
+                race.batch = .failed
+                race.batchFailure = failure
+            } else {
+                race.batchText = outcome.text
+                race.batch = Self.lane(for: outcome.text)
+            }
+            if race.winner != nil {
+                // 实时已经赢了（窗口过了）：迟到的整段只记一行，丢掉
+                if race.winner == .realtime {
+                    Log.info("CloudASR hybrid batch arrived late batch=\(race.ms(race.batchAt))ms "
+                             + "lane=\(race.batch) (discarded)")
+                }
+                return
+            }
+            self?.decideHybrid(race, outer: outer, deliver: deliver)
+        }
+
+        awaiting = { [weak self] result in
+            race.realtimeAt = Date()
+            switch result {
+            case .success(let transcript):
+                // 只清**终稿**（草稿不清，理由同上）
+                race.realtimeText = TextPostProcessor.cleanTranscript(transcript.text)
+                race.realtime = Self.lane(for: race.realtimeText)
+            case .failure(let failure):
+                // 「这条链路不支持实时」在 settle 里已经记住了；这一句整段本来就在路上
+                race.realtime = .failed
+                race.realtimeFailure = MTError(Self.message(for: failure))
+            }
+            guard race.winner == nil, !outer.isCancelled else { return }
+            self?.decideHybrid(race, outer: outer, deliver: deliver)
+        }
+        client.finish(audioSeconds: audioSeconds)
+        return outer
+    }
+
+    /// 清理之后有没有字
+    private static func lane(for text: String) -> HybridSelection.Lane {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .empty : .usable
+    }
+
+    /// 每当一条通道落地、或者规则 2 的窗口到点，问一次 HybridSelection：用谁、还是再等。
+    private func decideHybrid(_ race: HybridRace, outer: TranscriptionHandle,
+                              deliver: @escaping (TranscriptionOutcome) -> Void) {
+        guard race.winner == nil, !outer.isCancelled else { return }
+        let since = race.realtimeAt.map { Date().timeIntervalSince($0) }
+        let differ = race.realtime == .usable && race.batch == .usable
+            && HybridSelection.scriptsDiffer(race.realtimeText, race.batchText)
+        let step = HybridSelection.next(realtime: race.realtime, batch: race.batch,
+                                        sinceRealtimeFinal: since, audioSeconds: race.audioSeconds,
+                                        scriptsDiffer: differ)
+        switch step {
+        case .useBatch:
+            if differ {
+                // 只记文字系统的名字，不记任何文字
+                Log.info("CloudASR hybrid scripts differ "
+                         + "rt=\(HybridSelection.dominantScript(race.realtimeText).map { "\($0)" } ?? "-") "
+                         + "batch=\(HybridSelection.dominantScript(race.batchText).map { "\($0)" } ?? "-") → batch")
+            }
+            finishHybrid(race, winner: .batch, deliver: deliver,
+                         outcome: TranscriptionOutcome(text: race.batchText, completedSegments: 1,
+                                                       totalSegments: 1, failure: nil, cancelled: false))
+        case .useRealtime:
+            finishHybrid(race, winner: .realtime, deliver: deliver,
+                         outcome: TranscriptionOutcome(text: race.realtimeText, completedSegments: 1,
+                                                       totalSegments: 1, failure: nil, cancelled: false))
+        case .waitForEither, .waitForRealtime, .waitForBatch(window: nil):
+            break
+        case .waitForBatch(window: let rest?):
+            race.timer?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                self?.decideHybrid(race, outer: outer, deliver: deliver)
+            }
+            race.timer = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + rest, execute: work)
+        case .noSpeech:
+            // 服务商回了、没字：交出空文本，下游那句「没有听到内容」负责说话（与改动前同一条路）
+            finishHybrid(race, winner: .none, deliver: deliver,
+                         outcome: TranscriptionOutcome(text: "", completedSegments: 1, totalSegments: 1,
+                                                       failure: nil, cancelled: false))
+        case .failure:
+            // 两条都失败：报整段那条的原因（它更可能是 Key / 额度这类用户能处理的话），没有就报实时那条
+            let failure = race.batchFailure ?? race.realtimeFailure
+                ?? MTError(CloudFallbackDecision.retryExhausted)
+            finishHybrid(race, winner: .none, deliver: deliver,
+                         outcome: TranscriptionOutcome(text: "", completedSegments: 0, totalSegments: 1,
+                                                       failure: failure, cancelled: false))
+        }
+    }
+
+    private func finishHybrid(_ race: HybridRace, winner: HybridRace.Winner,
+                              deliver: @escaping (TranscriptionOutcome) -> Void,
+                              outcome: TranscriptionOutcome) {
+        race.winner = winner
+        race.timer?.cancel()
+        race.timer = nil
+        // 整段赢了而实时还没收尾：掐掉它（commit 之前掐掉 = 这一句不计实时的钱）
+        if winner == .batch, race.realtime == .pending {
+            awaiting = nil
+            isLive = false
+            client.cancel()
+        }
+        let label: String
+        switch winner {
+        case .batch: label = "batch"
+        case .realtime: label = "realtime"
+        case .none: label = "none"
+        }
+        let window = Int(HybridSelection.window(audioSeconds: race.audioSeconds) * 1000)
+        Log.info("CloudASR hybrid final=\(label) rt=\(race.ms(race.realtimeAt)) "
+                 + "batch=\(race.ms(race.batchAt)) window=\(window) "
+                 + "audio=\(String(format: "%.1f", race.audioSeconds))")
+        deliver(outcome)
     }
 
     /// 交给整段上传那条路，并把取消与分段进度原样转接过去
@@ -335,8 +484,7 @@ final class CloudStreamingSession: SpeechEngine {
     ///
     /// 它只有在同步那条退路**也**没成的时候才会真的出现在屏幕上：
     /// DictationController 会先拿整段音频再走一次同步接口（见 CloudFallbackDecision）。
-    static func message(for failure: RealtimeFailure, provider: CloudASRProvider) -> String {
-        let name = provider == .alibaba ? tr("阿里云", "Alibaba Cloud") : "OpenAI"
+    static func message(for failure: RealtimeFailure) -> String {
         switch failure {
         case .finalTimeout:
             return tr("云端识别没有按时返回结果，请再说一次",
@@ -345,15 +493,12 @@ final class CloudStreamingSession: SpeechEngine {
             return tr("云端识别报错", "Cloud recognition reported an error")
                 + (code.map { " (" + $0 + ")" } ?? "")
         case .transport:
-            return tr("到\(name)的实时连接中断了，请再说一次",
-                      "The realtime connection to \(name) dropped - please say it again")
-        case .handshakeRejected(let status):
-            return tr("\(name)拒绝了实时连接", "\(name) refused the realtime connection")
-                + " (\(status))"
+            return tr("到 OpenAI 的实时连接中断了，请再说一次",
+                      "The realtime connection to OpenAI dropped - please say it again")
         case .unauthorized:
-            return tr("\(name)不接受这把 Key（实时识别）",
-                      "\(name) did not accept this key for realtime recognition")
-        case .modelMismatch, .modelUnavailable:
+            return tr("OpenAI 不接受这把 Key（实时识别）",
+                      "OpenAI did not accept this key for realtime recognition")
+        case .modelUnavailable:
             return tr("这条链路上没有实时识别模型",
                       "This endpoint has no realtime speech model")
         }
@@ -364,9 +509,8 @@ final class CloudStreamingSession: SpeechEngine {
 
 /// 「识别也用云端」拨开时，除了现有那趟同步探针，**再试一次实时这条链路**。
 ///
-/// 为什么值得多花这一秒的钱：开着的开关必须意味着"它真的能用"，而实时与同步是两条不同的
-/// 链路（阿里云实测里工作空间主机在 HTTP 侧 200、在 WebSocket 侧 403）。用户在这一刻是最该
-/// 知道"我按下去之后会是什么体验"的——是松手就有结果，还是录完再传。
+/// 为什么值得多花这一秒的钱：实时与同步是两条不同的链路，一边通不代表另一边通。
+/// 用户在这一刻是最该知道"我按下去之后会是什么体验"的——是松手就有结果，还是录完再传。
 enum CloudStreamingProbe {
 
     enum Outcome: Equatable {
@@ -379,21 +523,19 @@ enum CloudStreamingProbe {
         case inconclusive
     }
 
-    /// 发 1 秒合成音走一遍完整的实时流程（OpenAI 那一档顺带把 16→24 kHz 重采样也走一遍）。
-    /// completion 在主线程。代价：1 秒音频的计费（阿里云约 $0.000035，OpenAI 约 $0.0003）。
+    /// 发 1 秒合成音走一遍完整的实时流程（顺带把 16→24 kHz 重采样也走一遍）。
+    /// completion 在主线程。代价：1 秒音频的计费（OpenAI 约 $0.0003）。
     static func run(config: CloudASRConfig,
                     officialOpenAI: Bool = CloudASRSettings.openAIUsesOfficialEndpoint,
                     completion: @escaping (Outcome) -> Void) {
         guard !config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              config.provider != .openai || officialOpenAI,
-              let host = CloudStreamingSession.streamHost(for: config) else {
+              officialOpenAI else {
             DispatchQueue.main.async { completion(.inconclusive) }
             return
         }
-        var probed = config
-        probed.host = host
+        let host = CloudStreamingSession.streamHost
         let provider = config.provider
-        let client = CloudStreamingSession.makeClient(config: probed)
+        let client = CloudStreamingSession.makeClient(config: config)
         // client 由这个闭包持有到收口为止；deliver 时客户端自己把 onFinish 置空，环就断了
         client.onFinish = { result in
             let outcome: Outcome
@@ -402,7 +544,7 @@ enum CloudStreamingProbe {
                 outcome = .live
             case .failure(let failure):
                 Log.warn("CloudASR stream probe failed provider=\(provider.rawValue) "
-                         + "host=\(CloudStreamingAvailability.loggable(provider: provider, host: host)) "
+                         + "host=\(host) "
                          + failure.logReason)
                 outcome = failure.disablesStreaming ? .unsupported : .inconclusive
             }

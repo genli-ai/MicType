@@ -2,8 +2,8 @@ import Foundation
 
 // MARK: - WAV 编码（16kHz 单声道 PCM16）
 //
-// 为什么自己写：云端两家都只吃文件形式的音频（阿里云 3.0 模型的 format 枚举只列
-// wav/mp3/opus），而 WAV 的全部内容就是 44 字节 RIFF 头 + 小端 PCM16——用
+// 为什么自己写：整段上传那条路（gpt-transcribe）只吃文件形式的音频，
+// 而 WAV 的全部内容就是 44 字节 RIFF 头 + 小端 PCM16——用
 // AVFoundation 反而要落一个临时文件、还要管清理。这里是纯函数，不碰全局状态、可单测。
 
 enum WAVEncoder {
@@ -63,18 +63,8 @@ enum WAVEncoder {
         return d
     }
 
-    // MARK: base64 / data URI
-
-    /// `data:audio/wav;base64,…` —— 阿里云 input_audio 要的形式
-    static func dataURI(wav: Data, mime: String = "audio/wav") -> String {
-        "data:" + mime + ";base64," + wav.base64EncodedString()
-    }
-
-    /// 只要 base64 正文：10MB 预校验算的就是这一段（不含 `data:` 前缀）
-    static func base64(wav: Data) -> String { wav.base64EncodedString() }
-
-    /// 不真的编码也能算出 base64 长度——预校验用，省一次 MB 级的字符串分配
-    static func base64Length(forByteCount n: Int) -> Int { ((n + 2) / 3) * 4 }
+    // base64 / data URI 那三个小工具 5.1.0 删掉：只有阿里云的请求体（data URI）与它的
+    // 10MB base64 预校验用它们；OpenAI 是 multipart 原样传 WAV。
 
     // MARK: 小工具
 

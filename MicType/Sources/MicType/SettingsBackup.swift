@@ -41,6 +41,8 @@ import UniformTypeIdentifiers
 //   customPolishRules       ← customPolishRules      / CustomPolishRules
 //   llmProvider             ← llmProvider            / LlmProvider
 //                             "openai" | "deepseek" | "qwen" | "custom" | "local"
+//                             **macOS 5.1.0 起只认 "openai"**：别的值（含 5.0.x 的 "qwen"）是退役的档，
+//                             导入时静默跳过——不改设置、也不算"不认识的键"
 //                             **切档要连它这一档的地址与型号一起带**：custom / local 出厂没有
 //                             内置端点或型号名，只搬一个档位过去等于把对方的 AI 关掉（见下面几行）
 //   openaiBaseURL           ← openaiBaseURL          / OpenAiBaseUrl
@@ -68,10 +70,8 @@ import UniformTypeIdentifiers
 //   keepHistory             ← keepHistory            / （Windows 暂无）      布尔
 //   recognitionEngine       ← recognitionEngine      / （Windows 暂无）      "local" | "cloudAlibaba" | "cloudOpenAI"
 //   recognitionLanguage     ← recognitionLanguage    / （Windows 暂无）      语言代码，"" = 自动检测
-//   cloudAlibabaModel       ← cloudAlibabaModel      / （Windows 暂无）      "qwen3-asr-flash" | "qwen-audio-3.0-asr-flash"
-//   qwenApiHost             ← qwenAPIHost            / （Windows 暂无）      百炼接入地址（用户可填；空 = 自动探测）
-//   qwenRegion              ← qwenRegion             / （Windows 暂无）      老设置：DashScope 接入区域（4.0.1 起界面上没有了）
-//   qwenWorkspaceId         ← qwenWorkspaceID        / （Windows 暂无）      老设置：区域端点主机名第一段
+//   cloudAlibabaModel / qwenApiHost / qwenRegion / qwenWorkspaceId
+//                           ← 阿里云那一档（5.1.0 删掉）：**既不导出也不导入**，老文件里读到只认不写
 //   speechModelRepo         ← qwenModelRepo          / （Windows 暂无）      HuggingFace 仓库 ID（"owner/name"）
 //
 // 关于 speechModelRepo：它确实和本机磁盘有关（导过去那台机器多半还没下这个模型），但它是
@@ -146,12 +146,14 @@ enum SettingsBackup {
 
         /// 这些键 5.0.0 之后**只认、不写**（见 all 的注释）。导入时读到就跳过，
         /// 既不报错、也不记进"被忽略的键"——它们不是坏数据，只是没有归宿了。
+        /// 5.1.0 加上阿里云那四个（识别模型 / 接入地址 / 区域 / WorkspaceId）：那一档删掉了。
         static let legacyIgnored: Set<String> = [
             polishLevel, deepseekBaseURL, customBaseURL,
             openaiPolishModel, openaiCommandModel, deepseekPolishModel, deepseekCommandModel,
             qwenPolishModel, qwenCommandModel, customPolishModel, customCommandModel,
             localRuntime, localPolishModel, localCommandModel,
             recognitionEngine, recognitionLanguage, speechModelRepo,
+            cloudAlibabaModel, qwenApiHost, qwenRegion, qwenWorkspaceId,
         ]
     }
 
@@ -182,14 +184,8 @@ enum SettingsBackup {
             Key.playSounds: s.playSounds,
             Key.restoreClipboard: s.restoreClipboard,
             Key.keepHistory: s.keepHistory,
-            // 识别这一段只剩三条：同步那条退路用哪个模型、接入地址、工作空间。
-            // 「用哪一家识别」不导出——它由 llmProvider 推出来（5.0.0 起没有单独的引擎设置）。
-            // Key 一如既往不在里面。试出来的那台主机（qwenResolvedHost）**不导出**：
-            // 它是本机探测的缓存，换台机器重新试一次就有。
-            Key.cloudAlibabaModel: s.cloudAlibabaModel.rawValue,
-            Key.qwenApiHost: s.qwenAPIHost,
-            Key.qwenRegion: s.qwenRegion.rawValue,
-            Key.qwenWorkspaceId: s.qwenWorkspaceID,
+            // 阿里云那四条（识别模型 / 接入地址 / 区域 / WorkspaceId）5.1.0 不再导出：那一档删掉了。
+            // Key 一如既往不在里面。
         ]
 
         let stamp = ISO8601DateFormatter()
@@ -264,15 +260,7 @@ enum SettingsBackup {
         return true
     }
 
-    /// WorkspaceId 会被拼进**主机名第一段**（{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com），
-    /// 所以这道闸和 base URL 那道是同一个理由：别人发来的文件不该能把你的音频指到别的主机去。
-    /// 只放行主机名标签允许的字符。
-    static func isAcceptableWorkspaceID(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return true }   // 空 = 不用专属主机，是合法状态
-        guard trimmed.count <= 63 else { return false }
-        return trimmed.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
-    }
+    // isAcceptableWorkspaceID（阿里云 WorkspaceId 的主机名字符校验）5.1.0 随那一档删掉。
 
     /// 把文档应用到设置上（合并语义）。抛错只发生在「这压根不是一份 MicType 设置文件」。
     @discardableResult
@@ -397,9 +385,21 @@ enum SettingsBackup {
         // 它在 Key.all 里，所以老文件里的这一项不会被报成"不认识的键"，只是不起作用。
         // Key.legacyIgnored 里那十几条同理（见那张表的注释）。
         //
-        // 服务商换了 = 从此刻起 Key 和听写文本发给另一家。和识别引擎同一条纪律：当面念出来，
-        // 只报一句"导入成功"等于把最该被看见的一条藏起来了。
-        enumValue(Key.llmProvider, notable: true) { (v: LLMProvider) in Settings.shared.llmProvider = v }
+        // 服务商：5.1.0 起只有 OpenAI 一家。文件里写着 openai 就照写（一个字都不变，所以不念）；
+        // 写着退役的那几档（5.0.x 的 qwen、4.x 的 deepseek / custom / local）**静默跳过**——
+        // 它们不是坏数据，只是没有归宿了，报成"忽略 1 项（不认识或格式不对）"会让人以为文件坏了。
+        // 只有类型都不对（不是字符串）才算格式错误。
+        if let raw = settings[Key.llmProvider] {
+            if let text = raw as? String {
+                if let match = LLMProvider.allCases.first(where: {
+                    $0.rawValue.compare(text, options: .caseInsensitive) == .orderedSame }) {
+                    Settings.shared.llmProvider = match
+                    summary.updatedKeys.append(Key.llmProvider)
+                }
+            } else {
+                summary.ignoredKeys.append(Key.llmProvider)
+            }
+        }
         // 界面语言走 L10n（@Published，切了要立刻刷新界面；它自己负责落盘）
         enumValue(Key.appLanguage) { (v: AppLanguage) in L10n.shared.language = v }
 
@@ -414,34 +414,9 @@ enum SettingsBackup {
             Settings.shared.autoStopSilenceSeconds = ($0 > 0 && $0 < 1) ? 1 : $0
         }
 
-        // Key.recognitionEngine 5.0.0 起只认不写：用哪一家识别由 llmProvider 推出来，
-        // 而那一条上面已经当面念过了。
-        //
-        // 这一项决定云端识别打的是哪个模型（也就是按什么价钱计费），和模型名同一条纪律
-        enumValue(Key.cloudAlibabaModel, notable: true) { (v: AlibabaASRModel) in
-            Settings.shared.cloudAlibabaModel = v
-        }
-        // 接入地址 = 收信主机，也就是 Key 与音频落在哪个司法辖区。一个字段就能把它们
-        // 从新加坡搬到北京，所以必须当面念出来，而且只接受一个像样的主机名。
-        // 空值一律跳过（nonEmptyString 而不是 checkedString）：4.0.1 的常态就是空着
-        // （地址自己试出来），而导出端总是写出这个键。照 checkedString 收的话，导入任何一份
-        // 没用过百炼的设置文件，都会抹掉导入方已经探测成功的主机缓存，还会在摘要里
-        // 记一条空的 notable，触发那句"这份文件改了接入地址"的假警报。
-        nonEmptyString(Key.qwenApiHost, notable: true,
-                       isValid: { AlibabaEndpoint.normalizeHost($0) != nil }) {
-            Settings.shared.qwenAPIHost = $0
-            // 地址被文件改了，上一次试通的那台就不再算数（"验证过"那一位一起清）
-            Settings.shared.qwenResolvedHost = ""
-            Settings.shared.qwenHostVerified = false
-        }
-        // 老设置，界面上已经没有了（4.0.1 拿掉了区域选择器）。仍然接受它：它是候选
-        // 主机表的排序线索，老文件导进来不该整段丢掉。
-        enumValue(Key.qwenRegion, notable: true) { (v: LLMCatalog.QwenRegion) in
-            Settings.shared.qwenRegion = v
-        }
-        checkedString(Key.qwenWorkspaceId, notable: true, isValid: isAcceptableWorkspaceID) {
-            Settings.shared.qwenWorkspaceID = $0
-        }
+        // Key.recognitionEngine 5.0.0 起只认不写：识别跟着服务商走。
+        // 阿里云那四个键（cloudAlibabaModel / qwenApiHost / qwenRegion / qwenWorkspaceId）
+        // 5.1.0 起同样只认不写（见 Key.legacyIgnored）：那一档删掉了，收下它们无处可写。
 
         bool(Key.livePreview) { Settings.shared.livePreview = $0 }
         bool(Key.playSounds) { Settings.shared.playSounds = $0 }
@@ -562,21 +537,11 @@ extension SettingsBackup {
             // 只有地址真的被改了才说这句重话，模型名换一换不至于
             if summary.notableChanges.contains(where: {
                 $0.hasPrefix(Key.openaiBaseURL) || $0.hasPrefix(Key.deepseekBaseURL)
-                    || $0.hasPrefix(Key.qwenApiHost)
             }) {
                 lines.append(tr("接口地址决定你的 API Key 和文本发往哪里——不是自己写的地址请改回去。",
                                 "The endpoint decides where your API key and text are sent — change it back if you didn't choose it."))
             }
-            // 区域 / 接入地址被改 = 收信主机换了一个司法辖区（润色与云端识别共用这一项）
-            if summary.notableChanges.contains(where: {
-                $0.hasPrefix(Key.qwenRegion) || $0.hasPrefix(Key.qwenApiHost)
-            }) {
-                // 4.3.1 起「接入地址」那一栏又在屏幕上了，所以这句话指回它——而且要说清楚
-                // **它不会被自动换掉**（那条"失败就丢掉重试"的规矩已经撤了）：
-                // 收下一份别人的设置之后，音频落在哪台服务器上必须是他自己能看见、能改的。
-                lines.append(tr("这份文件带来一个百炼接入地址：识别与润色会改发到那台服务器（可能是另一个司法辖区）。不是自己要的就在「设置」里把 API Host 清空，交回自动探测。",
-                                "This file brings its own Model Studio endpoint: recognition and polish will go to that server, possibly in a different jurisdiction. Clear API Host in Settings to hand the job back to auto-detection if you did not want it."))
-            }
+            // 「这份文件带来一个百炼接入地址」那一句 5.1.0 随阿里云删掉：那几个键不再被导入。
             // 「这份文件把识别改成云端了」那一句 5.0.0 删掉：识别本来就只有云端一条路，
             // 而服务商换没换已经由上面那句 llmProvider 的话说过了。
         }

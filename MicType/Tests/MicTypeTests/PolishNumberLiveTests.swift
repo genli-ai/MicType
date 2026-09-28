@@ -9,22 +9,17 @@ import XCTest
 //
 // 默认**不跑**（LLM 输出有随机性，门禁不该绑在它上面），要两个条件：
 //   • 环境变量 MICTYPE_LIVE_POLISH=1
-//   • Key（**永远不 print**）：
-//       阿里云 —— MICTYPE_QWEN_TEST_KEY 或 ~/.config/mictype/qwen_test_key
-//       OpenAI —— MICTYPE_OPENAI_TEST_KEY 或 ~/.config/mictype/openai_test_key
-//     OpenAI 那半边没有 Key 就单独跳过（用户实际在用的是 gpt-5.6-luna，有 Key 时最该跑的就是它）。
+//   • Key（**永远不 print**）：MICTYPE_OPENAI_TEST_KEY 或 ~/.config/mictype/openai_test_key
+//     （5.1.0 起只有 OpenAI 一家；阿里云那半边随那一档删掉）。
 //
 // 跑法（xcodebuild 要用 TEST_RUNNER_ 前缀把环境变量传进测试进程）：
 //   TEST_RUNNER_MICTYPE_LIVE_POLISH=1 xcodebuild test -scheme MicType \
 //     -destination 'platform=macOS,arch=arm64' -derivedDataPath .xcbuild \
 //     -only-testing:MicTypeTests/PolishNumberLiveTests
 //
-// 代价：每个服务商 10 次短请求，合计几分钱。
+// 代价：十几次短请求，合计几分钱。
 final class PolishNumberLiveTests: XCTestCase {
 
-    /// 阿里云国际站的兼容模式接口——润色走的就是这条路
-    private static let qwenEndpoint = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
-    private static let qwenModel = "qwen3.8-flash"
     /// OpenAI 官方端点 + 用户实际在用的型号（润色走 Responses）
     private static let openAIEndpoint = "https://api.openai.com/v1/responses"
     private static let openAIModel = "gpt-5.6-luna"
@@ -67,33 +62,13 @@ final class PolishNumberLiveTests: XCTestCase {
 
     // MARK: - 两条真实链路
 
-    /// 阿里云：chat/completions。系统提示词取**线上那一份**，原文照样用定界块包住
-    private func polishWithQwen(_ raw: String, key: String,
-                                system: String = PolishService.systemPrompt()) throws -> String {
-        let body: [String: Any] = [
-            "model": Self.qwenModel,
-            // qwen3.5–3.8 默认开思考，润色必须关掉（4.1.2 踩过）
-            "enable_thinking": false,
-            "messages": [
-                ["role": "system", "content": system],
-                ["role": "user", "content": "<<<原文>>>\n" + raw + "\n<<<结束>>>"],
-            ],
-        ]
-        let json = try post(Self.qwenEndpoint, body: body, key: key)
-        guard let choices = json["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any],
-              let content = message["content"] as? String else {
-            throw MTError("unparseable qwen response")
-        }
-        return content.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     /// OpenAI：Responses。请求体直接用 App 自己那份 `LLMClient.responsesBody`——
     /// 复制一份到测试里的话，线上改了参数这条验收照样绿，那就白验了
-    private func polishWithOpenAI(_ raw: String, key: String) throws -> String {
+    private func polishWithOpenAI(_ raw: String, key: String,
+                                  system: String = PolishService.systemPrompt()) throws -> String {
         let body = LLMClient.responsesBody(
             model: Self.openAIModel,
-            system: PolishService.systemPrompt(),
+            system: system,
             user: "<<<原文>>>\n" + raw + "\n<<<结束>>>",
             purpose: .polish,
             temperature: nil,
@@ -168,21 +143,13 @@ final class PolishNumberLiveTests: XCTestCase {
         }
     }
 
-    func testQwenWritesArabicNumeralsAndTheGuardLetsThemThrough() throws {
-        try requireLiveRun()
-        guard let key = liveKey(env: "MICTYPE_QWEN_TEST_KEY", file: "qwen_test_key") else {
-            throw XCTSkip("需要 MICTYPE_QWEN_TEST_KEY 或 ~/.config/mictype/qwen_test_key")
-        }
-        try check("qwen") { try polishWithQwen($0, key: key) }
-    }
-
     /// 轻清理那一趟（4.3.3）：**被保真校验拦下之后的最后一次机会**，所以两件事都得真跑一遍——
     /// 语气词删干净了没有，以及这一稿会不会又被同一道校验拦下（那样这趟重试就白做了）。
     /// 语料照抄用户 history.json 里被拦下、结果原样交付的那几句的长相。
     func testLightPromptStripsFillersAndSurvivesTheGuard() throws {
         try requireLiveRun()
-        guard let key = liveKey(env: "MICTYPE_QWEN_TEST_KEY", file: "qwen_test_key") else {
-            throw XCTSkip("需要 MICTYPE_QWEN_TEST_KEY 或 ~/.config/mictype/qwen_test_key")
+        guard let key = liveKey(env: "MICTYPE_OPENAI_TEST_KEY", file: "openai_test_key") else {
+            throw XCTSkip("需要 MICTYPE_OPENAI_TEST_KEY 或 ~/.config/mictype/openai_test_key")
         }
         let raws = [
             "啊啊，这个接口，嗯，是是怎么回事啊，那个那个我昨天试了一下有点有点慢",
@@ -192,7 +159,7 @@ final class PolishNumberLiveTests: XCTestCase {
         // 内置口水词表里最没有歧义的那几个：轻清理之后一个都不该剩
         let fillers = ["啊啊", "那个那个", "是是", "有点有点", "然后然后", "就是说", " um", " uh"]
         for raw in raws {
-            let polished = try polishWithQwen(raw, key: key, system: PolishService.lightPrompt())
+            let polished = try polishWithOpenAI(raw, key: key, system: PolishService.lightPrompt())
             let drift = TextPostProcessor.polishDriftCheck(raw: raw, polished: polished)
             print("live light polish:\n  raw      = \(raw)\n  polished = \(polished)"
                   + "\n  guard    = \(drift ?? "passed")")

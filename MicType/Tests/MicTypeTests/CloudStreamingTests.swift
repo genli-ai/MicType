@@ -1,16 +1,18 @@
 import XCTest
 @testable import MicType
 
-/// 云端实时识别（WebSocket）：协议层与接线层的单测。**一个字节都不上网**——
-/// socket 是注入的假实现，整条状态机在假 socket 上跑完。
+/// 云端实时识别的**接线层**（CloudStreamingSession）与共享底座（RealtimeTransport）的单测。
+/// **一个字节都不上网**——socket 是注入的假实现，整条状态机在假 socket 上跑完。
 ///
-/// 为什么这些用例值得存在（每一条都对应一次真金白银的实测教训，
-/// 见 docs/阿里云实时识别-协议实测_260921.md）：
-///   • `?model=` 拼错不会报错，只会被**静默换成更贵的模型** → 回显必须核对；
-///   • `session.update` 发第二次直接 1007 断连 → 只能发一次；
-///   • 单帧超 262144 字节 1009、发送超 2560 KB/s 1007 → 分帧与节流都要有；
-///   • `usage.duration` 是**整条会话的累计值** → 只能取最后一条，绝不能相加；
-///   • `COMMON_ERROR` 不断连也不给终稿 → 收到即判失败，不能傻等超时。
+/// 协议客户端本身（OpenAI 的 update / commit / 重采样 / 节流）由 OpenAIRealtimeTests 钉着；
+/// 这里钉的是它上面那一层——下一步的混合转写要搭在这一层上：
+///   • 松手时发到的采样数**恰好等于**这一段录音，不多不少；
+///   • 终稿过本地清理、草稿不清；
+///   • 实时在松手前断了 → 这一轮自己退回整段上传，用户察觉不到；
+///   • 「这条链路不支持实时」只记在内存里、只对那一条链路生效。
+///
+/// 5.1.0 之前这个文件的大半是阿里云实时协议的用例；那一档删掉之后，
+/// 接线层的用例改在 OpenAI 客户端上跑（同一个 RealtimeTranscriptionClient 接口）。
 final class CloudStreamingTests: XCTestCase {
 
     override func setUp() {
@@ -18,7 +20,11 @@ final class CloudStreamingTests: XCTestCase {
         CloudStreamingAvailability.resetForTesting()
     }
 
+    /// 用例期间要活着的对象（见 releaseHybrid）
+    private var keepAlive: [AnyObject] = []
+
     override func tearDown() {
+        keepAlive = []
         CloudStreamingAvailability.resetForTesting()
         super.tearDown()
     }
@@ -42,8 +48,9 @@ final class CloudStreamingTests: XCTestCase {
         }
         var appends: [String] { sent.filter { $0.contains("input_audio_buffer.append") } }
         var updates: [String] { sent.filter { $0.contains("\"session.update\"") } }
+        /// 5.1.0 之前阿里云那边的收尾；OpenAI 没有这一条（留着好断言"一条都没有"）
         var finishes: [String] { sent.filter { $0.contains("\"session.finish\"") } }
-        /// OpenAI 那边的收尾（那边没有 session.finish）
+        /// OpenAI 的收尾
         var commits: [String] { sent.filter { $0.contains("input_audio_buffer.commit") } }
         var clears: [String] { sent.filter { $0.contains("input_audio_buffer.clear") } }
 
@@ -79,36 +86,22 @@ final class CloudStreamingTests: XCTestCase {
     // MARK: - 小工具
 
     private func makeClient(_ socket: FakeSocket,
-                            configure: ((inout AlibabaRealtimeClient.Config) -> Void)? = nil)
-        -> AlibabaRealtimeClient {
-        var config = AlibabaRealtimeClient.Config(host: "dashscope-intl.aliyuncs.com",
-                                                  apiKey: "sk-unit-test")
+                            configure: ((inout OpenAIRealtimeClient.Config) -> Void)? = nil)
+        -> OpenAIRealtimeClient {
+        var config = OpenAIRealtimeClient.Config(apiKey: "sk-unit-test")
         configure?(&config)
-        return AlibabaRealtimeClient(config: config, makeSocket: { _, _ in socket })
+        return OpenAIRealtimeClient(config: config, makeSocket: { _, _ in socket })
     }
 
     /// 连到"可以送音频了"那一刻
-    private func bringUp(_ client: AlibabaRealtimeClient, _ socket: FakeSocket,
-                         model: String = AlibabaRealtimeClient.model) {
-        client.start()
+    private func bringUp(_ client: OpenAIRealtimeClient, _ socket: FakeSocket) {
         client.drainForTesting()
         socket.open()
         client.drainForTesting()
-        socket.receive(Self.sessionCreated(model: model))
+        socket.receive(#"{"type":"session.created","session":{"id":"sess_x"}}"#)
         client.drainForTesting()
-        socket.receive(#"{"type":"session.updated"}"#)
+        socket.receive(#"{"type":"session.updated","session":{"id":"sess_x"}}"#)
         client.drainForTesting()
-    }
-
-    private static func sessionCreated(model: String) -> String {
-        // 2026-09-21 实测的真实形状（连字段顺序都照抄）
-        """
-        {"event_id":"event_x","type":"session.created","session":{"object":"realtime.session",\
-        "model":"\(model)","modalities":["text"],"input_audio_format":"pcm","sample_rate":16000,\
-        "input_audio_transcription":{"model":"\(model)"},\
-        "turn_detection":{"type":"server_vad","threshold":0.2,"silence_duration_ms":800},\
-        "id":"sess_x"}}
-        """
     }
 
     private func tone(seconds: Double) -> [Float] {
@@ -127,440 +120,8 @@ final class CloudStreamingTests: XCTestCase {
         return condition()
     }
 
-    // MARK: - 纯函数
-
-    func testEndpointCarriesTheModelQuery() {
-        let url = AlibabaRealtimeClient.endpoint(host: "dashscope-intl.aliyuncs.com")
-        XCTAssertEqual(url?.absoluteString,
-                       "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime?model=qwen3-asr-flash-realtime")
-        XCTAssertNil(AlibabaRealtimeClient.endpoint(host: ""))
-        XCTAssertNil(AlibabaRealtimeClient.endpoint(host: "https://host.example.com/api"))
-    }
-
-    /// session.update 的四个字段一个都不能少，而且**绝不许出现 language**：
-    /// 中文音频配 language:"en" 会被静默翻译成英文（违反「禁止翻译」铁律）
-    func testSessionUpdateHasNoLanguageAndDisablesServerVAD() throws {
-        let text = AlibabaRealtimeClient.sessionUpdateMessage(sampleRate: 16000)
-        XCTAssertFalse(text.contains("language"), text)
-        let json = try XCTUnwrap((try? JSONSerialization.jsonObject(with: Data(text.utf8)))
-                                    as? [String: Any])
-        XCTAssertEqual(json["type"] as? String, "session.update")
-        let session = try XCTUnwrap(json["session"] as? [String: Any])
-        XCTAssertEqual(session["modalities"] as? [String], ["text"])
-        XCTAssertEqual(session["input_audio_format"] as? String, "pcm")
-        XCTAssertEqual(session["sample_rate"] as? Int, 16000)
-        // 不显式关掉的话默认是 server VAD，实测会截掉句尾
-        XCTAssertTrue(session["turn_detection"] is NSNull)
-        XCTAssertEqual((session["input_audio_transcription"] as? [String: Any])?.count, 0)
-    }
-
-    func testPCM16IsLittleEndianAndClamps() {
-        let data = RealtimeAudio.pcm16LE([0, 1.0, -1.0, 9.0, .nan])
-        XCTAssertEqual(data.count, 10)
-        XCTAssertEqual(Array(data[0..<2]), [0, 0])
-        XCTAssertEqual(Array(data[2..<4]), [0xFF, 0x7F], "1.0 → 32767，小端")
-        XCTAssertEqual(Array(data[4..<6]), [0x01, 0x80], "-1.0 → -32767")
-        XCTAssertEqual(Array(data[6..<8]), [0xFF, 0x7F], "越界要截断而不是溢出")
-        XCTAssertEqual(Array(data[8..<10]), [0, 0], "NaN 当静音")
-    }
-
-    /// 草稿 = 稳定前缀 + 未定尾巴。开头六七秒 text 是空的、内容全在 stash 里，
-    /// 只显示 text 的话屏幕上前几秒什么都没有
-    func testDraftJoinsTextAndStash() {
-        XCTAssertEqual(AlibabaRealtimeClient.draft(text: "今天天气", stash: "不错"), "今天天气不错")
-        XCTAssertEqual(AlibabaRealtimeClient.draft(text: "", stash: "今天天"), "今天天")
-        XCTAssertEqual(AlibabaRealtimeClient.draft(text: "全定了", stash: ""), "全定了")
-    }
-
-    /// 一帧的原始 PCM 上限换算成真正发出去的那条消息，必须还在 262144 字节以内（超了 1009）
-    func testOneFrameStaysUnderTheWireLimit() {
-        let pcm = Data(repeating: 0x41, count: AlibabaRealtimeClient.maxRawFrameBytes)
-        let message = AlibabaRealtimeClient.appendMessage(base64: pcm.base64EncodedString())
-        XCTAssertLessThanOrEqual(message.utf8.count, AlibabaRealtimeClient.frameByteLimit,
-                                 "一帧 \(message.utf8.count) 字节，超了 1009 的硬限")
-        XCTAssertLessThanOrEqual(Double(AlibabaRealtimeClient.maxRawFrameBytes) / 32000.0, 3.0,
-                                 "单次 append 的原始 PCM 不该超过 3 秒")
-    }
-
-    /// 节流：任何时刻"已发 + 还能发"都不许超过 `20× 实时 + 桶容量`，
-    /// 而且任何一秒窗口都远在服务端 2560 KB/s 的硬限以下
-    func testThrottleNeverExceedsTwentyTimesRealtime() {
-        let bytesPerSecond = 32000.0
-        let maxSpeed = 20.0
-        let burst = 3.0
-        for tick in 0...100 {
-            let elapsed = Double(tick) / 10.0
-            let allowed = RealtimeAudio.sendableBytes(elapsed: elapsed, sentBytes: 0,
-                                                              bytesPerSecond: bytesPerSecond,
-                                                              maxSpeed: maxSpeed,
-                                                              burstSeconds: burst)
-            let audioSeconds = Double(allowed) / bytesPerSecond
-            XCTAssertLessThanOrEqual(audioSeconds, elapsed * maxSpeed + burst + 0.001,
-                                     "t=\(elapsed)s 时允许发 \(audioSeconds)s 音频，超了 20× + 桶")
-        }
-        // 一秒窗口最多 (20 + 3) × 32000 = 736 KB，只有服务端硬限 2560 KB/s 的三成
-        let oneSecond = RealtimeAudio.sendableBytes(elapsed: 1, sentBytes: 0,
-                                                            bytesPerSecond: bytesPerSecond,
-                                                            maxSpeed: maxSpeed, burstSeconds: burst)
-        XCTAssertLessThan(oneSecond, 2_560 * 1024)
-        // 发过的字节数照扣
-        XCTAssertEqual(RealtimeAudio.sendableBytes(elapsed: 1, sentBytes: oneSecond,
-                                                           bytesPerSecond: bytesPerSecond,
-                                                           maxSpeed: maxSpeed, burstSeconds: burst), 0)
-    }
-
-    /// 松手时还没连上：**不能把 8 秒的建连预算原样花完**——那一刻用户盯着悬浮窗干等
-    func testRemainingSetupBudgetIsCappedAfterRelease() {
-        // 刚按下就松手：只肯再等宽限值那么久，而不是整整 8 秒
-        XCTAssertEqual(RealtimeAudio.remainingSetupBudget(elapsed: 0.2, setupTimeout: 8,
-                                                                  releaseGrace: 2.5), 2.5)
-        // 已经等了 7 秒：剩下的建连预算更短，就按它
-        XCTAssertEqual(RealtimeAudio.remainingSetupBudget(elapsed: 7, setupTimeout: 8,
-                                                                  releaseGrace: 2.5), 1,
-                       accuracy: 0.001)
-        // 预算早就花完了：一秒都不再等
-        XCTAssertEqual(RealtimeAudio.remainingSetupBudget(elapsed: 9, setupTimeout: 8,
-                                                                  releaseGrace: 2.5), 0)
-    }
-
-    /// 握手挂住 + 用户松手：在宽限值内收口，上层才能早点去走本机那条路
-    func testFinishWhileStillConnectingGivesUpWithinTheGrace() {
-        let socket = FakeSocket()
-        let client = makeClient(socket) {
-            $0.setupTimeout = 30          // 建连预算故意留得很长
-            $0.releaseSetupGrace = 0.2    // 松手之后只肯再等这么久
-        }
-        let done = expectation(description: "failed")
-        var failure: AlibabaRealtimeClient.Failure?
-        client.onFinish = { result in
-            if case .failure(let value) = result { failure = value }
-            done.fulfill()
-        }
-        client.start()
-        client.drainForTesting()
-        client.append(samples: tone(seconds: 0.5))
-        client.finish(audioSeconds: 0.5)
-        // 30 秒的建连预算还远没到；2 秒内就该收口，靠的是松手后的那条宽限
-        wait(for: [done], timeout: 2)
-        XCTAssertEqual(failure, .transport("setup timeout after release"))
-        XCTAssertEqual(failure?.disablesStreaming, false, "握手挂住只是偶发，不该把这台主机判死")
-    }
-
-    /// 终稿超时按录音长度分两档：长录音的尾巴服务端要多收一会儿
-    func testFinalTimeoutRelaxesForLongTakes() {
-        XCTAssertEqual(RealtimeAudio.finalTimeout(audioSeconds: 10, short: 3, long: 5,
-                                                          longTakeSeconds: 60), 3)
-        XCTAssertEqual(RealtimeAudio.finalTimeout(audioSeconds: 120, short: 3, long: 5,
-                                                          longTakeSeconds: 60), 5)
-    }
-
-    /// 事件解码：每一种都从 2026-09-21 实测抄来的真形状
-    func testEventDecoding() {
-        XCTAssertEqual(RealtimeEvent.parse(Self.sessionCreated(model: "qwen3-asr-flash-realtime")),
-                       .sessionCreated(model: "qwen3-asr-flash-realtime"))
-        XCTAssertEqual(RealtimeEvent.parse(#"{"type":"session.updated"}"#), .sessionUpdated)
-        XCTAssertEqual(
-            RealtimeEvent.parse(#"{"type":"conversation.item.input_audio_transcription.text","text":"今天天气","stash":"不错","language":"zh"}"#),
-            .partial(text: "今天天气", stash: "不错"))
-        XCTAssertEqual(
-            RealtimeEvent.parse(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"你好","language":"zh","usage":{"duration":22}}"#),
-            .completed(transcript: "你好", billedSeconds: 22, language: "zh"))
-        // 1 秒纯音调的实测回包：transcript 与 language 都是空串
-        XCTAssertEqual(
-            RealtimeEvent.parse(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"","language":"","emotion":"","usage":{"duration":1}}"#),
-            .completed(transcript: "", billedSeconds: 1, language: nil))
-        XCTAssertEqual(RealtimeEvent.parse(#"{"type":"session.finished"}"#), .sessionFinished)
-        XCTAssertEqual(RealtimeEvent.parse(#"{"type":"error","error":{"code":"COMMON_ERROR","message":"<400> x"}}"#),
-                       .failed(code: "COMMON_ERROR", message: "<400> x"))
-        XCTAssertEqual(RealtimeEvent.parse(#"{"type":"conversation.item.created"}"#), .ignored)
-        XCTAssertEqual(RealtimeEvent.parse("not json"), .ignored)
-    }
-
-    /// 失败分类：哪几种值得把"这台主机的实时"整个关掉
-    func testFailureClassification() {
-        XCTAssertTrue(AlibabaRealtimeClient.Failure.handshakeRejected(status: 401).disablesStreaming)
-        XCTAssertTrue(AlibabaRealtimeClient.Failure.handshakeRejected(status: 403).disablesStreaming)
-        XCTAssertTrue(AlibabaRealtimeClient.Failure.modelMismatch(reported: "x").disablesStreaming)
-        XCTAssertTrue(AlibabaRealtimeClient.Failure.modelUnavailable.disablesStreaming)
-        // 偶发那几种绝不能把整台主机判死：网络抖一下就再也不用实时了，那是最糟的一种"记住"
-        XCTAssertFalse(AlibabaRealtimeClient.Failure.transport("x").disablesStreaming)
-        XCTAssertFalse(AlibabaRealtimeClient.Failure.finalTimeout.disablesStreaming)
-        XCTAssertFalse(AlibabaRealtimeClient.Failure
-                        .serverError(code: "COMMON_ERROR", message: nil).disablesStreaming)
-        // 日志那一句只有状态码 / 关闭码 / 错误码，一个字用户内容都没有
-        XCTAssertEqual(AlibabaRealtimeClient.Failure.handshakeRejected(status: 403).logReason,
-                       "handshake status=403")
-        XCTAssertEqual(AlibabaRealtimeClient.Failure.modelUnavailable.logReason, "model unavailable")
-    }
-
-    // MARK: - 状态机（假 socket）
-
-    func testHappyPathFromHandshakeToFinalTranscript() {
-        let socket = FakeSocket()
-        let client = makeClient(socket)
-        var drafts: [String] = []
-        client.onPartial = { drafts.append($0) }
-        let done = expectation(description: "final")
-        var transcript: AlibabaRealtimeClient.Transcript?
-        client.onFinish = { result in
-            if case .success(let value) = result { transcript = value }
-            done.fulfill()
-        }
-
-        bringUp(client, socket)
-        XCTAssertEqual(socket.updates.count, 1, "session.update 只能发一次")
-
-        client.append(samples: tone(seconds: 1))
-        client.drainForTesting()
-        XCTAssertEqual(socket.appendedPCMBytes(), 32000, "1 秒音频 = 32000 字节 PCM16")
-
-        socket.receive(#"{"type":"conversation.item.input_audio_transcription.text","text":"今天","stash":"天气"}"#)
-        client.drainForTesting()
-
-        client.finish(audioSeconds: 1)
-        client.drainForTesting()
-        XCTAssertEqual(socket.finishes.count, 1, "松手只发一条 session.finish（隐式 flush）")
-
-        socket.receive(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"今天天气不错","usage":{"duration":1}}"#)
-        wait(for: [done], timeout: 2)
-
-        XCTAssertEqual(transcript?.text, "今天天气不错")
-        XCTAssertEqual(transcript?.billedSeconds, 1)
-        XCTAssertEqual(drafts, ["今天天气"], "草稿是 text + stash 拼起来的")
-        XCTAssertTrue(socket.cancelled, "终稿到手就把 socket 收了")
-    }
-
-    /// 音频开始之后再发一条 session.update → 服务端 1007 断连。所以哪怕
-    /// session.created 来两遍（重连 / 服务端重发），也只能发一次
-    func testSessionUpdateIsSentOnlyOnce() {
-        let socket = FakeSocket()
-        let client = makeClient(socket)
-        client.onFinish = { _ in }
-        bringUp(client, socket)
-        socket.receive(Self.sessionCreated(model: AlibabaRealtimeClient.model))
-        client.drainForTesting()
-        XCTAssertEqual(socket.updates.count, 1)
-    }
-
-    /// **回显对不上就当场断开**：`?model=` 拼错不会报错，只会被静默换成更贵的 omni 模型
-    func testModelEchoMismatchDisablesStreaming() {
-        let socket = FakeSocket()
-        let client = makeClient(socket)
-        let done = expectation(description: "failed")
-        var failure: AlibabaRealtimeClient.Failure?
-        client.onFinish = { result in
-            if case .failure(let value) = result { failure = value }
-            done.fulfill()
-        }
-        client.start()
-        client.drainForTesting()
-        socket.open()
-        client.drainForTesting()
-        socket.receive(Self.sessionCreated(model: "qwen-omni-turbo-realtime"))
-        wait(for: [done], timeout: 2)
-
-        XCTAssertEqual(failure, .modelMismatch(reported: "qwen-omni-turbo-realtime"))
-        XCTAssertEqual(failure?.disablesStreaming, true)
-        XCTAssertTrue(socket.updates.isEmpty, "对不上就一条配置都不发")
-        XCTAssertTrue(socket.cancelled)
-    }
-
-    /// 回显里根本没有那个字段：同样按"对不上"处理。
-    /// 判错的代价不对称——放过去就是在用十倍价钱的模型，判死只是退回整段上传。
-    func testMissingModelEchoIsTreatedAsMismatch() {
-        let socket = FakeSocket()
-        let client = makeClient(socket)
-        let done = expectation(description: "failed")
-        var failure: AlibabaRealtimeClient.Failure?
-        client.onFinish = { result in
-            if case .failure(let value) = result { failure = value }
-            done.fulfill()
-        }
-        client.start()
-        client.drainForTesting()
-        socket.open()
-        client.drainForTesting()
-        socket.receive(#"{"type":"session.created","session":{"id":"sess_x"}}"#)
-        wait(for: [done], timeout: 2)
-        XCTAssertEqual(failure, .modelMismatch(reported: nil))
-    }
-
-    /// 握手被拒：401 = 这把 Key，403 = 这台主机。两种都判"这台主机的实时用不了"。
-    /// 而**拿不到状态码**的那种（离线）只是偶发——不能因为一次断网就再也不用实时了。
-    func testHandshakeRejectionIsClassifiedByStatus() {
-        for status in [401, 403, 404] {
-            let socket = FakeSocket()
-            let client = makeClient(socket)
-            let done = expectation(description: "failed \(status)")
-            var failure: AlibabaRealtimeClient.Failure?
-            client.onFinish = { result in
-                if case .failure(let value) = result { failure = value }
-                done.fulfill()
-            }
-            client.start()
-            client.drainForTesting()
-            socket.close(status: status, code: nil, detail: "NSURLErrorDomain -1011")
-            wait(for: [done], timeout: 2)
-            XCTAssertEqual(failure, .handshakeRejected(status: status))
-            XCTAssertEqual(failure?.disablesStreaming, true)
-        }
-    }
-
-    func testHandshakeWithoutAStatusIsOnlyTransient() {
-        let socket = FakeSocket()
-        let client = makeClient(socket)
-        let done = expectation(description: "failed")
-        var failure: AlibabaRealtimeClient.Failure?
-        client.onFinish = { result in
-            if case .failure(let value) = result { failure = value }
-            done.fulfill()
-        }
-        client.start()
-        client.drainForTesting()
-        socket.close(status: nil, code: nil, detail: "NSURLErrorDomain -1009")
-        wait(for: [done], timeout: 2)
-        XCTAssertEqual(failure?.disablesStreaming, false, "离线一次不该把这台主机判死")
-    }
-
-    /// close 1011 = 这台主机上没有这个模型
-    func testCloseCode1011DisablesStreaming() {
-        let socket = FakeSocket()
-        let client = makeClient(socket)
-        let done = expectation(description: "failed")
-        var failure: AlibabaRealtimeClient.Failure?
-        client.onFinish = { result in
-            if case .failure(let value) = result { failure = value }
-            done.fulfill()
-        }
-        bringUp(client, socket)
-        socket.close(status: nil, code: 1011, detail: nil)
-        wait(for: [done], timeout: 2)
-        XCTAssertEqual(failure, .modelUnavailable)
-        XCTAssertEqual(failure?.disablesStreaming, true)
-    }
-
-    /// `COMMON_ERROR`（推理级）**不断连、也不会有终稿** → 收到即判失败，不能傻等超时
-    func testCommonErrorFailsImmediatelyWithoutWaitingForTheTimeout() {
-        let socket = FakeSocket()
-        let client = makeClient(socket) { $0.finalTimeout = 30 }
-        let done = expectation(description: "failed")
-        var failure: AlibabaRealtimeClient.Failure?
-        client.onFinish = { result in
-            if case .failure(let value) = result { failure = value }
-            done.fulfill()
-        }
-        bringUp(client, socket)
-        client.append(samples: tone(seconds: 0.5))
-        client.finish(audioSeconds: 0.5)
-        client.drainForTesting()
-        socket.receive(#"{"type":"error","error":{"code":"COMMON_ERROR","message":"<400> boom"}}"#)
-        // 终稿超时是 30 秒；2 秒内就该收口，靠的是错误事件本身
-        wait(for: [done], timeout: 2)
-        XCTAssertEqual(failure, .serverError(code: "COMMON_ERROR", message: "<400> boom"))
-        XCTAssertEqual(failure?.disablesStreaming, false)
-    }
-
-    func testFinalTimeoutAfterFinish() {
-        let socket = FakeSocket()
-        let client = makeClient(socket) { $0.finalTimeout = 0.2 }
-        let done = expectation(description: "failed")
-        var failure: AlibabaRealtimeClient.Failure?
-        client.onFinish = { result in
-            if case .failure(let value) = result { failure = value }
-            done.fulfill()
-        }
-        bringUp(client, socket)
-        client.append(samples: tone(seconds: 0.5))
-        client.finish(audioSeconds: 0.5)
-        wait(for: [done], timeout: 3)
-        XCTAssertEqual(failure, .finalTimeout)
-    }
-
-    /// `usage.duration` 是**整条会话的累计值**（45, 90, 135…）：取最后一条，绝不能相加
-    func testBilledSecondsTakesTheLastUsageNotTheSum() {
-        let socket = FakeSocket()
-        let client = makeClient(socket)
-        let done = expectation(description: "final")
-        var transcript: AlibabaRealtimeClient.Transcript?
-        client.onFinish = { result in
-            if case .success(let value) = result { transcript = value }
-            done.fulfill()
-        }
-        bringUp(client, socket)
-        // 极少见，但真出现过：finish 之前已经吐过一条 completed
-        socket.receive(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"前半段","usage":{"duration":45}}"#)
-        client.drainForTesting()
-        client.finish(audioSeconds: 90)
-        client.drainForTesting()
-        socket.receive(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"后半段","usage":{"duration":90}}"#)
-        wait(for: [done], timeout: 2)
-        XCTAssertEqual(transcript?.billedSeconds, 90, "累计值只能取最后一条，不是 45+90")
-        XCTAssertEqual(transcript?.text, "前半段后半段", "已经出过的文字一个字都不许丢")
-    }
-
-    /// Esc：直接掐 socket，**不发 finish**，而且之后一条回调都不来
-    func testCancelSendsNoFinishAndCallsNothingBack() {
-        let socket = FakeSocket()
-        let client = makeClient(socket)
-        client.onFinish = { _ in XCTFail("取消之后不许再回调") }
-        client.onPartial = { _ in XCTFail("取消之后不许再回调") }
-        bringUp(client, socket)
-        client.append(samples: tone(seconds: 1))
-        client.drainForTesting()
-        client.cancel()
-        client.drainForTesting()
-        XCTAssertTrue(socket.cancelled)
-        XCTAssertTrue(socket.finishes.isEmpty, "取消就是不要这一段了，绝不能发 finish")
-        // 掐完之后服务端还在路上的事件也一律不算数
-        socket.receive(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"迟到的终稿"}"#)
-        client.drainForTesting()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.15))
-    }
-
-    /// 握手那 0.3 秒里录到的音频先留在缓冲里，连上之后补发——一个采样都不能丢
-    func testAudioBufferedBeforeHandshakeIsSentAfterwards() {
-        let socket = FakeSocket()
-        let client = makeClient(socket)
-        client.onFinish = { _ in }
-        client.start()
-        client.drainForTesting()
-        client.append(samples: tone(seconds: 0.5))
-        client.drainForTesting()
-        XCTAssertTrue(socket.appends.isEmpty, "还没握手完就不该有音频出去")
-        socket.open()
-        client.drainForTesting()
-        socket.receive(Self.sessionCreated(model: AlibabaRealtimeClient.model))
-        client.drainForTesting()
-        socket.receive(#"{"type":"session.updated"}"#)
-        client.drainForTesting()
-        XCTAssertEqual(socket.appendedPCMBytes(), 16000, "0.5 秒音频照样补上去")
-    }
-
-    /// 补发积压：分帧不超硬限、整体不超 20× 实时
-    func testBacklogIsFramedAndThrottled() {
-        let socket = FakeSocket()
-        let client = makeClient(socket)
-        client.onFinish = { _ in }
-        bringUp(client, socket)
-        let seconds = 10.0
-        let startedAt = Date()
-        client.append(samples: tone(seconds: seconds))
-        let expected = Int(seconds * 32000)
-        XCTAssertTrue(waitUntil(5) { socket.appendedPCMBytes() >= expected },
-                      "积压没发完：\(socket.appendedPCMBytes()) / \(expected)")
-        let elapsed = Date().timeIntervalSince(startedAt)
-        for message in socket.appends {
-            XCTAssertLessThanOrEqual(message.utf8.count, AlibabaRealtimeClient.frameByteLimit)
-        }
-        XCTAssertGreaterThan(socket.appends.count, 1, "10 秒音频必须分成多帧")
-        // 桶容量 3 秒 + 20× 实时 → 10 秒音频最快也要 (10−3)/20 ≈ 0.35 秒
-        XCTAssertGreaterThan(elapsed, 0.2, "一口气全推出去了，节流没生效")
-    }
-
-    // MARK: - 接线层
-
-    private func streamingConfig(host: String = "dashscope-intl.aliyuncs.com") -> CloudASRConfig {
-        CloudASRConfig(provider: .alibaba, host: host, apiKey: "sk-unit-test")
+    private func streamingConfig(apiKey: String = "sk-unit-test") -> CloudASRConfig {
+        CloudASRConfig(provider: .openai, apiKey: apiKey)
     }
 
     /// 整段上传那条路的替身：一个字节都不上网
@@ -572,49 +133,144 @@ final class CloudStreamingTests: XCTestCase {
         return engine
     }
 
-    /// 「这台主机的实时用不了」**只对那一台生效**：主机被重新探测换掉就自然失效
-    func testUnsupportedMemoryIsPerHost() {
-        let denied = "denied.example.com"
-        let other = "other.example.com"
-        CloudStreamingAvailability.markUnsupported(provider: .alibaba, host: denied,
-                                                   reason: "handshake status=403")
-        XCTAssertTrue(CloudStreamingAvailability.isUnsupported(provider: .alibaba, host: denied))
-        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(provider: .alibaba, host: other))
-        XCTAssertNil(CloudStreamingSession.make(config: streamingConfig(host: denied),
-                                                fallback: stubFallback()))
-        XCTAssertNotNil(CloudStreamingSession.make(config: streamingConfig(host: other),
-                                                   fallback: stubFallback()))
-        // 真跑通过一次就把记忆清掉（把开关拨开那一下的探针会调它）
-        CloudStreamingAvailability.markAvailable(provider: .alibaba, host: denied)
-        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(provider: .alibaba, host: denied))
+    /// 整段那条通道的替身：回什么、什么时候回由用例自己决定（FakeCloudSender，见
+    /// CloudASRIntegrationTests）。不排结果 = 一直在飞，`finishPending` 才落地。
+    private func controlledFallback() -> (CloudASREngine, FakeCloudSender) {
+        let sender = FakeCloudSender()
+        let engine = CloudASREngine(config: streamingConfig())
+        engine.sendSegment = { request, client, handle, completion in
+            sender.send(request, client, handle, completion)
+        }
+        return (engine, sender)
     }
 
-    /// 没有 Key、拼不出主机名、OpenAI 指着第三方网关：一律不开实时，照常整段上传。
-    /// （4.2.2 起 OpenAI 官方接口**有**这条路，见 OpenAIRealtimeTests）
+    /// 实时那条的终稿（OpenAI 形状）
+    private static func completed(_ text: String, seconds: Int = 1) -> String {
+        #"{"type":"conversation.item.input_audio_transcription.completed","transcript":""#
+            + text + #"","usage":{"seconds":"# + String(seconds) + "}}"
+    }
+
+    /// 一个装着假 socket 的会话，已经连到"可以送音频了"
+    private func liveSession(_ socket: FakeSocket,
+                             fallback: CloudASREngine? = nil,
+                             configure: ((inout OpenAIRealtimeClient.Config) -> Void)? = nil)
+        -> (CloudStreamingSession, OpenAIRealtimeClient) {
+        let client = makeClient(socket, configure: configure)
+        let session = CloudStreamingSession(config: streamingConfig(),
+                                            fallback: fallback ?? stubFallback(), client: client)
+        session.start()
+        bringUp(client, socket)
+        return (session, client)
+    }
+
+    // MARK: - 共享底座的纯函数
+
+    func testPCM16IsLittleEndianAndClamps() {
+        let data = RealtimeAudio.pcm16LE([0, 1.0, -1.0, 9.0, .nan])
+        XCTAssertEqual(data.count, 10)
+        XCTAssertEqual(Array(data[0..<2]), [0, 0])
+        XCTAssertEqual(Array(data[2..<4]), [0xFF, 0x7F], "1.0 → 32767，小端")
+        XCTAssertEqual(Array(data[4..<6]), [0x01, 0x80], "-1.0 → -32767")
+        XCTAssertEqual(Array(data[6..<8]), [0xFF, 0x7F], "越界要截断而不是溢出")
+        XCTAssertEqual(Array(data[8..<10]), [0, 0], "NaN 当静音")
+    }
+
+    /// 节流（令牌桶）：任何时刻"已发 + 还能发"都不许超过 `maxSpeed × 实时 + 桶容量`。
+    /// 数字取 OpenAI 那一档（3× + 0.5 秒）：超过约 4× 会**静默丢音频**
+    func testThrottleNeverExceedsTheConfiguredSpeed() {
+        let bytesPerSecond = 48000.0
+        let maxSpeed = 3.0
+        let burst = 0.5
+        for tick in 0...100 {
+            let elapsed = Double(tick) / 10.0
+            let allowed = RealtimeAudio.sendableBytes(elapsed: elapsed, sentBytes: 0,
+                                                      bytesPerSecond: bytesPerSecond,
+                                                      maxSpeed: maxSpeed, burstSeconds: burst)
+            let audioSeconds = Double(allowed) / bytesPerSecond
+            XCTAssertLessThanOrEqual(audioSeconds, elapsed * maxSpeed + burst + 0.001,
+                                     "t=\(elapsed)s 时允许发 \(audioSeconds)s 音频，超了 3× + 桶")
+        }
+        // 发过的字节数照扣
+        let oneSecond = RealtimeAudio.sendableBytes(elapsed: 1, sentBytes: 0,
+                                                    bytesPerSecond: bytesPerSecond,
+                                                    maxSpeed: maxSpeed, burstSeconds: burst)
+        XCTAssertEqual(RealtimeAudio.sendableBytes(elapsed: 1, sentBytes: oneSecond,
+                                                   bytesPerSecond: bytesPerSecond,
+                                                   maxSpeed: maxSpeed, burstSeconds: burst), 0)
+    }
+
+    /// 松手时还没连上：**不能把建连预算原样花完**——那一刻用户盯着悬浮窗干等
+    func testRemainingSetupBudgetIsCappedAfterRelease() {
+        XCTAssertEqual(RealtimeAudio.remainingSetupBudget(elapsed: 0.2, setupTimeout: 8,
+                                                          releaseGrace: 2.5), 2.5)
+        XCTAssertEqual(RealtimeAudio.remainingSetupBudget(elapsed: 7, setupTimeout: 8,
+                                                          releaseGrace: 2.5), 1,
+                       accuracy: 0.001)
+        XCTAssertEqual(RealtimeAudio.remainingSetupBudget(elapsed: 9, setupTimeout: 8,
+                                                          releaseGrace: 2.5), 0)
+    }
+
+    /// 终稿超时按录音长度分两档：长录音的尾巴服务端要多收一会儿
+    func testFinalTimeoutRelaxesForLongTakes() {
+        XCTAssertEqual(RealtimeAudio.finalTimeout(audioSeconds: 10, short: 3, long: 5,
+                                                  longTakeSeconds: 60), 3)
+        XCTAssertEqual(RealtimeAudio.finalTimeout(audioSeconds: 120, short: 3, long: 5,
+                                                  longTakeSeconds: 60), 5)
+    }
+
+    /// 失败分类：哪几种值得把"这条链路的实时"整个关掉
+    func testFailureClassification() {
+        XCTAssertTrue(RealtimeFailure.modelUnavailable.disablesStreaming)
+        XCTAssertTrue(RealtimeFailure.unauthorized(code: "close 3000").disablesStreaming)
+        // 偶发那几种绝不能把整条链路判死：网络抖一下就再也不用实时了，那是最糟的一种"记住"
+        XCTAssertFalse(RealtimeFailure.transport("x").disablesStreaming)
+        XCTAssertFalse(RealtimeFailure.finalTimeout.disablesStreaming)
+        XCTAssertFalse(RealtimeFailure.serverError(code: "server_error", message: nil).disablesStreaming)
+        // 日志那一句只有关闭码 / 错误码，一个字用户内容都没有
+        XCTAssertEqual(RealtimeFailure.modelUnavailable.logReason, "model unavailable")
+        XCTAssertEqual(RealtimeFailure.unauthorized(code: "close 3000").logReason,
+                       "unauthorized code=close 3000")
+    }
+
+    // MARK: - 接线层
+
+    /// 「这条链路的实时用不了」**只对那一条生效**；真跑通过一次就把记忆清掉
+    func testUnsupportedMemoryIsPerHostAndCanBeCleared() {
+        let host = CloudStreamingSession.streamHost
+        CloudStreamingAvailability.markUnsupported(provider: .openai, host: host,
+                                                   reason: "close 4000")
+        XCTAssertTrue(CloudStreamingAvailability.isUnsupported(provider: .openai, host: host))
+        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(provider: .openai,
+                                                                host: "other.example.com"))
+        XCTAssertNil(CloudStreamingSession.make(config: streamingConfig(), fallback: stubFallback(),
+                                                officialOpenAI: true))
+        CloudStreamingAvailability.markAvailable(provider: .openai, host: host)
+        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(provider: .openai, host: host))
+        XCTAssertNotNil(CloudStreamingSession.make(config: streamingConfig(), fallback: stubFallback(),
+                                                   officialOpenAI: true))
+    }
+
+    /// 没有 Key、OpenAI 指着第三方网关：一律不开实时，照常整段上传
     func testStreamingDoesNotStartWithoutAUsableLink() {
-        XCTAssertNil(CloudStreamingSession.make(
-            config: CloudASRConfig(provider: .alibaba, apiKey: "  "), fallback: stubFallback()))
-        XCTAssertNil(CloudStreamingSession.make(
-            config: streamingConfig(host: "不是主机名"), fallback: stubFallback()))
-        XCTAssertNil(CloudStreamingSession.make(
-            config: CloudASRConfig(provider: .openai, apiKey: "sk-x"),
-            fallback: stubFallback(), officialOpenAI: false))
+        XCTAssertNil(CloudStreamingSession.make(config: streamingConfig(apiKey: "  "),
+                                                fallback: stubFallback(), officialOpenAI: true))
+        XCTAssertNil(CloudStreamingSession.make(config: streamingConfig(),
+                                                fallback: stubFallback(), officialOpenAI: false))
     }
 
     /// 松手时发到的采样数必须**恰好等于**同步那条路会拿去识别的那一段，不多不少
     func testSessionSendsExactlyTheWholeTakeAndNoMore() {
         let socket = FakeSocket()
-        let client = makeClient(socket)
-        let session = CloudStreamingSession(config: streamingConfig(),
-                                            fallback: stubFallback(), client: client)
-        session.start()
-        bringUp(client, socket)
+        // 整段那条一直不回：窗口到点之后实时那条的字交出去（这条用例验的是实时通道本身）
+        let (fallback, _) = controlledFallback()
+        let (session, client) = liveSession(socket, fallback: fallback)
 
         let take = tone(seconds: 3)
         // 录音中分两次喂（模拟电平回调），松手时把剩下的一截补上
         session.enqueue(Array(take[0..<16000]))
         session.enqueue(Array(take[16000..<24000]))
         client.drainForTesting()
+        XCTAssertEqual(session.queuedSampleCount, 24000)
 
         let done = expectation(description: "outcome")
         var outcome: TranscriptionOutcome?
@@ -622,10 +278,12 @@ final class CloudStreamingTests: XCTestCase {
             outcome = $0
             done.fulfill()
         }
-        XCTAssertTrue(waitUntil(3) { socket.finishes.count == 1 })
-        XCTAssertEqual(socket.appendedPCMBytes(), take.count * 2,
-                       "发出去的音频必须正好是这一整段")
-        socket.receive(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"三秒的话","usage":{"duration":3}}"#)
+        XCTAssertEqual(session.queuedSampleCount, take.count)
+        XCTAssertTrue(waitUntil(4) { socket.commits.count == 1 })
+        // 3 秒 16 kHz → 3 秒 24 kHz = 144000 字节 PCM16
+        XCTAssertEqual(socket.appendedPCMBytes(), take.count * 3,
+                       "发出去的音频必须正好是这一整段（重采样到 24 kHz 之后）")
+        socket.receive(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"三秒的话","usage":{"seconds":3}}"#)
         wait(for: [done], timeout: 3)
         XCTAssertEqual(outcome?.text, "三秒的话")
         XCTAssertEqual(outcome?.isComplete, true)
@@ -634,19 +292,18 @@ final class CloudStreamingTests: XCTestCase {
     /// 云端识别的**终稿**也要过一遍本地清理（4.3.3），中间结果（悬浮窗灰字）不清。
     ///
     /// 4.3.3 之前云端这条路一个字都没清过：本机档默认删掉的「嗯 / 那个 / um」在云端档
-    /// 原样进输入框，润色再被保真校验拦下的话，用户看到的就是满屏语气词的识别原文
-    /// （mini 上 2026-09-22 的 history.json 里那条「啊啊，这个接口……是是怎么回事啊」）。
+    /// 原样进输入框，润色再被保真校验拦下的话，用户看到的就是满屏语气词的识别原文。
     func testFinalTranscriptGetsTheSameLocalCleanupAsTheLocalEngine() {
         let socket = FakeSocket()
-        let client = makeClient(socket)
-        let session = CloudStreamingSession(config: streamingConfig(),
-                                            fallback: stubFallback(), client: client)
+        let (fallback, _) = controlledFallback()
+        let (session, client) = liveSession(socket, fallback: fallback)
         var drafts: [String] = []
         session.onDraft = { drafts.append($0) }
-        session.start()
-        bringUp(client, socket)
         let take = tone(seconds: 1)
         session.enqueue(take)
+        client.drainForTesting()
+        socket.receive(#"{"type":"conversation.item.input_audio_transcription.delta","delta":"嗯，那个，我们明天"}"#)
+        socket.receive(#"{"type":"conversation.item.input_audio_transcription.delta","delta":"开会"}"#)
         client.drainForTesting()
 
         let done = expectation(description: "outcome")
@@ -655,33 +312,29 @@ final class CloudStreamingTests: XCTestCase {
             outcome = $0
             done.fulfill()
         }
-        XCTAssertTrue(waitUntil(3) { socket.finishes.count == 1 })
-        socket.receive(#"{"type":"conversation.item.input_audio_transcription.text","text":"嗯，那个，我们明天","stash":"开会"}"#)
-        socket.receive(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"嗯，那个，我们明天开会。","usage":{"duration":1}}"#)
+        XCTAssertTrue(waitUntil(3) { socket.commits.count == 1 })
+        socket.receive(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"嗯，那个，我们明天开会。","usage":{"seconds":1}}"#)
         wait(for: [done], timeout: 3)
         XCTAssertEqual(outcome?.text, "我们明天开会。", "口水词该在交付之前就删掉")
         XCTAssertEqual(drafts.last, "嗯，那个，我们明天开会",
                        "草稿不清：它每 100 ms 重画一次，边说边删只会让字在眼前跳")
     }
 
-    /// 静音门判「没说话」：不发 finish、直接掐掉，与今天的行为一致
-    func testAbandonSendsNoFinish() {
+    /// 静音门判「没说话」 / Esc：不收尾、直接掐掉——一个 commit 都不发
+    func testAbandonCommitsNothing() {
         let socket = FakeSocket()
-        let client = makeClient(socket)
-        let session = CloudStreamingSession(config: streamingConfig(),
-                                            fallback: stubFallback(), client: client)
-        session.start()
-        bringUp(client, socket)
+        let (session, client) = liveSession(socket)
         session.enqueue(tone(seconds: 1))
         client.drainForTesting()
         session.abandon()
         client.drainForTesting()
-        XCTAssertTrue(socket.finishes.isEmpty)
+        XCTAssertTrue(socket.commits.isEmpty)
         XCTAssertTrue(socket.cancelled)
         XCTAssertFalse(session.isLive)
     }
 
-    /// 「这台主机不支持实时」→ 这一轮自己退回整段上传，用户什么都不该察觉
+    /// 「这把 Key 不让用实时」（close 3000）→ 记住这条链路，这一轮自己退回整段上传，
+    /// 用户什么都不该察觉（同步那条路能用就不算错误）
     func testStreamLostBeforeReleaseFallsBackToTheUploadPath() {
         let socket = FakeSocket()
         let client = makeClient(socket)
@@ -692,11 +345,11 @@ final class CloudStreamingTests: XCTestCase {
         session.onStreamingLost = { lost.fulfill() }
         session.start()
         client.drainForTesting()
-        socket.close(status: 403, code: nil, detail: nil)
+        socket.close(status: nil, code: 3000, detail: nil)
         wait(for: [lost], timeout: 2)
         XCTAssertFalse(session.isLive)
-        XCTAssertTrue(CloudStreamingAvailability.isUnsupported(provider: .alibaba,
-                                                 host: "dashscope-intl.aliyuncs.com"))
+        XCTAssertTrue(CloudStreamingAvailability.isUnsupported(provider: .openai,
+                                                               host: CloudStreamingSession.streamHost))
 
         let done = expectation(description: "outcome")
         var outcome: TranscriptionOutcome?
@@ -710,8 +363,7 @@ final class CloudStreamingTests: XCTestCase {
         XCTAssertNil(outcome?.failure, "同步那条路能用就不算错误")
     }
 
-    /// 录音中途偶发断线（5.0.0 起没有本机引擎可回落）→ 这一轮整段走同步接口。
-    /// 音频一个采样都没丢，用户最多只是多等一趟上传。
+    /// 录音中途偶发断线 → 这一轮整段走同步接口。音频一个采样都没丢，用户最多只是多等一趟上传。
     func testStreamLostTransientlyUploadsTheWholeTake() {
         let socket = FakeSocket()
         let client = makeClient(socket)
@@ -724,12 +376,12 @@ final class CloudStreamingTests: XCTestCase {
         bringUp(client, socket)
         session.enqueue(tone(seconds: 1))
         client.drainForTesting()
-        // 录到一半网断了（没有 HTTP 状态码 = 偶发，不是"这台主机不支持"）
+        // 录到一半网断了（不是 3000 / 4000 = 偶发，不是"这条链路不支持"）
         socket.close(status: nil, code: 1006, detail: "NSURLErrorDomain -1005")
         wait(for: [lost], timeout: 2)
-        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(provider: .alibaba,
-                                                 host: "dashscope-intl.aliyuncs.com"),
-                       "一次断网不该把这台主机的实时判死")
+        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(provider: .openai,
+                                                                host: CloudStreamingSession.streamHost),
+                       "一次断网不该把实时判死")
 
         let done = expectation(description: "outcome")
         var outcome: TranscriptionOutcome?
@@ -744,31 +396,171 @@ final class CloudStreamingTests: XCTestCase {
         XCTAssertEqual(outcome?.cancelled, false)
     }
 
-    /// 偶发失败（终稿超时）交回给现有那条「云端失败 → 回落本机」的路：
-    /// 报一个 failure 上去，整段音频还在调用方手上
-    func testTransientFailureAfterFinishIsReportedSoTheLocalEngineCanRetry() {
+    // MARK: - 混合转写：整段为准、实时兜底（5.1.0）
+
+    /// 松手开跑一句 1 秒的话，返回 (会话, socket, 整段替身, 取交付结果的闭包, 交付的期望)
+    private func releaseHybrid(seconds: Double = 1,
+                               configure: ((inout OpenAIRealtimeClient.Config) -> Void)? = nil)
+        -> (CloudStreamingSession, FakeSocket, FakeCloudSender, () -> [TranscriptionOutcome],
+            XCTestExpectation, TranscriptionHandle) {
         let socket = FakeSocket()
-        let client = makeClient(socket) { $0.finalTimeout = 0.2 }
-        let session = CloudStreamingSession(config: streamingConfig(),
-                                            fallback: stubFallback(), client: client)
-        session.start()
-        bringUp(client, socket)
-        let take = tone(seconds: 1)
+        let (fallback, sender) = controlledFallback()
+        let (session, client) = liveSession(socket, fallback: fallback, configure: configure)
+        // 用例里常常用 `_` 丢掉会话——真实的调用方（DictationController）会一直拿着它，
+        // 这里也得拿着，否则整段那条通道的引擎跟着会话一起被释放
+        keepAlive.append(session)
+        let take = tone(seconds: seconds)
         session.enqueue(take)
         client.drainForTesting()
-
         let done = expectation(description: "outcome")
-        var outcome: TranscriptionOutcome?
-        session.transcribe(samples: take, language: nil, previousText: "", onSegment: nil) {
-            outcome = $0
+        var outcomes: [TranscriptionOutcome] = []
+        let handle = session.transcribe(samples: take, language: nil, previousText: "", onSegment: nil) {
+            outcomes.append($0)
             done.fulfill()
         }
-        wait(for: [done], timeout: 4)
-        XCTAssertNotNil(outcome?.failure, "偶发失败要报上去，上层才会整段重跑本机")
-        XCTAssertEqual(outcome?.cancelled, false)
-        XCTAssertEqual(outcome?.text, "")
-        // 一次超时不该把这台主机的实时判死
-        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(provider: .alibaba,
-                                                 host: "dashscope-intl.aliyuncs.com"))
+        return (session, socket, sender, { outcomes }, done, handle)
+    }
+
+    /// 实时终稿先到、整段在窗口里到 → **整段赢**（它更准：字错率 6.2% vs 9.0%）
+    func testHybridBatchInsideTheWindowWins() {
+        let (session, socket, sender, outcomes, done, _) = releaseHybrid()
+        XCTAssertTrue(session.ranBatchLane)
+        XCTAssertTrue(waitUntil(3) { socket.commits.count == 1 && sender.requestCount == 1 })
+        socket.receive(Self.completed("实时的字"))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))   // 窗口 0.825 秒之内
+        XCTAssertTrue(outcomes().isEmpty, "窗口还没到，不该先交实时的字")
+        sender.finishPending(.success(CloudASRSegmentResult(text: "整段的字")))
+        wait(for: [done], timeout: 3)
+        XCTAssertEqual(outcomes().map(\.text), ["整段的字"])
+        XCTAssertNil(outcomes().first?.failure)
+    }
+
+    /// 整段先到且有字 → 立刻用它，不等实时；实时那条当场掐掉（commit 之前掐掉就不计实时的钱）
+    func testHybridBatchFirstWinsAtOnceAndCancelsTheRealtimeLane() {
+        let (_, socket, sender, outcomes, done, _) = releaseHybrid()
+        XCTAssertTrue(waitUntil(3) { sender.requestCount == 1 })
+        sender.finishPending(.success(CloudASRSegmentResult(text: "整段的字")))
+        wait(for: [done], timeout: 3)
+        XCTAssertEqual(outcomes().map(\.text), ["整段的字"])
+        XCTAssertTrue(socket.cancelled, "整段赢了，实时那条要当场掐掉")
+        // 实时终稿这时才到：一个字都不许再交付
+        socket.receive(Self.completed("迟到的实时"))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertEqual(outcomes().count, 1)
+    }
+
+    /// 窗口过了整段还没到 → **实时赢**；整段随后迟到，只记一行日志、丢掉
+    func testHybridLateBatchLosesToTheRealtimeText() {
+        let (_, socket, sender, outcomes, done, _) = releaseHybrid()
+        XCTAssertTrue(waitUntil(3) { socket.commits.count == 1 })
+        socket.receive(Self.completed("实时的字"))
+        wait(for: [done], timeout: 3)   // 窗口 0.825 秒后自己收口
+        XCTAssertEqual(outcomes().map(\.text), ["实时的字"])
+        sender.finishPending(.success(CloudASRSegmentResult(text: "迟到的整段")))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertEqual(outcomes().count, 1, "迟到的整段不许再交付第二次")
+    }
+
+    /// 实时失败（终稿超时）→ 等整段到底，整段的字交出去，**不报失败**
+    func testHybridRealtimeFailureFallsBackToTheBatch() {
+        let (_, _, sender, outcomes, done, _) = releaseHybrid(configure: { $0.finalTimeout = 0.2 })
+        XCTAssertTrue(waitUntil(3) { sender.requestCount == 1 })
+        RunLoop.current.run(until: Date().addingTimeInterval(0.6))   // 实时终稿超时
+        XCTAssertTrue(outcomes().isEmpty, "实时失败了也要等整段，不能先报失败")
+        sender.finishPending(.success(CloudASRSegmentResult(text: "整段的字")))
+        wait(for: [done], timeout: 3)
+        XCTAssertEqual(outcomes().map(\.text), ["整段的字"])
+        XCTAssertNil(outcomes().first?.failure)
+    }
+
+    /// 两条都失败 → 报失败（DictationController 看到 ranBatchLane 就不再整段重传一遍）
+    func testHybridBothLanesFailingIsAFailure() {
+        let (session, _, sender, outcomes, done, _) = releaseHybrid(configure: { $0.finalTimeout = 0.2 })
+        XCTAssertTrue(waitUntil(3) { sender.requestCount == 1 })
+        sender.finishPending(.failure(CloudASRFailure("upload failed", status: 500)))
+        wait(for: [done], timeout: 3)
+        XCTAssertNotNil(outcomes().first?.failure)
+        XCTAssertEqual(outcomes().first?.cancelled, false)
+        XCTAssertEqual(outcomes().first?.text, "")
+        XCTAssertTrue(session.ranBatchLane)
+    }
+
+    /// 两条都回了、都没字 → 交出空文本（下游说「没听清」），不是失败
+    func testHybridBothEmptyIsNoSpeech() {
+        let (_, socket, sender, outcomes, done, _) = releaseHybrid()
+        XCTAssertTrue(waitUntil(3) { socket.commits.count == 1 && sender.requestCount == 1 })
+        socket.receive(Self.completed(""))
+        sender.finishPending(.success(CloudASRSegmentResult(text: "  ")))
+        wait(for: [done], timeout: 3)
+        XCTAssertEqual(outcomes().first?.text, "")
+        XCTAssertNil(outcomes().first?.failure)
+    }
+
+    /// Esc：两条都掐掉，只交付一次「取消」，之后谁落地都不再交付
+    func testHybridCancelStopsBothLanes() {
+        let (_, socket, sender, outcomes, done, handle) = releaseHybrid()
+        XCTAssertTrue(waitUntil(3) { sender.requestCount == 1 })
+        handle.cancel()
+        wait(for: [done], timeout: 3)
+        XCTAssertEqual(outcomes().first?.cancelled, true)
+        XCTAssertTrue(socket.cancelled)
+        sender.finishPending(.success(CloudASRSegmentResult(text: "整段的字")))
+        socket.receive(Self.completed("实时的字"))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertEqual(outcomes().count, 1)
+    }
+
+    /// **阿拉伯语永远不算"不能用"**（用户在 UAE）：两条都是阿语 → 规则照常（窗口里的整段赢）
+    func testHybridArabicIsNeverRejected() {
+        let (_, socket, sender, outcomes, done, _) = releaseHybrid()
+        XCTAssertTrue(waitUntil(3) { socket.commits.count == 1 && sender.requestCount == 1 })
+        socket.receive(Self.completed("مرحبا كيف حالك اليوم"))
+        sender.finishPending(.success(CloudASRSegmentResult(text: "مرحباً، كيف حالك اليوم؟")))
+        wait(for: [done], timeout: 3)
+        XCTAssertEqual(outcomes().map(\.text), ["مرحباً، كيف حالك اليوم؟"])
+    }
+
+    /// 阿语实时有字、整段失败 → 实时那条阿语照常交出去
+    func testHybridArabicRealtimeSurvivesABatchFailure() {
+        let (_, socket, sender, outcomes, done, _) = releaseHybrid()
+        XCTAssertTrue(waitUntil(3) { socket.commits.count == 1 && sender.requestCount == 1 })
+        sender.finishPending(.failure(CloudASRFailure("upload failed", status: 500)))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        socket.receive(Self.completed("مرحبا كيف حالك اليوم"))
+        wait(for: [done], timeout: 3)
+        XCTAssertEqual(outcomes().map(\.text), ["مرحبا كيف حالك اليوم"])
+    }
+
+    /// 超过 60 秒的句子不跑混合：没有整段那条通道（照旧只等实时）
+    func testHybridIsSkippedForTakesOverSixtySeconds() {
+        let socket = FakeSocket()
+        let (fallback, sender) = controlledFallback()
+        let (session, client) = liveSession(socket, fallback: fallback)
+        let take = tone(seconds: 61)
+        client.drainForTesting()
+        let handle = session.transcribe(samples: take, language: nil, previousText: "", onSegment: nil) { _ in }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        XCTAssertFalse(session.ranBatchLane)
+        XCTAssertEqual(sender.requestCount, 0, "超过 60 秒不该把整段再传一次")
+        handle.cancel()
+    }
+
+    /// 实时那条路的失败 → 给用户看的一句话：点名 OpenAI，英文侧不漏中文
+    func testRealtimeFailureMessageNamesOpenAI() {
+        let saved = L10n.shared.language
+        defer { L10n.shared.language = saved }
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            for failure: RealtimeFailure in [.transport("x"), .unauthorized(code: nil),
+                                             .modelUnavailable, .finalTimeout,
+                                             .serverError(code: "e", message: nil)] {
+                let text = CloudStreamingSession.message(for: failure)
+                XCTAssertFalse(text.isEmpty)
+                if language == .en {
+                    XCTAssertFalse(CJKSourceScanner.containsFlagged(text), text)
+                }
+            }
+            XCTAssertTrue(CloudStreamingSession.message(for: .transport("x")).contains("OpenAI"))
+        }
     }
 }

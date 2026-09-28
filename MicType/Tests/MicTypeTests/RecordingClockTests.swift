@@ -57,7 +57,7 @@ final class RecordingClockTests: XCTestCase {
                     DictationController.preFinishWarningSeconds)), "\(language) \(flow): \(copy)")
                 // 段长只有**真的分段**的那条路才说：实时那条不分段，写个段长就是假话
                 XCTAssertEqual(copy.contains(DictationController.secondsLabel(
-                    CloudSegmentLimits.alibaba.targetSeconds)), flow != .cloudStreaming,
+                    CloudSegmentLimits.openai.targetSeconds)), flow != .cloudStreaming,
                                "\(language) \(flow): \(copy)")
             }
             // 当前设置那一版（界面真正渲染的就是它）同样要说全上限与预警
@@ -98,7 +98,7 @@ final class RecordingClockTests: XCTestCase {
             .contains("不分段"))
     }
 
-    /// 走哪条路由**生效服务商**（5.0.0 起识别引擎跟着它走）+ 这次运行的实时可用性决定
+    /// 走哪条路由这次运行的实时可用性决定（5.1.0 起只有 OpenAI 一家）
     func testRecordingFlowFollowsTheProviderAndStreamingAvailability() {
         let saved = Settings.shared.llmProvider
         defer {
@@ -113,17 +113,7 @@ final class RecordingClockTests: XCTestCase {
                                                    reason: "test")
         XCTAssertEqual(DictationController.currentRecordingFlow(), .cloudUpload)
         CloudStreamingAvailability.resetForTesting()
-        Settings.shared.llmProvider = .qwen
         XCTAssertEqual(DictationController.currentRecordingFlow(), .cloudStreaming)
-        // 这台主机这次运行里被判过"实时用不了"：那句话得换回整段上传那一版
-        let s = Settings.shared
-        let host = CloudASRSettings.alibabaHost(pastedHost: s.qwenAPIHost,
-                                                resolvedHost: s.qwenResolvedHost,
-                                                workspace: s.qwenWorkspaceID,
-                                                legacyRegionSlug: s.qwenRegion.regionSlug,
-                                                apiKey: "")
-        CloudStreamingAvailability.markUnsupported(provider: .alibaba, host: host, reason: "test")
-        XCTAssertEqual(DictationController.currentRecordingFlow(), .cloudUpload)
     }
 
     // MARK: 处理中按 Esc 到底是什么意思

@@ -169,14 +169,19 @@ final class SettingsCopyBudgetTests: XCTestCase {
         XCTAssertFalse(SettingsCopy.cloudCaptions.contains(SettingsCopy.customRulesPlaceholder))
     }
 
-    /// 选择器下面那行「预览中」必须点名**正在生效**的那一家：预览的这一刻
-    /// 「正在使用 ✓」恰好不在屏幕上，而"现在真正在用哪一家"正是这一版要解决的问题
-    func testPreviewHintNamesTheProviderStillInUse() {
-        for language in AppLanguage.allCases {
-            L10n.shared.language = language
-            XCTAssertTrue(SettingsCopy.providerNotSetUp(current: "OpenAI").contains("OpenAI"),
-                          SettingsCopy.providerNotSetUp(current: "OpenAI"))
-        }
+    // 「预览中，仍用 X」那条测试 5.1.0 随服务商选择器一起删掉：只剩一家，没有预览这回事。
+
+    /// 「实时草稿」那颗 ⓘ：只说为什么默认关（用户 2026-09-28 拍板，中文 ≤ 30 字），
+    /// 栏名短到能摆进一行开关
+    func testLiveDraftCopyIsShort() {
+        L10n.shared.language = .zh
+        XCTAssertLessThanOrEqual(SettingsCopy.livePreviewInfo.count, 30, SettingsCopy.livePreviewInfo)
+        XCTAssertTrue(SettingsCopy.livePreviewInfo.contains("默认关闭"), SettingsCopy.livePreviewInfo)
+        XCTAssertEqual(SettingsCopy.livePreviewLabel, "实时草稿")
+        L10n.shared.language = .en
+        XCTAssertEqual(SettingsCopy.livePreviewLabel, "Live draft")
+        XCTAssertFalse(CJKSourceScanner.containsFlagged(SettingsCopy.livePreviewInfo),
+                       SettingsCopy.livePreviewInfo)
     }
 
     // 联网搜索那颗 ⓘ 的预算测试随那个开关一起删掉（5.0.0）。
@@ -216,8 +221,7 @@ final class SettingsCopyBudgetTests: XCTestCase {
     // 「识别也用云端」那颗 ⓘ 的预算测试随那个开关一起删掉（5.0.0）：
     // 两家的计费与留存口径现在由 PrivacyCopyTests 钉着。
 
-    /// 云端识别的单价**只有一个出处**（LLMCatalog.cloudASRPriceNote），而且必须摆在
-    /// 开关旁边而不是 ⓘ 里：两家差着近八倍，那是选择本身的一部分
+    /// 云端识别的单价**只有一个出处**（LLMCatalog.cloudASRPriceNote）
     func testCloudASRPriceHasASingleSource() {
         for language in AppLanguage.allCases {
             L10n.shared.language = language
@@ -228,34 +232,27 @@ final class SettingsCopyBudgetTests: XCTestCase {
                 XCTAssertFalse(CJKSourceScanner.containsFlagged(
                     LLMCatalog.cloudASRPriceNote(provider: provider)) && language == .en, note)
             }
-            XCTAssertNotEqual(LLMCatalog.cloudASRPriceNote(provider: .alibaba),
-                              LLMCatalog.cloudASRPriceNote(provider: .openai))
         }
     }
 
-    /// Key 那颗 ⓘ 必须逐字引用 LLMCatalog 的存储与费用两句（全 App 唯一出处），
-    /// 而且阿里云那一档多说一句"接入地址去哪儿找"——那一栏自己没有 ⓘ。
-    ///
+    /// Key 那颗 ⓘ 必须逐字引用 LLMCatalog 的存储与费用两句（全 App 唯一出处）。
     /// 4.3.2 起费用那句只住在这颗 ⓘ 里（原来它常驻在输入框下面），所以这条测试
-    /// 同时是"它没被漏掉"的保险。
+    /// 同时是"它没被漏掉"的保险。5.1.0 起阿里云那一档（多一句 API Host）没有了。
     func testKeyInfoQuotesTheSingleSource() {
         for language in AppLanguage.allCases {
             L10n.shared.language = language
-            let base = SettingsCopy.keyInfo(hostField: false)
-            XCTAssertTrue(base.contains(LLMCatalog.keyStorageNote), base)
-            XCTAssertTrue(base.contains(LLMCatalog.billingNote), base)
-            let withHost = SettingsCopy.keyInfo(hostField: true)
-            XCTAssertTrue(withHost.lowercased().contains("api host"), withHost)
-            // 反过来也要成立：OpenAI 那一档没有接入地址这回事，不许出现这一句
-            XCTAssertFalse(base.lowercased().contains("api host"), base)
+            let info = SettingsCopy.keyInfo
+            XCTAssertTrue(info.contains(LLMCatalog.keyStorageNote), info)
+            XCTAssertTrue(info.contains(LLMCatalog.billingNote), info)
+            XCTAssertFalse(info.lowercased().contains("api host"), info)
         }
     }
 
-    /// 这一页只剩一颗 ⓘ（5.0.0：整页只有服务商 / Key / 接入地址三行）。
+    /// 这一页只有两颗 ⓘ：API Key、实时草稿（5.1.0）。
     /// 这里钉的是"没人再把 ⓘ 悄悄加回来"。
-    func testCloudPageKeepsOnlyOneInfoPopover() {
-        // 5.0.0 起整页只有一颗 ⓘ：API Key（阿里云那一档多一句"接入地址在哪儿找"，所以是两份文案）
+    func testCloudPageKeepsOnlyTwoInfoPopovers() {
         XCTAssertEqual(SettingsCopy.cloudInfos.count, 2, "\(SettingsCopy.cloudInfos)")
+        XCTAssertTrue(SettingsCopy.cloudInfos.contains(SettingsCopy.livePreviewInfo))
     }
 
     // MARK: - 隐私文案只在关于页出现

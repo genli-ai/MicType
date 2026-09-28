@@ -1,9 +1,9 @@
 import Foundation
 
-// MARK: - 云端识别供应商（阿里云 Model Studio / OpenAI）
+// MARK: - 云端识别供应商（OpenAI）
 //
 // 设计原则：**建请求与解响应全是纯函数**，网络只剩薄薄一层执行器。
-// 这样两家的请求体格式、词表过滤、语言提示、错误映射都能在单测里钉死，
+// 这样请求体格式、词表过滤、语言提示、错误映射都能在单测里钉死，
 // 不用真的花钱调云端；执行器只管发、重试、取消。
 //
 // 隐私：音频只在用户显式选了云端引擎时才离开这台机器。日志只记字节数与耗时，
@@ -44,46 +44,29 @@ final class CloudASRHandle {
     }
 }
 
-/// 供应商种类（引擎名、分段上限、Key 存哪个钥匙串账号都由它决定）
+/// 供应商种类（引擎名、分段上限、Key 存哪个钥匙串账号都由它决定）。
+///
+/// 5.1.0 起**只有 OpenAI 一家**（用户 2026-09-28 拍板，与 iOS L36 同一个决定：阿里云整档删除）。
+/// 仍然留成枚举：整条云端链路（日志、可用性记忆、分段上限、钥匙串账号）都按它取值，
+/// 改成散落的常量只会让"识别用的是哪一家"这件事再也没有一个出处。
 enum CloudASRProvider: String, CaseIterable {
-    case alibaba
     case openai
 
     /// SpeechEngine.engineName
-    var engineName: String {
-        switch self {
-        case .alibaba: return "Cloud · Alibaba"
-        case .openai: return "Cloud · OpenAI"
-        }
-    }
+    var engineName: String { "Cloud · OpenAI" }
 
-    var displayName: String {
-        switch self {
-        case .alibaba: return tr("云端·阿里云 Qwen ASR", "Cloud · Alibaba Qwen ASR")
-        case .openai: return tr("云端·OpenAI", "Cloud · OpenAI")
-        }
-    }
+    var displayName: String { tr("云端·OpenAI", "Cloud · OpenAI") }
 
-    var segmentLimits: CloudSegmentLimits {
-        switch self {
-        case .alibaba: return .alibaba
-        case .openai: return .openai
-        }
-    }
+    var segmentLimits: CloudSegmentLimits { .openai }
 
-    /// 钥匙串账号：阿里云自己一份，OpenAI 复用润色那把 Key
-    var keychainAccount: String {
-        switch self {
-        case .alibaba: return KeychainHelper.dashScopeAccount
-        case .openai: return KeychainHelper.openAIAccount
-        }
-    }
+    /// 钥匙串账号：复用润色那把 Key（听写、润色、指令同一把）
+    var keychainAccount: String { KeychainHelper.openAIAccount }
 }
 
 /// 一段音频的识别结果
 struct CloudASRSegmentResult: Equatable {
     var text: String
-    /// 云端回报的识别语言（阿里云 3.0 不返回；qwen3 / OpenAI 返回）
+    /// 云端回报的识别语言（OpenAI 会返回）
     var detectedLanguage: String?
     /// 云端计费秒数（用于诊断与成本提示）
     var billedSeconds: Double?
@@ -125,16 +108,13 @@ struct CloudASRFailure: Error {
 
 enum CloudASRLanguage {
 
-    /// 两家共同支持的代码（阿里云文档列表；阿拉伯语只有 "ar"，没有方言码）
+    /// 认得的语言代码（阿拉伯语只有 "ar"，没有方言码）
     static let supported: Set<String> = [
         "zh", "yue", "en", "ja", "de", "ko", "ru", "fr", "pt", "ar", "it", "es", "hi",
         "id", "th", "tr", "uk", "vi", "cs", "da", "fil", "fi", "is", "ms", "no", "pl", "sv",
     ]
 
-    /// enable_itn 只对中英有效
-    static let itnSupported: Set<String> = ["zh", "en"]
-
-    /// 规整语言提示：小写、去重、丢掉不认识的码、最多 4 个（阿里云上限）
+    /// 规整语言提示：小写、去重、丢掉不认识的码、最多 4 个
     static func sanitize(hints: [String], max: Int = 4) -> [String] {
         var out = [String]()
         for raw in hints {
@@ -168,26 +148,17 @@ enum CloudASRLanguage {
 
 enum CloudASRContext {
 
-    /// 一条上下文 turn 的字数上限（阿里云文档：≤400 字/turn）
+    /// 上下文（OpenAI 的 prompt 字段）的字数上限
     static let charLimit = 400
 
-    /// 拼上下文：上一段的尾巴（接续用）+ 词汇表（认名词用）。
-    /// 两者都没有就返回 nil——宁可不发这个 turn，也不发一个空 turn（空内容容易被判 InvalidParameter）。
-    /// includeVocabulary：qwen3 没有独立的 vocabulary 参数，词表只能走上下文；
-    /// 3.0 有 parameters.vocabulary，这里就只放尾巴。
-    static func text(vocabulary: [String], previousTail: String?, includeVocabulary: Bool,
-                     limit: Int = charLimit) -> String? {
-        var parts = [String]()
-        if includeVocabulary, !vocabulary.isEmpty {
-            parts.append("常用词汇：" + vocabulary.joined(separator: "、"))
-        }
-        if let tail = previousTail?.trimmingCharacters(in: .whitespacesAndNewlines), !tail.isEmpty {
-            parts.append("上文：" + tail)
-        }
-        guard !parts.isEmpty else { return nil }
-        var joined = parts.joined(separator: "\n")
-        if joined.count > limit { joined = String(joined.suffix(limit)) }
-        return joined
+    /// 拼上下文：只有上一段的尾巴（接续用）。词汇表不进这里——它走 keywords[]
+    /// （5.1.0 之前阿里云 qwen3 没有独立的词表参数，才需要把词表塞进上下文）。
+    /// 没有尾巴就返回 nil：宁可不发 prompt，也不发一个空串。
+    static func text(previousTail: String?, limit: Int = charLimit) -> String? {
+        guard let tail = previousTail?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !tail.isEmpty else { return nil }
+        let joined = "上文：" + tail
+        return joined.count > limit ? String(joined.suffix(limit)) : joined
     }
 
     /// 取一段文本的尾巴当下一段的上下文
@@ -206,7 +177,8 @@ protocol CloudTranscriptionProviding {
     /// 有没有 Key（没有就等于"引擎不可用"）
     var hasCredentials: Bool { get }
     /// 本地预校验 + 构造请求。失败不上网（体积/时长超限、URL 拼不出来、没 Key）。
-    func makeRequest(wav: Data, seconds: Double, context: String?) -> Result<URLRequest, CloudASRFailure>
+    /// 5.1.0 起上传体是 m4a（AAC-LC 48 kbps）或退路 WAV，见 AACEncoder
+    func makeRequest(audio: CloudUploadAudio, seconds: Double, context: String?) -> Result<URLRequest, CloudASRFailure>
     /// 解析 HTTP 200 的响应体
     func parse(_ data: Data) -> Result<CloudASRSegmentResult, CloudASRFailure>
     /// 非 200 → 错误映射
@@ -215,6 +187,11 @@ protocol CloudTranscriptionProviding {
 
 extension CloudTranscriptionProviding {
     var segmentLimits: CloudSegmentLimits { provider.segmentLimits }
+
+    /// WAV 那条老入口（单测与退路用）：等价于 `makeRequest(audio: .wav(wav), …)`
+    func makeRequest(wav: Data, seconds: Double, context: String?) -> Result<URLRequest, CloudASRFailure> {
+        makeRequest(audio: .wav(wav), seconds: seconds, context: context)
+    }
 }
 
 // MARK: - 执行器（唯一碰网络的地方）
@@ -291,432 +268,6 @@ enum CloudASRExecutor {
     }
 }
 
-// MARK: - 阿里云 Model Studio（DashScope）
-
-/// 两个可选模型。**默认必须是 qwen3-asr-flash**：官方文档里同步端点
-/// （/api/v1/services/aigc/multimodal-generation/generation）上只有它；
-/// qwen-audio-3.0-asr-flash 属于「非实时语音识别」那条**异步**链路
-/// （/api/v1/services/audio/asr/transcription），打同步端点必然 404 ModelNotFound。
-/// 4.0.0 把 3.0 设成了默认，于是云端识别对谁都是一次 404 —— 这就是 4.0.1 要修的那个 bug。
-///
-/// 3.0 仍然留在枚举里：老用户的设置里存着这个 rawValue，读不出来会整档失灵；
-/// 而且真遇到 404 时 CloudASRProbe 会自动改用 qwen3 并记住（见 fallbackOrder）。
-enum AlibabaASRModel: String, CaseIterable {
-    case qwen3Flash = "qwen3-asr-flash"
-    case qwenAudio30Flash = "qwen-audio-3.0-asr-flash"
-
-    var displayName: String {
-        switch self {
-        case .qwen3Flash: return "qwen3-asr-flash" + tr("（推荐）", " (recommended)")
-        case .qwenAudio30Flash:
-            return "qwen-audio-3.0-asr-flash" + tr("（异步端点专用，多数账号不可用）",
-                                                   " (async endpoint only, unavailable on most accounts)")
-        }
-    }
-
-    /// 有没有 parameters.vocabulary（决定词表走参数还是走上下文）
-    var supportsInlineVocabulary: Bool { self == .qwenAudio30Flash }
-
-    /// 试的顺序：先试用户选的那个，404 了再试 qwen3-asr-flash。
-    /// 只有这一条回落——它是文档上同步端点唯一保证存在的型号。
-    var fallbackOrder: [AlibabaASRModel] {
-        self == .qwen3Flash ? [self] : [self, .qwen3Flash]
-    }
-}
-
-struct AlibabaASRClient: CloudTranscriptionProviding {
-
-    // MARK: 配置
-
-    var apiKey: String
-    var model: AlibabaASRModel = .qwen3Flash
-    /// 接入主机名（裸主机，不带 scheme 与路径）。由 AlibabaHostResolver 试出来，
-    /// 界面上没有"区域"这个概念了——见 AlibabaEndpoint 顶部那段。
-    var host: String = AlibabaEndpoint.defaultHost
-    /// 词汇表原文（右侧词 + 普通词条），权重统一 4
-    var vocabulary: [String] = []
-    var languageHints: [String] = []
-    /// ITN（数字/单位规范化）只对中英有效；MicType 自己有润色层，默认关
-    var enableITN: Bool = false
-    var timeout: TimeInterval = 120
-
-    var provider: CloudASRProvider { .alibaba }
-    var hasCredentials: Bool { !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-
-    // MARK: 硬限制（与 spec 一致）
-
-    /// 单请求 base64 上限 10MB
-    static let maxBase64Bytes = 10 * 1024 * 1024
-    /// 单请求时长上限 5 分钟
-    static let maxSeconds: Double = 300
-    /// 端点路径只写一处（AlibabaEndpoint），这里留个别名给老调用点
-    static var apiPath: String { AlibabaEndpoint.asrPath }
-
-    /// 热词上限（文档：≤2000 词）
-    static let vocabularyCap = 2000
-    /// 推荐权重（1–5，4 为推荐值；50 是"超级热词"，这里不用）
-    static let vocabularyWeight = 4
-
-    // MARK: 纯函数 · 端点
-
-    static func endpoint(host: String) -> URL? { AlibabaEndpoint.asrURL(host: host) }
-
-    // MARK: 纯函数 · 热词过滤
-
-    /// 按文档规则过滤词表：
-    /// • 含非 ASCII 的词条：总字数 ≤15
-    /// • 纯 ASCII 词条：空格分隔不超过 7 段
-    /// • 去重、去空白、最多 2000 条
-    /// 不合规的直接丢掉——整张词表被云端判 InvalidParameter 比少一个词严重得多。
-    static func filteredTerms(_ terms: [String], cap: Int = vocabularyCap) -> [String] {
-        var out = [String]()
-        var seen = Set<String>()
-        for raw in terms {
-            let term = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !term.isEmpty, !seen.contains(term) else { continue }
-            guard !term.contains("\n"), !term.contains("\t") else { continue }
-            let isASCII = term.unicodeScalars.allSatisfy { $0.isASCII }
-            if isASCII {
-                let parts = term.split(separator: " ", omittingEmptySubsequences: true)
-                guard parts.count <= 7 else { continue }
-            } else {
-                guard term.count <= 15 else { continue }
-            }
-            seen.insert(term)
-            out.append(term)
-            if out.count >= cap { break }
-        }
-        return out
-    }
-
-    /// {词: 权重}，供 parameters.vocabulary 直接用
-    static func vocabularyParameter(_ terms: [String]) -> [String: Int] {
-        var dict = [String: Int]()
-        for term in filteredTerms(terms) { dict[term] = vocabularyWeight }
-        return dict
-    }
-
-    // MARK: 纯函数 · 请求体
-
-    /// 按模型拼请求体。audioDataURI 形如 `data:audio/wav;base64,…`。
-    static func requestBody(model: AlibabaASRModel,
-                            audioDataURI: String,
-                            vocabulary: [String],
-                            languageHints: [String],
-                            context: String?,
-                            enableITN: Bool) -> [String: Any] {
-        let hints = CloudASRLanguage.sanitize(hints: languageHints)
-        let contextText = context?.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        switch model {
-        case .qwenAudio30Flash:
-            // 3.0 走的是「非实时识别」那条异步链路，消息体沿用 OpenAI 兼容的
-            // `{"type":"input_audio", …}` 形状（这一档多数账号不可用，留着只为老设置读得出来）。
-            let audioTurn: [String: Any] = [
-                "role": "user",
-                "content": [["type": "input_audio", "input_audio": ["data": audioDataURI]]],
-            ]
-            var messages = [[String: Any]]()
-            // 上下文走 input_text + 一个空 assistant turn（文档的 few-shot 形式）。
-            // 没有上下文就整对省掉：空 text turn 有被判 InvalidParameter 的风险。
-            if let contextText = contextText, !contextText.isEmpty {
-                messages.append(["role": "user",
-                                 "content": [["type": "input_text", "text": contextText]]])
-                messages.append(["role": "assistant",
-                                 "content": [["type": "text", "text": ""]]])
-            }
-            messages.append(audioTurn)
-            var parameters: [String: Any] = ["format": "wav", "sample_rate": "16000"]
-            let vocab = vocabularyParameter(vocabulary)
-            if !vocab.isEmpty { parameters["vocabulary"] = vocab }
-            if !hints.isEmpty { parameters["language_hints"] = hints }
-            return ["model": model.rawValue,
-                    "input": ["messages": messages],
-                    "parameters": parameters]
-
-        case .qwen3Flash:
-            // **原生 DashScope 端点的形状，不是 OpenAI 兼容那一套**：
-            // /api/v1/services/aigc/multimodal-generation/generation 的 content 项是
-            // `{"audio": "data:audio/wav;base64,…"}` 与 `{"text": "…"}`，没有 `type` 这个字段。
-            // 4.1.0 在这里发的是兼容模式的 `{"type":"input_audio","input_audio":{"data":…}}`，
-            // 于是主机、鉴权、模型全都对了之后仍然吃一个
-            // `400 InvalidParameter: Input should be a valid string: input` ——
-            // 服务端在 content 里找不到它认识的任何字段。这是 4.1.1 要修的那个 bug。
-            let audioTurn: [String: Any] = [
-                "role": "user",
-                "content": [["audio": audioDataURI]],
-            ]
-            var messages = [[String: Any]]()
-            if let contextText = contextText, !contextText.isEmpty {
-                messages.append(["role": "system", "content": [["text": contextText]]])
-            }
-            messages.append(audioTurn)
-            // qwen3 只接受单一语言：取第一个提示；没有就不传（走自动检测）
-            var asrOptions: [String: Any] = [:]
-            if let first = hints.first { asrOptions["language"] = first }
-            let itnOK = enableITN && (hints.first.map { CloudASRLanguage.itnSupported.contains($0) } ?? false)
-            asrOptions["enable_itn"] = itnOK
-            return ["model": model.rawValue,
-                    "input": ["messages": messages],
-                    "parameters": ["asr_options": asrOptions]]
-        }
-    }
-
-    // MARK: 纯函数 · 本地预校验
-
-    /// 上网之前先自查：超限就别发（发了必 400，白等一个 RTT 还可能计费）。
-    /// 引擎本来就该先分段，走到这里说明分段参数配错了——报一句明确的话。
-    static func precheck(base64Length: Int, seconds: Double) -> CloudASRFailure? {
-        if seconds > maxSeconds {
-            return CloudASRFailure(tr("这一段音频 ", "This audio segment is ")
-                + String(format: "%.0f", seconds)
-                + tr("秒，超过云端单请求 5 分钟上限（分段参数有问题，请反馈）",
-                     "s long — over the provider's 5-minute per-request limit (segmentation bug, please report)"))
-        }
-        if base64Length > maxBase64Bytes {
-            return CloudASRFailure(tr("这一段音频编码后 ", "This segment encodes to ")
-                + String(base64Length / (1024 * 1024))
-                + tr("MB，超过云端单请求 10MB 上限（分段参数有问题，请反馈）",
-                     "MB — over the provider's 10MB per-request limit (segmentation bug, please report)"))
-        }
-        return nil
-    }
-
-    // MARK: 请求
-
-    func makeRequest(wav: Data, seconds: Double, context: String?) -> Result<URLRequest, CloudASRFailure> {
-        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else {
-            return .failure(CloudASRFailure(tr("还没有填阿里云 API Key（去「设置」）",
-                                               "No Alibaba API key yet (open Settings)")))
-        }
-        if let failure = Self.precheck(base64Length: WAVEncoder.base64Length(forByteCount: wav.count),
-                                       seconds: seconds) {
-            return .failure(failure)
-        }
-        guard let url = Self.endpoint(host: host) else {
-            // 几乎到不了这里：候选表本身就会跳过拼不出主机名的值。真走到了就指回那一栏
-            //（4.3.1 起「接入地址」输入框又在屏幕上了，指得出来的东西才值得说）
-            return .failure(CloudASRFailure(tr("这一次没能发往阿里云：「接入地址」这一栏不是一个主机名。改掉它，或清空它交回自动探测",
-                                               "This take could not be sent to Alibaba Cloud: the API host field is not a hostname. Fix it, or clear it to hand the job back to auto-detection")))
-        }
-        let body = Self.requestBody(model: model,
-                                    audioDataURI: WAVEncoder.dataURI(wav: wav),
-                                    vocabulary: vocabulary,
-                                    languageHints: languageHints,
-                                    context: context,
-                                    enableITN: enableITN)
-        guard let data = try? JSONSerialization.data(withJSONObject: body) else {
-            return .failure(CloudASRFailure(tr("云端请求体序列化失败", "Could not serialize the request body")))
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = timeout
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
-        // 非流式必须显式关掉 SSE，否则服务端按流式返回、这里解不出来
-        request.setValue("disable", forHTTPHeaderField: "X-DashScope-SSE")
-        request.httpBody = data
-        return .success(request)
-    }
-
-    // MARK: 纯函数 · 解析
-
-    func parse(_ data: Data) -> Result<CloudASRSegmentResult, CloudASRFailure> {
-        Self.parse(data, model: model)
-    }
-
-    static func parse(_ data: Data, model: AlibabaASRModel) -> Result<CloudASRSegmentResult, CloudASRFailure> {
-        guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            return .failure(CloudASRFailure(tr("云端返回格式无法解析", "Could not parse the provider response")))
-        }
-        // DashScope 有时 HTTP 200 也在 body 里报错
-        if let code = json["code"] as? String, !code.isEmpty {
-            return .failure(failure(status: 200, code: code, message: json["message"] as? String))
-        }
-        guard let output = json["output"] as? [String: Any] else {
-            return .failure(CloudASRFailure(tr("云端响应缺少 output 字段", "Provider response has no output field")))
-        }
-        let billed = billedSeconds(json["usage"] as? [String: Any])
-
-        switch model {
-        case .qwenAudio30Flash:
-            if let text = output["text"] as? String {
-                return .success(CloudASRSegmentResult(text: text, billedSeconds: billed))
-            }
-            // 备用形状：output.sentence.text（也见过 sentence 是数组的）
-            if let sentence = output["sentence"] as? [String: Any], let text = sentence["text"] as? String {
-                return .success(CloudASRSegmentResult(text: text, billedSeconds: billed))
-            }
-            if let sentences = output["sentence"] as? [[String: Any]] {
-                let text = sentences.compactMap { $0["text"] as? String }.joined()
-                if !text.isEmpty {
-                    return .success(CloudASRSegmentResult(text: text, billedSeconds: billed))
-                }
-            }
-            return .failure(CloudASRFailure(tr("云端没有返回识别文本", "Provider returned no transcript"),
-                                            code: CloudASRFailure.emptyTranscriptCode,
-                                            status: 200))
-
-        case .qwen3Flash:
-            guard let choices = output["choices"] as? [[String: Any]],
-                  let message = choices.first?["message"] as? [String: Any] else {
-                return .failure(CloudASRFailure(tr("云端没有返回识别文本", "Provider returned no transcript"),
-                                                code: CloudASRFailure.emptyTranscriptCode,
-                                                status: 200))
-            }
-            var text: String?
-            if let content = message["content"] as? [[String: Any]] {
-                let joined = content.compactMap { $0["text"] as? String }.joined()
-                text = joined
-            } else if let plain = message["content"] as? String {
-                text = plain
-            }
-            guard let text = text else {
-                return .failure(CloudASRFailure(tr("云端没有返回识别文本", "Provider returned no transcript"),
-                                                code: CloudASRFailure.emptyTranscriptCode,
-                                                status: 200))
-            }
-            var language: String?
-            if let annotations = message["annotations"] as? [[String: Any]] {
-                for a in annotations where (a["type"] as? String) == "audio_info" {
-                    if let lang = a["language"] as? String, !lang.isEmpty { language = lang; break }
-                }
-            }
-            return .success(CloudASRSegmentResult(text: text, detectedLanguage: language, billedSeconds: billed))
-        }
-    }
-
-    /// 3.0 记在 usage.duration，qwen3 记在 usage.seconds——两个都认
-    static func billedSeconds(_ usage: [String: Any]?) -> Double? {
-        guard let usage = usage else { return nil }
-        for key in ["duration", "seconds"] {
-            if let v = usage[key] as? Double { return v }
-            if let v = usage[key] as? Int { return Double(v) }
-            if let v = usage[key] as? NSNumber { return v.doubleValue }
-        }
-        return nil
-    }
-
-    // MARK: 纯函数 · 错误映射
-
-    func failure(status: Int, data: Data?) -> CloudASRFailure {
-        var code: String?
-        var message: String?
-        if let data = data,
-           let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
-            code = json["code"] as? String
-            message = json["message"] as? String
-            // 兼容 OpenAI 风格的 {"error":{...}} 包装
-            if code == nil, let err = json["error"] as? [String: Any] {
-                code = (err["code"] as? String) ?? (err["type"] as? String)
-                message = err["message"] as? String
-            }
-        }
-        return Self.failure(status: status, code: code, message: message)
-    }
-
-    /// HTTP 200 的 body 里报上来的错误码 → 它**本该**是的那个状态码。
-    /// nil = 这个码我们不认识，照 200 处理（文案会落到"意外状态码"那一条，但至少会写出原码）。
-    /// 纯函数，单测钉住每一条映射。
-    static func syntheticStatus(code: String) -> Int? {
-        let c = code.lowercased()
-        if c.contains("datainspection") { return 400 }          // 内容审核拦截 → 那条"可改用本地引擎"
-        if c.contains("throttling") { return 429 }              // 限流 → 值得重试那一条
-        if c.contains("arrear") { return 403 }                  // 欠费 → 去充值
-        if c.contains("invalidapikey") || c.contains("invalidapi-key")
-            || c.contains("unauthorized") { return 401 }
-        if c.contains("modelnotfound") || c.contains("invalidparameter.model")
-            || c.contains("model.not.exist") { return 404 }
-        return nil
-    }
-
-    /// 状态码 + 错误码 → 双语文案（含"怎么办"）+ 是否值得重试。
-    /// 铁律：401 绝不清掉已存的 Key（可能只是接入地址还没试对）。
-    /// 每一条都必须给**一句下一步**：屏幕上只写"失败了"等于把排查工作全推给用户。
-    static func failure(status: Int, code: String?, message: String?) -> CloudASRFailure {
-        let raw = (code ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        // DashScope 有时把错误塞在 HTTP 200 的 body 里（parse 会带着 code 走到这里）。
-        // 200 这个数字在那种形状下不含任何信息：照着它派发的话，内容审核拦截、限流、
-        // Key 不对全都落进最后那条"意外状态码"，一句下一步都没有（违反本段开头那条纪律），
-        // 限流还会因为 retryable=false 连那一次重试都不发。所以先按错误码合成一个状态码。
-        let effective = status == 200 ? (syntheticStatus(code: raw) ?? status) : status
-        // 冒号用 ASCII：这串会直接接在 tail 的 ASCII 括号后面，英文界面下混一个全角「：」
-        // 就是一处中文泄漏（CJKUIStringGuardTests 拦的正是 U+FF01–FF60）。中文界面下也不突兀。
-        let detail = message.map { ": " + String($0.prefix(80)) } ?? ""
-        // status 0 = 还没上网（DNS / 连接失败），"(0)" 对用户没有任何意义，不如不写
-        let tail: String = {
-            if status == 0 { return raw.isEmpty ? "" : " (" + raw + ")" }
-            return " (" + String(status) + (raw.isEmpty ? "" : " " + raw) + ")"
-        }()
-
-        func made(_ zh: String, _ en: String, retryable: Bool = false) -> CloudASRFailure {
-            // tail 写**真实**的 HTTP 状态码（200 裹着错误码时就写 200 + 那个码），
-            // 存进 failure 的却是合成后的那个：下游按它判重试与模型回落
-            CloudASRFailure(tr(zh, en) + tail + detail, retryable: retryable, code: raw.isEmpty ? nil : raw,
-                            status: effective)
-        }
-
-        switch effective {
-        // 4.1.4 起这两句**不再指路"去粘接入地址"**：那个输入框已经没有了（地址改由 MicType
-        // 自己并发试一圈、挑最快的，见 AlibabaEndpoint）。指着一个不存在的控件，
-        // 用户只会以为界面少了东西，然后照样查不出原因。现在只说我们真正知道的那件事：
-        // 每一台都试过了，没有一台认这把 Key。
-        case 0:
-            return made("连不上阿里云：网络不通，或者这台 Mac 到阿里云的线路被挡住了。确认能上网之后再试一次",
-                        "Could not reach Alibaba Cloud: no network, or this Mac cannot get through to it. Check your connection and try again")
-        case 401:
-            return made("试过的每一个接入地址都不认这把 Key。请确认它是阿里云百炼（Model Studio）的 API Key，而且没有过期或被删除",
-                        "Every endpoint MicType tried refused this key. Check that it is an Alibaba Cloud Model Studio (Bailian) API key and that it has not expired or been deleted")
-        case 403:
-            // 「这把 Key 的工作空间不开放接口访问」和「这个模型没开通」是两件事，下一步完全不同。
-            // 2026-09-20 实测：新建的工作空间 Key 在识别端点上回 Endpoint.AccessDenied，
-            // 而同一把 Key 在 dashscope-intl 上一切正常——去模型广场开通模型救不了他。
-            if AlibabaEndpoint.deniesEndpointAccess(status: 403, code: raw, message: message) {
-                return CloudASRFailure(AlibabaHostResolver.workspaceAccessDeniedCopy + tail,
-                                       code: raw.isEmpty ? nil : raw, status: 403)
-            }
-            if raw.localizedCaseInsensitiveContains("arrear") {
-                return made("阿里云账户欠费，云端识别已停。请充值后再试",
-                            "The Alibaba account is in arrears and cloud recognition is blocked. Top it up and try again")
-            }
-            return made("这个模型还没在阿里云百炼开通（或免费额度已用完、子工作空间无权）。请到百炼控制台 → 模型广场把该模型开通一次",
-                        "This model is not enabled for your account (or the free quota is used up, or the sub-workspace lacks access). Enable it once in the Model Studio console → Model Gallery")
-        case 404:
-            // 别写成"qwen3-asr-flash 也已经试过了"：自动换模型只发生在"把云端识别开关拨开"
-            // 与粘 Key 那两趟上（见 CloudASRProbe.runTryingModels），日常听写这条路不换模型。
-            // 说成已经试过，用户就不会再去做那个真能救他的动作。
-            // 4.1.4 起那个动作是"开关关掉再打开"——「测试识别」按钮已经并进它了。
-            // 5.0.0 起没有那个"关掉再打开"的开关了，所以只剩去控制台开通这一条路
-            return made("这个接入地址上没有这个识别模型。请到百炼控制台 → 模型广场开通 qwen3-asr-flash",
-                        "This endpoint has no such speech model. Enable qwen3-asr-flash in the Model Studio console → Model Gallery")
-        case 429:
-            // 只认 AllocationQuota：Throttling.RateQuota 里也有 "quota" 字样，但那是限流，该重试
-            if raw.localizedCaseInsensitiveContains("allocation") {
-                return made("云端额度已用完（限额/配额）。请到百炼控制台查看额度，或改用本地引擎",
-                            "Cloud quota exhausted. Check your allocation in the Model Studio console, or switch back to the local engine")
-            }
-            return made("云端限流，已重试一次仍未通过。稍后再说一遍，或改用本地引擎",
-                        "Rate limited by the provider (already retried once). Try again shortly or switch back to the local engine",
-                        retryable: true)
-        case 400:
-            if raw.localizedCaseInsensitiveContains("datainspection") {
-                return made("云端内容审核拦截了这段音频，识别结果没有返回。可改用本地引擎（音频不出机）",
-                            "The provider's content filter blocked this audio, so no transcript came back. The local engine keeps audio on your Mac")
-            }
-            return made("云端拒绝了这个请求（参数/音频不合规）。若是长录音请分段后重试；反复出现请反馈",
-                        "The provider rejected the request (invalid parameter or audio). For long recordings try again in shorter pieces; please report it if it keeps happening")
-        default:
-            if effective >= 500 {
-                return made("云端服务暂时出错，已重试一次。稍后再试，或改用本地引擎",
-                            "The provider had a server error (already retried once). Try again later or switch back to the local engine",
-                            retryable: true)
-            }
-            return made("云端返回了意外状态码", "The provider returned an unexpected status code")
-        }
-    }
-}
-
 // MARK: - OpenAI /v1/audio/transcriptions
 
 /// gpt-transcribe（multipart 上传，非流式）。
@@ -743,6 +294,38 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
     static let endpointString = "https://api.openai.com/v1/audio/transcriptions"
     static let responseFormat = "json"
 
+    // MARK: 纯函数 · 热词过滤
+
+    /// keywords[] 最多送多少条（沿用 4.x 词表的 2000 条上限；词表再长也不该整张被拒）
+    static let keywordCap = 2000
+
+    /// 词表 → keywords[]。规则沿用 4.x 那一套（5.1.0 从已删除的阿里云客户端搬过来，
+    /// 单测照旧钉着）：
+    /// • 含非 ASCII 的词条：总字数 ≤15
+    /// • 纯 ASCII 词条：空格分隔不超过 7 段
+    /// • 去重、去空白、最多 2000 条
+    /// 不合规的直接丢掉——整张词表被云端判 invalid 比少一个词严重得多。
+    static func filteredTerms(_ terms: [String], cap: Int = keywordCap) -> [String] {
+        var out = [String]()
+        var seen = Set<String>()
+        for raw in terms {
+            let term = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !term.isEmpty, !seen.contains(term) else { continue }
+            guard !term.contains("\n"), !term.contains("\t") else { continue }
+            let isASCII = term.unicodeScalars.allSatisfy { $0.isASCII }
+            if isASCII {
+                let parts = term.split(separator: " ", omittingEmptySubsequences: true)
+                guard parts.count <= 7 else { continue }
+            } else {
+                guard term.count <= 15 else { continue }
+            }
+            seen.insert(term)
+            out.append(term)
+            if out.count >= cap { break }
+        }
+        return out
+    }
+
     // MARK: 纯函数 · multipart
 
     /// 随机 boundary（单测里可以传固定值，好断言）
@@ -750,9 +333,12 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
 
     /// 手搓 multipart/form-data。顺序：model → response_format → languages[] → keywords[] → prompt → file。
     /// 文件放最后：服务端边读边解析时，小字段先到手对它更友好。
+    /// - filename / contentType: 文件那一段的名字与类型。WAV 是 `seg.wav` / `audio/wav`（默认值，
+    ///   与 5.0 逐字节相同）；m4a 是 `audio.m4a` / `audio/mp4`（见 CloudUploadAudio）
     static func multipartBody(boundary: String,
                               wav: Data,
                               filename: String = "seg.wav",
+                              contentType: String = "audio/wav",
                               model: String,
                               languages: [String],
                               keywords: [String],
@@ -766,13 +352,13 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
         field("model", model)
         field("response_format", responseFormat)
         for code in CloudASRLanguage.sanitize(hints: languages, max: 4) { field("languages[]", code) }
-        for word in AlibabaASRClient.filteredTerms(keywords) { field("keywords[]", word) }
+        for word in filteredTerms(keywords) { field("keywords[]", word) }
         if let prompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines), !prompt.isEmpty {
             field("prompt", prompt)
         }
         body.append(Data(("--" + boundary + "\r\n").utf8))
         body.append(Data(("Content-Disposition: form-data; name=\"file\"; filename=\"" + filename + "\"\r\n").utf8))
-        body.append(Data("Content-Type: audio/wav\r\n\r\n".utf8))
+        body.append(Data(("Content-Type: " + contentType + "\r\n\r\n").utf8))
         body.append(wav)
         body.append(Data("\r\n".utf8))
         body.append(Data(("--" + boundary + "--\r\n").utf8))
@@ -791,13 +377,13 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
 
     // MARK: 请求
 
-    func makeRequest(wav: Data, seconds: Double, context: String?) -> Result<URLRequest, CloudASRFailure> {
+    func makeRequest(audio: CloudUploadAudio, seconds: Double, context: String?) -> Result<URLRequest, CloudASRFailure> {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else {
             return .failure(CloudASRFailure(tr("还没有填 OpenAI API Key（去「设置」）",
                                                "No OpenAI API key yet (open Settings)")))
         }
-        if let failure = Self.precheck(fileBytes: wav.count) { return .failure(failure) }
+        if let failure = Self.precheck(fileBytes: audio.data.count) { return .failure(failure) }
         guard let url = URL(string: Self.endpointString) else {
             return .failure(CloudASRFailure(tr("云端地址无效", "Invalid endpoint URL")))
         }
@@ -808,7 +394,9 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
         request.setValue("multipart/form-data; boundary=" + boundary, forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
         request.httpBody = Self.multipartBody(boundary: boundary,
-                                              wav: wav,
+                                              wav: audio.data,
+                                              filename: audio.filename,
+                                              contentType: audio.contentType,
                                               model: model,
                                               languages: languages,
                                               keywords: keywords,
@@ -883,19 +471,19 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
                         "OpenAI does not know this model name. Switch back to the default gpt-transcribe")
         case 429:
             if raw.localizedCaseInsensitiveContains("insufficient_quota") {
-                return made("OpenAI 账户额度不足，云端识别已停。请充值，或改用本地引擎",
-                            "The OpenAI account is out of credit, so cloud recognition is blocked. Add credit or switch back to the local engine")
+                return made("OpenAI 账户额度不足，云端识别已停。请充值后再试",
+                            "The OpenAI account is out of credit, so cloud recognition is blocked. Add credit and try again")
             }
-            return made("OpenAI 限流，已重试一次仍未通过。稍后再说一遍，或改用本地引擎",
-                        "Rate limited by OpenAI (already retried once). Try again shortly or switch back to the local engine",
+            return made("OpenAI 限流，已重试一次仍未通过。稍后再说一遍",
+                        "Rate limited by OpenAI (already retried once). Try again shortly",
                         retryable: true)
         case 400:
             return made("OpenAI 拒绝了这个请求（参数或文件不合规，最常见是超过 25MB）",
                         "OpenAI rejected the request (invalid parameter or file — most often over the 25MB limit)")
         default:
             if status >= 500 {
-                return made("OpenAI 服务暂时出错，已重试一次。稍后再试，或改用本地引擎",
-                            "OpenAI had a server error (already retried once). Try again later or switch back to the local engine",
+                return made("OpenAI 服务暂时出错，已重试一次。稍后再试",
+                            "OpenAI had a server error (already retried once). Try again later",
                             retryable: true)
             }
             return made("OpenAI 返回了意外状态码", "OpenAI returned an unexpected status code")

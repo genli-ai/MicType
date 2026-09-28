@@ -130,74 +130,39 @@ enum OverlayPosition: String, CaseIterable {
 
 // MARK: - 大模型服务商
 
-/// 5.0.0 起**只有两家**（用户 2026-09-22 拍板）：识别和润色都在云端，而只有这两家
-/// 同时有识别接口。DeepSeek（没有识别接口）、自定义 OpenAI 兼容端点、本机大模型三档删掉；
-/// 它们的钥匙串条目一律**留着不删**（那是用户自己的东西），设置里不再显示。
+/// 5.0.0 起只有两家（用户 2026-09-22 拍板）；**5.1.0 起只剩 OpenAI**（用户 2026-09-28 拍板，
+/// 与 iOS L36 同一个决定：用户少做一个决定——一家服务商、一把 Key）。阿里云那一档
+/// （`qwen`）连同它的 Key、接入地址、区域等设置由启动时的 RetiredProviderCleanup 一次清掉。
+///
+/// 仍然留成枚举：Key 的钥匙串账号、Base URL、默认型号全按"这一档"取值，
+/// 而"Key 永不串槽"那条铁律要求每把 Key 的存 / 读 / 删都点名 `provider.keychainAccount`。
+/// DeepSeek / 自定义端点 / 本机大模型那三档（5.0.0 删掉）的钥匙串条目照旧**留着不删**。
 enum LLMProvider: String, CaseIterable {
     case openai
-    /// 阿里云百炼（DashScope）。国内可直连、便宜、有实时识别。
-    case qwen
 
-    /// 用户认得的名字。`.qwen` 这一档 4.0.1 起一律叫**阿里云**：
-    /// 「Qwen」「DashScope」「百炼」是三个内部名字，而用户手里那把 Key 来自阿里云控制台。
-    var displayName: String {
-        switch self {
-        case .openai: return "OpenAI (GPT)"
-        case .qwen: return tr("阿里云", "Alibaba Cloud")
-        }
-    }
+    /// 用户认得的名字
+    var displayName: String { "OpenAI (GPT)" }
 
-    /// 分段选择器里的名字：两档并排，名字要短到不换行。
-    var segmentName: String {
-        switch self {
-        case .openai: return "OpenAI"
-        case .qwen: return tr("阿里云", "Alibaba Cloud")
-        }
-    }
+    /// 短名（状态行、日志）
+    var segmentName: String { "OpenAI" }
 
-    /// 每个服务商一条独立的钥匙串条目：换服务商试用时互不覆盖。
-    /// **名字一个字都不改**——老用户钥匙串里存的就是这两条。
-    var keychainAccount: String {
-        switch self {
-        case .openai: return "openai_api_key"
-        case .qwen: return "qwen_api_key"
-        }
-    }
+    /// 这一档的钥匙串条目。**名字一个字都不改**——老用户钥匙串里存的就是这一条。
+    var keychainAccount: String { "openai_api_key" }
 
-    /// 两家都要 Key。留着这个属性是因为整条采纳链路（AISetup.adoptsProvider）按它工作，
+    /// 要 Key。留着这个属性是因为 KeyEntryView 与 LLMClient.credential 按它判"有没有 Key 可验"，
     /// 而 5.0.0 之前「本机模型」那一档是可以不填 Key 的。
     var requiresAPIKey: Bool { true }
 
-    var defaultBaseURL: String {
-        switch self {
-        case .openai: return "https://api.openai.com/v1"
-        case .qwen: return LLMCatalog.qwenBaseURL(region: .international, workspaceID: "")
-        }
-    }
+    var defaultBaseURL: String { "https://api.openai.com/v1" }
 }
 
 // MARK: - AI 配置（5.0.0 起只剩「哪家在用 + 有没有 Key」）
 
 /// 5.0.0 砍掉了「使用方式」（只用本地 / 本地 + AI）与「识别也用云端」两个决定：
 /// 识别本来就只有云端一条路，润色永远开着，所以这两个开关问的都是一个没有第二个答案的问题。
-/// 剩下的判断只有一条——**这一档能不能被采纳为生效服务商**。
+/// 5.1.0 又删掉了最后那一条判断（adoptsProvider：看着的那一档能不能被采纳为生效服务商）——
+/// 只剩 OpenAI 一家，没有第二档可采纳。
 enum AISetup {
-
-    /// 看着的这一档能不能被采纳为**正在使用**的服务商。
-    ///
-    /// 为什么设置页也要这道闸（4.1.1 之前只有引导页有）：分段选择器上点一下就把生效服务商
-    /// 换掉，意味着"点着看看"的人会把自己从一把好 Key 上换到一档空配置上——下一次按住说指令
-    /// 直接失败，而他完全不知道是刚才那一下点的。所以：**验证通过（钥匙串里有 Key）才换过去**，
-    /// 在那之前选择器只是预览这一档的 Key。
-    /// 纯函数，单测钉死；调用方拿它的结论去写 Settings.llmProvider。
-    static func adoptsProvider(current: LLMProvider, next: LLMProvider,
-                               requiresKey: Bool, hasKey: Bool, polishModel: String) -> Bool {
-        guard current != next else { return false }
-        guard !requiresKey || hasKey else { return false }
-        // 型号名是空的照样跑不起来（发出去就是 400）。5.0.0 起型号写死在 LLMCatalog 里，
-        // 这一条因此恒真——留着是因为它是这条判据的一部分，而不是因为它现在会拦住谁
-        return !polishModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
 
     // MARK: - 4.1.1：合并「关于我」到「自定义规则」
 
@@ -250,21 +215,13 @@ enum SettingsKeys {
     static let restoreClipboard = "restoreClipboard"
     static let autoStopSilenceSeconds = "autoStopSilenceSeconds"  // 静音自动停秒数（0 = 关）
     static let inputDeviceUID = "inputDeviceUID"            // 指定麦克风的 CoreAudio UID（"" = 系统默认）
-    static let livePreview = "livePreview"                 // 录音中悬浮窗灰字预览（伪流式）
+    static let livePreview = "livePreview"                 // 录音中悬浮窗灰字草稿（5.1.0 起默认关）
     static let overlayPosition = "overlayPosition"         // 悬浮窗在屏幕上的落点
     static let keepHistory = "keepHistory"                 // 是否把听写结果记进历史（默认开）
-    static let cloudAlibabaModel = "cloudAlibabaModel"      // 云端·阿里云用哪个识别模型（同步那条退路）
     static let llmProvider = "llmProvider"
     static let appLanguage = "appLanguage"
-    // 4.0.1：区域选择器已从界面拿掉（用户拍板）。这两条留着**只为兼容老设置**——
-    // 它们仍是候选主机表最好的排序线索（见 AlibabaEndpoint.candidates），但不再有 UI。
-    static let qwenRegion = "qwenRegion"                    // 老设置：DashScope 接入区域
-    static let qwenWorkspaceID = "qwenWorkspaceID"          // 老设置：WorkspaceId（主机名第一段）
-    static let qwenAPIHost = "qwenAPIHost"                  // 用户填的接入地址（可选；空 = 自动探测）
-    static let qwenResolvedHost = "qwenResolvedHost"        // 试通并记住的那台主机（本机缓存，不进设置导出）
-    /// 上面那台主机是**真的联网试通过**的，而不是 4.0.1 迁移按老区域种下的（见 AlibabaEndpoint.hostLooksVerified）。
-    /// 只有 CloudASRSettings.rememberResolution 写得出真；恢复探测要不要跑就看它。
-    static let qwenHostVerified = "qwenHostVerified"
+    // 阿里云那一档的六个键（识别模型 / 区域 / WorkspaceId / 接入地址 / 试通主机 / 已验证）
+    // 5.1.0 删掉，键名进 LegacyKeys.retiredAlibaba，启动时由 RetiredProviderCleanup 清掉。
     // 4.1.6 删掉了 "fastTier"：Fast 档不再是一条设置（OpenAI 官方接口恒开，见
     // LLMClient.asksForFastTier）。键名也不留——SettingsBackup 的 Key.all 里本来就没有它，
     // 导入的文件里带一条 fastTier 会被当成未知键忽略并计数，**绝不会**把 Fast 关掉。
@@ -285,8 +242,19 @@ enum SettingsKeys {
 ///   • 只作忽略用，**绝不迁移**（没有目的地）；
 ///   • **绝不删 UserDefaults 里的值**（用户降级回 4.x 还要用它们）；
 ///   • 钥匙串里 DeepSeek / 自定义 / 本机那几把 Key 同理，一把都不删（那是用户自己的东西）。
+///
+/// **唯一的例外是 `retiredAlibaba` 那一组**（用户 2026-09-28 拍板）：5.1.0 删阿里云时
+/// 明确要求把它的设置与 Key 一起清掉（见 RetiredProviderCleanup）。它们同样列进 `all`，
+/// 好让 5.0 导出的设置文件导进来时不被报成"未知键"。
 enum LegacyKeys {
-    static let all: Set<String> = [
+    /// 5.1.0 删掉的阿里云那一档留在 UserDefaults 里的键（含三条已无意义的一次性迁移标记）
+    static let retiredAlibaba: Set<String> = [
+        "cloudAlibabaModel", "qwenRegion", "qwenWorkspaceID", "qwenAPIHost",
+        "qwenResolvedHost", "qwenHostVerified", "qwenFastestHostProbedAt", "qwenFastestHostProbeVersion",
+        "migratedQwenLegacyHost", "migratedQwenHostVerified", "migratedCloudASRModelTo3",
+    ]
+
+    static let all: Set<String> = retiredAlibaba.union([
         // 润色档位 / 开关
         "polishLevel", "polishEnabled",
         // 本机识别模型与它那一整套目录 / 升级 / 清理状态
@@ -305,7 +273,7 @@ enum LegacyKeys {
         "deepseekBaseURL", "customBaseURL", "localRuntime",
         // 联网搜索：支持的服务商永远开
         "webSearchEnabled",
-    ]
+    ])
 
     /// 这个键是 5.0 之前的遗留吗（前缀那一条是「这份模型文件我点过以后再说」，按仓库一条）
     static func isLegacy(_ key: String) -> Bool {
@@ -332,17 +300,13 @@ final class Settings {
             SettingsKeys.playSounds: true,
             SettingsKeys.restoreClipboard: true,
             SettingsKeys.autoStopSilenceSeconds: 0.0,
-            SettingsKeys.livePreview: true,
+            // 5.1.0 起默认**关**（用户 2026-09-28 拍板）：OpenAI 实时的草稿比说话慢 1–2 秒，
+            // 用户把"字停了"当成"录完了"而干等（看着草稿不动就不敢松手）。只改默认值——
+            // 自己打开过（存着 true）的人照旧，界面上「实时草稿」开关随时能开。
+            SettingsKeys.livePreview: false,
             SettingsKeys.overlayPosition: OverlayPosition.bottomCenter.rawValue,
             SettingsKeys.keepHistory: true,
-            // 同步识别端点上只有 qwen3-asr-flash（4.0.0 默认的 3.0 打它必 404，见 AlibabaASRModel）
-            SettingsKeys.cloudAlibabaModel: AlibabaASRModel.qwen3Flash.rawValue,
             SettingsKeys.llmProvider: LLMProvider.openai.rawValue,
-            SettingsKeys.qwenRegion: LLMCatalog.QwenRegion.international.rawValue,
-            SettingsKeys.qwenWorkspaceID: "",
-            SettingsKeys.qwenAPIHost: "",
-            SettingsKeys.qwenResolvedHost: "",
-            SettingsKeys.qwenHostVerified: false,
             SettingsKeys.onboardingCompleted: false,
             SettingsKeys.onboardingSkippedEssentials: false,
         ])
@@ -366,54 +330,10 @@ final class Settings {
         // 型号不再是一条设置（写死平衡档，见 LLMCatalog.polishDefault），没有东西可迁。
         // 存着的那些型号键留在 UserDefaults 里不动（见 LegacyKeys 的三条纪律）。
 
-        // 一次性迁移（4.0.1）：老设置里的「区域 + WorkspaceId」→ 试通主机缓存。
-        //
-        // 4.0.1 拿掉了区域选择器，接入地址改成 App 自己试。但候选表只认三个工作空间后缀，
-        // 4.0.0 里能选的东京 / 香港 / US 三档一台都拼不出来——这几位用户升上来之后，
-        // 润色和识别会被静默改发到北京站或国际站，而探测器永远试不到他真正那台。
-        // 把老设置推出来的主机种进缓存，等于"上一次试通的就是它"，升级当天照常能用。
-        // 拼不出合法主机名时（WorkspaceId 带下划线）不种：那一支仍然退回区域兜底 + 提示粘地址。
-        if !d.bool(forKey: "migratedQwenLegacyHost") {
-            let region = LLMCatalog.QwenRegion(rawValue: d.string(forKey: SettingsKeys.qwenRegion) ?? "")
-                ?? .international
-            if let seed = AlibabaEndpoint.legacyHostSeed(
-                region: region,
-                workspaceID: d.string(forKey: SettingsKeys.qwenWorkspaceID) ?? "",
-                pastedHost: d.string(forKey: SettingsKeys.qwenAPIHost) ?? "",
-                resolvedHost: d.string(forKey: SettingsKeys.qwenResolvedHost) ?? "") {
-                d.set(seed, forKey: SettingsKeys.qwenResolvedHost)
-                Log.info("Qwen legacy host seeded host=\(AlibabaEndpoint.redacted(seed))")
-            }
-            d.set(true, forKey: "migratedQwenLegacyHost")
-        }
-
-        // 一次性迁移（4.1.1）：把"真的试通过"从"只是种下的"里分出来。
-        //
-        // 4.1.1 之前只要 qwenResolvedHost 有值就算"地址定下来了"，于是上面那条种子迁移
-        // 反而把恢复探测关死了：Key 属于新加坡工作空间、种下的是北京站的人，每句话 401，
-        // 而 App 一次都不去试——只有去设置页点「验证」才好（正是 4.1.1 要消掉的那一幕）。
-        if !d.bool(forKey: "migratedQwenHostVerified") {
-            let region = LLMCatalog.QwenRegion(rawValue: d.string(forKey: SettingsKeys.qwenRegion) ?? "")
-                ?? .international
-            let verified = AlibabaEndpoint.hostLooksVerified(
-                resolvedHost: d.string(forKey: SettingsKeys.qwenResolvedHost) ?? "",
-                region: region,
-                workspaceID: d.string(forKey: SettingsKeys.qwenWorkspaceID) ?? "")
-            d.set(verified, forKey: SettingsKeys.qwenHostVerified)
-            Log.info("Qwen host verified flag migrated to=\(verified)")
-            d.set(true, forKey: "migratedQwenHostVerified")
-        }
-
-        // 一次性迁移（4.0.1）：云端识别模型 qwen-audio-3.0-asr-flash → qwen3-asr-flash。
-        // 3.0 只活在异步端点上，打同步端点必然 404（见 AlibabaASRModel），而 4.0.0 把它
-        // 设成过默认值——不改的话同步那条退路每次都白跑一趟。
-        if !d.bool(forKey: "migratedCloudASRModelTo3") {
-            if d.string(forKey: SettingsKeys.cloudAlibabaModel) == AlibabaASRModel.qwenAudio30Flash.rawValue {
-                d.set(AlibabaASRModel.qwen3Flash.rawValue, forKey: SettingsKeys.cloudAlibabaModel)
-                Log.info("CloudASR model migrated to=\(AlibabaASRModel.qwen3Flash.rawValue)")
-            }
-            d.set(true, forKey: "migratedCloudASRModelTo3")
-        }
+        // 阿里云那三条一次性迁移（4.0.1 老区域 → 主机种子、4.1.1 "已验证"标记、
+        // 4.0.1 识别模型 3.0 → qwen3）5.1.0 随阿里云一起删掉；它们的标记键由
+        // RetiredProviderCleanup 清掉。那一档的删除本身**不在这里做**：它要动钥匙串，
+        // 而 Settings.shared 在单测里也会被初始化——见 AppDelegate 启动时那一次调用。
 
         // 一次性迁移（4.1.0）：快捷键只剩右 Option 一颗（用户 2026-09-20 拍板）。
         // 界面上从此没有任何地方改得动它，所以老设置里存着的左 Command / Fn 会变成
@@ -435,7 +355,7 @@ final class Settings {
             d.set(true, forKey: "migratedAboutMeIntoRules")
         }
 
-        // 一次性迁移（5.0.0）：服务商只剩 OpenAI 与阿里云。
+        // 一次性迁移（5.0.0）：服务商只剩 OpenAI 与阿里云（5.1.0 起只剩 OpenAI，见 RetiredProviderCleanup）。
         //
         // 存着 deepseek / custom / local 的人，llmProvider 读出来会退回 OpenAI（枚举没有
         // 那几个 case 了），而他的 OpenAI 档很可能一把 Key 都没有——那等于**静默**把他
@@ -443,7 +363,10 @@ final class Settings {
         // （他自己的 DeepSeek Key 留在钥匙串里，一个字都不动）。
         if !d.bool(forKey: "migratedProvidersToTwo") {
             let stored = d.string(forKey: SettingsKeys.llmProvider) ?? ""
-            if LLMProvider(rawValue: stored) == nil {
+            // qwen 不在这里改：它归 RetiredProviderCleanup（5.1.0），那边要据此判断
+            // "这位是阿里云用户"、记那行迁移日志——在这里先改成 openai 就把线索抹了
+            if LLMProvider(rawValue: stored) == nil,
+               stored != RetiredProviderCleanup.retiredProviderRawValue {
                 Log.info("LLM provider dropped in 5.0 from=\(stored.isEmpty ? "unset" : stored) "
                          + "— falling back to openai")
                 d.set(LLMProvider.openai.rawValue, forKey: SettingsKeys.llmProvider)
@@ -590,9 +513,10 @@ final class Settings {
     ///「指定了就用指定的」工作，而它对空串就是"跟随系统默认"。
     var inputDeviceUID: String { "" }
 
-    /// 录音中在悬浮窗显示灰色的实时草稿（伪流式预览）。默认开。
-    /// 这条只影响"看得见"，永远不影响插入的文字——草稿绝不会进目标应用，
-    /// 最终结果永远是松手后重跑的那一遍完整识别。
+    /// 录音中在悬浮窗显示灰色的实时草稿。**5.1.0 起默认关**，设置页有「实时草稿」开关。
+    /// 为什么关（用户 2026-09-28 拍板）：OpenAI 实时的草稿比说话慢 1–2 秒，用户看着草稿停了
+    /// 就以为录完了、干等着不松手。关着时悬浮窗照常显示「正在听…」与波形。
+    /// 这条只影响"看得见"，永远不影响插入的文字——草稿绝不会进目标应用。
     var livePreview: Bool {
         get { d.bool(forKey: SettingsKeys.livePreview) }
         set { d.set(newValue, forKey: SettingsKeys.livePreview) }
@@ -613,74 +537,12 @@ final class Settings {
         set { d.set(newValue, forKey: SettingsKeys.keepHistory) }
     }
 
-    /// 识别 + 润色 + 指令三件事共用的这一家（OpenAI / 阿里云，二选一）。
-    /// 存着 5.0 之前那三档（deepseek / custom / local）的老设置读出来是 OpenAI——
-    /// 那次退档由启动时的 migratedProvidersToTwo 记一行日志。
+    /// 识别 + 润色 + 指令三件事共用的这一家。**5.1.0 起永远是 OpenAI**：
+    /// 存着任何别的值（5.0 之前那三档、5.0.x 的 qwen）的老设置读出来都是 OpenAI——
+    /// qwen 那一档由启动时的 RetiredProviderCleanup 改写并记一行日志。
     var llmProvider: LLMProvider {
         get { LLMProvider(rawValue: d.string(forKey: SettingsKeys.llmProvider) ?? "") ?? .openai }
         set { d.set(newValue.rawValue, forKey: SettingsKeys.llmProvider) }
-    }
-
-    // MARK: 阿里云的接入地址
-
-    /// 老设置：DashScope 接入区域。界面上已经没有它了（4.0.1 拿掉了区域选择器），
-    /// 留着是因为老用户选过的那个值仍是候选主机表最好的排序线索。
-    /// 读到脏值回退国际站（一条坏设置不该让服务商整档失灵）。
-    var qwenRegion: LLMCatalog.QwenRegion {
-        get { LLMCatalog.QwenRegion(rawValue: d.string(forKey: SettingsKeys.qwenRegion) ?? "") ?? .international }
-        set { d.set(newValue.rawValue, forKey: SettingsKeys.qwenRegion) }
-    }
-
-    /// 老设置：区域端点主机名里的 WorkspaceId。同样只剩"候选主机的种子"这一个用途。
-    var qwenWorkspaceID: String {
-        get { d.string(forKey: SettingsKeys.qwenWorkspaceID) ?? "" }
-        set { d.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines),
-                    forKey: SettingsKeys.qwenWorkspaceID) }
-    }
-
-    /// 存着的接入地址（apiHost 或整条 URL 都认）。**4.1.4 起界面上没有这个输入框了**，
-    /// 所以它只可能来自导入的设置文件。有值就只用它，不再试别的主机；
-    /// 而它一旦 401 / 连不上就会被清掉、交回自动探测（CloudASRSettings.resolveHost）——
-    /// 界面上既然没有地方能清空它，就不能让它把人卡死。
-    var qwenAPIHost: String {
-        get { d.string(forKey: SettingsKeys.qwenAPIHost) ?? "" }
-        set { d.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines),
-                    forKey: SettingsKeys.qwenAPIHost) }
-    }
-
-    /// 上一次真的试通的那台主机（本机缓存）。有了它，正常使用一次都不再探测。
-    var qwenResolvedHost: String {
-        get { d.string(forKey: SettingsKeys.qwenResolvedHost) ?? "" }
-        set { d.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines),
-                    forKey: SettingsKeys.qwenResolvedHost) }
-    }
-
-    /// 上面那台主机是不是**真的试通过**（而不是迁移种下的猜测）。
-    /// 只有 rememberResolution 写真；判"要不要再去试一圈"的是 LLMClient.alibabaHostSettled。
-    var qwenHostVerified: Bool {
-        get { d.bool(forKey: SettingsKeys.qwenHostVerified) }
-        set { d.set(newValue, forKey: SettingsKeys.qwenHostVerified) }
-    }
-
-    /// Qwen 的 Base URL 永远是推出来的，没有 URL 输入框。
-    /// 优先用试通/粘贴的那台主机——**润色与云端识别同一台主机**，一处试通两边都对；
-    /// 都还没有就退回老设置那条（区域 + WorkspaceId），老用户升级上来第一次仍然能用。
-    ///
-    /// 这里**不读钥匙串**（每次界面重算、每次请求都会走到这个属性，Security 框架那一趟
-    /// 不能挂在这种地方）。可云端识别那条路是带着 Key 去拼候选主机的：工作空间那几台
-    /// 是从 `sk-ws-xxxx` 这个形状认出来的，两边喂的东西不一样就会一个发去工作空间主机、
-    /// 一个发去 dashscope-intl，必有一边 401。所以 Key 里的 WorkspaceId 在**验证那一刻**
-    /// 就落盘（CloudASRSettings.rememberWorkspace），这条路从设置里读它，两边同源。
-    var qwenBaseURL: String {
-        let host = CloudASRSettings.alibabaHost(pastedHost: qwenAPIHost,
-                                                resolvedHost: qwenResolvedHost,
-                                                workspace: qwenWorkspaceID,
-                                                legacyRegionSlug: qwenRegion.regionSlug,
-                                                apiKey: "")
-        let derived = AlibabaEndpoint.compatibleBaseURL(host: host)
-        return derived.isEmpty
-            ? LLMCatalog.qwenBaseURL(region: qwenRegion, workspaceID: qwenWorkspaceID)
-            : derived
     }
 
     // MARK: 联网搜索（5.0.0 起永远开，没有开关）
@@ -701,7 +563,7 @@ final class Settings {
 
     /// 润色温度的默认值。**4.3.3 从 0.5 降到 0.3**：温度越低模型越少自由发挥（少无中生有的
     /// 编号列表、少改写措辞），保真校验（polishDriftCheck）的误拦就跟着少——而误拦的代价是
-    /// 用户拿到一整段没润色过的识别原文。真 Key 实测 qwen3.8-flash：0.2 与 0.5 对满是语气词的
+    /// 用户拿到一整段没润色过的识别原文。4.3.3 的真 Key 实测：0.2 与 0.5 对满是语气词的
     /// 口述都是 0 残留，清理质量没差别，0.2 还略快一点。界面上没有这一项（不要温度滑杆），
     /// 只有导入设置文件能改；**已经存过值的用户不迁移**，那是他自己填进来的数。
     static let defaultPolishTemperature: Double = 0.3
@@ -725,16 +587,9 @@ final class Settings {
         set { d.set(newValue, forKey: SettingsKeys.aboutMe) }
     }
 
-    /// **某一档**服务商的 Base URL——不能只有"当前生效那档"。
-    /// 为什么：粘贴即验证要把候选 Key 发到用户**刚选中**的那一档去（引导第 5 屏选了 DeepSeek 时，
-    /// 生效档可能还是 OpenAI）。读全局当前档就等于把一家的 Key 送到另一家的端点上，
-    /// 而且那趟必然 401 → Key 存不进钥匙串 → 那一档永远采纳不了（见 KeyVerifier.Probe）。
-    func baseURL(for provider: LLMProvider) -> String {
-        switch provider {
-        case .openai: return openaiBaseURL
-        case .qwen: return qwenBaseURL
-        }
-    }
+    /// **某一档**服务商的 Base URL。5.1.0 起只有 OpenAI 一档；参数留着，
+    /// 调用方继续点名"发给哪一档"（Key 永不串槽那条铁律按档说话）。
+    func baseURL(for provider: LLMProvider) -> String { openaiBaseURL }
 
     /// 当前服务商生效的 Base URL。
     var currentBaseURL: String { baseURL(for: llmProvider) }
@@ -764,26 +619,70 @@ final class Settings {
 
     // MARK: 识别引擎（5.0.0 起只有云端，跟着服务商走）
 
-    /// 这一刻用哪一档云端识别。**它不是一条设置**：识别只有云端一条路，而用哪一家
-    /// 由生效服务商直接决定（用户 2026-09-22 拍板：设置页只做一个决定）。
-    /// 4.x 的 recognitionEngine / cloudRecognitionWanted 两个键读到就忽略（见 LegacyKeys）。
-    var recognitionEngine: RecognitionEngineChoice {
-        switch llmProvider {
-        case .openai: return .cloudOpenAI
-        case .qwen: return .cloudAlibaba
-        }
-    }
+    /// 这一刻用哪一档云端识别。**它不是一条设置**：识别只有云端一条路，5.1.0 起也只有
+    /// OpenAI 一家。4.x 的 recognitionEngine / cloudRecognitionWanted 两个键读到就忽略（见 LegacyKeys）。
+    var recognitionEngine: RecognitionEngineChoice { .cloudOpenAI }
 
-    /// 送给识别模型的语言参数。**永远是 nil**：两家云端都不发语言提示
-    /// （阿里云实时协议里传 language 会翻车，OpenAI 那边自动检测本来就准）。
+    /// 送给识别模型的语言参数。**永远是 nil**：OpenAI 那边自动检测本来就准。
     var recognitionModelLanguage: String? { nil }
 
-    /// 云端·阿里云那一档用哪个模型。默认 qwen3-asr-flash：同步识别端点上只有它
-    /// （4.0.0 默认的 qwen-audio-3.0-asr-flash 打这个端点必 404，见 AlibabaASRModel）。
-    var cloudAlibabaModel: AlibabaASRModel {
-        get { AlibabaASRModel(rawValue: d.string(forKey: SettingsKeys.cloudAlibabaModel) ?? "")
-                ?? .qwen3Flash }
-        set { d.set(newValue.rawValue, forKey: SettingsKeys.cloudAlibabaModel) }
+}
+
+// MARK: - 5.1.0：阿里云整档删除（启动时一次）
+
+/// 老用户升上 5.1.0 的那一次清理（用户 2026-09-28 拍板，与 iOS L36 同一个决定）。
+///
+/// 三件事，**顺序无关、只做一次**（标记落盘）：
+///   1. 生效服务商是 qwen → 改成 openai；
+///   2. 钥匙串里阿里云的两条 Key（`qwen_api_key`，以及 4.0 开发期的旧名 `dashscope_api_key`）删掉；
+///   3. 阿里云那一档留在 UserDefaults 里的键（LegacyKeys.retiredAlibaba）清掉。
+///
+/// **绝不把阿里云的 Key 当成 OpenAI 的 Key 用**：这里一个字节都不搬，只删。
+/// 删完之后没有 OpenAI Key 的人，`RecognitionEngineReadiness` 是 `.cloudKeyMissing`、
+/// aiStatus 是 `.off`，AppDelegate.routeFirstLaunch 会把他接回引导 ③（与 5.0 升级时
+/// DeepSeek 用户走的是同一条路）。升级提示里**不提**阿里云被删——只记日志（用户不喜欢被打扰）。
+///
+/// 为什么不放在 Settings.init 里：要动钥匙串，而 Settings.shared 在单测里也会被初始化——
+/// 那样跑一遍测试就会删掉开发机上的真 Key。钥匙串与 UserDefaults 都由调用方注入，单测用假的。
+enum RetiredProviderCleanup {
+
+    /// 一次性标记
+    static let flagKey = "migratedRetiredAlibabaProvider"
+    /// 老设置里阿里云那一档存的 llmProvider 原值
+    static let retiredProviderRawValue = "qwen"
+    /// 要删的钥匙串账号：现用名 + 4.0 开发期的旧名
+    static let retiredKeychainAccounts = ["qwen_api_key", "dashscope_api_key"]
+
+    struct Outcome: Equatable {
+        /// 生效服务商原来是 qwen、这一次被改成了 openai
+        let providerReset: Bool
+        /// 清掉了几个 UserDefaults 键（只数真的存在的）
+        let clearedDefaults: Int
     }
 
+    /// - deleteKey: 删一条钥匙串条目（调用方传 KeychainHelper.deleteAPIKey）
+    /// - Returns: nil = 以前已经做过，这次什么都没动
+    @discardableResult
+    static func run(defaults: UserDefaults, deleteKey: (String) -> Void) -> Outcome? {
+        guard !defaults.bool(forKey: flagKey) else { return nil }
+        let stored = defaults.string(forKey: SettingsKeys.llmProvider) ?? ""
+        let providerReset = stored == retiredProviderRawValue
+        if providerReset {
+            defaults.set(LLMProvider.openai.rawValue, forKey: SettingsKeys.llmProvider)
+        }
+        var cleared = 0
+        for key in LegacyKeys.retiredAlibaba where defaults.object(forKey: key) != nil {
+            defaults.removeObject(forKey: key)
+            cleared += 1
+        }
+        // 删不删得掉都不重试：条目不存在时 SecItemDelete 回 errSecItemNotFound，那正是想要的结果
+        for account in retiredKeychainAccounts { deleteKey(account) }
+        defaults.set(true, forKey: flagKey)
+        // 日志只有事件与计数，不含任何 Key 或主机名
+        if providerReset {
+            Log.info("Migration: Alibaba Cloud removed, provider reset to OpenAI")
+        }
+        Log.info("Migration: retired Alibaba Cloud settings cleared keys=\(cleared)")
+        return Outcome(providerReset: providerReset, clearedDefaults: cleared)
+    }
 }

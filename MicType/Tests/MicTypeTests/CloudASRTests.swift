@@ -69,19 +69,13 @@ final class CloudASRTests: XCTestCase {
         }
     }
 
-    func testDataURIAndBase64Length() {
-        let wav = WAVEncoder.encode(samples: [0, 0.1, 0.2])
-        let uri = WAVEncoder.dataURI(wav: wav)
-        XCTAssertTrue(uri.hasPrefix("data:audio/wav;base64,"))
-        let payload = String(uri.dropFirst("data:audio/wav;base64,".count))
-        XCTAssertEqual(payload, WAVEncoder.base64(wav: wav))
-        XCTAssertEqual(WAVEncoder.base64Length(forByteCount: wav.count), payload.count,
-                       "预校验算的长度必须与真编码出来的一致")
-    }
-
     // MARK: - 分段规划
 
     private let sr = WAVEncoder.defaultSampleRate
+
+    /// 规划算法本身的用例用一组固定的 120 / 180 秒上限（5.1.0 之前就是阿里云那一档的数；
+    /// 那一档删掉之后这组数只为让算法断言保持原样——它们验的是"怎么切"，不是哪一家）
+    private static let limits120 = CloudSegmentLimits(targetSeconds: 120, hardMaxSeconds: 180)
 
     /// 按秒生成 RMS 帧：silences 里的秒数附近给近零能量
     private func rmsFrames(seconds: Double, loud: Float = 0.2, silentAt: [Double] = []) -> [Float] {
@@ -105,7 +99,7 @@ final class CloudASRTests: XCTestCase {
 
     func testShortClipIsASingleSegment() {
         let clip = [Float](repeating: 0.1, count: samples(seconds: 3))
-        let segments = CloudSegmentPlanner.plan(samples: clip, limits: .alibaba)
+        let segments = CloudSegmentPlanner.plan(samples: clip, limits: Self.limits120)
         XCTAssertEqual(segments.count, 1)
         XCTAssertEqual(segments.first?.start, 0)
         XCTAssertEqual(segments.first?.count, clip.count)
@@ -116,10 +110,10 @@ final class CloudASRTests: XCTestCase {
         let frames = rmsFrames(seconds: total, silentAt: [110, 118, 238, 358])
         let segments = CloudSegmentPlanner.plan(rmsFrames: frames,
                                                totalSamples: samples(seconds: total),
-                                               limits: .alibaba)
+                                               limits: Self.limits120)
         XCTAssertTrue((3...4).contains(segments.count), "400 秒应切成 3–4 段，实际 \(segments.count)")
         for seg in segments {
-            XCTAssertLessThanOrEqual(seg.seconds, CloudSegmentLimits.alibaba.hardMaxSeconds + 0.001)
+            XCTAssertLessThanOrEqual(seg.seconds, Self.limits120.hardMaxSeconds + 0.001)
             XCTAssertGreaterThan(seg.count, 0)
         }
         // 覆盖完整、首尾相接，一个采样都不丢
@@ -137,7 +131,7 @@ final class CloudASRTests: XCTestCase {
         let frames = rmsFrames(seconds: total)      // 全程等能量：没有静音可挑
         let segments = CloudSegmentPlanner.plan(rmsFrames: frames,
                                                totalSamples: samples(seconds: total),
-                                               limits: .alibaba)
+                                               limits: Self.limits120)
         XCTAssertEqual(segments.count, 4)
         XCTAssertEqual(segments[0].seconds, 120, accuracy: 0.001, "平局要归名义边界")
         XCTAssertEqual(segments[1].seconds, 120, accuracy: 0.001)
@@ -150,11 +144,11 @@ final class CloudASRTests: XCTestCase {
         let frames = rmsFrames(seconds: total)
         let segments = CloudSegmentPlanner.plan(rmsFrames: frames,
                                                totalSamples: samples(seconds: total),
-                                               limits: .alibaba)
+                                               limits: Self.limits120)
         XCTAssertEqual(segments.count, 2, "短尾巴要并进上一段，而不是为 5 秒话单独发一次请求")
         XCTAssertEqual(segments[0].seconds, 120, accuracy: 0.001)
         XCTAssertEqual(segments[1].seconds, 125, accuracy: 0.001)
-        XCTAssertLessThanOrEqual(segments[1].seconds, CloudSegmentLimits.alibaba.hardMaxSeconds)
+        XCTAssertLessThanOrEqual(segments[1].seconds, Self.limits120.hardMaxSeconds)
         XCTAssertEqual(segments.reduce(0) { $0 + $1.count }, samples(seconds: total))
     }
 
@@ -195,38 +189,10 @@ final class CloudASRTests: XCTestCase {
     }
 
     func testEmptyAudioPlansNothing() {
-        XCTAssertTrue(CloudSegmentPlanner.plan(samples: [], limits: .alibaba).isEmpty)
+        XCTAssertTrue(CloudSegmentPlanner.plan(samples: [], limits: Self.limits120).isEmpty)
     }
 
-    // MARK: - 阿里云：端点
-
-    /// 端点只有一条路径（DashScope 同步 multimodal-generation），变的只是主机
-    func testAlibabaEndpointIsBuiltFromTheHost() {
-        XCTAssertEqual(AlibabaASRClient.endpoint(host: "dashscope-intl.aliyuncs.com")?.absoluteString,
-                       "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")
-        XCTAssertEqual(AlibabaASRClient.endpoint(host: "ws-abc.cn-beijing.maas.aliyuncs.com")?.host,
-                       "ws-abc.cn-beijing.maas.aliyuncs.com")
-        // 整条 URL 粘进来也认（控制台给的就是整条）
-        XCTAssertEqual(AlibabaASRClient.endpoint(host: "https://ws-abc.cn-beijing.maas.aliyuncs.com/api/v1")?.host,
-                       "ws-abc.cn-beijing.maas.aliyuncs.com")
-        XCTAssertNil(AlibabaASRClient.endpoint(host: "  "), "拼不出主机名就别拼出一个假地址")
-    }
-
-    /// 默认识别模型必须是 qwen3-asr-flash：4.0.0 默认的 qwen-audio-3.0-asr-flash
-    /// 根本不在这个同步端点上，于是云端识别对谁都是一次 404——这条断言就是那个 bug 的守门人
-    func testDefaultAlibabaModelIsTheOneTheSyncEndpointHas() {
-        XCTAssertEqual(AlibabaASRClient(apiKey: "k").model, .qwen3Flash)
-        XCTAssertEqual(CloudASRConfig().alibabaModel, .qwen3Flash)
-        XCTAssertEqual(AlibabaASRModel.allCases.first, .qwen3Flash, "下拉框里也要排第一")
-    }
-
-    /// 404 之后换哪个模型：只回落到 qwen3-asr-flash，而且不会把自己再试一遍
-    func testModelFallbackOrder() {
-        XCTAssertEqual(AlibabaASRModel.qwen3Flash.fallbackOrder, [.qwen3Flash])
-        XCTAssertEqual(AlibabaASRModel.qwenAudio30Flash.fallbackOrder, [.qwenAudio30Flash, .qwen3Flash])
-    }
-
-    // MARK: - 阿里云：词表过滤与语言提示
+    // MARK: - 词表过滤（OpenAI 的 keywords[]）与语言提示
 
     func testVocabularyFilteringFollowsDocumentedRules() {
         let terms = [
@@ -239,18 +205,13 @@ final class CloudASRTests: XCTestCase {
             "MicType",                              // 重复 → 去重
             "",                                     // 空 → 丢
         ]
-        let kept = AlibabaASRClient.filteredTerms(terms)
-        XCTAssertEqual(kept, ["MicType", "Model Context Protocol", "云术法", "Rappel"])
-        let param = AlibabaASRClient.vocabularyParameter(terms)
-        XCTAssertEqual(param.count, 4)
-        XCTAssertEqual(param["MicType"], 4, "权重统一用推荐值 4")
-        XCTAssertNil(param["a b c d e f g h"])
+        XCTAssertEqual(OpenAITranscribeClient.filteredTerms(terms),
+                       ["MicType", "Model Context Protocol", "云术法", "Rappel"])
     }
 
     func testVocabularyIsCappedAt2000() {
         let many = (0 ..< 2500).map { "term\($0)" }
-        XCTAssertEqual(AlibabaASRClient.filteredTerms(many).count, 2000)
-        XCTAssertEqual(AlibabaASRClient.vocabularyParameter(many).count, 2000)
+        XCTAssertEqual(OpenAITranscribeClient.filteredTerms(many).count, 2000)
     }
 
     func testLanguageHintsAreSanitizedAndCappedAtFour() {
@@ -267,304 +228,19 @@ final class CloudASRTests: XCTestCase {
         XCTAssertEqual(CloudASRLanguage.code(forName: "klingon"), "klingon", "认不出就原样返回，不瞎猜")
     }
 
-    // MARK: - 阿里云：请求体
-
-    private func body30(context: String?) -> [String: Any] {
-        AlibabaASRClient.requestBody(model: .qwenAudio30Flash,
-                                     audioDataURI: "data:audio/wav;base64,AAAA",
-                                     vocabulary: ["MicType", "云术法"],
-                                     languageHints: ["zh", "en", "xx"],
-                                     context: context,
-                                     enableITN: false)
-    }
-
-    func testAudio30RequestBodyShape() {
-        let body = body30(context: "上文：你好")
-        XCTAssertEqual(body["model"] as? String, "qwen-audio-3.0-asr-flash")
-        let input = body["input"] as? [String: Any]
-        let messages = input?["messages"] as? [[String: Any]]
-        XCTAssertEqual(messages?.count, 3, "input_text 上下文 turn + 空 assistant turn + input_audio turn")
-        XCTAssertEqual(messages?[0]["role"] as? String, "user")
-        let firstContent = messages?[0]["content"] as? [[String: Any]]
-        XCTAssertEqual(firstContent?.first?["type"] as? String, "input_text")
-        XCTAssertEqual(firstContent?.first?["text"] as? String, "上文：你好")
-        XCTAssertEqual(messages?[1]["role"] as? String, "assistant")
-        let assistantContent = messages?[1]["content"] as? [[String: Any]]
-        XCTAssertEqual(assistantContent?.first?["type"] as? String, "text")
-        XCTAssertEqual(assistantContent?.first?["text"] as? String, "")
-        let audioContent = messages?[2]["content"] as? [[String: Any]]
-        XCTAssertEqual(audioContent?.first?["type"] as? String, "input_audio")
-        let audio = audioContent?.first?["input_audio"] as? [String: Any]
-        XCTAssertEqual(audio?["data"] as? String, "data:audio/wav;base64,AAAA")
-
-        let parameters = body["parameters"] as? [String: Any]
-        XCTAssertEqual(parameters?["format"] as? String, "wav")
-        XCTAssertEqual(parameters?["sample_rate"] as? String, "16000", "sample_rate 是字符串，不是数字")
-        XCTAssertEqual(parameters?["vocabulary"] as? [String: Int], ["MicType": 4, "云术法": 4])
-        XCTAssertEqual(parameters?["language_hints"] as? [String], ["zh", "en"], "不认识的 xx 要被丢掉")
-    }
-
-    func testAudio30RequestBodyOmitsEmptyContextTurns() {
-        let body = body30(context: nil)
-        let messages = (body["input"] as? [String: Any])?["messages"] as? [[String: Any]]
-        XCTAssertEqual(messages?.count, 1, "没有上下文就只发音频那一条，不发空 text turn")
-        let content = messages?.first?["content"] as? [[String: Any]]
-        XCTAssertEqual(content?.first?["type"] as? String, "input_audio")
-
-        let blank = body30(context: "   ")
-        let blankMessages = (blank["input"] as? [String: Any])?["messages"] as? [[String: Any]]
-        XCTAssertEqual(blankMessages?.count, 1, "全是空白的上下文等于没有")
-    }
-
-    func testAudio30OmitsEmptyVocabularyAndHints() {
-        let body = AlibabaASRClient.requestBody(model: .qwenAudio30Flash,
-                                                audioDataURI: "data:audio/wav;base64,AAAA",
-                                                vocabulary: [],
-                                                languageHints: [],
-                                                context: nil,
-                                                enableITN: false)
-        let parameters = body["parameters"] as? [String: Any]
-        XCTAssertNil(parameters?["vocabulary"])
-        XCTAssertNil(parameters?["language_hints"])
-    }
-
-    /// qwen3-asr-flash 打的是**原生 DashScope 端点**
-    /// （/api/v1/services/aigc/multimodal-generation/generation），它的 content 项是
-    /// `{"audio": …}` / `{"text": …}`，**没有 `type` 这个字段**。
-    /// 4.1.0 在这里发的是 OpenAI 兼容模式那一套 `{"type":"input_audio","input_audio":{"data":…}}`，
-    /// 于是主机、鉴权、模型全对之后仍然吃一个
-    /// `400 InvalidParameter: Input should be a valid string: input`
-    /// （用户 2026-09-20 的日志）。这个测试就是不让那个形状回来。
-    func testQwen3RequestBodyShape() {
-        let body = AlibabaASRClient.requestBody(model: .qwen3Flash,
-                                                audioDataURI: "data:audio/wav;base64,AAAA",
-                                                vocabulary: ["MicType"],
-                                                languageHints: ["zh"],
-                                                context: "常用词汇：MicType",
-                                                enableITN: false)
-        XCTAssertEqual(body["model"] as? String, "qwen3-asr-flash")
-        let messages = (body["input"] as? [String: Any])?["messages"] as? [[String: Any]]
-        XCTAssertEqual(messages?.count, 2)
-        XCTAssertEqual(messages?[0]["role"] as? String, "system")
-        let systemContent = messages?[0]["content"] as? [[String: Any]]
-        XCTAssertEqual(systemContent?.first?["text"] as? String, "常用词汇：MicType")
-        XCTAssertNil(systemContent?.first?["type"], "qwen3 的 system content 只有 text 字段")
-
-        XCTAssertEqual(messages?[1]["role"] as? String, "user")
-        let audioContent = messages?[1]["content"] as? [[String: Any]]
-        XCTAssertEqual(audioContent?.count, 1)
-        XCTAssertEqual(audioContent?.first?["audio"] as? String, "data:audio/wav;base64,AAAA",
-                       "原生端点的音频项就是一个 audio 字段，值是 data URI")
-        XCTAssertNil(audioContent?.first?["type"], "原生端点的 content 项没有 type")
-        XCTAssertNil(audioContent?.first?["input_audio"],
-                     "input_audio 是 OpenAI 兼容模式的形状，发到原生端点必 400 InvalidParameter")
-
-        let options = (body["parameters"] as? [String: Any])?["asr_options"] as? [String: Any]
-        XCTAssertEqual(options?["language"] as? String, "zh")
-        XCTAssertEqual(options?["enable_itn"] as? Bool, false)
-        // qwen3 没有 parameters.vocabulary
-        XCTAssertNil((body["parameters"] as? [String: Any])?["vocabulary"])
-    }
-
-    /// 整个请求体必须能被 JSONSerialization 吃下去（makeRequest 就是这么发的）
-    func testQwen3RequestBodySerializesToTheDocumentedJSON() {
-        let body = AlibabaASRClient.requestBody(model: .qwen3Flash,
-                                                audioDataURI: "data:audio/wav;base64,AAAA",
-                                                vocabulary: [],
-                                                languageHints: [],
-                                                context: nil,
-                                                enableITN: false)
-        guard let data = try? JSONSerialization.data(withJSONObject: body),
-              let text = String(data: data, encoding: .utf8) else {
-            return XCTFail("请求体应该能序列化")
-        }
-        XCTAssertTrue(text.contains("\"audio\""))
-        XCTAssertFalse(text.contains("input_audio"))
-        let messages = (body["input"] as? [String: Any])?["messages"] as? [[String: Any]]
-        XCTAssertEqual(messages?.count, 1, "没有上下文就只发音频那一条")
-    }
-
-    func testQwen3ITNOnlyForChineseAndEnglish() {
-        func itn(_ hints: [String]) -> Bool? {
-            let body = AlibabaASRClient.requestBody(model: .qwen3Flash,
-                                                    audioDataURI: "x",
-                                                    vocabulary: [],
-                                                    languageHints: hints,
-                                                    context: nil,
-                                                    enableITN: true)
-            let options = (body["parameters"] as? [String: Any])?["asr_options"] as? [String: Any]
-            return options?["enable_itn"] as? Bool
-        }
-        XCTAssertEqual(itn(["en"]), true)
-        XCTAssertEqual(itn(["zh"]), true)
-        XCTAssertEqual(itn(["ar"]), false, "ITN 只对中英有效")
-        XCTAssertEqual(itn([]), false, "没指定语言时不开 ITN")
-    }
-
-    func testAlibabaRequestHeadersAndPrecheck() {
-        let client = AlibabaASRClient(apiKey: "sk-test", host: AlibabaEndpoint.defaultHost)
-        let wav = WAVEncoder.encode(samples: [Float](repeating: 0, count: 16_000))
-        guard case .success(let request) = client.makeRequest(wav: wav, seconds: 1, context: nil) else {
-            return XCTFail("正常大小的音频应该能建出请求")
-        }
-        XCTAssertEqual(request.httpMethod, "POST")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer sk-test")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "X-DashScope-SSE"), "disable",
-                       "非流式必须显式关掉 SSE")
-        XCTAssertNotNil(request.httpBody)
-
-        // 没 Key 不上网
-        let noKey = AlibabaASRClient(apiKey: "  ")
-        guard case .failure = noKey.makeRequest(wav: wav, seconds: 1, context: nil) else {
-            return XCTFail("没有 Key 时必须在本地就失败")
-        }
-    }
-
-    func testAlibabaPrecheckRejectsOverLimitAudio() {
-        XCTAssertNotNil(AlibabaASRClient.precheck(base64Length: 1000, seconds: 301), "超 5 分钟要本地拦下")
-        XCTAssertNil(AlibabaASRClient.precheck(base64Length: 1000, seconds: 300))
-        XCTAssertNotNil(AlibabaASRClient.precheck(base64Length: 10 * 1024 * 1024 + 1, seconds: 10),
-                        "base64 超 10MB 要本地拦下")
-        XCTAssertNil(AlibabaASRClient.precheck(base64Length: 10 * 1024 * 1024, seconds: 10))
-    }
-
-    // MARK: - 阿里云：响应解析
+    // 阿里云那一档的用例（端点、模型回落、请求体、响应解析、错误映射、200 裹着的错误码）
+    // 5.1.0 随 AlibabaASRClient 一起删掉。
 
     private func json(_ s: String) -> Data { Data(s.utf8) }
-
-    func testParseAudio30OutputText() {
-        let data = json(#"{"output":{"text":"今天天气不错"},"usage":{"duration":12.5}}"#)
-        guard case .success(let result) = AlibabaASRClient.parse(data, model: .qwenAudio30Flash) else {
-            return XCTFail("应该解析成功")
-        }
-        XCTAssertEqual(result.text, "今天天气不错")
-        XCTAssertEqual(result.billedSeconds, 12.5)
-        XCTAssertNil(result.detectedLanguage, "3.0 不返回识别语言")
-    }
-
-    func testParseAudio30SentenceFallback() {
-        let data = json(#"{"output":{"sentence":{"text":"备用形状"}},"usage":{"duration":3}}"#)
-        guard case .success(let result) = AlibabaASRClient.parse(data, model: .qwenAudio30Flash) else {
-            return XCTFail("output.sentence.text 也要认")
-        }
-        XCTAssertEqual(result.text, "备用形状")
-        XCTAssertEqual(result.billedSeconds, 3)
-    }
-
-    func testParseQwen3ChoicesAndAnnotations() {
-        let data = json("""
-        {"output":{"choices":[{"message":{"content":[{"text":"hello there"}],
-          "annotations":[{"type":"audio_info","language":"en"}]}}]},"usage":{"seconds":8}}
-        """)
-        guard case .success(let result) = AlibabaASRClient.parse(data, model: .qwen3Flash) else {
-            return XCTFail("应该解析成功")
-        }
-        XCTAssertEqual(result.text, "hello there")
-        XCTAssertEqual(result.detectedLanguage, "en")
-        XCTAssertEqual(result.billedSeconds, 8)
-    }
-
-    func testParseRejectsMissingTextAndBodyLevelErrorCode() {
-        if case .success = AlibabaASRClient.parse(json(#"{"output":{}}"#), model: .qwenAudio30Flash) {
-            XCTFail("没有文本字段不能算成功")
-        }
-        if case .success = AlibabaASRClient.parse(json("not json"), model: .qwenAudio30Flash) {
-            XCTFail("坏 JSON 不能算成功")
-        }
-        // HTTP 200 但 body 里报错的情况（DashScope 有这种返回）
-        let data = json(#"{"code":"DataInspectionFailed","message":"blocked"}"#)
-        guard case .failure(let failure) = AlibabaASRClient.parse(data, model: .qwenAudio30Flash) else {
-            return XCTFail("body 里带 code 就是失败")
-        }
-        XCTAssertEqual(failure.code, "DataInspectionFailed")
-    }
-
-    // MARK: - 阿里云：错误映射
-
-    func testAlibabaErrorMapping() {
-        let unauthorized = AlibabaASRClient.failure(status: 401, code: "InvalidApiKey", message: "bad key")
-        XCTAssertFalse(unauthorized.retryable)
-        XCTAssertEqual(unauthorized.status, 401)
-        XCTAssertEqual(unauthorized.code, "InvalidApiKey")
-        XCTAssertTrue(unauthorized.message.contains("401"))
-        // 4.1.4 起**不再指路"去粘接入地址"**（那个输入框已经没有了）：只说我们真正知道的事
-        // ——每一台都试过了，没有一台认这把 Key，请核对它是不是百炼的 Key、有没有过期
-        XCTAssertFalse(unauthorized.message.contains("粘"), unauthorized.message)
-        XCTAssertFalse(unauthorized.message.lowercased().contains("paste"), unauthorized.message)
-        XCTAssertTrue(unauthorized.message.contains("Key") || unauthorized.message.contains("key"),
-                      unauthorized.message)
-
-        let denied = AlibabaASRClient.failure(status: 403, code: "Model.AccessDenied", message: nil)
-        XCTAssertFalse(denied.retryable)
-        XCTAssertTrue(denied.message.contains("模型广场") || denied.message.contains("Model Gallery"),
-                      "403 要告诉用户去控制台开通模型")
-
-        let arrear = AlibabaASRClient.failure(status: 403, code: "Arrearage", message: nil)
-        XCTAssertTrue(arrear.message.contains("充值") || arrear.message.contains("Top it up"))
-
-        // 404 是 4.0.0 那个 bug 的现场：文案必须点名 qwen3-asr-flash，并指出那个真能救他的动作
-        // （4.1.4 起是"把云端识别开关关掉再打开"，「测试识别」按钮已经并进它了）
-        let notFound = AlibabaASRClient.failure(status: 404, code: "ModelNotFound", message: nil)
-        XCTAssertFalse(notFound.retryable)
-        XCTAssertTrue(notFound.message.contains("qwen3-asr-flash"))
-        XCTAssertTrue(notFound.message.contains("模型广场") || notFound.message.contains("Model Gallery"))
-
-        // 还没上网（DNS 不通 / 主机不存在）：不写 "(0)" 这种对用户毫无意义的尾巴
-        let offline = AlibabaASRClient.failure(status: 0, code: nil, message: nil)
-        XCTAssertFalse(offline.message.contains("(0)"))
-        // 同理：连不上就说连不上，别指着一个不存在的输入框
-        XCTAssertFalse(offline.message.contains("粘"), offline.message)
-        XCTAssertFalse(offline.message.lowercased().contains("paste"), offline.message)
-
-        let throttled = AlibabaASRClient.failure(status: 429, code: "Throttling.RateQuota", message: nil)
-        XCTAssertTrue(throttled.retryable, "限流值得退避重试一次")
-
-        let allocation = AlibabaASRClient.failure(status: 429, code: "Throttling.AllocationQuota", message: nil)
-        XCTAssertFalse(allocation.retryable, "额度用完重试也没用")
-
-        let inspection = AlibabaASRClient.failure(status: 400, code: "DataInspectionFailed", message: nil)
-        XCTAssertFalse(inspection.retryable)
-        XCTAssertTrue(inspection.message.contains("审核") || inspection.message.contains("content filter"),
-                      "内容审核拦截要说明白，不能含糊成'参数错误'")
-
-        let badParam = AlibabaASRClient.failure(status: 400, code: "InvalidParameter", message: "too long")
-        XCTAssertFalse(badParam.retryable)
-        XCTAssertTrue(badParam.message.contains("too long"), "云端原文要带上，方便排查")
-
-        let serverError = AlibabaASRClient.failure(status: 500, code: "InternalError", message: nil)
-        XCTAssertTrue(serverError.retryable)
-        XCTAssertTrue(AlibabaASRClient.failure(status: 503, code: nil, message: nil).retryable)
-
-        let weird = AlibabaASRClient.failure(status: 418, code: nil, message: nil)
-        XCTAssertFalse(weird.retryable)
-        XCTAssertNil(weird.code)
-    }
 
     /// 服务商原话前面那个冒号必须是 ASCII：这串会整条显示在悬浮窗/设置页上，
     /// 英文界面里混一个全角「：」就是一处中文泄漏（CJKUIStringGuardTests 拦的正是这一类）。
     func testProviderDetailUsesAnASCIIColon() {
-        // 断言只看"接服务商原话"的那个冒号：中文文案自己带的全角冒号是合法的
-        let alibaba = AlibabaASRClient.failure(status: 401, code: "InvalidApiKey",
-                                               message: "Invalid API-key provided.")
-        XCTAssertTrue(alibaba.message.hasSuffix("(401 InvalidApiKey): Invalid API-key provided."),
-                      "实际是：\(alibaba.message)")
-        XCTAssertFalse(alibaba.message.contains("：Invalid"), "英文界面下不许出现全角冒号")
-
         let openai = OpenAITranscribeClient.failure(status: 401, code: "invalid_api_key",
                                                    message: "Incorrect API key provided: sk-***")
         XCTAssertTrue(openai.message.hasSuffix("(401 invalid_api_key): Incorrect API key provided: sk-***"),
                       "实际是：\(openai.message)")
         XCTAssertFalse(openai.message.contains("：Incorrect"))
-    }
-
-    func testAlibabaErrorMappingReadsResponseBody() {
-        let client = AlibabaASRClient(apiKey: "sk")
-        let failure = client.failure(status: 429,
-                                     data: json(#"{"code":"Throttling","message":"slow down"}"#))
-        XCTAssertEqual(failure.code, "Throttling")
-        XCTAssertTrue(failure.retryable)
-        XCTAssertTrue(failure.message.contains("slow down"))
     }
 
     // MARK: - OpenAI：multipart
@@ -737,16 +413,11 @@ final class CloudASRTests: XCTestCase {
     // MARK: - 上下文
 
     func testContextBuilderLimitsAndSkipsEmpty() {
-        XCTAssertNil(CloudASRContext.text(vocabulary: [], previousTail: nil, includeVocabulary: true))
-        XCTAssertNil(CloudASRContext.text(vocabulary: ["MicType"], previousTail: nil, includeVocabulary: false),
-                     "词表走参数时，没有上文就不发这个 turn")
-        let withVocab = CloudASRContext.text(vocabulary: ["MicType"], previousTail: "上一段结尾",
-                                             includeVocabulary: true)
-        XCTAssertEqual(withVocab?.contains("MicType"), true)
-        XCTAssertEqual(withVocab?.contains("上一段结尾"), true)
-        let long = CloudASRContext.text(vocabulary: [String(repeating: "词", count: 900)],
-                                        previousTail: nil, includeVocabulary: true)
-        XCTAssertEqual(long?.count, CloudASRContext.charLimit, "上下文一 turn 不得超过 400 字")
+        XCTAssertNil(CloudASRContext.text(previousTail: nil), "没有上文就不发 prompt")
+        XCTAssertNil(CloudASRContext.text(previousTail: "  \n "))
+        XCTAssertEqual(CloudASRContext.text(previousTail: "上一段结尾"), "上文：上一段结尾")
+        let long = CloudASRContext.text(previousTail: String(repeating: "词", count: 900))
+        XCTAssertEqual(long?.count, CloudASRContext.charLimit, "上下文不得超过 400 字")
         XCTAssertNil(CloudASRContext.tail(of: "  \n  "))
         XCTAssertEqual(CloudASRContext.tail(of: "abcdef", chars: 3), "def")
     }
@@ -754,19 +425,14 @@ final class CloudASRTests: XCTestCase {
     // MARK: - 配置与引擎外壳
 
     func testConfigBuildsMatchingClient() {
-        let alibaba = CloudASRConfig(provider: .alibaba, apiKey: "k")
-        XCTAssertTrue(alibaba.makeClient() is AlibabaASRClient)
-        XCTAssertEqual(alibaba.makeClient().provider, .alibaba)
-        XCTAssertEqual(alibaba.makeClient().segmentLimits, .alibaba)
-
         let openai = CloudASRConfig(provider: .openai, apiKey: "k")
         XCTAssertTrue(openai.makeClient() is OpenAITranscribeClient)
         XCTAssertEqual(openai.makeClient().segmentLimits, .openai)
     }
 
     func testEngineNameAndAvailability() {
-        let engine = CloudASREngine(config: CloudASRConfig(provider: .alibaba, apiKey: ""))
-        XCTAssertEqual(engine.engineName, "Cloud · Alibaba")
+        let engine = CloudASREngine(config: CloudASRConfig(provider: .openai, apiKey: ""))
+        XCTAssertEqual(engine.engineName, "Cloud · OpenAI")
         XCTAssertFalse(engine.isModelAvailable, "没 Key 就等于引擎不可用")
         XCTAssertFalse(engine.isModelLoaded, "云端永远不占本机内存")
 
@@ -778,7 +444,7 @@ final class CloudASRTests: XCTestCase {
 
     /// 没 Key 时必须在主线程回一个明确的错误，而不是静默不回调（否则悬浮窗会永远转圈）
     func testEngineFailsFastWithoutCredentials() {
-        let engine = CloudASREngine(config: CloudASRConfig(provider: .alibaba, apiKey: ""))
+        let engine = CloudASREngine(config: CloudASRConfig(provider: .openai, apiKey: ""))
         let done = expectation(description: "completion")
         engine.transcribe(samples: [0.1, 0.2]) { result in
             XCTAssertTrue(Thread.isMainThread, "completion 必须回主线程")
@@ -789,7 +455,7 @@ final class CloudASRTests: XCTestCase {
     }
 
     func testEngineReturnsEmptyForEmptyAudio() {
-        let engine = CloudASREngine(config: CloudASRConfig(provider: .alibaba, apiKey: "sk-test"))
+        let engine = CloudASREngine(config: CloudASRConfig(provider: .openai, apiKey: "sk-test"))
         let done = expectation(description: "completion")
         engine.transcribe(samples: []) { result in
             XCTAssertEqual(try? result.get(), "", "空音频不上网，直接回空文本")
@@ -798,49 +464,12 @@ final class CloudASRTests: XCTestCase {
         wait(for: [done], timeout: 2)
     }
 
-    /// 两家云端都**复用润色那一档的 Key**：同一个控制台里的同一把 Key，分两处存
+    /// 云端识别**复用润色那一档的 Key**：同一个控制台里的同一把 Key，分两处存
     /// 只会存出两个不一致的值（改了一处、另一处还是旧的，表现是随机 401）
     func testCloudKeychainAccountNames() {
-        XCTAssertEqual(KeychainHelper.dashScopeAccount, "qwen_api_key")
-        XCTAssertEqual(CloudASRProvider.alibaba.keychainAccount, "qwen_api_key",
-                       "阿里云识别与 Qwen 润色共用一把百炼 Key")
-        XCTAssertEqual(CloudASRProvider.alibaba.keychainAccount, LLMProvider.qwen.keychainAccount)
         XCTAssertEqual(CloudASRProvider.openai.keychainAccount, "openai_api_key",
                        "OpenAI 云端识别复用润色那把 Key")
         XCTAssertEqual(CloudASRProvider.openai.keychainAccount, LLMProvider.openai.keychainAccount)
-        XCTAssertNotEqual(KeychainHelper.legacyDashScopeAccount, KeychainHelper.dashScopeAccount,
-                          "旧账号名留着只为迁移，不能和统一账号同名")
-    }
-
-    /// DashScope 有时在 HTTP 200 的 body 里报错。照 200 派发的话，内容审核、限流、
-    /// Key 不对全都落进"意外状态码"那条兜底——一句下一步都没有，限流还不会重试
-    func testBodyLevelErrorCodesAreMappedToTheStatusTheyReallyAre() {
-        XCTAssertEqual(AlibabaASRClient.syntheticStatus(code: "DataInspectionFailed"), 400)
-        XCTAssertEqual(AlibabaASRClient.syntheticStatus(code: "Throttling.RateQuota"), 429)
-        XCTAssertEqual(AlibabaASRClient.syntheticStatus(code: "InvalidApiKey"), 401)
-        XCTAssertEqual(AlibabaASRClient.syntheticStatus(code: "Arrearage"), 403)
-        XCTAssertEqual(AlibabaASRClient.syntheticStatus(code: "ModelNotFound"), 404)
-        XCTAssertNil(AlibabaASRClient.syntheticStatus(code: "SomethingNew"))
-        XCTAssertNil(AlibabaASRClient.syntheticStatus(code: ""))
-    }
-
-    /// 200 裹着的限流要走"值得重试"那一条，而且文案必须带一句下一步
-    func testTwoHundredWrappedThrottlingGetsTheRateLimitCopy() {
-        let saved = L10n.shared.language
-        defer { L10n.shared.language = saved }
-        L10n.shared.language = .zh
-
-        let throttled = AlibabaASRClient.failure(status: 200, code: "Throttling.RateQuota",
-                                                 message: "Requests rate limit exceeded")
-        XCTAssertTrue(throttled.retryable)
-        XCTAssertEqual(throttled.status, 429)
-        XCTAssertFalse(throttled.message.contains("意外状态码"), throttled.message)
-        // 真实的那个 HTTP 状态码仍然如实写在括号里
-        XCTAssertTrue(throttled.message.contains("(200 Throttling.RateQuota)"), throttled.message)
-
-        let blocked = AlibabaASRClient.failure(status: 200, code: "DataInspectionFailed", message: nil)
-        XCTAssertEqual(blocked.status, 400)
-        XCTAssertTrue(blocked.message.contains("本地引擎"), blocked.message)
-        XCTAssertFalse(blocked.retryable)
+        XCTAssertEqual(KeychainHelper.openAIAccount, LLMProvider.openai.keychainAccount)
     }
 }

@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - OpenAI「实时转写」协议客户端（WebSocket）
 //
-// **只依赖 Foundation**（与 AlibabaRealtimeClient、RealtimeTransport 同一条纪律）：
+// **只依赖 Foundation**（与 RealtimeTransport 同一条纪律；5.1.0 之前还有一个阿里云客户端）：
 // 不认识 Settings / Log / tr() / 任何单例，日志走注入的闭包，失败是共享的类型化 enum。
 //
 // 为什么单独写一个类而不是给阿里云那个加分支（用户 2026-09-21 拍板）：两家协议除了

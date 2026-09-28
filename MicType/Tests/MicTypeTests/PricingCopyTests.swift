@@ -3,8 +3,9 @@ import XCTest
 
 /// 「一小时多少钱 / 一句话多少钱」与拿 Key 的那几步。
 ///
-/// 为什么这几条值得钉住：5.0.0 起用户在引导 ③ 要在两家之间做一个**会花他自己的钱**的选择，
-/// 而这些数字和链接就是他做那个选择的全部依据。数字写错了他选错家，链接写错了他卡在第一分钟。
+/// 为什么这几条值得钉住：这些数字是用户在 Key 那颗 ⓘ 与验通之后的状态行里读到的
+/// "这要花我多少钱"，链接是他拿到 Key 的唯一路径——链接写错了他卡在第一分钟。
+/// （5.0.x 引导 ③ 的两家对比卡片与阿里云那几条 5.1.0 随那一档删掉。）
 final class PricingCopyTests: XCTestCase {
 
     private var savedLanguage: AppLanguage = .zh
@@ -37,27 +38,16 @@ final class PricingCopyTests: XCTestCase {
         }
     }
 
-    /// **阿里云必须明显更便宜**——那是引导 ③ 两张卡片之间最大的差别（设计文档第 3 节写的是
-    /// 约 $0.2 对约 $1.1；5.0.6 OpenAI 润色换 terra 后是约 $1.4）。这一条一旦反过来，卡片上那句「更便宜、更快」就成了假话。
-    func testAlibabaIsTheCheapOne() {
-        XCTAssertLessThan(LLMCatalog.hourlyUSD(provider: .qwen),
-                          LLMCatalog.hourlyUSD(provider: .openai))
-        XCTAssertLessThan(LLMCatalog.hourlyUSD(provider: .qwen), 0.5)
-        XCTAssertGreaterThan(LLMCatalog.hourlyUSD(provider: .openai), 0.8)
-    }
-
-    /// 「约 $1.4/小时」：**只留一位小数、永远带"约"**。给一个 $1.1234 的数字，
+    /// 「约 $1.7/小时」（5.1.0 起识别多了整段那一趟 $0.0045/分钟）：**只留一位小数、永远带"约"**。给一个 $1.1234 的数字，
     /// 等于假装我们知道用户会说多久、说多密。
     func testHourlyNoteIsRoundedAndHedged() {
         L10n.shared.language = .zh
-        XCTAssertEqual(LLMCatalog.hourlyCostNote(provider: .qwen), "约 $0.2/小时")
-        XCTAssertEqual(LLMCatalog.hourlyCostNote(provider: .openai), "约 $1.4/小时")
+        XCTAssertEqual(LLMCatalog.hourlyCostNote(provider: .openai), "约 $1.7/小时")
         L10n.shared.language = .en
-        XCTAssertEqual(LLMCatalog.hourlyCostNote(provider: .qwen), "about $0.2/hour")
-        XCTAssertEqual(LLMCatalog.hourlyCostNote(provider: .openai), "about $1.4/hour")
+        XCTAssertEqual(LLMCatalog.hourlyCostNote(provider: .openai), "about $1.7/hour")
     }
 
-    /// 「每句话约 $0.004」：引导 ③ 验通之后念的就是它。一小时的数字对还没用过的人
+    /// 「每句话约 $0.005」：引导 ③ 验通之后念的就是它。一小时的数字对还没用过的人
     /// 没有概念，而"一句话"是他真正的计量单位。
     func testPerSentenceNoteFollowsTheHourlyPrice() {
         for provider in LLMProvider.allCases {
@@ -66,10 +56,9 @@ final class PricingCopyTests: XCTestCase {
                            accuracy: 0.000001)
         }
         L10n.shared.language = .zh
-        XCTAssertEqual(LLMCatalog.perSentenceCostNote(provider: .qwen), "每句话约 $0.001")
-        XCTAssertEqual(LLMCatalog.perSentenceCostNote(provider: .openai), "每句话约 $0.004")
+        XCTAssertEqual(LLMCatalog.perSentenceCostNote(provider: .openai), "每句话约 $0.005")
         L10n.shared.language = .en
-        XCTAssertTrue(LLMCatalog.perSentenceCostNote(provider: .openai).hasPrefix("about $0.004"))
+        XCTAssertTrue(LLMCatalog.perSentenceCostNote(provider: .openai).hasPrefix("about $0.005"))
     }
 
     /// 价格串里**不许出现"分钱"**：中文的"分"既能读成人民币也能读成美分，
@@ -88,31 +77,17 @@ final class PricingCopyTests: XCTestCase {
     }
 
     /// 英文界面里这几串不许夹中文或全角标点
-    func testPriceAndCardNotesAreCleanInEnglish() {
+    func testPriceNotesAreCleanInEnglish() {
         L10n.shared.language = .en
         for provider in LLMProvider.allCases {
             for note in [LLMCatalog.hourlyCostNote(provider: provider),
-                         LLMCatalog.perSentenceCostNote(provider: provider),
-                         LLMCatalog.audienceNote(provider: provider),
-                         LLMCatalog.strengthNote(provider: provider)] {
+                         LLMCatalog.perSentenceCostNote(provider: provider)] {
                 XCTAssertFalse(CJKSourceScanner.containsFlagged(note), note)
             }
         }
     }
 
-    /// 引导 ③ 两张卡片上那两行必须各说各的：复制粘贴写错一处，两张卡片就一模一样，
-    /// 而那一刻用户正靠它们做选择
-    func testCardLinesDifferBetweenProviders() {
-        for language in AppLanguage.allCases {
-            L10n.shared.language = language
-            XCTAssertNotEqual(LLMCatalog.audienceNote(provider: .openai),
-                              LLMCatalog.audienceNote(provider: .qwen))
-            XCTAssertNotEqual(LLMCatalog.strengthNote(provider: .openai),
-                              LLMCatalog.strengthNote(provider: .qwen))
-            XCTAssertNotEqual(LLMCatalog.hourlyCostNote(provider: .openai),
-                              LLMCatalog.hourlyCostNote(provider: .qwen))
-        }
-    }
+    // 「两张卡片各说各的」（audienceNote / strengthNote）5.1.0 随那两张卡片删掉。
 
     // MARK: - 拿 Key 的那几步
 
@@ -135,63 +110,18 @@ final class PricingCopyTests: XCTestCase {
         }
     }
 
-    /// 阿里云第一步必须给**两个**入口：两个站是两套账号体系，我们无从得知用户在哪一边
-    /// ——写死一个的结果是另一边的人点进去看到空页面。
-    /// 按钮上只写站点自己的名字，**中英两侧一模一样**（用户 2026-09-22 拍板）
-    func testAlibabaOffersBothConsoles() {
+    /// 「去申请 Key ↗」直达 OpenAI 的 API Key 页（5.0.4 为阿里云加的两站小菜单 5.1.0 删掉）；
+    /// 引导 ③ 的文案里仍然**一个字都不提「国内 / 国际站 / 中国站」**（用户 2026-09-22 拍板）
+    func testKeyConsoleEntryAndStepsWording() {
         for language in AppLanguage.allCases {
             L10n.shared.language = language
-            let first = LLMCatalog.consoleSteps(for: .qwen).first
-            XCTAssertEqual(first?.links.count, 2)
-            let urls = first?.links.map(\.url) ?? []
-            XCTAssertTrue(urls.contains(LLMCatalog.alibabaConsoleInternational))
-            XCTAssertTrue(urls.contains(LLMCatalog.alibabaConsoleChina))
-            XCTAssertEqual(first?.links.map(\.label), ["International", "China"])
-        }
-    }
-
-    /// 引导 ③ 的文案里**一个字都不提「国内 / 国际站 / 中国站」**（用户 2026-09-22 拍板）：
-    /// 那是阿里云自己的账号体系，不是用户在这一刻要做的那个选择
-    func testNoStationWordingAnywhereInTheSteps() {
-        for language in AppLanguage.allCases {
-            L10n.shared.language = language
-            for provider in LLMProvider.allCases {
-                let lines = LLMCatalog.consoleSteps(for: provider).map(\.text)
-                    + [LLMCatalog.audienceNote(provider: provider),
-                       LLMCatalog.strengthNote(provider: provider)]
-                for line in lines {
-                    for banned in ["国内", "国际站", "中国站"] {
-                        XCTAssertFalse(line.contains(banned), line)
-                    }
+            XCTAssertTrue(LLMCatalog.apiKeyConsoleURL(for: .openai).hasPrefix("https://"))
+            XCTAssertFalse(LLMCatalog.getAKeyLabel.isEmpty)
+            for step in LLMCatalog.consoleSteps(for: .openai) {
+                for banned in ["国内", "国际站", "中国站"] {
+                    XCTAssertFalse(step.text.contains(banned), step.text)
                 }
             }
-        }
-    }
-
-    /// **两家都要有「去申请 Key ↗」**（5.0.4，用户 2026-09-23 实机反馈：阿里云那一档
-    /// 右边什么都没有）。阿里云给的是两个站的小菜单——和引导 ③ 第一步同两条链接、同两个名字，
-    /// 而且那两个名字中英一致（它们是站点自己的名字）。
-    func testBothProvidersOfferAKeyConsoleEntry() {
-        for language in AppLanguage.allCases {
-            L10n.shared.language = language
-            switch LLMCatalog.keyConsole(for: .openai) {
-            case .single(let url):
-                XCTAssertEqual(url, LLMCatalog.apiKeyConsoleURL(for: .openai))
-                XCTAssertTrue(url.hasPrefix("https://"), url)
-            case .choices(let links):
-                XCTFail("OpenAI 只有一条地址，不该弹菜单：\(links)")
-            }
-            switch LLMCatalog.keyConsole(for: .qwen) {
-            case .single(let url):
-                XCTFail("阿里云是两个站两套账号，不许替用户挑一个：\(url)")
-            case .choices(let links):
-                XCTAssertEqual(links.map(\.label), ["International", "China"])
-                XCTAssertEqual(links.map(\.url), [LLMCatalog.alibabaConsoleInternational,
-                                                  LLMCatalog.alibabaConsoleChina])
-                // 和引导 ③ 第一步是同两条链接（同一个事实只写一处）
-                XCTAssertEqual(links, LLMCatalog.consoleSteps(for: .qwen).first?.links)
-            }
-            XCTAssertFalse(LLMCatalog.getAKeyLabel.isEmpty)
         }
         L10n.shared.language = .en
         XCTAssertFalse(CJKSourceScanner.containsFlagged(LLMCatalog.getAKeyLabel),
@@ -203,7 +133,7 @@ final class PricingCopyTests: XCTestCase {
         let urls = LLMCatalog.consoleSteps(for: .openai).flatMap { $0.links.map(\.url) }
         XCTAssertEqual(Set(urls).count, urls.count, "\(urls)")
         XCTAssertTrue(urls.contains { $0.contains("billing") })
-        XCTAssertTrue(urls.contains(LLMCatalog.apiKeyConsoleURL(for: .openai) ?? ""),
+        XCTAssertTrue(urls.contains(LLMCatalog.apiKeyConsoleURL(for: .openai)),
                       "建 Key 那一步要和「去申请 Key ↗」指同一页")
     }
 

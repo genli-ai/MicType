@@ -21,16 +21,14 @@ final class LLMCatalogTests: XCTestCase {
     // MARK: - 预设与默认
 
     /// 默认一律是这家**均衡偏快**的那一档（用户 2026-09-20 拍板，推翻前一天那条"必须是旗舰"）。
-    /// 润色是每句话都要跑一次的东西，它的全部价值是顺手：实测 qwen3.8-flash 1.8–3.6 秒，
-    /// 而 qwen3.8-max 4–12 秒、还撞得上 12 秒的润色超时——那一次整句话就白说了。
+    /// 润色是每句话都要跑一次的东西，它的全部价值是顺手：旗舰实测 4–12 秒、
+    /// 还撞得上 12 秒的润色超时——那一次整句话就白说了（4.1.4 的日志）。
     /// 5.0.0 起这就是**唯一**的型号：界面上没有下拉（用户 2026-09-22 拍板）。
     /// 5.0.6 起 OpenAI 润色单独换 terra（iOS 144 次评测：严格保真 80% vs 64%、中位只慢 180 ms），
     /// 指令仍是 luna（terra 做指令不升质量、贵约 8 倍）。
     func testDefaultsAreTheBalancedFastTier() {
         XCTAssertEqual(LLMCatalog.polishDefault(for: .openai), "gpt-5.6-terra")
         XCTAssertEqual(LLMCatalog.commandDefault(for: .openai), "gpt-5.6-luna")
-        XCTAssertEqual(LLMCatalog.polishDefault(for: .qwen), "qwen3.8-flash")
-        XCTAssertEqual(LLMCatalog.commandDefault(for: .qwen), "qwen3.8-flash")
     }
 
     /// 每一档都有型号名：5.0.0 之前「自定义端点 / 本机模型」两档是空串（型号名只有用户
@@ -107,8 +105,9 @@ final class LLMCatalogTests: XCTestCase {
                                                  code: "unsupported_country_region_territory",
                                                  message: "Country, region, or territory not supported")
         XCTAssertTrue(region.text.contains("403"))
-        // 403 必须给出下一步：改用阿里云（用户在 UAE，这条命中率不低）
-        XCTAssertTrue(region.text.contains("Alibaba"))
+        // 5.1.0 起没有另一家可以指给他：只说清原因，不编一个不存在的下一步
+        XCTAssertTrue(region.text.lowercased().contains("country"), region.text)
+        XCTAssertFalse(region.text.contains("Alibaba"), region.text)
 
         let model = LLMCatalog.describeHTTPError(status: 404, provider: .openai, code: nil,
                                                 message: "The model `gpt-9` does not exist")
@@ -116,21 +115,16 @@ final class LLMCatalogTests: XCTestCase {
         XCTAssertTrue(model.text.contains("gpt-9"))
     }
 
-    /// 403 必须按服务商分流：建议换去的那一档不能是他正在用的那一档，
-    /// 而 DashScope 的 403 根本不是地区封锁（是模型没在百炼控制台开通）
-    func testForbiddenCopyIsProviderSpecific() {
-        L10n.shared.language = .en
-        let openai = LLMCatalog.describeHTTPError(status: 403, provider: .openai,
-                                                  code: nil, message: nil)
-        XCTAssertTrue(openai.text.contains("403"))
-        XCTAssertTrue(openai.text.contains("Alibaba"),
-                      "地区封锁那一句要指出还能换去哪: \(openai.text)")
-
-        let qwen = LLMCatalog.describeHTTPError(status: 403, provider: .qwen, code: nil, message: nil)
-        XCTAssertTrue(qwen.text.contains("Model Studio"))
-        XCTAssertFalse(qwen.text.lowercased().contains("country"))
-        XCTAssertFalse(qwen.text.contains("Alibaba Cloud in Settings"),
-                       "别建议阿里云用户改用阿里云: \(qwen.text)")
+    /// 403 不再建议"改用阿里云"（5.1.0 那一档删掉了）：指着一个不存在的选项比不说更糟
+    func testForbiddenCopyDoesNotPointAtARemovedProvider() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            let openai = LLMCatalog.describeHTTPError(status: 403, provider: .openai,
+                                                      code: nil, message: nil)
+            XCTAssertTrue(openai.text.contains("403"))
+            XCTAssertFalse(openai.text.contains("Alibaba") || openai.text.contains("阿里云"),
+                           openai.text)
+        }
     }
 
     /// 429 的两种含义必须分开说：一个该等几秒，一个该去充钱
@@ -165,34 +159,18 @@ final class LLMCatalogTests: XCTestCase {
         }
     }
 
-    /// 接入地址还没试对时的 401：这一刻代码自己刚判定"多半是地址的事"并且已经去试了，
-    /// 再说一句"API Key 无效"就是指错方向——用户去重贴 Key，而下一句恰好因为探测成功而好了。
-    func testUnverifiedHost401TalksAboutTheEndpointNotTheKey() {
-        L10n.shared.language = .zh
-        let probing = LLMCatalog.qwenUnverifiedHost401(probing: true).fullText
-        XCTAssertTrue(probing.contains("接入地址"), probing)
-        XCTAssertFalse(probing.contains("Key 无效"), probing)
-        // 试完一圈仍然不对：换成"试过的每一个接入地址都不认这把 Key"，
-        // 下一步是去核对 Key 本身（4.1.4 起不再指路"去粘接入地址"——那个框已经没有了）
-        let exhausted = LLMCatalog.qwenUnverifiedHost401(probing: false).fullText
-        XCTAssertTrue(exhausted.contains("接入地址"), exhausted)
-        XCTAssertFalse(exhausted.contains("粘"), exhausted)
-        XCTAssertNotEqual(exhausted, probing)
-    }
-
     func testCapacityAndUnknownStatusCopy() {
         L10n.shared.language = .en
-        XCTAssertTrue(LLMCatalog.describeHTTPError(status: 503, provider: .qwen,
+        XCTAssertTrue(LLMCatalog.describeHTTPError(status: 503, provider: .openai,
                                                    code: nil, message: nil).text.contains("503"))
-        XCTAssertTrue(LLMCatalog.describeHTTPError(status: 500, provider: .qwen,
+        XCTAssertTrue(LLMCatalog.describeHTTPError(status: 500, provider: .openai,
                                                    code: nil, message: nil).text.contains("500"))
     }
 
     /// 英文界面下这几条话术里不能混进中文或全角标点（英文用户看到「：」就是 bug）
     func testEnglishCopyHasNoCJKOrFullWidthPunctuation() {
         L10n.shared.language = .en
-        var texts = [LLMCatalog.timeoutCopy().fullText, LLMCatalog.timeoutCopy(retried: true).fullText,
-                     LLMCatalog.qwenUnverifiedHost401(probing: true).fullText]
+        var texts = [LLMCatalog.timeoutCopy().fullText, LLMCatalog.timeoutCopy(retried: true).fullText]
         for status in [401, 403, 404, 429, 503, 500] {
             texts.append(LLMCatalog.describeHTTPError(status: status, provider: .openai,
                                                       code: "insufficient_quota",
@@ -223,45 +201,16 @@ final class LLMCatalogTests: XCTestCase {
         XCTAssertEqual(Set(accounts).count, accounts.count)
     }
 
-    /// 5.0.0 起两家都要 Key（可以不填 Key 的「本机模型」那一档没有了）
+    /// 5.0.0 起每一档都要 Key（可以不填 Key 的「本机模型」那一档没有了）
     func testEveryProviderNeedsAnAPIKey() {
         for provider in LLMProvider.allCases {
             XCTAssertTrue(provider.requiresAPIKey, provider.rawValue)
         }
     }
 
-    /// 只剩两家（用户 2026-09-22 拍板）：DeepSeek 没有识别接口，自定义端点与本机大模型
-    /// 既没有识别也不该出现在一页只做一个决定的设置里
-    func testOnlyTwoProviders() {
-        XCTAssertEqual(LLMProvider.allCases, [.openai, .qwen])
-    }
-
-    // MARK: - Qwen 区域 → Base URL
-
-    /// 国际站不需要 WorkspaceId，直接给地址
-    func testQwenGlobalRegionsNeedNoWorkspace() {
-        XCTAssertEqual(LLMCatalog.qwenBaseURL(region: .international, workspaceID: ""),
-                       "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
-        XCTAssertEqual(LLMCatalog.qwenBaseURL(region: .us, workspaceID: "ignored"),
-                       "https://dashscope-us.aliyuncs.com/compatible-mode/v1")
-        XCTAssertFalse(LLMCatalog.QwenRegion.international.requiresWorkspaceID)
-    }
-
-    /// 区域端点把 WorkspaceId 放在主机名第一段
-    func testQwenRegionalEndpointEmbedsTheWorkspaceID() {
-        XCTAssertEqual(LLMCatalog.qwenBaseURL(region: .beijing, workspaceID: " llm-abc123 "),
-                       "https://llm-abc123.cn-beijing.maas.aliyuncs.com/compatible-mode/v1")
-        XCTAssertEqual(LLMCatalog.qwenBaseURL(region: .singapore, workspaceID: "ws"),
-                       "https://ws.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1")
-    }
-
-    /// **没填 WorkspaceId 时宁可给空地址**：偷偷退回国际站等于把 Key 和听写文本
-    /// 发到用户没选的区域去
-    func testQwenRegionalEndpointWithoutWorkspaceIsEmpty() {
-        for region in LLMCatalog.QwenRegion.allCases where region.requiresWorkspaceID {
-            XCTAssertEqual(LLMCatalog.qwenBaseURL(region: region, workspaceID: "   "), "",
-                           region.rawValue)
-        }
+    /// 5.1.0 起只剩 OpenAI 一家（用户 2026-09-28 拍板，与 iOS L36 一致）
+    func testOnlyOneProvider() {
+        XCTAssertEqual(LLMProvider.allCases, [.openai])
     }
 
     // MARK: - 自定义 Base URL 校验
@@ -345,7 +294,7 @@ final class LLMCatalogTests: XCTestCase {
 
     /// 拉取失败（空数组）时清单保持原样
     func testMergedModelListFallsBackToPresets() {
-        let presets = ["qwen3.8-flash", "qwen3.8-max"]
+        let presets = ["gpt-5.6-terra", "gpt-5.6-luna"]
         XCTAssertEqual(LLMCatalog.mergedModelList(presets: presets, fetched: []), presets)
     }
 
@@ -357,16 +306,13 @@ final class LLMCatalogTests: XCTestCase {
         // OpenAI 档指向第三方网关时只有 chat/completions，没有 web_search 工具
         XCTAssertEqual(LLMCatalog.searchStyle(provider: .openai, baseURL: "https://gw.example.com/v1"),
                        .unsupported)
-        XCTAssertEqual(LLMCatalog.searchStyle(provider: .qwen,
-                                              baseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
-                       .qwenEnableSearch)
         // OpenRouter 仍然认（把 OpenAI 档的 Base URL 指过去的人还在）
         XCTAssertEqual(LLMCatalog.searchStyle(provider: .openai,
                                               baseURL: "https://openrouter.ai/api/v1"),
                        .openrouterPlugin)
     }
 
-    /// 来源数量那句话：0 条也要说"已联网"（Qwen 那档不回传来源，但钱是真花了）
+    /// 来源数量那句话：0 条也要说"已联网"（有的端点不回传来源，但钱是真花了）
     func testWebSearchNote() {
         L10n.shared.language = .zh
         XCTAssertEqual(LLMCatalog.webSearchNote(citationCount: 0), "已联网")
@@ -418,7 +364,6 @@ final class LLMCatalogTests: XCTestCase {
                      LLMCatalog.serviceTierName("default"),
                      LLMCatalog.serviceTierName("fast"),
                      LLMCatalog.serviceTierName("flex")]
-        texts += LLMCatalog.QwenRegion.allCases.map(\.displayName)
         texts += LLMProvider.allCases.map(\.displayName)
         for problem: LLMCatalog.BaseURLProblem in [.empty, .malformed, .insecure, .noVersionSegment] {
             texts.append(problem.message)

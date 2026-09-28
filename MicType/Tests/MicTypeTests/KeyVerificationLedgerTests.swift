@@ -32,12 +32,12 @@ final class KeyVerificationLedgerTests: XCTestCase {
         XCTAssertTrue(ledger.isCurrent(second, for: account))
     }
 
-    /// 一档一本账：在 OpenAI 那一档粘 Key，不该把阿里云那一档在路上的验证作废
+    /// 一个账户一本账：别的账户领了新代数，不该把这一个在路上的验证作废
     func testAccountsDoNotRetireEachOther() {
         let openai = account() + ".openai"
-        let qwen = account() + ".qwen"
+        let other = account() + ".other"
         let generation = ledger.nextGeneration(for: openai)
-        _ = ledger.nextGeneration(for: qwen)
+        _ = ledger.nextGeneration(for: other)
         XCTAssertTrue(ledger.isCurrent(generation, for: openai))
     }
 

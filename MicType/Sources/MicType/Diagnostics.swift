@@ -27,16 +27,12 @@ enum Diagnostics {
         lines.append("App: \(UpdateChecker.currentVersion) (build \(buildNumber))")
         lines.append("macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)")
         lines.append("Chip: \(chip)")
-        // 识别这一行是排障第一问：走的哪一家、地址对不对、Key 在不在、这会儿有没有网。
+        // 识别这一行是排障第一问：走的哪条路、Key 在不在、这会儿有没有网。
         // 只报档位与"有没有 Key"——Key 本身一个字符都不出现。
-        // 主机名里第一段是工作空间编号，抹掉再报（诊断信息是要被整段贴出来的）
-        let resolvedHost = s.qwenResolvedHost.isEmpty
-            ? "unresolved" : AlibabaEndpoint.redacted(s.qwenResolvedHost)
+        // （5.1.0 删掉了阿里云那几项：识别模型 / 试通主机 / 粘贴地址。）
         let cloudKey = CloudASRSettings.hasKey(for: s.recognitionEngine) ? "configured" : "absent"
         lines.append("Recognition: engine=\(s.recognitionEngine.rawValue)"
-                     + " cloudModel=\(s.cloudAlibabaModel.rawValue)"
-                     + " host=\(resolvedHost)"
-                     + " pastedHost=\(s.qwenAPIHost.isEmpty ? "unset" : "set")"
+                     + " flow=\(DictationController.currentRecordingFlow())"
                      + " cloudKey=\(cloudKey)"
                      + " online=\(NetworkReachability.isOnline)"
                      + " ready=\(RecognitionEngineReadiness.current().isReady)")

@@ -46,10 +46,20 @@ final class LocalModelCleanupTests: XCTestCase {
     /// 5.0 还在用的键**一个都不许进这张表**：进了就会被当成遗留忽略掉
     func testStillLiveKeysAreNotLegacy() {
         for key in [SettingsKeys.hotkey, SettingsKeys.llmProvider, SettingsKeys.customVocabulary,
-                    SettingsKeys.customPolishRules, SettingsKeys.qwenAPIHost,
-                    SettingsKeys.cloudAlibabaModel, SettingsKeys.keepHistory,
+                    SettingsKeys.customPolishRules, SettingsKeys.livePreview,
+                    SettingsKeys.openaiBaseURL, SettingsKeys.keepHistory,
                     SettingsKeys.onboardingCompleted] {
             XCTAssertFalse(LegacyKeys.isLegacy(key), key)
+        }
+    }
+
+    /// 5.1.0 删掉的阿里云那一档：它的键也要被认成遗留（5.0 导出的文件里带着它们），
+    /// 而且是 RetiredProviderCleanup 要清掉的那一组
+    func testRetiredAlibabaKeysAreLegacy() {
+        for key in ["cloudAlibabaModel", "qwenRegion", "qwenWorkspaceID", "qwenAPIHost",
+                    "qwenResolvedHost", "qwenHostVerified"] {
+            XCTAssertTrue(LegacyKeys.isLegacy(key), key)
+            XCTAssertTrue(LegacyKeys.retiredAlibaba.contains(key), key)
         }
     }
 }

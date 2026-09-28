@@ -50,19 +50,16 @@ final class SettingsBackupTests: XCTestCase {
         XCTAssertEqual(r.skipped, 0)
     }
 
-    /// 识别这一段（引擎 / 语言 / 云端模型 / 区域 / WorkspaceId / 本机模型仓库）要跟着备份走，
-    /// 而 API Key 一如既往不在里面
-    func testExportIncludesRecognitionSettings() {
+    /// 5.1.0：阿里云那四个键（识别模型 / 接入地址 / 区域 / WorkspaceId）不再导出，
+    /// 但仍在已知键表里（5.0 导出的文件导进来不报"未知键"）；API Key 一如既往不在里面
+    func testExportDropsTheRetiredAlibabaSettings() {
         let settings = SettingsBackup.makeDocument()["settings"] as? [String: Any]
-        // 5.0.0 起识别这一段只剩三条（引擎由 llmProvider 推出来，语言与本机模型仓库没有了）
-        for key in [SettingsBackup.Key.cloudAlibabaModel, SettingsBackup.Key.qwenRegion,
-                    SettingsBackup.Key.qwenWorkspaceId] {
-            XCTAssertNotNil(settings?[key] as? String, "导出表里少了 \(key)")
-            XCTAssertTrue(SettingsBackup.Key.all.contains(key), "\(key) 不在已知键表里，导入端会忽略它")
+        for key in [SettingsBackup.Key.cloudAlibabaModel, SettingsBackup.Key.qwenApiHost,
+                    SettingsBackup.Key.qwenRegion, SettingsBackup.Key.qwenWorkspaceId] {
+            XCTAssertNil(settings?[key], "阿里云那一档删掉了，\(key) 不该再被导出")
+            XCTAssertTrue(SettingsBackup.Key.all.contains(key), "\(key) 不在已知键表里，导入端会报未知键")
+            XCTAssertTrue(SettingsBackup.Key.legacyIgnored.contains(key), key)
         }
-        // 导出的值必须是自己那道校验放行的值，否则"导出再导入"会掉设置
-        let workspace = (settings?[SettingsBackup.Key.qwenWorkspaceId] as? String) ?? "!"
-        XCTAssertTrue(SettingsBackup.isAcceptableWorkspaceID(workspace))
         // API Key 永远不导出（"hotkey" 里也有 key 三个字母，所以按 apikey/secret/token 判）
         for key in settings?.keys ?? [String: Any]().keys {
             let lowered = key.lowercased()
@@ -76,14 +73,29 @@ final class SettingsBackupTests: XCTestCase {
 
     // 识别语言与本机模型仓库那两道校验随它们的设置一起删掉（5.0.0）。
 
-    /// WorkspaceId 会被拼进主机名第一段——别人发来的文件不该能把音频指到别的主机去
-    func testWorkspaceIDRejectsAnythingThatIsNotAHostLabel() {
-        XCTAssertTrue(SettingsBackup.isAcceptableWorkspaceID(""))
-        XCTAssertTrue(SettingsBackup.isAcceptableWorkspaceID("llm-abc123"))
-        XCTAssertFalse(SettingsBackup.isAcceptableWorkspaceID("evil.example.com"))
-        XCTAssertFalse(SettingsBackup.isAcceptableWorkspaceID("ws/../x"))
-        XCTAssertFalse(SettingsBackup.isAcceptableWorkspaceID("ws 123"))
-        XCTAssertFalse(SettingsBackup.isAcceptableWorkspaceID(String(repeating: "a", count: 64)))
+    // WorkspaceId 的主机名字符校验随阿里云那一档一起删掉（5.1.0）。
+
+    /// 5.0.x 导出的文件（服务商是阿里云、带着接入地址）导进 5.1.0：**不报错、不改设置**。
+    /// 服务商那一条静默跳过（只剩 OpenAI 一家），阿里云那四条只认不写——
+    /// 一条都不许记成"忽略 N 项（不认识或格式不对）"，那句话会让人以为自己的文件坏了。
+    func testImportingAFiveZeroAlibabaFileIsSilentlyIgnored() throws {
+        let saved = Settings.shared.llmProvider
+        defer { Settings.shared.llmProvider = saved }
+        let document: [String: Any] = [
+            "schemaVersion": 1,
+            "settings": [
+                SettingsBackup.Key.llmProvider: "qwen",
+                SettingsBackup.Key.cloudAlibabaModel: "qwen3-asr-flash",
+                SettingsBackup.Key.qwenApiHost: "dashscope-intl.aliyuncs.com",
+                SettingsBackup.Key.qwenRegion: "international",
+                SettingsBackup.Key.qwenWorkspaceId: "",
+            ],
+        ]
+        let summary = try SettingsBackup.apply(document: document)
+        XCTAssertTrue(summary.ignoredKeys.isEmpty, "\(summary.ignoredKeys)")
+        XCTAssertTrue(summary.updatedKeys.isEmpty, "\(summary.updatedKeys)")
+        XCTAssertTrue(summary.notableChanges.isEmpty, "\(summary.notableChanges)")
+        XCTAssertEqual(Settings.shared.llmProvider, .openai)
     }
 
     /// 新加的偏好要跟着备份走：导出表里必须有它，键名也必须在已知表里（否则导入端会忽略）

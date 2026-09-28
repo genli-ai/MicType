@@ -42,9 +42,11 @@ enum SettingsCopy {
                                       " Turning this off stops recording and leaves existing entries alone.")
     }
 
+    /// 5.1.0 去掉了「服务商与接入地址」：只剩 OpenAI 一家，阿里云的接入地址也没了。
+    /// 仍然会被导入改掉的只有 OpenAI 的接口地址（openaiBaseURL），所以说"接口地址"。
     static var backupInfo: String {
-        tr("导出一个 JSON：词汇表、自定义规则、服务商与接入地址、界面语言。导入是合并，别人给的文件可能把服务商或接入地址换掉（会提示一次）。API Key 从不导出、也从不导入。",
-           "Exports one JSON file: vocabulary, custom rules, provider and endpoint, and the interface language. Import merges, and a file from someone else can switch your provider or endpoint (the summary says so). API keys are never exported or imported.")
+        tr("导出一个 JSON：词汇表、自定义规则、接口地址、界面语言。导入是合并，别人给的文件可能把接口地址换掉（会提示一次）。API Key 从不导出、也从不导入。",
+           "Exports one JSON file: vocabulary, custom rules, endpoint and the interface language. Import merges, and a file from someone else can change your endpoint (the summary says so). API keys are never exported or imported.")
     }
 
     // rulesNeedAI 5.0.0 删掉：没有「只用本地」那一档了，自定义规则永远会被发出去。
@@ -88,9 +90,10 @@ enum SettingsCopy {
         tr("也支持「错写=正写」硬替换", "Supports hard replacement, written as wrong=right")
     }
 
+    /// 5.1.0 删掉了「阿里云那一档识别时不认它」那一句：那一档没有了。
     static var vocabularyInfo: String {
-        tr("这些词作为热词直接送进 OpenAI 的云端识别，也参与 AI 润色纠错——专有名词准确率的第一杠杆。阿里云那一档识别时不认它，由润色纠正。硬替换「杰文=捷文」零耗时，一个正写可挂多个错写「杰文|捷纹=捷文」。口水词内置。",
-           "These terms go as hotwords to OpenAI cloud recognition, and are used by AI polish — the number one lever for proper-noun accuracy. Alibaba Cloud recognition ignores them, so polish fixes those names afterwards. Hard replacement such as \"Jevin=Jaywen\" rewrites every occurrence at zero latency, and one correct form can take several wrong spellings: \"Jevin|Javin=Jaywen\". Filler words are built in.")
+        tr("这些词作为热词直接送进 OpenAI 的云端识别，也参与 AI 润色纠错——专有名词准确率的第一杠杆。硬替换「杰文=捷文」零耗时，一个正写可挂多个错写「杰文|捷纹=捷文」。口水词内置。",
+           "These terms go as hotwords to OpenAI cloud recognition, and are used by AI polish — the number one lever for proper-noun accuracy. Hard replacement such as \"Jevin=Jaywen\" rewrites every occurrence at zero latency, and one correct form can take several wrong spellings: \"Jevin|Javin=Jaywen\". Filler words are built in.")
     }
 
     // MARK: - 云端 AI
@@ -101,14 +104,8 @@ enum SettingsCopy {
         tr("例如：署名用 Gen；邮件偏正式", "For example: sign as Gen; formal in email")
     }
 
-    /// 服务商选择器上「正在使用」的那一档。**不是 Caption**（它是选择器旁边的一枚小标签），
-    /// 所以不进那张 16 字的表，但仍然只写这一处。
-    ///
-    /// 为什么非有不可（用户 2026-09-20 的实测反馈）：三档并排、每一档都点得动，屏幕上却
-    /// 没有任何地方写着"现在真正在用的是哪一家"——于是人人都挨个点一遍，最后停在哪档就是哪档。
-    static var providerInUse: String {
-        tr("正在使用 ✓", "In use ✓")
-    }
+    // 服务商选择器那一套（「正在使用 ✓」providerInUse、「预览中，仍用 X」providerNotSetUp）
+    // 5.1.0 删掉：只剩 OpenAI 一家，没有选择器，也就没有"看着的那一档还没生效"这回事。
 
     /// Key 验通之后，状态行末尾那半句（设置页）：**这一档一小时大概多少钱**。
     ///
@@ -120,26 +117,11 @@ enum SettingsCopy {
            "recognition + polish, \(LLMCatalog.hourlyCostNote(provider: provider))")
     }
 
-    /// 选择器上看着的这一档还没配 Key：它现在只是**预览**，生效的仍然是上一档。
-    ///
-    /// 为什么要把生效那家的名字念出来：预览的这一刻，「正在使用 ✓」恰好不在屏幕上
-    ///（它只长在生效那一段旁边），而"现在真正在用哪一家"正是这一版要解决的问题——
-    /// 最需要这句话的时刻反而没有，就等于没解决。引导页同一状态本来就这么写
-    ///（OnboardingCopy.providerNotAdoptedYet）。
-    static func providerNotSetUp(current: String) -> String {
-        tr("预览中，仍用 " + current, "Previewing — still using " + current)
-    }
-
     // 云端识别那三句（边说边上传 / 默认关 / 打开后多少钱）与「本机模型不需要 Key」那一句
     // 5.0.0 一起删掉：识别永远云端，那个开关没有了；而"录音会离开这台 Mac、按秒计费"
     // 这件事改由引导 ③ 与 关于 → 隐私 各说一次（PrivacyCopy）。
 
-    // MARK: 接入地址（只有阿里云有，见 QwenHostField）
-
-    /// 填的东西拼不出主机名。**不删、不清空**，只说它现在不算数
-    static var hostMalformed: String {
-        tr("这串不像接入地址，暂不使用", "Not a hostname, so it is ignored for now")
-    }
+    // 「接入地址」那一栏（阿里云的 API Host，hostMalformed 那一句）5.1.0 随阿里云删掉。
 
     /// Key 那一行右端那颗 ⓘ——**整页只剩三颗之一**（4.3.2）。
     ///
@@ -151,30 +133,38 @@ enum SettingsCopy {
     /// 「去充值」的链接（LLMCatalog.describeHTTPError）——在真的撞上之前先讲一遍，
     /// 属于"预支的焦虑"。
     /// **「开着云端识别就拿识别端点验」那句也删了**：验完的状态行写的是
-    /// 「已连通 ✓ 阿里云 · qwen3-asr-flash」，它自己就把这件事演示了一遍。
+    /// 「已连通 ✓ 云端·OpenAI · gpt-transcribe」，它自己就把这件事演示了一遍。
     ///
-    /// - hostField: 这一档下面跟着 API Host 那一行（只有阿里云）。那一栏没有自己的 ⓘ，
-    ///   "去哪儿找这一串"就挂在这里——它和 Key 本来就印在百炼控制台的同一页上。
-    static func keyInfo(hostField: Bool) -> String {
-        // 「这一家一小时大概多少钱」：5.0.0 起识别也要花钱，而这颗 ⓘ 是设置页上唯一
-        // 能说这件事的地方。单价的唯一出处是 LLMCatalog（引导 ③ 的卡片念的是同一个数）
-        let provider: LLMProvider = hostField ? .qwen : .openai
-        let cost = tr("识别加润色\(LLMCatalog.hourlyCostNote(provider: provider))，按说话时长算。",
-                      "Recognition plus polish: \(LLMCatalog.hourlyCostNote(provider: provider)) of speech.")
+    /// 5.1.0 起只有 OpenAI 一档（阿里云那一档多出来的"API Host 留空即自动找"随之删掉）。
+    static var keyInfo: String {
+        // 「一小时大概多少钱」：5.0.0 起识别也要花钱，而这颗 ⓘ 是设置页上唯一
+        // 能说这件事的地方。单价的唯一出处是 LLMCatalog
+        let cost = tr("识别加润色\(LLMCatalog.hourlyCostNote(provider: .openai))，按说话时长算。",
+                      "Recognition plus polish: \(LLMCatalog.hourlyCostNote(provider: .openai)) of speech.")
         // 5.0.2 从 关于 → 隐私 搬来的两个半句（那一段压到三句，而这两句讲的是**花钱**，
-        // 这里本来就在说这一档一小时多少钱——单价的唯一出处仍是 LLMCatalog）：
+        // 这里本来就在说一小时多少钱——单价的唯一出处仍是 LLMCatalog）：
         //   • 按住说指令时的联网搜索没有开关、永远开；
-        //   • OpenAI 官方接口一律 Fast 档（第三方网关那一档不发，所以只对 OpenAI 说）。
+        //   • OpenAI 官方接口一律 Fast 档。
         let search = tr("按住说指令会联网搜索（永远开）：", "Hold-to-command searches the web (always on): ")
-            + LLMCatalog.webSearchPriceNote(style: hostField ? .qwenEnableSearch : .openaiResponsesTool)!
-        let fast = hostField ? "" : "\n" + tr("OpenAI 官方接口走 Fast 档：",
-                                              "The official OpenAI API runs in the Fast tier: ")
+            + LLMCatalog.webSearchPriceNote
+        let fast = tr("OpenAI 官方接口走 Fast 档：", "The official OpenAI API runs in the Fast tier: ")
             + LLMCatalog.fastTierPriceNote
-        let base = LLMCatalog.keyStorageNote + "\n" + LLMCatalog.billingNote + "\n" + cost
-            + "\n" + search + fast
-        guard hostField else { return base }
-        return base + "\n" + tr("API Host 留空即自动找，填了就只用那一台。",
-                                "Leave API Host empty to find one automatically, or paste one to pin it.")
+        return LLMCatalog.keyStorageNote + "\n" + LLMCatalog.billingNote + "\n" + cost
+            + "\n" + search + "\n" + fast
+    }
+
+    // MARK: 实时草稿（5.1.0 加回的唯一一个开关）
+
+    /// 开关的栏名。这一页上其余的"要不要"全都定死了默认值；它是唯一一个留给用户的，
+    /// 因为两种选择都有人要：看着字跑出来安心，和不被一个慢半拍的草稿骗着干等。
+    static var livePreviewLabel: String {
+        tr("实时草稿", "Live draft")
+    }
+
+    /// 那颗 ⓘ。**只说为什么默认关**（用户 2026-09-28 拍板，≤ 30 字）：
+    /// OpenAI 实时的草稿比说话慢 1–2 秒，用户把"字停了"当"录完了"而干等。
+    static var livePreviewInfo: String {
+        tr("草稿比说话慢 1–2 秒，默认关闭。", "Drafts lag your speech by 1–2 seconds, so this is off by default.")
     }
 
     // 云端识别那颗 ⓘ（cloudRecognitionInfo，按家两份）5.0.0 删掉：没有那个开关了。
@@ -201,14 +191,14 @@ enum SettingsCopy {
     // 而屏幕上没有那个开关之后，这两句话一句也没有落脚的地方。代价改在 关于 → 隐私 说一次
     //（PrivacyCopy.fastTier）；服务商实际给了哪一档照常进 Metrics 与诊断信息。
 
-    /// 这一页**常驻**在屏幕上的说明行。5.0.0 只剩两条，而且都只在出事时才出现。
-    static var cloudCaptions: [String] {
-        [providerNotSetUp(current: "OpenAI"), hostMalformed]
-    }
+    /// 这一页**常驻**在屏幕上的说明行。5.1.0 起一条都没有了：原来那两条（「预览中，仍用 X」、
+    /// 「这串不像接入地址」）随服务商选择器与阿里云的接入地址一起删掉。
+    /// 这张表留着是因为"设置页说明合计"那条预算线还在（将来再加，它自动受约束）。
+    static var cloudCaptions: [String] { [] }
 
-    /// 5.0.0 起整页只剩一颗 ⓘ：API Key（阿里云那一档多一句"接入地址在哪儿找"）。
+    /// 设置正页的 ⓘ：API Key 那一颗，外加 5.1.0 的「实时草稿」那一颗。
     static var cloudInfos: [String] {
-        [keyInfo(hostField: false), keyInfo(hostField: true)]
+        [keyInfo, livePreviewInfo]
     }
 
     // MARK: - 概览（权限横幅：缺了才出现，一行 + 一颗按钮）

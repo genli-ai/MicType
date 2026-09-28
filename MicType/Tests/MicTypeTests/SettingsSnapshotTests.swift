@@ -33,6 +33,7 @@ final class SettingsSnapshotTests: XCTestCase {
         SettingsKeys.customVocabulary,
         SettingsKeys.customPolishRules,
         SettingsKeys.llmProvider,
+        SettingsKeys.livePreview,
     ]
 
     private var savedDefaults: [String: Any?] = [:]
@@ -85,14 +86,14 @@ final class SettingsSnapshotTests: XCTestCase {
             L10n.shared.language = language
             let tag = language == .zh ? "zh" : "en"
 
-            // 设置正页：两家各一张（阿里云比 OpenAI 多一行「API Host」，
-            // 5.0.0 之后两档在这一页上的差别就只剩它）
+            // 设置正页（5.1.0 起只有 OpenAI 一家）：实时草稿关（默认）与开各一张
             useProvider(.openai)
+            UserDefaults.standard.set(false, forKey: SettingsKeys.livePreview)
             shoot(.overview, name: "settings-openai-\(tag)")
-            useProvider(.qwen)
-            shoot(.overview, name: "settings-alibaba-\(tag)")
+            UserDefaults.standard.set(true, forKey: SettingsKeys.livePreview)
+            shoot(.overview, name: "settings-openai-livedraft-on-\(tag)")
+            UserDefaults.standard.set(false, forKey: SettingsKeys.livePreview)
 
-            useProvider(.openai)
             // 专有词汇表（5.0.2 之前叫「写作偏好」）：两个文本框整个入画
             shoot(.writing, name: "custom-vocabulary-\(tag)", fullHeight: true)
             // 关于页比窗口高，所以整页入画——要看的正是最下面隐私那一段

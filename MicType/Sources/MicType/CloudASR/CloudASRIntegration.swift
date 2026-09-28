@@ -7,9 +7,9 @@ import Network
 // 那些决定全在这一层，而且**全写成纯函数**：语言提示怎么来、接入地址怎么定、云端炸了要不要
 // 回落本地——每一条都能在单测里钉死，不用真的花钱调云端。
 //
-// 铁律（用户 2026-09-22 拍板，5.0.0 起）：
+// 铁律（用户 2026-09-22 拍板，5.0.0 起；2026-09-28 起只剩 OpenAI 一家）：
 //   • 识别**只有云端**一条路（本机 Qwen3-ASR 整条链路已删）；
-//   • 用哪一家不是一条单独的设置，跟着生效服务商走；
+//   • 5.1.0 起云端也只有 OpenAI 一家（阿里云整档删除，与 iOS L36 同一个决定）；
 //   • 录音按秒计费的事实必须当面写清楚；
 //   • 云端失败的退路是**同一家的同步接口重试一次**，再失败就如实报错，绝不自动改用户的设置。
 
@@ -19,35 +19,19 @@ import Network
 /// 从生效服务商推出来）；留成枚举是因为整条云端链路（配置组装、就绪判定、日志、
 /// 设置导入摘要）都按它工作。
 enum RecognitionEngineChoice: String, CaseIterable {
-    case cloudAlibaba
     case cloudOpenAI
 
-    /// 脏值回落阿里云那一档只是个形式：调用方拿到的值一律由服务商推出来，
-    /// 这条路只剩设置导入摘要在用。
-    static func parse(_ raw: String) -> RecognitionEngineChoice {
-        RecognitionEngineChoice(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines))
-            ?? .cloudAlibaba
-    }
+    /// 5.1.0 起只有一档，任何存量值（含老设置里的 cloudAlibaba）都读成它。
+    static func parse(_ raw: String) -> RecognitionEngineChoice { .cloudOpenAI }
 
     /// 恒真（5.0.0 起识别只有云端）。留着是因为它读起来比 `true` 说明意图。
     var isCloud: Bool { true }
 
     /// 对应的云端供应商
-    var cloudProvider: CloudASRProvider {
-        switch self {
-        case .cloudAlibaba: return .alibaba
-        case .cloudOpenAI: return .openai
-        }
-    }
+    var cloudProvider: CloudASRProvider { .openai }
 
-    /// 这一档的名字。界面上没有「识别引擎」选择器，所以这串只出现在设置导入摘要、
-    /// 日志与诊断信息里。
-    var displayName: String {
-        switch self {
-        case .cloudAlibaba: return tr("云端 · 阿里云", "Cloud · Alibaba")
-        case .cloudOpenAI: return tr("云端 · OpenAI", "Cloud · OpenAI")
-        }
-    }
+    /// 这一档的名字。界面上没有「识别引擎」选择器，所以这串只出现在日志与诊断信息里。
+    var displayName: String { tr("云端 · OpenAI", "Cloud · OpenAI") }
 }
 
 // MARK: - Settings → CloudASRConfig
@@ -84,163 +68,22 @@ enum CloudASRSettings {
         }
     }
 
-    // MARK: 接入地址
-
-    /// 现在该往哪台主机发。**没有"区域"这个概念了**（用户 2026-09-19 拍板）：
-    /// 存着接入地址就用它，否则用上一次试出来的那台，都没有就用候选表的第一项——
-    /// 真正的答案由 AlibabaHostResolver 试出来（验证 Key / 失败恢复 / 每周一次的开机复查
-    /// 那三条路，见 AlibabaEndpoint）。**日常听写走的就是这里，一句话都不探测。**
-    static func alibabaHost(pastedHost: String, resolvedHost: String,
-                            workspace: String, legacyRegionSlug: String?,
-                            apiKey: String) -> String {
-        AlibabaEndpoint.candidates(pastedHost: pastedHost, resolvedHost: resolvedHost,
-                                   workspace: workspace, legacyRegionSlug: legacyRegionSlug,
-                                   apiKey: apiKey).first ?? AlibabaEndpoint.defaultHost
-    }
-
-    /// 当前设置下的候选主机表，**给整表探测用**（验证 Key / 失败恢复 / 开机的周期复查）。
-    ///
-    /// 与正常听写那一档（alibabaHost）的唯一差别：上一次试出来的那台不占表头。
-    /// 4.1.4 之前它钉在第一位，而探测"第一台答应就收工"——于是缓存里种着北京的人
-    /// 永远试不到新加坡（见 AlibabaEndpoint 顶部那笔实测）。现在它仍然是候选之一，
-    /// 只是要和别人比一次延迟。
-    static func currentHostCandidates(apiKey: String) -> [String] {
-        let s = Settings.shared
-        return AlibabaEndpoint.candidates(pastedHost: s.qwenAPIHost,
-                                          resolvedHost: s.qwenResolvedHost,
-                                          workspace: s.qwenWorkspaceID,
-                                          legacyRegionSlug: s.qwenRegion.regionSlug,
-                                          apiKey: apiKey,
-                                          pinsResolvedFirst: false)
-    }
-
-    /// 试出接入地址。验证 Key、失败恢复、开机复查几条路全走这里。
-    ///
-    /// **用户自己填了接入地址时，这里只试他那一台，失败就如实报失败**（4.3.1，用户 2026-09-21
-    /// 拍板）。4.1.4–4.3.0 是反过来的：那一台 401 / 连不上就把它清掉、回落整表探测——
-    /// 当时界面上没有这个输入框，一条死地址真能把人困住。现在框回来了，那条"替他删"
-    /// 就成了纯粹的越权：他填的东西必须保持原样，屏幕上说清楚哪儿不通，改不改由他。
-    ///
-    /// - candidates: 这一趟要试的候选表（正常都传 currentHostCandidates；冒烟测试会指定一台）。
-    static func resolveHost(apiKey: String,
-                            candidates: [String],
-                            completion: @escaping (Result<String, CloudASRFailure>) -> Void) {
-        let pinned = AlibabaEndpoint.normalizeHost(Settings.shared.qwenAPIHost) != nil
-        AlibabaHostResolver.resolve(apiKey: apiKey, candidates: candidates) { result in
-            guard case .failure(let failure) = result else {
-                // 刚刚问过整张表了：把时间戳记下来，下次开机的那趟周期复查就不必再问一遍
-                //（同一个问题问两次，而每问一次都要把 Key 发给每一台主机）。
-                // 填了接入地址的那一趟不算：它只问了一台，不是"挑最快"的那种探测。
-                if !pinned { AlibabaFastestHostRefresh.stamp() }
-                completion(result)
-                return
-            }
-            // 只试了他指定的那一台，那就别说成"每一个接入地址都不认这把 Key"（那是整表探测的话）。
-            // 这一句指回那个输入框——现在它真的在屏幕上（判据与措辞都是纯函数，单测钉死）
-            guard pinned,
-                  let copy = AlibabaHostResolver.pastedHostFailureCopy(status: failure.status,
-                                                                       code: failure.code) else {
-                completion(result)
-                return
-            }
-            Log.warn("Qwen pinned host failed host="
-                     + AlibabaEndpoint.redacted(Settings.shared.qwenAPIHost)
-                     + " status=\(failure.status) code=\(failure.code ?? "-") (kept as entered)")
-            completion(.failure(CloudASRFailure(copy, code: failure.code, status: failure.status)))
-        }
-    }
-
-    /// 云端识别吃了"端点访问被拒"：**后台换一台主机**。
-    ///
-    /// 为什么识别这条路也要有（4.1.5）：那台主机是 GET /models 验过的，而 2026-09-20 的实测
-    /// 证明 /models 通过的主机照样可能把识别端点也一并拒掉（Endpoint.AccessDenied）。
-    /// 不换的话，每一段录音都要先白传一趟云端、再回落本机模型——用户只会觉得"云端识别很慢"。
-    ///
-    /// **这一趟只在后台跑**：本轮录音由 CloudFallbackDecision 交给本机模型，一个字都不丢；
-    /// 换好的主机下一段录音才用得上。单飞闸与 60 秒冷却都在 resolveNow 里，
-    /// 所以"每台都被拒"的那把 Key 不会变成每句话一趟探测。
-    static func recoverIfEndpointDenied(_ failure: CloudASRFailure) {
-        // 用户自己填了接入地址：一趟都不探测（与 LLM 那条路同一条规矩，见 AlibabaHostRecovery.action）
-        guard AlibabaEndpoint.normalizeHost(Settings.shared.qwenAPIHost) == nil else { return }
-        guard Settings.shared.recognitionEngine == .cloudAlibaba,
-              AlibabaEndpoint.deniesEndpointAccess(status: failure.status,
-                                                   code: failure.code, message: nil) else { return }
-        let key = (KeychainHelper.loadCloudASRKey(for: .alibaba) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { return }
-        Log.warn("CloudASR endpoint access denied — re-resolving the host in the background")
-        AlibabaHostRecovery.resolveNow(apiKey: key) { changed in
-            Log.info("CloudASR host recovery after access denied changed=\(changed)")
-        }
-    }
-
-    /// 把 Key 里认出来的 WorkspaceId 落盘一次（只在验证 / 探测那一刻调用）。
-    ///
-    /// 为什么非落盘不可：候选主机里工作空间那几台是**从 Key 的形状**认出来的，而润色那条路
-    /// （Settings.qwenBaseURL）手上没有 Key，也不该为此去读钥匙串——不落盘的话，识别把音频
-    /// 发去工作空间主机、润色把文字发去 dashscope-intl，两边必有一边 401，而
-    /// 「一条主机同时决定两件事」正是这一版要立的规矩（见 AlibabaEndpoint 顶部）。
-    /// 已经存着一个就不动：用户/老设置里的那个才是权威。
-    static func rememberWorkspace(fromKey key: String) {
-        guard Settings.shared.qwenWorkspaceID.isEmpty,
-              let workspace = AlibabaEndpoint.workspaceID(fromKey: key) else { return }
-        Settings.shared.qwenWorkspaceID = workspace
-        Log.info("Qwen workspace remembered from the key shape")
-    }
-
-    /// 试通之后记下来：主机 + 那个真的能用的识别模型。正常使用从此一次都不再探测。
-    /// 也因此润色/指令的 Base URL 跟着一起对了（同一台主机的 compatible-mode）。
-    static func rememberResolution(host: String, model: AlibabaASRModel?) {
-        let s = Settings.shared
-        if let normalized = AlibabaEndpoint.normalizeHost(host) {
-            s.qwenResolvedHost = normalized
-            // 只有这里写得出"已验证"：这条路的每一个调用方都是**真的联过网**
-            //（粘 Key 那一趟、失败后的恢复探测、每周一次的开机复查）。迁移种下的那台不算，
-            // 否则它吃 401 时恢复流程一次都不会跑（见 AlibabaEndpoint.hostLooksVerified）。
-            s.qwenHostVerified = true
-            Log.info("Qwen host resolved host=\(AlibabaEndpoint.redacted(normalized))")
-        }
-        if let model = model, model != s.cloudAlibabaModel {
-            Log.info("CloudASR model switched to=\(model.rawValue)")
-            s.cloudAlibabaModel = model
-        }
-    }
-
     // MARK: 组装
 
     /// 纯函数版：所有输入都从外面传进来，单测不碰 UserDefaults / 钥匙串
-    static func config(provider: CloudASRProvider,
-                       alibabaModel: AlibabaASRModel,
-                       host: String,
-                       vocabulary: [String],
-                       apiKey: String) -> CloudASRConfig {
-        CloudASRConfig(provider: provider,
-                       alibabaModel: alibabaModel,
-                       host: AlibabaEndpoint.normalizeHost(host) ?? AlibabaEndpoint.defaultHost,
+    static func config(vocabulary: [String], apiKey: String) -> CloudASRConfig {
+        CloudASRConfig(provider: .openai,
                        languageHints: languageHints(vocabulary: vocabulary),
-                       // 词表按权重 4 送进热词（权重与过滤规则在 AlibabaASRClient）
+                       // 词表走 keywords[]（过滤规则在 OpenAITranscribeClient.filteredTerms）
                        vocabulary: vocabulary,
-                       apiKey: apiKey,
-                       // ITN（数字规范化）一律关：MicType 自己有润色层，让云端先改一遍
-                       // 只会让保真校验与词表替换对不上账
-                       enableITN: false)
+                       apiKey: apiKey)
     }
 
     /// 当前设置下的配置。5.0.0 起**永远拿得到**（识别只有云端，用哪一家跟着服务商走）；
     /// Key 可能是空串，那由 RecognitionEngineReadiness 在按下热键那一刻当面拦。
     static func currentConfig() -> CloudASRConfig {
-        let s = Settings.shared
-        let provider = s.recognitionEngine.cloudProvider
-        let apiKey = KeychainHelper.loadCloudASRKey(for: provider) ?? ""
-        return config(provider: provider,
-                      alibabaModel: s.cloudAlibabaModel,
-                      host: alibabaHost(pastedHost: s.qwenAPIHost,
-                                        resolvedHost: s.qwenResolvedHost,
-                                        workspace: s.qwenWorkspaceID,
-                                        legacyRegionSlug: s.qwenRegion.regionSlug,
-                                        apiKey: apiKey),
-                      vocabulary: s.vocabularyTerms,
-                      apiKey: apiKey)
+        let apiKey = KeychainHelper.loadCloudASRKey(for: .openai) ?? ""
+        return config(vocabulary: Settings.shared.vocabularyTerms, apiKey: apiKey)
     }
 
     /// OpenAI 这一档现在指着的是**官方接口**吗。
@@ -258,38 +101,6 @@ enum CloudASRSettings {
     static func hasKey(for choice: RecognitionEngineChoice) -> Bool {
         let key = KeychainHelper.loadCloudASRKey(for: choice.cloudProvider) ?? ""
         return !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-}
-
-// MARK: - 「这一家这次运行里已经当面验过一次」
-
-/// 只为一件事（4.3.1）：换服务商时云端识别会自动落到新一家上，那一刻要不要再花一秒钱测一遍。
-///
-/// **内存态、按服务商**：切走又切回来不该每次都测（用户在设置里就是来回点着对比的），
-/// 但重启一次就重新测——Key 可能被吊销、额度可能用完，而这两件事我们无从得知。
-/// 与 CloudStreamingAvailability 分开：那一份记的是"实时这条链路用不了"（更细，按主机），
-/// 这一份记的是"这一家整条云端识别刚刚验过"。
-enum CloudRecognitionCheckMemory {
-
-    private static let lock = NSLock()
-    private static var checked: Set<String> = []
-
-    static func isChecked(_ provider: CloudASRProvider) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        return checked.contains(provider.rawValue)
-    }
-
-    static func markChecked(_ provider: CloudASRProvider) {
-        lock.lock(); checked.insert(provider.rawValue); lock.unlock()
-    }
-
-    /// 验失败了 / Key 换了：忘掉，下次落到这一家时重新测
-    static func forget(_ provider: CloudASRProvider) {
-        lock.lock(); checked.remove(provider.rawValue); lock.unlock()
-    }
-
-    static func resetForTesting() {
-        lock.lock(); checked = []; lock.unlock()
     }
 }
 
@@ -437,10 +248,8 @@ enum CloudFallbackDecision: Equatable {
 
 /// 往云端发 1 秒合成音，看这条链路通不通。
 ///
-/// 为什么用合成音而不是只查型号清单：模型有没有在控制台开通，只有真的调一次识别端点才验得到。
-/// 代价是不到一秒的计费（阿里云 $0.000035/s），界面上会写明这一点。
-/// 接入地址是上一步（AlibabaHostResolver）用免费的型号清单定下来的——两件事分开问，
-/// 错误信息才说得准。
+/// 为什么用合成音而不是只查型号清单：这把 Key 能不能调识别端点，只有真的调一次才验得到。
+/// 代价是 1 秒音频的计费（OpenAI 约 $0.0003）。
 enum CloudASRProbe {
 
     /// 探针音频：1 秒、440Hz 正弦、半幅。纯函数（可单测），不读任何设置。
@@ -465,7 +274,7 @@ enum CloudASRProbe {
         /// 云端转出来的字（合成音多半是空串，这不算失败）
         let text: String
         let billedSeconds: Double?
-        /// 真正跑通的那个模型（阿里云才有；结果行要写出来——"用的哪个型号"是用户最想知道的）
+        /// 真正跑通的那个模型（结果行要写出来——"用的哪个型号"是用户最想知道的）
         let model: String?
 
         init(milliseconds: Int, text: String, billedSeconds: Double?, model: String? = nil) {
@@ -484,16 +293,14 @@ enum CloudASRProbe {
     }
 
     /// 发一次探针。completion 在主线程。engine 由闭包持有到回调为止（探针是一次性的）。
-    /// - sendSegment: 只给单测用的替身（与 CloudASREngine.sendSegment 同一个口子）。
-    ///   "404 就换 qwen3-asr-flash" 这条回落只有真跑一遍多模型流程才验得到，而那条路要上网。
+    /// - sendSegment: 只给单测用的替身（与 CloudASREngine.sendSegment 同一个口子），不花钱、不上网。
     static func run(config: CloudASRConfig,
                     sendSegment: CloudASREngine.SegmentSender? = nil,
                     completion: @escaping (Result<Outcome, CloudASRFailure>) -> Void) {
         let engine = CloudASREngine(config: config)
         if let sendSegment = sendSegment { engine.sendSegment = sendSegment }
         let started = DispatchTime.now()
-        let modelName = config.provider == .alibaba
-            ? config.alibabaModel.rawValue : OpenAITranscribeClient.defaultModel
+        let modelName = OpenAITranscribeClient.defaultModel
         engine.transcribeDetailed(samples: toneSamples()) { result in
             // 闭包里显式提一下 engine，保证它活到回调（引擎只被这里强引用）
             _ = engine
@@ -515,43 +322,6 @@ enum CloudASRProbe {
                 }
             }
         }
-    }
-
-    /// 同一台主机上把模型试一遍：用户选的那个 404（ModelNotFound）就改用 qwen3-asr-flash。
-    ///
-    /// 为什么必须有这一条：4.0.0 的默认识别模型是 qwen-audio-3.0-asr-flash，
-    /// 而它根本不在同步端点上（见 AlibabaASRModel 的注释）——老用户设置里存着这个值，
-    /// 光改默认值救不了他们。试通之后 rememberResolution 会把模型改过来，只 404 这一次。
-    static func runTryingModels(config: CloudASRConfig,
-                                models: [AlibabaASRModel],
-                                sendSegment: CloudASREngine.SegmentSender? = nil,
-                                completion: @escaping (Result<Outcome, CloudASRFailure>) -> Void) {
-        func attempt(_ index: Int) {
-            guard index < models.count else {
-                completion(.failure(CloudASRFailure(tr("没有可用的识别模型", "No usable speech model"),
-                                                    status: 404)))
-                return
-            }
-            var cfg = config
-            cfg.alibabaModel = models[index]
-            run(config: cfg, sendSegment: sendSegment) { result in
-                switch result {
-                case .success:
-                    completion(result)
-                case .failure(let failure):
-                    // 只有"这个端点上没有这个模型"才值得换一个模型再试；
-                    // 401/403/限流换模型一点用都没有，立刻把真正的原因报出来
-                    guard failure.status == 404, index + 1 < models.count else {
-                        completion(result)
-                        return
-                    }
-                    Log.info("CloudASR model fallback from=\(models[index].rawValue) "
-                             + "to=\(models[index + 1].rawValue) (404)")
-                    attempt(index + 1)
-                }
-            }
-        }
-        attempt(0)
     }
 
     /// 云端识别开关旁边那一行结果（纯函数，单测钉住措辞）。
@@ -586,60 +356,6 @@ enum CloudASRProbe {
                              "; this key has no realtime support, so audio is sent after you finish")
         case .inconclusive:
             return base
-        }
-    }
-}
-
-// MARK: - 「粘贴即验证」/「把云端识别拨开」的完整一趟（阿里云）
-
-/// 阿里云这一档验一次 Key 要回答两个问题，而且顺序不能反：
-///   1. 这把 Key 属于哪台接入主机？—— GET /compatible-mode/v1/models，不花钱、不传音频。
-///   2. 这台主机上哪个识别模型能用？—— 1 秒合成音打识别端点，404 就换 qwen3-asr-flash。
-/// 分两步问，错误信息才说得准：4.0.0 把两件事混在一趟里，结果"模型不存在"被报成
-/// "区域或 Key 不对"，用户翻了半天 Key。
-enum CloudASRSetup {
-
-    struct Success {
-        let host: String
-        let model: AlibabaASRModel
-        let outcome: CloudASRProbe.Outcome
-    }
-
-    /// - config: 除了主机与模型之外的其余配置（语言提示、词表…）。
-    /// - candidates: 候选主机表（CloudASRSettings.currentHostCandidates）。
-    /// completion 在主线程。成功时调用方负责 rememberResolution。
-    static func verifyAlibaba(apiKey: String,
-                              config: CloudASRConfig,
-                              candidates: [String],
-                              completion: @escaping (Result<Success, CloudASRFailure>) -> Void) {
-        let started = DispatchTime.now()
-        Log.info("CloudASR verify start provider=alibaba candidates=\(candidates.count)")
-        CloudASRSettings.resolveHost(apiKey: apiKey, candidates: candidates) { hostResult in
-            switch hostResult {
-            case .failure(let failure):
-                Log.warn("CloudASR verify failed at host step status=\(failure.status) "
-                         + "code=\(failure.code ?? "-") ms=\(Log.ms(since: started))")
-                completion(.failure(failure))
-            case .success(let host):
-                var cfg = config
-                cfg.apiKey = apiKey
-                cfg.host = host
-                CloudASRProbe.runTryingModels(config: cfg,
-                                              models: cfg.alibabaModel.fallbackOrder) { result in
-                    switch result {
-                    case .success(let outcome):
-                        let model = AlibabaASRModel(rawValue: outcome.model ?? "") ?? cfg.alibabaModel
-                        Log.info("CloudASR verify ok host=\(AlibabaEndpoint.redacted(host)) "
-                                 + "model=\(model.rawValue) ms=\(Log.ms(since: started))")
-                        completion(.success(Success(host: host, model: model, outcome: outcome)))
-                    case .failure(let failure):
-                        Log.warn("CloudASR verify failed host=\(AlibabaEndpoint.redacted(host)) "
-                                 + "status=\(failure.status) code=\(failure.code ?? "-") "
-                                 + "ms=\(Log.ms(since: started))")
-                        completion(.failure(failure))
-                    }
-                }
-            }
         }
     }
 }

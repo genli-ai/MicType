@@ -28,7 +28,7 @@ enum LLMCatalog {
     /// 润色 terra 严格保真 80% vs luna 64%，意思级错误 1–2 次 vs 9 次，中位延迟只多 +180 ms。
     /// 指令不跟着换：同一轮评测里 terra 做指令质量没有提升、价格约 8 倍，所以指令仍是 luna。
     static let openaiPolishModel = "gpt-5.6-terra"
-    static let qwenDefaultModel = "qwen3.8-flash"
+    // qwenDefaultModel（qwen3.8-flash）5.1.0 删掉：阿里云那一档整档移除（用户 2026-09-28 拍板）。
 
     /// 润色用哪个型号。**5.0.0 起这就是全部**：没有设置、没有下拉、没有输入框
     /// （用户 2026-09-22 拍板）。"挑型号"是一个用户没有依据、也不该被问的问题；
@@ -36,20 +36,11 @@ enum LLMCatalog {
     ///
     /// 验证 Key 也拿这个型号去探（KeyEntryView）：润色是每句话都要跑的那一趟，
     /// Key 能用却开不了这个型号的话，用户说的第一句话就会失败。
-    static func polishDefault(for provider: LLMProvider) -> String {
-        switch provider {
-        case .openai: return openaiPolishModel
-        case .qwen: return qwenDefaultModel
-        }
-    }
+    /// 5.1.0 起只剩 OpenAI 一档，参数留着是为了让调用方继续按"这一档"说话。
+    static func polishDefault(for provider: LLMProvider) -> String { openaiPolishModel }
 
     /// 语音指令用哪个型号。
-    static func commandDefault(for provider: LLMProvider) -> String {
-        switch provider {
-        case .openai: return openaiCommandModel
-        case .qwen: return qwenDefaultModel
-        }
-    }
+    static func commandDefault(for provider: LLMProvider) -> String { openaiCommandModel }
 
     // 「模型选单」5.0.0 整段删掉（ModelChoice / modelMenu / modelLabel / modelWrites /
     // selectedMenuModel / unifyModelWrites / modelKeys，以及 4.x 那三条型号迁移）：
@@ -62,7 +53,7 @@ enum LLMCatalog {
     /// AI（润色 + 语音指令）现在到底跑不跑得起来：引导最后一屏的两种收尾话术、
     /// 以及「没配 AI」的可见状态都据此二选一。三样都得有：
     ///   • 凭据——本机模型那一档的"空 Key"由 LLMClient.credential 判成**有**凭据，这里只收结论；
-    ///   • 拼得出来的接口地址——Qwen 区域端点缺 WorkspaceId 时是空串；
+    ///   • 拼得出来的接口地址——被导入设置改成空串时就是没配好；
     ///   • 非空的润色型号——自定义端点与本机模型没有内置型号，用户没填就是没配好。
     /// 纯函数、不读全局状态：调用方把三样喂进来，单测才钉得住。
     static func aiReady(hasCredential: Bool, baseURL: String, polishModel: String) -> Bool {
@@ -87,8 +78,8 @@ enum LLMCatalog {
 
     // MARK: - 一小时要花多少钱（识别 + 润色合计）
     //
-    // 5.0.0 起用户在引导 ③ 要在两家之间做一个选择，而**两家差着五倍**——那不是一条解释，
-    // 是选择本身的全部内容。所以这个数必须摆在那两张卡片上，而且只能有一个出处。
+    // 5.0.0–5.0.6 这个数摆在引导 ③ 的两张服务商卡片上（两家差着五倍）；5.1.0 只剩 OpenAI，
+    // 它改由 Key 那颗 ⓘ 与验通之后的状态行念出来，出处仍然只有这一个。
     //
     // 两段费用的来路不一样，注释也要如实分开写：
     //   • 识别那一段是**查过官方价目页的**（2026-09-21，与 cloudASRPriceNote 同源）；
@@ -99,25 +90,18 @@ enum LLMCatalog {
     // 界面上一律只说"约"，而且只保留一位小数（见 hourlyCostNote）：给一个 $1.1234 的数字，
     // 等于假装我们知道用户会说多久、说多密。
 
-    /// 每小时录音的**识别**费用（美元）。阿里云 $0.13/小时；OpenAI $0.017/分钟 × 60。
-    static func asrHourlyUSD(provider: LLMProvider) -> Double {
-        switch provider {
-        case .qwen: return 0.13
-        case .openai: return 0.017 * 60
-        }
-    }
+    /// 每小时录音的**识别**费用（美元）：实时 gpt-live-transcribe $0.017/分钟，
+    /// 5.1.0 起每句话松手后还要整段再传一次 gpt-transcribe $0.0045/分钟（混合转写，
+    /// OpenAI 模型页 2026-09-28 查）——两段都按录音时长计费，合计 × 60 ≈ $1.29/小时。
+    /// 整段先赢、实时还没 commit 时实时会被掐掉、这一句不计实时的钱，所以这是偏高的那一边的估计。
+    static func asrHourlyUSD(provider: LLMProvider) -> Double { (0.017 + 0.0045) * 60 }
 
     /// 每小时录音的**润色**费用（美元，估算，见上面那段注释）
     ///
     /// OpenAI 5.0.6 从 0.08 改成 0.40：润色换成 gpt-5.6-terra（Fast 档）。**估算**，出处是
     /// iOS DECISIONS L38 的评测账单——terra Fast 档约 $1.1 / 千次润色 × sentencesPerHour 360 次
     /// ≈ $0.40/小时。不是 Mac 上的实测账单。
-    static func polishHourlyUSD(provider: LLMProvider) -> Double {
-        switch provider {
-        case .qwen: return 0.07
-        case .openai: return 0.40
-        }
-    }
+    static func polishHourlyUSD(provider: LLMProvider) -> Double { 0.40 }
 
     /// 两段加起来：引导卡片与设置状态行念的就是这个数
     static func hourlyUSD(provider: LLMProvider) -> Double {
@@ -147,70 +131,18 @@ enum LLMCatalog {
         return tr("每句话约 \(text)", "about \(text) per sentence")
     }
 
-    // MARK: - 引导 ③ 的两张卡片（哪一家适合谁）
-
-    /// 卡片上第三行：**怎么付钱**。这是两家真正的分野——一个要海外信用卡，一个支付宝就能充。
-    ///
-    /// 5.0.1 砍到 6 个字以内（用户 2026-09-22 拍板）：这两张卡片是并排的，
-    /// 每多一个字就多一次换行，而换行之后两张卡一高一矮，看着像其中一张更重要。
-    /// 「国内 / 国际站」那几个字一并去掉——它们要解释的是阿里云自己的账号体系，
-    /// 不是用户在这一刻要做的那个选择。
-    static func audienceNote(provider: LLMProvider) -> String {
-        switch provider {
-        case .openai:
-            return tr("海外信用卡", "Overseas card")
-        case .qwen:
-            return tr("支付宝可用", "Alipay works")
-        }
-    }
-
-    /// 卡片上第二行：这一家**一句话的优势**。两句必须各说各的实话
-    /// （2026-09-22 真 Key 实测：阿里云实时识别对词汇表热词全部无效，OpenAI 那一档认）。
-    /// 括号里那半句「识别时认词汇表」5.0.1 去掉：它是这句话的依据，不是这句话本身。
-    static func strengthNote(provider: LLMProvider) -> String {
-        switch provider {
-        case .openai:
-            return tr("专名更准", "Better with names")
-        case .qwen:
-            return tr("更便宜、更快", "Cheaper and faster")
-        }
-    }
-
     // MARK: - 去哪儿申请 Key / 固定的 Key 与费用说法
 
-    /// 「去申请 Key ↗」指向的页面。nil = 这一家没有**唯一**一条可以打包票的地址
-    /// （阿里云是两个站两套账号，见 keyConsole）。
-    static func apiKeyConsoleURL(for provider: LLMProvider) -> String? {
-        switch provider {
-        case .openai: return "https://platform.openai.com/api-keys"
-        case .qwen: return nil
-        }
+    // 引导 ③ 的两张服务商卡片（audienceNote「海外信用卡 / 支付宝可用」、strengthNote「专名更准 /
+    // 更便宜、更快」）5.1.0 删掉：只剩一家，没有要比的了。
+
+    /// 「去申请 Key ↗」指向的页面（设置页 Key 那一行右边那颗按钮）。
+    static func apiKeyConsoleURL(for provider: LLMProvider) -> String {
+        "https://platform.openai.com/api-keys"
     }
 
-    /// Key 输入框右边那颗「去申请 Key ↗」点下去会怎样。
-    ///
-    /// 5.0.4 加的（用户 2026-09-23 实机反馈：阿里云那一档右边**什么都没有**）。
-    /// 4.x 起 `apiKeyConsoleURL` 对阿里云返回 nil，理由是"两个站我们不敢替他挑"——
-    /// 可结果不是"少一个猜出来的链接"，是**这一档的用户压根没有入口**，
-    /// 而他恰恰是最需要入口的那个（OpenAI 那一档的人多半已经有 Key 了）。
-    /// 不敢替他挑就让他挑：一颗按钮，点开两项，和引导 ③ 第一步是同两条链接。
-    enum KeyConsole {
-        /// 一个地址，点了直接开
-        case single(String)
-        /// 好几个入口，点开让他自己认（阿里云的两个站）
-        case choices([ConsoleStep.Link])
-    }
-
-    static func keyConsole(for provider: LLMProvider) -> KeyConsole {
-        switch provider {
-        case .openai:
-            return .single(apiKeyConsoleURL(for: .openai)!)
-        case .qwen:
-            // 和引导 ③ 第一步**同两条链接、同两个名字**（那两个名字中英一致，见 consoleSteps）
-            return .choices([.init(label: "International", url: alibabaConsoleInternational),
-                             .init(label: "China", url: alibabaConsoleChina)])
-        }
-    }
+    // KeyConsole（.single / .choices）5.0.4 为阿里云那两个站（International / China）加的，
+    // 5.1.0 随阿里云一起删掉：只剩一个地址，按钮点了就开（apiKeyConsoleURL）。
 
     /// 那颗按钮上的字（设置页与引导 ③ 共用，只写一处）
     static var getAKeyLabel: String { tr("去申请 Key ↗", "Get a key ↗") }
@@ -224,8 +156,7 @@ enum LLMCatalog {
     /// 等于把最难的一步留给他自己。链接与文字都只写这一处（引导 ③ 是唯一的渲染点）。
     struct ConsoleStep: Equatable {
         let text: String
-        /// 这一步能打开的页面。空 = 这一步不用离开 MicType（最后那一步"回到这里粘贴"）。
-        /// 多于一个 = 同一步有两个入口（阿里云的国际站 / 中国站）。
+        /// 这一步能打开的页面。空 = 这一步不用离开 MicType。
         let links: [Link]
 
         struct Link: Equatable {
@@ -234,42 +165,22 @@ enum LLMCatalog {
         }
     }
 
-    /// 阿里云百炼控制台：两个站是两套账号体系，我们无从得知用户在哪一边，
-    /// 所以两颗按钮都摆出来让他自己认（写死一个的结果是另一边的人点进去看到空页面）。
-    /// **按钮上只写 International / China，中英两侧一模一样**（用户 2026-09-22 拍板）：
-    /// 那是两个站点自己的名字，译成「国际站 / 中国站」反而要用户先猜哪个对应哪个。
-    static let alibabaConsoleInternational = "https://modelstudio.console.alibabacloud.com/"
-    static let alibabaConsoleChina = "https://bailian.console.aliyun.com/"
-
     /// 拿 Key 的那几步（纯函数，单测钉住"每一步都有话、链接都是 https"）。
     ///
     /// **三步封顶**（5.0.1）：原先最后一步是「回到这里粘贴」——粘贴框就在这几行字底下，
     /// 光标都在那儿，用一整行告诉他"回来"是在凑步骤。
     static func consoleSteps(for provider: LLMProvider) -> [ConsoleStep] {
-        switch provider {
-        case .openai:
-            return [
-                ConsoleStep(text: tr("注册", "Sign up"),
-                            links: [.init(label: tr("打开", "Open"),
-                                          url: "https://platform.openai.com/")]),
-                ConsoleStep(text: tr("充值", "Add credit"),
-                            links: [.init(label: tr("打开", "Open"),
-                                          url: "https://platform.openai.com/settings/organization/billing/overview")]),
-                ConsoleStep(text: tr("创建 API Key，复制", "Create an API key and copy it"),
-                            links: [.init(label: tr("打开", "Open"),
-                                          url: "https://platform.openai.com/api-keys")]),
-            ]
-        case .qwen:
-            return [
-                ConsoleStep(text: tr("注册并开通", "Sign up and enable"),
-                            links: [.init(label: "International", url: alibabaConsoleInternational),
-                                    .init(label: "China", url: alibabaConsoleChina)]),
-                ConsoleStep(text: tr("创建 API Key，复制", "Create an API key and copy it"),
-                            links: []),
-                ConsoleStep(text: tr("复制接入地址（同一页）", "Copy the API host on the same page"),
-                            links: []),
-            ]
-        }
+        [
+            ConsoleStep(text: tr("注册", "Sign up"),
+                        links: [.init(label: tr("打开", "Open"),
+                                      url: "https://platform.openai.com/")]),
+            ConsoleStep(text: tr("充值", "Add credit"),
+                        links: [.init(label: tr("打开", "Open"),
+                                      url: "https://platform.openai.com/settings/organization/billing/overview")]),
+            ConsoleStep(text: tr("创建 API Key，复制", "Create an API key and copy it"),
+                        links: [.init(label: tr("打开", "Open"),
+                                      url: apiKeyConsoleURL(for: provider))]),
+        ]
     }
 
     /// Key 怎么存 / 钱怎么付。**设置页与引导页必须逐字用这两句**（同一个事实只写一处）。
@@ -283,59 +194,7 @@ enum LLMCatalog {
     }
     // MARK: - 接口地址
 
-    /// DashScope 兼容模式的接入区域。**必须做成选择器**：URL 里带 WorkspaceId，
-    /// 手抄错一个字符的表现是「鉴权失败」，用户会一直去翻 Key 而不是看地址。
-    enum QwenRegion: String, CaseIterable {
-        case international   // 国际站总入口
-        case us              // 国际站美国入口
-        case beijing         // 区域端点（下面四个都要 WorkspaceId）
-        case singapore
-        case tokyo
-        case hongkong
-
-        var displayName: String {
-            switch self {
-            case .international: return tr("国际站（dashscope-intl）", "International (dashscope-intl)")
-            case .us: return tr("国际站 · 美国（dashscope-us）", "International - US (dashscope-us)")
-            case .beijing: return tr("中国 · 北京（需 WorkspaceId）", "China - Beijing (needs a workspace ID)")
-            case .singapore: return tr("新加坡 ap-southeast-1（需 WorkspaceId）",
-                                       "Singapore ap-southeast-1 (needs a workspace ID)")
-            case .tokyo: return tr("东京 ap-northeast-1（需 WorkspaceId）",
-                                   "Tokyo ap-northeast-1 (needs a workspace ID)")
-            case .hongkong: return tr("香港 cn-hongkong（需 WorkspaceId）",
-                                      "Hong Kong cn-hongkong (needs a workspace ID)")
-            }
-        }
-
-        /// 区域端点的主机名里第一段是 WorkspaceId，没有它压根拼不出地址
-        var regionSlug: String? {
-            switch self {
-            case .international, .us: return nil
-            case .beijing: return "cn-beijing"
-            case .singapore: return "ap-southeast-1"
-            case .tokyo: return "ap-northeast-1"
-            case .hongkong: return "cn-hongkong"
-            }
-        }
-
-        var requiresWorkspaceID: Bool { regionSlug != nil }
-    }
-
-    /// Qwen 的 Base URL 由「区域 + WorkspaceId」推出来，用户永远不用手拼。
-    /// 返回 ""（而不是偷偷退回国际站）表示这套配置还不完整——**绝不能因为 WorkspaceId 没填，
-    /// 就把 Key 和听写文本默默发到另一个区域去**。调用方据此报「地址还没填完」。
-    static func qwenBaseURL(region: QwenRegion, workspaceID: String) -> String {
-        guard let slug = region.regionSlug else {
-            switch region {
-            case .us: return "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
-            default: return "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-            }
-        }
-        let ws = workspaceID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !ws.isEmpty else { return "" }
-        return "https://\(ws).\(slug).maas.aliyuncs.com/compatible-mode/v1"
-    }
-
+    // QwenRegion / qwenBaseURL（阿里云的区域端点与 Base URL 推导）5.1.0 删掉。
     // LocalRuntime（Ollama / LM Studio）5.0.0 删掉：本机大模型那一档没有了。
 
     /// 自定义 Base URL 的毛病。分四档是因为「怎么改」完全不同：
@@ -416,7 +275,7 @@ enum LLMCatalog {
     // MARK: - 模型列表（GET {base}/models）
 
     /// 不能拿来聊天的型号 id 片段：嵌入、图像、语音、审核。
-    /// 为什么要过滤：OpenAI 的 /models 有上百条，DashScope 更多，全塞进下拉框等于没有下拉框。
+    /// 为什么要过滤：OpenAI 的 /models 有上百条，全塞进下拉框等于没有下拉框。
     private static let nonChatModelMarkers = ["embedding", "vision", "audio", "tts",
                                               "whisper", "dall-e", "moderation"]
 
@@ -452,10 +311,7 @@ enum LLMCatalog {
     enum WebSearchStyle: Equatable {
         /// OpenAI Responses 的 `tools:[{type:"web_search"}]`——唯一会回传来源链接的一档
         case openaiResponsesTool
-        /// DashScope 兼容模式：body 里只发 `enable_search`（策略用端点默认的 turbo——
-        /// 3.8 线在 Chat Completions 上不吃 `search_options.search_strategy` 的 agent 值，
-        /// 硬写就是 400），**不回传来源**
-        case qwenEnableSearch
+        // DashScope 兼容模式那一档（qwenEnableSearch，只发 enable_search）5.1.0 随阿里云删掉
         /// OpenRouter：`plugins:[{id:"web"}]`
         case openrouterPlugin
         /// 这个端点没有内建搜索 → **整段只留一行说明，连开关都不摆**（4.1.1），绝不假装能用
@@ -466,13 +322,8 @@ enum LLMCatalog {
         let host = URL(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines))?
             .host?.lowercased() ?? ""
         if host == "openrouter.ai" || host.hasSuffix(".openrouter.ai") { return .openrouterPlugin }
-        switch provider {
-        case .openai:
-            // web_search 是 Responses 独有；OpenAI 档指向第三方网关时只有 chat/completions，没有它
-            return LLMClient.usesResponsesAPI(baseURL: baseURL) ? .openaiResponsesTool : .unsupported
-        case .qwen:
-            return .qwenEnableSearch
-        }
+        // web_search 是 Responses 独有；OpenAI 档指向第三方网关时只有 chat/completions，没有它
+        return LLMClient.usesResponsesAPI(baseURL: baseURL) ? .openaiResponsesTool : .unsupported
     }
 
     /// 联网搜索的单价——**全 App 唯一出处**。设置页开关旁与隐私说明（PrivacyCopy.webSearchBilled）
@@ -487,8 +338,9 @@ enum LLMCatalog {
     static var webSearchPriceNote: String { tr("每次约 $0.01 外加 token 费用。",
                                        "about $0.01 per search plus tokens.") }
 
-    /// 阿里云那一档的联网搜索价钱。**我们报不出一个准数**：DashScope 的搜索按它自己的
-    /// 价目结算，随套餐和地区变——编一个数字比不给数字糟得多，所以只说"按服务商计费"。
+    /// 第三方网关（OpenRouter）那一档的联网搜索价钱。**我们报不出一个准数**：它按网关自己的
+    /// 价目结算——编一个数字比不给数字糟得多，所以只说"按服务商计费"。
+    /// （4.1–5.0 阿里云那一档也念这一句，5.1.0 那一档删掉了。）
     static var providerBilledSearchNote: String { tr("按服务商自己的价目计费。",
                                             "billed at your provider's own rates.") }
 
@@ -497,7 +349,7 @@ enum LLMCatalog {
     static func webSearchPriceNote(style: WebSearchStyle) -> String? {
         switch style {
         case .openaiResponsesTool: return webSearchPriceNote
-        case .qwenEnableSearch, .openrouterPlugin: return providerBilledSearchNote
+        case .openrouterPlugin: return providerBilledSearchNote
         case .unsupported: return nil
         }
     }
@@ -508,16 +360,10 @@ enum LLMCatalog {
     /// 4.1.6 起没有「优先处理」这个开关了（用户 2026-09-21 拍板：OpenAI 官方接口一律走 Fast），
     /// 所以这句话不再说"默认关闭"，而且它现在只被 PrivacyCopy.fastTier 引用——写成能接在
     /// 「…一律走 Fast 档：」后面的半句（英文首字母小写），免得拼出来中间冒出一个大写字母。
-    /// 云端识别的单价（**全 App 唯一出处**）。查证日期 2026-09-21，来自两家的官方价目页。
-    ///
-    /// 为什么它必须摆在开关旁边而不是收进 ⓘ：两家差着近八倍（阿里云约 $0.13/小时、
-    /// OpenAI 约 $1.02/小时），这不是"解释"，是**选择本身的一部分**——藏在一颗要点开的
-    /// 气泡后面，等于让用户在不知道价钱的情况下按下那个开关。
+    /// 云端识别的单价（**全 App 唯一出处**）。查证日期 2026-09-21，来自 OpenAI 官方价目页。
+    /// （4.3–5.0 这里还有阿里云那一档的 $0.13/小时，5.1.0 删掉。）
     static func cloudASRPriceNote(provider: CloudASRProvider) -> String {
-        switch provider {
-        case .alibaba: return tr("约 $0.13/小时", "about $0.13/hour")
-        case .openai: return tr("约 $0.017/分钟", "about $0.017/min")
-        }
+        tr("约 $0.017/分钟", "about $0.017/min")
     }
 
     static var fastTierPriceNote: String { tr("延迟更低更稳，token 单价约 2 倍。",
@@ -548,7 +394,7 @@ enum LLMCatalog {
     }
 
     /// 悬浮窗/历史里那句「已联网 · 3 来源」。0 条来源也要说「已联网」——
-    /// Qwen 那档压根不回传来源，用户仍该知道这次调用花了搜索的钱。
+    /// 有的端点（OpenRouter 之类）不回传来源，用户仍该知道这次调用花了搜索的钱。
     static func webSearchNote(citationCount: Int) -> String {
         guard citationCount > 0 else { return tr("已联网", "Searched the web") }
         return tr("已联网 · \(citationCount) 来源", "Searched the web · \(citationCount) sources")
@@ -650,13 +496,6 @@ enum LLMCatalog {
                                       "Invalid or revoked API key (401) — check that it was pasted in full") + detail,
                              actionLabel: nil, actionURL: nil)
         case 403:
-            // 阿里云那一档里有一种 403 跟"模型没开通"毫无关系：**这把 Key 所属的工作空间
-            // 不开放接口访问**（2026-09-20 实测，见 AlibabaEndpoint.deniesEndpointAccess）。
-            // 照通用那句去模型广场开通模型，开一百次也没用——它换一句话，也换一个下一步。
-            if AlibabaEndpoint.deniesEndpointAccess(status: 403, code: code, message: message) {
-                return ErrorCopy(text: AlibabaHostResolver.workspaceAccessDeniedCopy,
-                                 actionLabel: nil, actionURL: nil)
-            }
             return ErrorCopy(text: forbiddenText(for: provider) + detail,
                              actionLabel: nil, actionURL: nil)
         case 404:
@@ -669,7 +508,7 @@ enum LLMCatalog {
                 || hay.contains("balance") {
                 return ErrorCopy(text: tr("账户余额不足 (429)，充值后即可继续",
                                           "Out of credit (429) — add credit to continue") + detail,
-                                 actionLabel: billingURL(for: provider) == nil ? nil : tr("去充值", "Add credit"),
+                                 actionLabel: tr("去充值", "Add credit"),
                                  actionURL: billingURL(for: provider))
             }
             return ErrorCopy(text: tr("请求太密，被服务商限流了 (429)，等几秒再说一次",
@@ -685,24 +524,13 @@ enum LLMCatalog {
         }
     }
 
-    /// 403 说的根本不是同一件事，所以**必须按服务商分流**：
-    ///   • OpenAI —— 国家/地区封锁（用户在 UAE，这条命中率不低）；
-    ///   • Qwen（DashScope）—— 几乎总是"模型没在百炼控制台开通 / 账户欠费 / 子工作空间没权限"，
-    ///     跟地区无关。说成地区封锁会把用户推去做一件没用的事（措辞与云端识别那条路一致）；
-    ///   • DeepSeek / 自定义端点 —— Key 的权限或网关的策略；
-    ///   • 本机模型 —— Ollama / LM Studio 拒绝了来源，跟"国家/地区"更是一点关系都没有。
-    /// 另外：建议换去的那一档永远不能是他当前正在用的那一档（以前写死"改用 DeepSeek"，
-    /// DeepSeek 用户收到的就是一句"改用 DeepSeek"）。
+    /// OpenAI 的 403 几乎总是国家/地区封锁（用户在 UAE，这条命中率不低）。
+    ///
+    /// 5.0.x 这句后面还跟着「可以在设置里改用阿里云」；5.1.0 阿里云那一档删掉了，
+    /// 没有另一家可以指给他——**不编一个不存在的下一步**，只把原因说清楚。
     private static func forbiddenText(for provider: LLMProvider) -> String {
-        switch provider {
-        case .openai:
-            // 5.0.0 起只剩两家，所以这句里能改去的也只剩阿里云（自定义端点那一档没有了）
-            return tr("你所在的国家/地区不支持这个服务 (403)。可以在设置里改用阿里云",
-                      "This service is not supported in your country or region (403). Switch to Alibaba Cloud in Settings")
-        case .qwen:
-            return tr("这个模型还没在阿里云百炼开通，或账户欠费、子工作空间无权 (403)。请到百炼控制台 → 模型广场把它开通一次",
-                      "This model is not enabled for your account, or the account is in arrears, or the sub-workspace lacks access (403). Enable it once in the Alibaba Model Studio console (Model Gallery)")
-        }
+        tr("你所在的国家/地区不支持这个服务 (403)",
+           "This service is not supported in your country or region (403)")
     }
 
     /// 超时话术。
@@ -712,7 +540,7 @@ enum LLMCatalog {
     ///   仍会重试的只剩验证 / 测试那几条路。
     static func timeoutCopy(retried: Bool = false) -> ErrorCopy {
         let text = retried
-            // 不指认"网络"：4.1.2 的日志里阿里云那几趟超时，服务端自己就算了 ~17 s（思考模式），
+            // 不指认"网络"：4.1.2 的日志里那几趟超时，服务端自己就算了 ~17 s（思考模式），
             // 而这句话让用户去怀疑自己的网络和 Key。我们只知道"没等到"，就只说这个。
             ? tr("请求超时（已重试一次，服务商响应太慢）",
                  "Request timed out (retried once — the provider took too long to respond)")
@@ -720,31 +548,10 @@ enum LLMCatalog {
         return ErrorCopy(text: text, actionLabel: nil, actionURL: nil)
     }
 
-    /// 阿里云那一档打在**还没试对**的接入地址上收到的 401。
-    ///
-    /// 为什么不能用通用那句（"API Key 无效或已失效"）：走到这里时代码自己刚判定
-    /// "问题多半出在接入地址"并已经去试了（AlibabaHostRecovery）。用户照通用那句去重贴 Key，
-    /// 而下一句话恰好因为后台探测成功而好了——他会以为是重贴救了他，真正的原因一次都没露面。
-    /// - probing: 探测正在后台跑（润色那一档，它等不起那 30 秒）
-    static func qwenUnverifiedHost401(probing: Bool) -> ErrorCopy {
-        guard probing else {
-            // 试完一圈仍然不对：这句话（"这把 Key 不属于试过的这些接入地址…"）与云端识别
-            // 那条路同一个出处，别在这里另写一份
-            return ErrorCopy(text: AlibabaASRClient.failure(status: 401, code: nil, message: nil).message,
-                             actionLabel: nil, actionURL: nil)
-        }
-        return ErrorCopy(text: tr("接入地址还没试对 (401)，正在自动探测，下一句就会对",
-                                  "Still finding the right endpoint for this key (401) — MicType is probing now, the next sentence should work"),
-                         actionLabel: nil, actionURL: nil)
-    }
-
-    /// 「去充值」指向哪个控制台。nil = 我们没有一条可以打包票的充值地址
-    /// （Qwen 的控制台随区域不同，自定义端点与本机模型压根没有账单）——**宁可不给按钮，
-    /// 也不塞一个猜出来的链接**：点进去是 404 比没有按钮更让人心慌。
-    private static func billingURL(for provider: LLMProvider) -> String? {
-        switch provider {
-        case .openai: return "https://platform.openai.com/settings/organization/billing"
-        case .qwen: return nil
-        }
+    /// 「去充值」指向哪个控制台。5.1.0 起只有 OpenAI 一档，永远有这条地址。
+    /// （阿里云那一档没有可以打包票的充值地址，当年宁可不给按钮；那一档已删。）
+    // qwenUnverifiedHost401（阿里云接入地址还没试对时的 401 话术）5.1.0 删掉。
+    private static func billingURL(for provider: LLMProvider) -> String {
+        "https://platform.openai.com/settings/organization/billing"
     }
 }

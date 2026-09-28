@@ -30,7 +30,7 @@ final class TranscriptionHandle: @unchecked Sendable {
     private var cancelledFlag = false
     /// 取消时同步回调一次（装了才有）。**云端那一路必须靠它**：在飞的 HTTP 请求只有
     /// CloudASRHandle 掐得掉，光置个标志位等于让用户按完 Esc 还要等这一整段上传完、
-    /// 云端转完、可能还退避重试一次（阿里云 120s 起步，而且照常计费）。
+    /// 云端转完、可能还退避重试一次（单段 150s 起步，而且照常计费）。
     /// 本机引擎不用装：它在每段解码前自己查 isCancelled，最坏只等一段。
     private var onCancel: (() -> Void)?
 

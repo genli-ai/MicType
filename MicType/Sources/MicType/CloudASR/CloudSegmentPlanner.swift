@@ -2,8 +2,8 @@ import Foundation
 
 // MARK: - 云端分段规划
 //
-// 云端两家都有单请求上限（阿里云 ≤5 分钟且 base64 ≤10MB；OpenAI ≤25MB 原始文件），
-// 长录音必须切开分别发。切哪儿很讲究：切在人说话中间会把一个词劈成两半，两段各错一次。
+// 云端有单请求上限（OpenAI ≤25MB 原始文件），而且段长还决定了分段进度、
+// 失败部分交付与 Esc 保字（见 CloudSegmentLimits.openai），长录音必须切开分别发。切哪儿很讲究：切在人说话中间会把一个词劈成两半，两段各错一次。
 // 所以按 20ms 一帧算 RMS，在"名义边界 ±3s"里挑能量最低的那一帧下刀——那通常是句间停顿。
 //
 // 纯函数：输入采样（或已算好的 RMS 帧），输出采样下标区间，不碰 Settings、不碰网络。
@@ -39,8 +39,6 @@ struct CloudSegmentLimits: Equatable {
         self.minTailSeconds = minTailSeconds
     }
 
-    /// 阿里云：10MB base64 ≈ 234s，且模型另有 5 分钟上限 → 120s / 180s（180s ≈ 7.68MB base64）
-    static let alibaba = CloudSegmentLimits(targetSeconds: 120, hardMaxSeconds: 180)
     /// OpenAI：25MB 原始文件 ≈ 781s，体积根本不是瓶颈，所以段长由**产品**定而不是由上限定。
     /// 为什么不用 600/700：录音硬上限就是 600s（DictationController.maxRecordingSeconds），
     /// hardMax 比它还大的话 planner 的"一次就能发完"提前返回对**每一次**录音都命中，永远只有

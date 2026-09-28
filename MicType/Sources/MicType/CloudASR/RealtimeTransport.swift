@@ -1,19 +1,13 @@
 import Foundation
 
-// MARK: - 两家实时识别客户端的共享底座
+// MARK: - 实时识别客户端的共享底座
 //
-// **这个文件只依赖 Foundation**（与两个客户端同一条纪律）：不认识 Settings / Log / tr()
-// / 任何单例。iPhone 版会连同两个客户端一起只读移植它。
+// **这个文件只依赖 Foundation**（与客户端同一条纪律）：不认识 Settings / Log / tr()
+// / 任何单例。iPhone 版会连同客户端一起只读移植它。
 //
-// 为什么不做「一个客户端两种方言」（用户 2026-09-21 拍板）：两家的协议除了"都是 WebSocket"
-// 之外几乎没有共同点——
-//   • 阿里云握手会给 401/403，OpenAI **永远 101**，错误在 error 事件 + close 3000/4000；
-//   • 阿里云模型放 query 且会静默降级，OpenAI 模型放 session 体、拼错会报错但会话变成空配置；
-//   • 阿里云 16 kHz、OpenAI **只认 24 kHz**；
-//   • 阿里云 usage 是整条会话累计（取最后一条），OpenAI 每个 item 独立（要相加）；
-//   • 阿里云收尾是 session.finish，OpenAI 是 commit 之后自己关。
-// 一个类里塞两套，每个 if 都是一次踩错的机会。所以：两个客户端各写各的，
-// 共享的只有下面这些——socket、失败分类、终稿形状、以及几条与协议无关的纯函数。
+// 4.2–5.0 这里是阿里云与 OpenAI 两个客户端的共享层；5.1.0 删掉阿里云（用户 2026-09-28 拍板）
+// 之后只剩 OpenAIRealtimeClient 在用，但分层不动：socket、失败分类、终稿形状、以及几条
+// 与协议无关的纯函数留在这里，协议本身的规矩留在客户端里——下一步的混合转写也搭在这一层上。
 
 // MARK: - socket 抽象
 
@@ -41,8 +35,7 @@ protocol RealtimeSocket: AnyObject {
 /// 一次实时会话的终稿（两家同一个形状）
 struct RealtimeTranscript: Equatable {
     var text: String
-    /// 云端回报的计费秒数。**两家的口径相反**：阿里云是整条会话的累计值（取最后一条），
-    /// OpenAI 是每个 item 独立（要相加）。算清楚是各自客户端的事，这里只存结果。
+    /// 云端回报的计费秒数。OpenAI 是每个 item 独立（要相加）——算清楚是客户端的事，这里只存结果。
     var billedSeconds: Double?
     var language: String?
 
@@ -53,19 +46,16 @@ struct RealtimeTranscript: Equatable {
     }
 }
 
-/// 两家共用的失败分类。
+/// 实时失败的分类。
 ///
 /// 分两类**行为完全不同**（用户 2026-09-21 拍板）：
 ///   • `disablesStreaming` = 这条链路压根不支持实时（或这把 Key 不让用）→ 本次运行内记住，
 ///     之后一律走整段上传，不打扰用户——同步那条路能用就不算错误；
-///   • 其余 = 偶发 → 本句有本机模型就整段回落本机，否则退到整段上传。
+///   • 其余 = 偶发 → 本句退到整段上传。
+/// 5.1.0 删掉了只有阿里云才会出现的两档（握手被拒 401/403、回显型号对不上）：
+/// OpenAI 握手永远 101，型号拼错走 error 事件，落在下面的 modelUnavailable。
 enum RealtimeFailure: Error, Equatable {
-    /// 握手被拒（阿里云才会：401 = 这把 Key，403 = 这台主机）。OpenAI 永远 101，用不到这一档。
-    case handshakeRejected(status: Int)
-    /// 回显的模型不是我们点的那个（阿里云：继续下去就是在用十倍价钱的模型）
-    case modelMismatch(reported: String?)
-    /// 这条链路上没有这个模型 / 这把 Key 没有权限用它
-    /// （阿里云 close 1011；OpenAI invalid_model、无权限、close 4000）
+    /// 这条链路上没有这个模型 / 这把 Key 没有权限用它（OpenAI invalid_model、无权限、close 4000）
     case modelUnavailable
     /// 鉴权不通过（OpenAI：error invalid_api_key + close 3000）
     case unauthorized(code: String?)
@@ -79,7 +69,7 @@ enum RealtimeFailure: Error, Equatable {
     /// 这一次失败值不值得把「这条链路的实时」整个关掉（纯函数，单测钉死）
     var disablesStreaming: Bool {
         switch self {
-        case .handshakeRejected, .modelMismatch, .modelUnavailable, .unauthorized: return true
+        case .modelUnavailable, .unauthorized: return true
         case .transport, .serverError, .finalTimeout: return false
         }
     }
@@ -87,8 +77,6 @@ enum RealtimeFailure: Error, Equatable {
     /// 写进日志的那一句。**只有状态码 / 关闭码 / 服务端错误码**，一个字用户内容都没有。
     var logReason: String {
         switch self {
-        case .handshakeRejected(let status): return "handshake status=\(status)"
-        case .modelMismatch(let reported): return "model echoed=\(reported ?? "-")"
         case .modelUnavailable: return "model unavailable"
         case .unauthorized(let code): return "unauthorized code=\(code ?? "-")"
         case .transport(let detail): return "transport=\(detail)"
@@ -100,7 +88,7 @@ enum RealtimeFailure: Error, Equatable {
 
 // MARK: - 上层只认这一个协议
 
-/// 接线层（CloudStreamingSession）看到的实时客户端。**两家实现同一套动作**，
+/// 接线层（CloudStreamingSession）看到的实时客户端。接线层只认这一套动作，
 /// 于是"按下热键建连 → 边说边送 → 松手收尾"这条主线只写一遍。
 protocol RealtimeTranscriptionClient: AnyObject {
     /// 中间结果（已经拼成一整串草稿）。在客户端的 callbackQueue 上回调。
@@ -141,10 +129,8 @@ enum RealtimeAudio {
 
     /// 到现在为止还能发多少字节（令牌桶，纯函数）。
     ///
-    /// 为什么两家都要节流，只是数不同：
-    ///   • 阿里云硬限 2560 KB/s（约 80× 实时），超了 **1007 断连**——看得见；
-    ///   • OpenAI 超过约 4× 实时会**静默丢音频**（8× 起 usage.seconds 就对不上），
-    ///     不报错、不断连——看不见，所以更要守。
+    /// 为什么要节流：OpenAI 超过约 4× 实时会**静默丢音频**（8× 起 usage.seconds 就对不上），
+    /// 不报错、不断连——看不见，所以更要守。
     /// 桶的容量是 burstSeconds 秒音频，按 maxSpeed × 实时补充。
     static func sendableBytes(elapsed: TimeInterval, sentBytes: Int,
                               bytesPerSecond: Double, maxSpeed: Double,
@@ -268,9 +254,9 @@ final class Resampler16kTo24k {
 // MARK: - socket 的真实现（URLSessionWebSocketTask）
 
 /// 两处坑（2026-09-21 实测）：
-///   • 阿里云握手失败时 URLSession 只给 `NSURLErrorDomain -1011`，**状态码要从
-///     `task.response as? HTTPURLResponse` 取**（401 = 这把 Key，403 = 这台主机），错误体拿不到；
-///     OpenAI 那边永远 101，真正的原因在 error 事件与关闭码里。
+///   • 握手失败时 URLSession 只给 `NSURLErrorDomain -1011`，**状态码要从
+///     `task.response as? HTTPURLResponse` 取**，错误体拿不到（OpenAI 永远 101，
+///     真正的原因在 error 事件与关闭码里；状态码仍照报给 delegate，留给日志）。
 ///   • URLSession 会强引用 delegate 直到 invalidate——所以 cancel() 必须 invalidateAndCancel()，
 ///     否则每次听写都漏一个 session 和一条连接。
 final class URLSessionRealtimeSocket: NSObject, RealtimeSocket, URLSessionWebSocketDelegate {

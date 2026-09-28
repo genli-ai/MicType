@@ -82,13 +82,7 @@ final class KeyVerifier: ObservableObject {
         status = .idle
     }
 
-    /// Key 没变，但它要发去的**地方**变了（阿里云那一栏「接入地址」）。
-    /// 上一次的"已验证"是对着上一台主机挣来的，对新地址一个字都不算数——
-    /// 忘掉它，下一次 verifyNow() 才会真的再发一趟（needsVerification 靠的就是这一位）。
-    func forgetVerification() {
-        verifiedKey = nil
-        invalidate()
-    }
+    // forgetVerification（阿里云「接入地址」一改就对着新主机重验）5.1.0 随那一栏删掉。
 
     /// 用户又动了输入框：把上一次的结论撤掉，别让旧的 ✓ 挂在一把新 Key 旁边
     func invalidate() {
@@ -109,13 +103,10 @@ final class KeyVerifier: ObservableObject {
 
     /// 这把 Key 用哪条链路去验。
     ///
-    /// 为什么必须可插拔：识别页上的 Key 属于 Qwen/OpenAI 的**云端识别**，用户的润色服务商
-    /// 完全可能是另一家——照搬 LLM 探针就等于把阿里云的 Key 发到 OpenAI 去。
-    /// （`.llm` 这条路本身也曾有同一个毛病：dispatch 读全局当前档，于是引导页刚选中
-    /// 但还没生效的那一档会被发到上一档的端点上。现在 provider 一路显式传到 dispatch，
-    /// 验证打的永远是 KeyEntryView 手上这一档。）
-    /// 所以识别页走 `.cloudASR`：直接打识别端点，发 1 秒合成音，
-    /// 顺带把接入地址、模型有没有在控制台开通一起验了（LLM 的 /models 探针验不到后者）。
+    /// 为什么必须可插拔（4.x 起）：识别那条链路比润色更严，而且验的是另一件事——
+    /// 这把 Key 能不能调识别端点，LLM 的探针验不到。provider 一路显式传到 dispatch，
+    /// 验证打的永远是 KeyEntryView 手上这一档（"Key 永不串槽"那条铁律）。
+    /// 设置页与引导都走 `.cloudASR`：直接打识别端点，发 1 秒合成音。
     enum Probe: Equatable {
         /// 走润色/指令那条链路（AI 页默认）
         case llm
@@ -148,9 +139,6 @@ final class KeyVerifier: ObservableObject {
         }
 
         status = .verifying
-        // 这把 Key 里带着 WorkspaceId 的话，趁这一刻落盘：润色那条路不读钥匙串，
-        // 只能从设置里拿它——两边拼出来的候选主机必须是同一张表（见 rememberWorkspace）
-        if provider == .qwen { CloudASRSettings.rememberWorkspace(fromKey: trimmed) }
         let hadPrevious = KeychainHelper.loadAPIKey(account: provider.keychainAccount) != nil
         /// 两条探针回来之后做的事一模一样：过了就写钥匙串，没过就一个字节都不动
         let settle: (Bool, String, String, String) -> Void = { [weak self] ok, label, model, message in
@@ -184,41 +172,11 @@ final class KeyVerifier: ObservableObject {
 
         switch probe {
         case .llm:
-            // Qwen 这一档的接入地址是试出来的：先用最便宜的那趟（GET /models）把候选主机
-            // **整表并发试一遍、挑最快的**，再照常走 testModel。定不下来就直接报那一趟的原因
-            // ——它比"型号不对"准得多。
-            //
-            // **每验一次 Key 都要重新试一圈**（4.1.4 起连"上一次试通的那台"都不再短路它）：
-            // 缓存的那台既可能是上一把 Key 的答案（换了账号就只剩 401，而那句话指向 Key，
-            // 用户翻不到头上），也可能只是"能用但慢得多"的那一台——按「验证」是用户
-            // **明确要求重新确认这套配置**，那就该把这两件事一起确认掉。
-            // 存着的粘贴地址仍然优先（候选表只有它一台），它死了才丢掉重试（见 resolveHost）。
-            guard provider == .qwen else {
-                LLMClient.testModel(model, provider: provider, candidateKey: trimmed) { ok, message in
-                    settle(ok, provider.segmentName, model, message)
-                }
-                return
-            }
-            CloudASRSettings.resolveHost(
-                apiKey: trimmed,
-                candidates: CloudASRSettings.currentHostCandidates(apiKey: trimmed)) { result in
-                switch result {
-                case .failure(let failure):
-                    settle(false, provider.segmentName, model, failure.message)
-                case .success(let host):
-                    // 和 settle 同一道闸（问的也是账本，不是视图）：这几秒里用户可能又粘了
-                    // 一把别的 Key，让上一把的答案把接入地址写掉，下一把就被钉在一台不属于它的主机上
-                    if ledger.isCurrent(gen, for: account) {
-                        CloudASRSettings.rememberResolution(host: host, model: nil)
-                    }
-                    LLMClient.testModel(model, provider: provider, candidateKey: trimmed) { ok, message in
-                        settle(ok, provider.segmentName, model, message)
-                    }
-                }
+            LLMClient.testModel(model, provider: provider, candidateKey: trimmed) { ok, message in
+                settle(ok, provider.segmentName, model, message)
             }
         case .cloudASR(let cloudProvider):
-            // 识别页：直接打识别端点，1 秒合成音。阿里云那一档还要先把接入主机试出来、
-            // 模型 404 时自动换 qwen3-asr-flash（见 CloudASRSetup）。
+            // 直接打识别端点，1 秒合成音
             var config = CloudASRSettings.currentConfig()
             guard config.provider == cloudProvider else {
                 // 走到这里只可能是生效服务商在这半秒里被换掉了。
@@ -232,30 +190,13 @@ final class KeyVerifier: ObservableObject {
                 return
             }
             config.apiKey = trimmed
-            guard cloudProvider == .alibaba else {
-                CloudASRProbe.run(config: config) { result in
-                    switch result {
-                    case .success:
-                        settle(true, cloudProvider.displayName, OpenAITranscribeClient.defaultModel, "")
-                    case .failure(let failure):
-                        settle(false, cloudProvider.displayName,
-                               OpenAITranscribeClient.defaultModel, failure.message)
-                    }
-                }
-                return
-            }
-            CloudASRSetup.verifyAlibaba(apiKey: trimmed, config: config,
-                                        candidates: CloudASRSettings.currentHostCandidates(apiKey: trimmed)) { result in
+            CloudASRProbe.run(config: config) { result in
                 switch result {
-                case .success(let success):
-                    // 同一道代数闸：放弃掉的那一次验证不许改写接入地址与识别模型
-                    if ledger.isCurrent(gen, for: account) {
-                        CloudASRSettings.rememberResolution(host: success.host, model: success.model)
-                    }
-                    settle(true, cloudProvider.displayName, success.model.rawValue, "")
+                case .success:
+                    settle(true, cloudProvider.displayName, OpenAITranscribeClient.defaultModel, "")
                 case .failure(let failure):
                     settle(false, cloudProvider.displayName,
-                           Settings.shared.cloudAlibabaModel.rawValue, failure.message)
+                           OpenAITranscribeClient.defaultModel, failure.message)
                 }
             }
         }
@@ -300,14 +241,13 @@ struct KeyEntryView: View {
     /// 用哪条链路验这把 Key。默认走 LLM（AI 页）；识别页传 `.cloudASR(...)`，
     /// 直接打识别端点、发 1 秒合成音（理由见 KeyVerifier.Probe）
     var probe: KeyVerifier.Probe = .llm
-    /// 「接入地址」那一栏被改过几次（阿里云才有，见 QwenHostField）。
-    /// 它一变就拿同一把 Key 对着新地址重验一次：**那是整页唯一的手动测试**，
-    /// 所以结果就显示在下面这行 Key 状态行上，用户不必再去找第二个地方看。
-    var hostChangeTick: Int = 0
     /// 验通那一行末尾再补一句（空串 = 不补）。**只在成功那一档补**：
     /// 失败那一行本来就长（服务商的原话在里面），再挂一句价钱等于把最该读的原因往后推。
     /// 补什么由调用方定——设置页补「一小时多少钱」，引导 ③ 补「一句话多少钱」（见 CloudSetupCore）。
     var connectedNote: String = ""
+    /// Key 框右边要不要摆「去申请 Key ↗」。引导 ③ 传 false：上面第 3 步已经直达同一页，
+    /// 同一个入口摆两次只是重复（用户 2026-09-28 拍板）；设置页没有那几步，照摆。
+    var showsConsoleLink: Bool = true
     /// 验证结束时通知外面（true = 通过）。菜单栏的「配置 AI…」之类要据此刷新。
     var onStatusChange: ((KeyVerifier.Status) -> Void)? = nil
 
@@ -334,12 +274,12 @@ struct KeyEntryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if provider.requiresAPIKey {
-                // 栏名就写 "API Key"（4.3.2）：原来那句占位文字是「粘贴 阿里云 的 API Key」，
-                // 换一家就变一次、还把输入框撑得老长——而屏幕上方那一行已经写着是哪一家了。
-                SettingsFieldRow(label: "API Key",
-                              info: SettingsCopy.keyInfo(hostField: provider == .qwen)) {
+                // 栏名就写 "API Key"（4.3.2）：是哪一家，上面那一行（设置页）/ 标题（引导 ③）已经写着了
+                // 栏名直接写「OpenAI Key」（5.1.0，用户 2026-09-28 拍板）：只剩一家之后，
+                // 那一行只读的「服务商 OpenAI」删掉了，是哪一家的 Key 就由栏名自己说
+                SettingsFieldRow(label: "OpenAI Key", info: SettingsCopy.keyInfo) {
                     secureField
-                    consoleLink
+                    if showsConsoleLink { consoleLink }
                 }
                 // 状态行：**只在真有话说时才出现**（验证中 / 已连通 ✓ / 失败原因）。
                 // 4.3.2 删掉了原来常驻在这儿的那行费用说明——它并进了上面那颗 ⓘ，
@@ -371,13 +311,6 @@ struct KeyEntryView: View {
         .onChange(of: verifier.status) { _, newValue in
             onStatusChange?(newValue)
         }
-        // 地址换了：同一把 Key 要对着新那一台重验一次（KeyVerifier 那边先忘掉旧结论，
-        // 否则 needsVerification 会因为"Key 没变"直接把这一趟吃掉）
-        .onChange(of: hostChangeTick) { _, _ in
-            guard provider == .qwen else { return }
-            verifier.forgetVerification()
-            verifyNow()
-        }
         // 状态行是一次性快照，切语言要跟着换（见 CLAUDE.md「i18n 快照字符串」）
         .onChange(of: l10n.language) { _, _ in verifier.invalidate() }
     }
@@ -387,36 +320,18 @@ struct KeyEntryView: View {
     private var secureField: some View {
         // 占位写**该做的动作**而不是 Key 长什么样（5.0.1）：「sk-…」是给认得 Key 的人看的，
         // 而第一次走到这一步的人刚从控制台复制完，他要确认的是"贴这儿对不对"
-        SecureField(text: $key, prompt: Text(tr("粘贴到这里", "Paste it here"))) { Text("API Key") }
+        SecureField(text: $key, prompt: Text(tr("粘贴到这里", "Paste it here"))) { Text("OpenAI Key") }
             .labelsHidden()
             .textFieldStyle(.roundedBorder)
             .focused($focused)
             .onSubmit { verifyNow() }
     }
 
-    /// 「去申请 Key ↗」。**两家都有**（5.0.4）：阿里云那一档点开是两个站的小菜单，
-    /// 因为那两个站是两套账号体系，我们无从得知他在哪一边（见 LLMCatalog.keyConsole）。
-    /// 5.0.4 之前阿里云这一档右边是空的——而最需要这个入口的正是他。
-    @ViewBuilder
+    /// 「去申请 Key ↗」：点了直接开 OpenAI 的 API Key 页。
+    /// （5.0.4 为阿里云那两个站加的 International / China 小菜单，5.1.0 随阿里云删掉。）
     private var consoleLink: some View {
-        switch LLMCatalog.keyConsole(for: provider) {
-        case .single(let url):
-            Button(LLMCatalog.getAKeyLabel) { open(url) }
-                .fixedSize()
-        case .choices(let links):
-            Menu {
-                ForEach(links, id: \.url) { link in
-                    Button(link.label) { open(link.url) }
-                }
-            } label: {
-                Text(LLMCatalog.getAKeyLabel)
-            }
-            // 和左边那颗按钮长得一样（默认那一档就是普通按钮的样子），
-            // 只是点下去先问一句"哪个站"
-            .menuStyle(.button)
-            .menuIndicator(.hidden)
+        Button(LLMCatalog.getAKeyLabel) { open(LLMCatalog.apiKeyConsoleURL(for: provider)) }
             .fixedSize()
-        }
     }
 
     private func open(_ url: String) {
@@ -448,7 +363,3 @@ struct KeyEntryView: View {
         verifier.verify(key: trimmed, provider: provider, model: model, probe: probe)
     }
 }
-
-// 阿里云的「接入地址（可选）」输入框在 CloudAIFields.QwenHostField 里（4.1.4 删过，
-// 4.3.1 按用户 2026-09-21 的要求加了回来）。它摆在这个 Key 输入框的下面、两处共用，
-// 改完由 hostChangeTick 推着这里重验一次——见那边的注释。

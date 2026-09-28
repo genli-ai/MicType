@@ -72,16 +72,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             SettingsWindowController.shared.show()
         }
 
-        // 云端识别的 Key 统一到润色那把（qwen_api_key）：开发期存过旧账号的搬过来再删
-        KeychainHelper.migrateLegacyDashScopeKey()
-
-        // 接入地址每周按**最快**重挑一次（见 AlibabaFastestHostRefresh）。界面上已经没有
-        // 任何"重新探测"的按钮了，所以这件事只能自己做：选定的那台主机日常一句话都不复查，
-        // 而它会随着用户换地方、服务商调链路而变旧。后台跑、不挡任何事，问不出结果就留到下次启动。
-        // 放在后台队列上是因为它要读一次钥匙串——那件事不该坐在启动路径上。
-        DispatchQueue.global(qos: .utility).async {
-            AlibabaFastestHostRefresh.runAtLaunch()
-        }
+        // 5.1.0：阿里云整档删除（用户 2026-09-28 拍板）。生效服务商是 qwen 的改回 OpenAI，
+        // 阿里云的 Key 与设置一次清掉——**一个字节都不搬到 OpenAI 那一档**。必须在
+        // routeFirstLaunch 之前：删完没有 OpenAI Key 的人，要被那里接回引导 ③。
+        // 升级提示里不提这件事，只记日志（见 RetiredProviderCleanup）。
+        RetiredProviderCleanup.run(defaults: .standard,
+                                   deleteKey: { KeychainHelper.deleteAPIKey(account: $0) })
 
         // 识别引擎 5.0.0 起由生效服务商推出来，「识别停在旧档」那条边界状态不再可能出现。
 
@@ -211,8 +207,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if case .cloudKeyMissing = RecognitionEngineReadiness.current(),
                   !Settings.shared.onboardingSkippedEssentials {
             // 走过引导、但这一刻**没有 Key**（5.0.0 把 DeepSeek / 自定义端点 / 本机大模型
-            // 三档删掉了，用那几档的老用户升上来就落在这里）。识别也在云端，没有 Key
-            // 连听写都不能用——所以把他接回引导第三屏，而不是让他按一次热键才发现。
+            // 三档删掉了，5.1.0 又删掉了阿里云——用那几档的老用户升上来就落在这里）。
+            // 识别也在云端，没有 Key 连听写都不能用——所以把他接回引导第三屏，
+            // 而不是让他按一次热键才发现。
             // 点过「先跳过」的人例外：他已经知道，每次启动再弹一遍就成了催促。
             Log.info("Onboarding reopened: no API key after the 5.0 upgrade")
             OnboardingWindowController.shared.show(startAt: .howYouUse)

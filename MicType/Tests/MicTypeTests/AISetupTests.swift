@@ -18,16 +18,21 @@ final class AISetupTests: XCTestCase {
         super.tearDown()
     }
 
-    /// 粘贴即验证必须把候选 Key 发到**用户刚选中**的那一档去，所以地址得按档取。
-    /// 以前整条链路只认"当前生效那档"：引导第 5 屏选了 DeepSeek、生效档还是 OpenAI 时，
-    /// 粘进去的 DeepSeek Key 会被发到 api.openai.com，401 之后 Key 存不进钥匙串，
-    /// 那一档就永远采纳不了——粘一次泄一次，还是个死循环。
-    func testBaseURLIsResolvedPerProviderNotFromTheActiveOne() {
+    /// 地址按档取（5.1.0 起只剩 OpenAI 一档，调用方仍然点名"发给哪一档"）
+    func testBaseURLIsResolvedPerProvider() {
         let s = Settings.shared
         XCTAssertEqual(s.baseURL(for: .openai), s.openaiBaseURL)
-        XCTAssertEqual(s.baseURL(for: .qwen), s.qwenBaseURL)
-        // "当前档"只是"按档取"的一个特例，不再是唯一的取法
         XCTAssertEqual(s.currentBaseURL, s.baseURL(for: s.llmProvider))
+    }
+
+    /// 5.1.0：只剩 OpenAI 一档（阿里云整档删除）。有人把它加回来之前，先要过这一条
+    func testOpenAIIsTheOnlyProvider() {
+        XCTAssertEqual(LLMProvider.allCases, [.openai])
+        XCTAssertEqual(CloudASRProvider.allCases, [.openai])
+        XCTAssertEqual(RecognitionEngineChoice.allCases, [.cloudOpenAI])
+        // 存量里的 qwen 读不出一档来——它归 RetiredProviderCleanup 改写
+        XCTAssertNil(LLMProvider(rawValue: "qwen"))
+        XCTAssertEqual(RecognitionEngineChoice.parse("cloudAlibaba"), .cloudOpenAI)
     }
 
     /// 英文界面里不许出现汉字、CJK 标点或全角标点（见 docs 的 C2）
@@ -83,23 +88,10 @@ final class AISetupTests: XCTestCase {
                                           polishModel: "gpt-5.6-luna"))
     }
 
-    /// 地址是空串（自定义端点还没填）——那不是"就绪"，是根本拼不出地址。
-    /// Qwen 已经不会落到这一档了：它的接入地址由 MicType 自己试出来（见 AlibabaEndpoint），
-    /// 但这条判据仍然守着自定义端点那一路。
+    /// 地址是空串（被改坏的导入设置）——那不是"就绪"，是根本拼不出地址
     func testAIReadyIsFalseWhenTheEndpointCannotBeDerived() {
         XCTAssertFalse(LLMCatalog.aiReady(hasCredential: true, baseURL: "",
-                                          polishModel: "qwen3.8-flash"))
-        XCTAssertFalse(LLMCatalog.qwenBaseURL(region: .international, workspaceID: "").isEmpty,
-                       "国际站共享主机永远拼得出来")
-    }
-
-    /// 接入地址一旦试通，润色与云端识别必须落在**同一台主机**上：
-    /// 4.0.0 让用户在两页各选一次区域，选出两个不一致的值正是那时的坑
-    func testResolvedHostDrivesThePolishEndpointToo() {
-        let host = "ws-e9548i71rc13pul7.cn-beijing.maas.aliyuncs.com"
-        XCTAssertEqual(AlibabaEndpoint.compatibleBaseURL(host: host),
-                       "https://" + host + "/compatible-mode/v1")
-        XCTAssertEqual(AlibabaEndpoint.asrURL(host: host)?.host, host)
+                                          polishModel: "gpt-5.6-terra"))
     }
 
     /// 型号名是空的不算就绪（空型号发出去是 400）。5.0.0 起型号写死，这一条因此恒真——
@@ -115,18 +107,15 @@ final class AISetupTests: XCTestCase {
 
     // MARK: - 去申请 Key
 
-    /// 只给确定的地址；猜不出来的一律 nil（宁可不给按钮，也不塞一个点进去 404 的链接）
-    func testAPIKeyConsoleLinksOnlyExistWhereWeAreSure() {
+    /// 「去申请 Key ↗」直达 OpenAI 的 API Key 页
+    func testAPIKeyConsoleLinkIsTheOpenAIKeyPage() {
         XCTAssertEqual(LLMCatalog.apiKeyConsoleURL(for: .openai), "https://platform.openai.com/api-keys")
-        // 阿里云的控制台随区域不同，我们打不了包票 → 宁可不给按钮
-        XCTAssertNil(LLMCatalog.apiKeyConsoleURL(for: .qwen))
     }
 
     /// 申请页一律 https：设置页会把它直接交给 NSWorkspace 打开
     func testAPIKeyConsoleLinksAreHTTPS() {
         for provider in LLMProvider.allCases {
-            guard let url = LLMCatalog.apiKeyConsoleURL(for: provider) else { continue }
-            XCTAssertTrue(url.hasPrefix("https://"), url)
+            XCTAssertTrue(LLMCatalog.apiKeyConsoleURL(for: provider).hasPrefix("https://"))
         }
     }
 
@@ -173,9 +162,9 @@ final class AISetupTests: XCTestCase {
         }
     }
 
-    // MARK: - 服务商分段名
+    // MARK: - 服务商短名
 
-    /// 分段选择器里每一档都要有名字，而且英文界面下不含中文
+    /// 每一档都要有名字（验证状态行念的就是它），而且英文界面下不含中文
     func testSegmentNamesAreDistinctAndCleanInEnglish() {
         L10n.shared.language = .en
         let names = LLMProvider.allCases.map(\.segmentName)
@@ -225,7 +214,7 @@ final class AISetupTests: XCTestCase {
     /// 支持的服务商默认开、不支持的连开关都不摆：价格与"有没有这个功能"必须同源，
     /// 否则会出现"这家没有搜索"和"每次 $0.01"并排
     func testWebSearchPriceNoteExistsExactlyWhereSearchDoes() {
-        for style in [LLMCatalog.WebSearchStyle.openaiResponsesTool, .qwenEnableSearch, .openrouterPlugin] {
+        for style in [LLMCatalog.WebSearchStyle.openaiResponsesTool, .openrouterPlugin] {
             XCTAssertNotNil(LLMCatalog.webSearchPriceNote(style: style), "\(style)")
         }
         XCTAssertNil(LLMCatalog.webSearchPriceNote(style: .unsupported))
@@ -233,28 +222,5 @@ final class AISetupTests: XCTestCase {
                        LLMCatalog.webSearchPriceNote)
     }
 
-    // MARK: - 4.1.1：验证通过才采纳（设置页与引导页同一条）
-
-    /// 没 Key 的那一档只是**预览**：点一下就把生效服务商换过去，表现是他下次按住说指令
-    /// 直接失败，而完全不知道是刚才那一下点的
-    func testProviderIsAdoptedOnlyOnceItsKeyIsThere() {
-        XCTAssertTrue(AISetup.adoptsProvider(current: .openai, next: .qwen,
-                                             requiresKey: true, hasKey: true,
-                                             polishModel: "qwen3.8-flash"))
-        XCTAssertFalse(AISetup.adoptsProvider(current: .openai, next: .qwen,
-                                              requiresKey: true, hasKey: false,
-                                              polishModel: "qwen3.8-flash"))
-        // 已经就是这一档：不必再写一遍（也就不会白记一行日志）
-        XCTAssertFalse(AISetup.adoptsProvider(current: .qwen, next: .qwen,
-                                              requiresKey: true, hasKey: true,
-                                              polishModel: "qwen3.8-flash"))
-    }
-
-    /// 型号名是空的照样跑不起来（发出去就是 400）——同样不能拿它换掉一个正在好好用着的服务商。
-    /// 5.0.0 起型号写死，这一支因此走不到；留着是因为它是这条判据的一部分。
-    func testAnEmptyModelNameBlocksAdoption() {
-        XCTAssertFalse(AISetup.adoptsProvider(current: .openai, next: .qwen,
-                                              requiresKey: true, hasKey: true,
-                                              polishModel: "  "))
-    }
+    // 「验证通过才采纳」那两条（adoptsProvider）5.1.0 随服务商选择器一起删掉：只剩一家。
 }

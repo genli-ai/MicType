@@ -221,7 +221,7 @@ final class OpenAIRealtimeTests: XCTestCase {
         XCTAssertTrue(socket.cancelled)
     }
 
-    /// usage **每个 item 独立，要相加**（阿里云是整条会话累计、取最后一条，正好相反）
+    /// usage **每个 item 独立，要相加**（不是整条会话累计、取最后一条）
     func testUsageSecondsAreSummedAcrossItems() {
         let socket = FakeSocket()
         let client = makeClient(socket)
@@ -501,31 +501,29 @@ final class OpenAIRealtimeTests: XCTestCase {
                                                    officialOpenAI: true))
     }
 
-    /// 「这条链路的实时用不了」的记忆键是**服务商 + 主机**：两家互不影响
-    func testUnsupportedMemoryIsPerProvider() {
+    /// 「这条链路的实时用不了」记住之后，这一轮就不再开实时（行为与 4.1.6 的整段上传一致）；
+    /// 重置之后又开得起来。记忆的键是「服务商 + 主机」
+    func testUnsupportedMemoryDisablesStreaming() {
+        CloudStreamingAvailability.resetForTesting()
+        defer { CloudStreamingAvailability.resetForTesting() }
+        let openAI = CloudASRConfig(provider: .openai, apiKey: "sk-x")
+        XCTAssertNotNil(CloudStreamingSession.make(config: openAI,
+                                                   fallback: CloudASREngine(config: openAI),
+                                                   officialOpenAI: true))
         CloudStreamingAvailability.markUnsupported(provider: .openai, host: "api.openai.com",
                                                    reason: "close 4000")
         XCTAssertTrue(CloudStreamingAvailability.isUnsupported(provider: .openai,
                                                                host: "api.openai.com"))
-        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(provider: .alibaba,
-                                                                host: "api.openai.com"))
-        let openAI = CloudASRConfig(provider: .openai, apiKey: "sk-x")
+        XCTAssertFalse(CloudStreamingAvailability.isUnsupported(provider: .openai,
+                                                                host: "other.example.com"))
         XCTAssertNil(CloudStreamingSession.make(config: openAI,
                                                 fallback: CloudASREngine(config: openAI),
                                                 officialOpenAI: true))
-        // 阿里云那一档照样开得起来
-        let alibaba = CloudASRConfig(provider: .alibaba, host: "dashscope-intl.aliyuncs.com",
-                                     apiKey: "sk-x")
-        XCTAssertNotNil(CloudStreamingSession.make(config: alibaba,
-                                                   fallback: CloudASREngine(config: alibaba)))
     }
 
-    /// 两家的实时模型名不一样，界面上那行字读的就是它
-    func testStreamModelPerProvider() {
-        XCTAssertEqual(CloudStreamingSession.streamModel(for: .alibaba),
-                       "qwen3-asr-flash-realtime")
-        XCTAssertEqual(CloudStreamingSession.streamModel(for: .openai), "gpt-live-transcribe")
-        XCTAssertEqual(CloudStreamingSession.streamHost(for:
-            CloudASRConfig(provider: .openai, apiKey: "k")), "api.openai.com")
+    /// 实时模型名与主机：日志里那一行读的就是它们
+    func testStreamModelAndHost() {
+        XCTAssertEqual(CloudStreamingSession.streamModel, "gpt-live-transcribe")
+        XCTAssertEqual(CloudStreamingSession.streamHost, "api.openai.com")
     }
 }

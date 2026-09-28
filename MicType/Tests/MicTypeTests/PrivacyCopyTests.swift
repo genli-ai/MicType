@@ -36,15 +36,10 @@ final class PrivacyCopyTests: XCTestCase {
     func testMoneySentencesLiveInTheKeyPopoverNow() {
         for language in AppLanguage.allCases {
             L10n.shared.language = language
-            // OpenAI 那一档两句都在（Fast 档只对官方接口成立，所以只对 OpenAI 说）
-            let openai = SettingsCopy.keyInfo(hostField: false)
-            XCTAssertTrue(openai.contains(LLMCatalog.fastTierPriceNote), openai)
-            XCTAssertTrue(openai.contains(LLMCatalog.webSearchPriceNote), openai)
-            // 阿里云那一档没有 Fast 档这回事；搜索那句念的是它自己那一版
-            //（我们报不出阿里云的搜索单价，见 LLMCatalog.providerBilledSearchNote）
-            let qwen = SettingsCopy.keyInfo(hostField: true)
-            XCTAssertFalse(qwen.contains(LLMCatalog.fastTierPriceNote), qwen)
-            XCTAssertTrue(qwen.contains(LLMCatalog.providerBilledSearchNote), qwen)
+            // 两句都在（5.1.0 起只有 OpenAI 一档）
+            let info = SettingsCopy.keyInfo
+            XCTAssertTrue(info.contains(LLMCatalog.fastTierPriceNote), info)
+            XCTAssertTrue(info.contains(LLMCatalog.webSearchPriceNote), info)
             // 关于页那三句里一个价钱都不出现了
             for line in PrivacyCopy.allLines {
                 XCTAssertFalse(line.contains(LLMCatalog.fastTierPriceNote), line)
@@ -65,7 +60,7 @@ final class PrivacyCopyTests: XCTestCase {
                           PrivacyCopy.keyAndBilling)
             XCTAssertTrue(PrivacyCopy.keyAndBilling.contains(LLMCatalog.billingNote),
                           PrivacyCopy.keyAndBilling)
-            XCTAssertTrue(SettingsCopy.keyInfo(hostField: false).contains(LLMCatalog.keyStorageNote))
+            XCTAssertTrue(SettingsCopy.keyInfo.contains(LLMCatalog.keyStorageNote))
         }
     }
 
@@ -160,7 +155,9 @@ final class PrivacyCopyTests: XCTestCase {
         XCTAssertTrue(PrivacyCopy.keyAndBilling.contains("pay the provider directly"))
 
         L10n.shared.language = .zh
-        XCTAssertTrue(PrivacyCopy.audioGoesToProvider.contains("你选的服务商"))
+        // 5.1.0 起只有一家：点名说 OpenAI，不再说"你选的服务商"
+        XCTAssertTrue(PrivacyCopy.audioGoesToProvider.contains("OpenAI"))
+        XCTAssertFalse(PrivacyCopy.audioGoesToProvider.contains("你选的服务商"))
         XCTAssertTrue(PrivacyCopy.audioGoesToProvider.contains("收不回来"))
         XCTAssertFalse(PrivacyCopy.audioGoesToProvider.contains("本机"), "没有本机识别那一档了")
         XCTAssertTrue(PrivacyCopy.onlyTextLeaves.contains("选中"))

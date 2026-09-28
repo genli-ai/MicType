@@ -179,9 +179,10 @@ enum OnboardingCopy {
     }
 
     /// 权限页两条权限各自的用途
+    /// 5.1.0 起只有 OpenAI 一家：点名说它，不再说"你选的服务商"
     static var microphonePurpose: String {
-        tr("录下你说的话，边说边传给你选的服务商识别。",
-           "Records your voice and streams it to the provider you picked.")
+        tr("录下你说的话，边说边传给 OpenAI 识别。",
+           "Records your voice and streams it to OpenAI for recognition.")
     }
 
     static var accessibilityPurpose: String {
@@ -193,11 +194,8 @@ enum OnboardingCopy {
            "Tick MicType in System Settings; if it is ticked but still red, remove it from the list and add it back.")
     }
 
-    /// 第三屏：选择器换了一档，但还没验证通过 —— 生效的仍然是原来那一档
-    static func providerNotAdoptedYet(current: String) -> String {
-        tr("验证通过才会换过去，在此之前仍用 \(current)",
-           "MicType switches over only once a key is verified, and keeps using \(current)")
-    }
+    // providerNotAdoptedYet（「验证通过才会换过去，在此之前仍用 X」）5.1.0 删掉：
+    // 第三屏只剩 OpenAI 一家，没有"看着的那一档还没生效"这回事。
 
     /// 第四屏的两步。**编号写出来**（5.0.1）：这一屏要他真的动手做两件事，
     /// 而第二件（选中刚打出来的字、按住说指令）是这个产品最不直觉、也最值钱的一步——
@@ -228,8 +226,8 @@ enum OnboardingCopy {
     /// 4.3.4 之前 ⌘V 在自家窗口里是坏的（没有主菜单，见 AppMenu），用户只能右键粘贴，
     /// 于是"粘不进去"成了首配最常卡住的一步
     static var pasteKeyHere: String {
-        tr("从服务商控制台复制 Key，⌘V 粘贴到这里",
-           "Copy the key from your provider's console and paste it here with ⌘V")
+        tr("从 OpenAI 控制台复制 Key，⌘V 粘贴到这里",
+           "Copy the key from the OpenAI console and paste it here with ⌘V")
     }
 
     // MARK: 第五屏「它在哪」
@@ -272,20 +270,21 @@ enum OnboardingCopy {
     static var paragraphs: [String] {
         [hotkeyLine, dictateCardDetail, commandCardNoSelection, commandCardSelection,
          permissionsIntro, microphonePurpose, accessibilityPurpose, permissionsStuckHint,
-         providerNotAdoptedYet(current: "OpenAI"), pasteKeyHere,
+         pasteKeyHere,
          tryItStepDictate(hotkey: "⌥"), tryItStepCommand(hotkey: "⌥"), keyMissingForTryIt,
          menuBarHome, launchAtLoginWhy]
     }
 
-    /// 第三屏的标题。这一屏就是设置页那一页的首配版本，名字必须和那里一致。
-    /// 5.0.0 起它**不再写「可选」**：识别、润色、指令三件事全在云端，没有 Key 一件都做不了。
+    /// 第三屏的标题。5.0.0 起它**不再写「可选」**：识别、润色、指令三件事全在云端，
+    /// 没有 Key 一件都做不了。5.1.0 从「选你的 AI」改成「连接 OpenAI」：只剩一家，
+    /// 这一屏要他做的不是"选"，是把那一家连上（用户 2026-09-28 拍板）。
     static var usageHeadline: String {
-        tr("选你的 AI", "Choose your AI")
+        tr("连接 OpenAI", "Connect OpenAI")
     }
 
     // usageExplanation（「听写、润色、语音指令都用这一把 Key…」）5.0.1 删掉：
-    // 那一屏开头再摆一整段说明，用户要往下翻才看得见真正要做的事（选一家、贴一把 Key），
-    // 而两张卡片和那三步申请说明本来就把这件事说全了。费用与隐私在「关于 → 隐私」。
+    // 那一屏开头再摆一整段说明，用户要往下翻才看得见真正要做的事（贴一把 Key），
+    // 而那三步申请说明本来就把这件事说全了。费用与隐私在「关于 → 隐私」。
     //
     // doneAIStatus（最后一屏那句 AI 收尾）同样删掉：最后一屏只回答"它在哪"。
     // 没配 Key 的人在 ③ 已经被那条「先跳过」明确告知过代价了。
@@ -986,68 +985,30 @@ private struct PermissionRow: View {
 
 // MARK: - 3. 怎么用（可跳过）
 
-/// 一屏走完首配的那**一个**决定：只用本地 / 本地 + AI →（选了 AI）选一家 → 粘 Key → 看一眼模型。
+/// 一屏走完首配的那**一个**动作：照着三步拿到 OpenAI 的 Key → 粘进来 → 当场验证。
 ///
-/// 为什么整屏可跳过、而且跳过不留任何警告：轻点听写压根不需要 Key，把这一屏做成关卡
-/// 就是骗人。反过来，配 AI 的人也不该被丢进设置页里自己找——所以这一屏只摆首配真正要的
-/// 那几个控件（自定义规则、联网搜索、优先处理都留在设置页上）。
+/// 5.1.0 之前这一屏上半是两张服务商对比卡片（阿里云 / OpenAI，价格 / 优势 / 怎么付钱），
+/// 用户要先做一个"选哪家"的决定；阿里云整档删掉之后（用户 2026-09-28 拍板，与 iOS L36 一致）
+/// 那个决定没有了，这一屏只剩标题「连接 OpenAI」+ 申请步骤 + Key 框。
 ///
-/// **控件与「云端 AI」页逐个共用**（ProviderPickerField / KeyEntryView / ModelPickerField /
-/// CloudRecognitionFields）：4.0.1 这里是各抄一份，于是阿里云的「识别也用云端」开关只长在
-/// 设置页上——在引导里选了阿里云的人根本不知道有这一档，也没人告诉他它要花钱。
+/// **控件与设置正页共用**（CloudSetupCore / KeyEntryView）：Key 框、那颗 ⓘ、状态行只写一处。
 private struct HowYouUsePage: View {
     @ObservedObject var model: OnboardingModel
     @ObservedObject private var l10n = L10n.shared
-    /// 阿里云那一档的接入地址（可选；留空 = MicType 自己试出来）。
-    /// 这里盯着它：地址一改，这一档发往哪台主机就变了，"能不能连得上"得跟着重算。
-    @AppStorage(SettingsKeys.qwenAPIHost) private var qwenAPIHost = ""
-    @State private var keyStatus: KeyVerifier.Status = .idle
-    /// 选择器上**正在看**的那一档，不是生效的那一档。
-    ///
-    /// 点着看看的人很多，而原来那一档可能正配着一把好 Key——点一下就把生效服务商换掉，
-    /// 表现是他下次按键直接失败，还找不到原因（判据见 AISetup.adoptsProvider）。
-    @State private var pendingProvider: LLMProvider = Settings.shared.llmProvider
-    /// 钥匙串里有没有**正在看**的这一档的 Key。存着而不是在 body 里读：
-    /// SecItemCopyMatching 坐在每帧都跑的路径上是明令禁止的（Settings.swift 那条规矩）。
-    @State private var selectedHasStoredKey = KeychainHelper
-        .loadAPIKey(account: Settings.shared.llmProvider.keychainAccount) != nil
-    /// 这一刻**真正生效**的那一档。Settings.llmProvider 不是 @Published，采纳之后这一屏不会
-    /// 自己重算，而选择器旁边那枚「正在使用 ✓」正靠它——所以存一份，在同样那几个事件上刷新。
-    @State private var inUseProvider: LLMProvider = Settings.shared.llmProvider
-
-    private var selected: LLMProvider { pendingProvider }
 
     var body: some View {
-        // ScrollView 是保险绳：验证失败那行可能三行，阿里云还多一个接入地址框——
-        // 挤爆时宁可能滚，也不要把底部的控件裁掉。
+        // ScrollView 是保险绳：验证失败那行可能三行——挤爆时宁可能滚，也不要把底部的控件裁掉。
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 Text(OnboardingCopy.usageHeadline)
                     .font(.system(size: 16, weight: .semibold))
-                // 开头那整段说明 5.0.1 删掉：它把真正要做的事（选一家、贴一把 Key）压到了
-                // 第二屏之外，而两张卡片和那三步申请说明本来就把这件事说全了
-
-                // 上半：两张并排的卡片（点一张选中）。每张三行：一小时多少钱 / 一句优势 /
-                // 怎么付钱——这一刻用户对这两个名字一无所知，一个只有两个词的分段选择器
-                // 给不了他任何做这个选择的依据（设置页那一处不同：他早就选过了）。
-                ProviderChoiceCards(selection: providerBinding, inUse: inUseProvider)
-
-                // 下半：选中那一家的申请步骤 → Key 框（+ 阿里云的接入地址框）→ 状态行。
-                // 与设置正页**同一个视图**（CloudSetupCore），Key 框、那颗 ⓘ、接入地址
-                // 全都只写一处。两处真正不同的只有语义：看着的那一档要验证通过才采纳。
+                // 申请步骤 → Key 框 → 状态行。与设置正页**同一个视图**（CloudSetupCore）
                 CloudSetupCore(style: .onboarding,
-                               selected: selected,
-                               inUse: inUseProvider,
-                               provider: providerBinding,
-                               showsNotSetUpHint: false,
-                               onKeyStatus: { status in
-                                   keyStatus = status
-                                   adoptIfUsable(selected)
-                                   refreshStoredKey()
+                               onKeyStatus: { _ in
                                    model.refreshEngineReady()
                                    model.refreshAIReady()
                                }) {
-                    providerNotices
+                    EmptyView()
                 }
                 Spacer(minLength: 0)
             }
@@ -1055,61 +1016,13 @@ private struct HowYouUsePage: View {
             .measuresOnboardingPage(.howYouUse)
         }
         .onAppear {
-            // 回头再走一遍引导的人：选择器要停在他**正在用**的那一档上
-            pendingProvider = Settings.shared.llmProvider
-            refreshStoredKey()
-            model.refreshEngineReady()
-            model.refreshAIReady()
-        }
-        // 存着的接入地址被丢掉 / 被导入改掉，阿里云那一档的地址就变了，能不能连得上跟着变
-        .onChange(of: qwenAPIHost) { _, _ in
             model.refreshEngineReady()
             model.refreshAIReady()
         }
     }
 
-    /// 服务商选择器下面的边界状态：一行结论，动作就在下面那个 Key 输入框里，所以不另给按钮。
-    @ViewBuilder
-    private var providerNotices: some View {
-        if Settings.shared.llmProvider != selected, !selectedHasStoredKey {
-            Caption(OnboardingCopy.providerNotAdoptedYet(current: Settings.shared.llmProvider.segmentName))
-        }
-    }
-
-    /// 选择器上换一档：只换"正在看"的那一档，真正生效要等 adoptIfUsable 认可。
-    private var providerBinding: Binding<LLMProvider> {
-        Binding(get: { pendingProvider },
-                set: { next in
-                    guard next != pendingProvider else { return }
-                    pendingProvider = next
-                    // 上一档的验证结论对这一档毫无意义（KeyEntryView 自己也会重载钥匙串里的 Key）
-                    keyStatus = .idle
-                    adoptIfUsable(next)
-                    refreshStoredKey()
-                    model.refreshEngineReady()
-                    model.refreshAIReady()
-                })
-    }
-
-    // MARK: 状态读写
-
-    /// 重读一次"钥匙串里有没有正在看的这一档的 Key"。只在事件上调，绝不在 body 里调。
-    private func refreshStoredKey() {
-        selectedHasStoredKey = KeychainHelper.loadAPIKey(account: selected.keychainAccount) != nil
-        inUseProvider = Settings.shared.llmProvider
-    }
-
-    /// 只有"这一档真的能用"才把它写成生效的服务商（判据是纯函数 AISetup.adoptsProvider，
-    /// 设置页那一处走的是同一条）。换过去之后识别也跟着换家——那是 5.0.0 的推导，不是一条设置。
-    private func adoptIfUsable(_ provider: LLMProvider) {
-        let hasKey = KeychainHelper.loadAPIKey(account: provider.keychainAccount) != nil
-        guard AISetup.adoptsProvider(current: Settings.shared.llmProvider, next: provider,
-                                     requiresKey: provider.requiresAPIKey, hasKey: hasKey,
-                                     polishModel: LLMCatalog.polishDefault(for: provider)) else { return }
-        Settings.shared.llmProvider = provider
-        inUseProvider = provider
-        Log.info("Onboarding adopted provider=\(provider.rawValue) (recognition follows)")
-    }
+    // 服务商选择器那一套（providerNotices / providerBinding / refreshStoredKey / adoptIfUsable）
+    // 5.1.0 删掉：只剩 OpenAI 一家，没有"看着的那一档"与"生效的那一档"之分。
 }
 
 // MARK: - 4. 试一下 + 收尾

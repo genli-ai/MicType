@@ -25,9 +25,12 @@ enum PrivacyCopy {
     ///
     /// 名字仍然叫 audioStaysLocal 会自相矛盾，所以改名 audioGoesToProvider；
     /// 引导第一屏与关于页引用的都是这一个出处。
+    ///
+    /// 5.1.0 起只有 OpenAI 一家（用户 2026-09-28 拍板）：点名说它，不再说"你选的服务商"。
+    /// 同一版起每句话松手后**整段再发送一次**（混合转写，整段更准）——音频出门两次，必须照实写。
     static var audioGoesToProvider: String {
-        tr("录音与识别都在你选的服务商那边完成：你说话的同时音频就在往上传，按 Esc 会立刻停止，但已经传出去的部分收不回来。",
-           "Recording and recognition both happen at the provider you picked: audio goes up while you are still speaking. Esc stops it at once, but whatever already left cannot be taken back.")
+        tr("录音与识别都在 OpenAI 那边完成：你说话的同时音频就在往上传，松手后整段再发送一次以获得更准的结果。按 Esc 会立刻停止，但已经传出去的部分收不回来。",
+           "Recording and recognition both happen at OpenAI: audio goes up while you are still speaking, and the whole take is sent once more when you let go for a more accurate result. Esc stops it at once, but whatever already left cannot be taken back.")
     }
 
     /// 出门的是哪些文字。
