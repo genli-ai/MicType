@@ -53,6 +53,28 @@ final class UserMessageCopyTests: XCTestCase {
         }
     }
 
+    /// 豁免长度的那几句（5.4.0 每周一句）：长度不量，其余规矩照量
+    func testExemptLinesFollowTheOtherRules() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            for line in UserMessage.exemptFromLength {
+                XCTAssertFalse(line.isEmpty)
+                XCTAssertFalse(line.contains("\n"), line)
+                for banned in ["请", "抱歉", "——", "！", "!", "please", "Please", "sorry", "Sorry"] {
+                    XCTAssertFalse(line.contains(banned), "「\(banned)」出现在：\(line)")
+                }
+                if language == .en {
+                    XCTAssertFalse(line.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value)
+                        || (0x3000...0x303F).contains($0.value) || (0xFF00...0xFFEF).contains($0.value) }, line)
+                }
+            }
+        }
+        L10n.shared.language = .zh
+        let zh = UserMessage.exemptFromLength
+        L10n.shared.language = .en
+        XCTAssertNotEqual(zh, UserMessage.exemptFromLength)
+    }
+
     func testBothLanguagesAreWritten() {
         L10n.shared.language = .zh
         let zh = UserMessage.all

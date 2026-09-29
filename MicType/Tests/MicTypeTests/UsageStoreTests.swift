@@ -121,7 +121,7 @@ final class UsageStoreTests: XCTestCase {
 
     // MARK: - 落盘
 
-    /// 一行一句、能读回来；坏行跳过；只读最近 8 天
+    /// 一行一句、能读回来；坏行跳过；只读最近 15 天
     func testRoundTripsThroughTheFile() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("UsageStoreTests-\(UUID().uuidString)", isDirectory: true)
@@ -153,6 +153,60 @@ final class UsageStoreTests: XCTestCase {
                                                               command: false)))
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
         XCTAssertEqual(Set(json.keys), ["date", "seconds", "chars", "command"])
+    }
+
+    // MARK: - 5.4.0：换回原文、上周
+
+    /// 「换回原文」那一行只进 reverts，不进分钟 / 字数 / 句数 / 费用
+    func testRevertsAreCountedApart() {
+        let now = date("2026-09-30T15:00:00Z")
+        let week = UsageStore.summarize([
+            entry("2026-09-28T09:00:00Z", seconds: 30, chars: 100),
+            UsageEntry(date: date("2026-09-28T09:00:05Z"), seconds: 0, chars: 0, command: false, revert: true),
+            UsageEntry(date: date("2026-09-20T09:00:05Z"), seconds: 0, chars: 0, command: false, revert: true),
+        ], now: now, timeZone: utc)
+        XCTAssertEqual(week.sentences, 1)
+        XCTAssertEqual(week.chars, 100)
+        XCTAssertEqual(week.reverts, 1, "上周那次不算")
+        XCTAssertEqual(week.costUSD, UsageStore.estimatedCostUSD(seconds: 30, sentences: 1), accuracy: 0.000001)
+    }
+
+    /// 旧账本（没有 revert 字段）按 false 读；revert 行写出来带 revert 键、读得回来
+    func testRevertFieldIsOptionalOnDisk() throws {
+        let old = #"{"chars":2,"command":false,"date":"2026-09-28T09:00:00Z","seconds":1}"#
+        XCTAssertEqual(UsageStore.decode(old)?.revert, false)
+        let line = try XCTUnwrap(UsageStore.encode(UsageEntry(date: Date(), seconds: 0, chars: 0,
+                                                              command: false, revert: true)))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+        XCTAssertEqual(json["revert"] as? Bool, true)
+        XCTAssertEqual(UsageStore.decode(line)?.revert, true)
+    }
+
+    /// 上周 = 上周一 00:00 到本周一 00:00（不含）
+    func testPreviousWeekSummary() {
+        let now = date("2026-10-04T23:00:00Z")   // 周日
+        let entries = [
+            entry("2026-09-20T23:59:59Z", seconds: 999, chars: 999),   // 上上周日
+            entry("2026-09-21T00:00:00Z", seconds: 60, chars: 100),    // 上周一零点
+            entry("2026-09-27T23:59:59Z", seconds: 120, chars: 200),   // 上周日
+            entry("2026-09-28T00:00:00Z", seconds: 5, chars: 5),       // 本周一
+        ]
+        let previous = UsageStore.summarize(entries, now: now, week: .previous, timeZone: utc)
+        XCTAssertEqual(previous.sentences, 2)
+        XCTAssertEqual(previous.chars, 300)
+        XCTAssertEqual(previous.seconds, 180, accuracy: 0.001)
+        // 周日晚上启动也读得到上周一：启动只装 15 天
+        XCTAssertLessThanOrEqual(UsageStore.loadCutoff(now: now), date("2026-09-21T00:00:00Z"))
+    }
+
+    func testWritingPreferencesLineMentionsRevertsOnlyWhenAny() {
+        L10n.shared.language = .zh
+        XCTAssertEqual(WritingPreferencesSummary.line(vocabulary: "a", rules: "", reverts: 0), "词汇表 1 条 · 规则 0 条")
+        XCTAssertEqual(WritingPreferencesSummary.line(vocabulary: "a", rules: "", reverts: 3),
+                       "词汇表 1 条 · 规则 0 条 · 本周换回原文 3 次")
+        L10n.shared.language = .en
+        XCTAssertEqual(WritingPreferencesSummary.line(vocabulary: "a", rules: "", reverts: 3),
+                       "1 term · 0 rules · reverted 3× this week")
     }
 
     // MARK: - 状态卡左半边

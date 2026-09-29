@@ -32,6 +32,7 @@ import Combine
 struct MainSettingsPage: View {
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var usage = UsageStore.shared
+    @ObservedObject private var suggestions = VocabularySuggestionStore.shared
     @AppStorage(SettingsKeys.openaiBaseURL) private var baseURL = "https://api.openai.com/v1"
     @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
     @AppStorage(SettingsKeys.customPolishRules) private var customRules = ""
@@ -69,6 +70,12 @@ struct MainSettingsPage: View {
                         MTCard { permissionsBanner }
                     }
                     SettingsStatusCard(keyTail: keyTail, week: usage.thisWeek())
+                    // 词汇提议（5.4.0）：一次只一条、计数最高的那条；没有就一个像素都不占
+                    if let pair = suggestions.pending(vocabulary: vocabulary) {
+                        VocabularySuggestionRow(pair: pair,
+                                                onAccept: { suggestions.accept(pair) },
+                                                onIgnore: { suggestions.ignore(pair) })
+                    }
                     rowsCard
                 }
                 .padding(20)
@@ -147,7 +154,8 @@ struct MainSettingsPage: View {
         } label: {
             SettingsFieldRow(label: SettingsCopy.vocabularyPageTitle) {
                 HStack {
-                    Text(WritingPreferencesSummary.line(vocabulary: vocabulary, rules: customRules))
+                    Text(WritingPreferencesSummary.line(vocabulary: vocabulary, rules: customRules,
+                                                        reverts: usage.thisWeek().reverts))
                         .lineLimit(1)
                     Spacer(minLength: 8)
                     chevron
@@ -388,6 +396,41 @@ struct SettingsStatusCard: View {
     }
 }
 
+// MARK: - 词汇提议那一行（5.4.0）
+
+/// 状态卡与下面三行之间的一张小卡：左边一道 3 pt 品牌渐变竖线 + 一句问话 + 两颗按钮。
+/// 渐变只给"正在发生 / 一次性"的东西（Theme 的规矩）——这一条正是一次性的：点了就走。
+struct VocabularySuggestionRow: View {
+    let pair: (wrong: String, right: String)
+    let onAccept: () -> Void
+    let onIgnore: () -> Void
+    @Environment(\.colorScheme) private var scheme
+
+    /// 问话（纯函数，单测与快照都拿它）。只点名正写：错写是识别的错，用户没必要再读一遍
+    static func question(right: String) -> String {
+        tr("把「\(right)」加进词汇表？", "Add \u{201C}\(right)\u{201D} to your vocabulary?")
+    }
+
+    var body: some View {
+        MTCard {
+            HStack(alignment: .center, spacing: 12) {
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(Theme.accentGradientVertical)
+                    .frame(width: 3, height: 34)
+                    .accessibilityHidden(true)
+                Text(Self.question(right: pair.right))
+                    .font(.system(size: 13))
+                    .foregroundColor(Theme.palette(scheme).text)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                MTButton(title: tr("忽略", "Ignore"), style: .quiet, adaptive: true, action: onIgnore)
+                MTButton(title: tr("加入", "Add"), style: .primary, adaptive: true, action: onAccept)
+            }
+        }
+    }
+}
+
 // MARK: - 「写作偏好」那一行的值（纯函数）
 
 enum WritingPreferencesSummary {
@@ -406,13 +449,17 @@ enum WritingPreferencesSummary {
             .count
     }
 
-    static func line(vocabulary: String, rules: String) -> String {
+    /// - reverts: 本周点了几次「换回原文」（5.4.0）。≥ 1 才追加那半句：
+    ///   它是"润色这周有几次改得不合你意"的事实，0 次的时候说出来就是噪音
+    static func line(vocabulary: String, rules: String, reverts: Int = 0) -> String {
         let terms = vocabularyCount(vocabulary)
         let count = ruleCount(rules)
         // 英文要分单复数：「1 rules」在一张写着"高级"的卡片上是最扎眼的那种错
         let termWord = terms == 1 ? "term" : "terms"
         let ruleWord = count == 1 ? "rule" : "rules"
-        return tr("词汇表 \(terms) 条 · 规则 \(count) 条", "\(terms) \(termWord) · \(count) \(ruleWord)")
+        let base = tr("词汇表 \(terms) 条 · 规则 \(count) 条", "\(terms) \(termWord) · \(count) \(ruleWord)")
+        guard reverts >= 1 else { return base }
+        return base + tr(" · 本周换回原文 \(reverts) 次", " · reverted \(reverts)× this week")
     }
 }
 

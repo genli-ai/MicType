@@ -151,6 +151,21 @@ enum UserMessage {
     static var providerChangedPasteAgain: String { tr("再粘一次这把 Key", "Paste the key again.") }
     static var keyRemoved: String { tr("Key 已从钥匙串删除", "Key removed from Keychain.") }
 
+    // MARK: 每周一句（5.4.0，豁免长度规矩）
+
+    /// 每周第一次启动闪的那一句：「上周说了 43 分钟，打出 6,200 字」。
+    /// **不在 `all` 里、豁免 ≤ 16 字 / 8 词**（任务书 5.4.0 点名豁免，UserMessageCopyTests 另量它）：
+    /// 它不是一句"不顺利"，而是两个数字——拆短了就只剩一个数。数字的写法与设置状态卡同一处出处（UsageFormat）
+    static func weeklyRecap(_ week: UsageWeek) -> String {
+        let minutes = UsageFormat.minutes(week), chars = UsageFormat.chars(week)
+        return tr("上周说了 \(minutes)，打出 \(chars)", "Last week: \(minutes) spoken, \(chars) typed")
+    }
+
+    /// 豁免长度规矩的句子（带参数的喂代表性的参数）。其余规矩（不写请 / 抱歉 / 感叹号、双语都写）照样量
+    static var exemptFromLength: [String] {
+        [weeklyRecap(UsageWeek(seconds: 43 * 60, chars: 6_200, sentences: 120, costUSD: 0.5))]
+    }
+
     // MARK: 量表（UserMessageCopyTests 逐条量）
 
     /// 表里每一句（带参数的那几句喂代表性的参数）。**新加一句就加进这里**，否则量不到它

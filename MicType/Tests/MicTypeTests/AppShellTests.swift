@@ -168,6 +168,57 @@ final class AppShellTests: XCTestCase {
         XCTAssertEqual(LaunchNotice.decide(updatedTo: "  ", onboardingShowing: false), .running)
     }
 
+    /// 5.4.0 每周一句：每周第一次启动、上周有数据才报；与升级撞车时只闪升级那句（周报不记已报，下次再闪）
+    func testWeeklyNoticeIsDueOncePerWeekWithData() {
+        let utc = TimeZone(identifier: "UTC")!
+        let f = ISO8601DateFormatter()
+        f.timeZone = utc
+        let now = f.date(from: "2026-10-05T09:00:00Z")!   // 周一
+        let lastWeek = [UsageEntry(date: f.date(from: "2026-10-01T10:00:00Z")!, seconds: 120, chars: 300,
+                                   command: false)]
+        XCTAssertEqual(LaunchNotice.weekKey(for: now, timeZone: utc), "2026-10-05")
+        XCTAssertEqual(LaunchNotice.weekKey(for: f.date(from: "2026-10-11T23:00:00Z")!, timeZone: utc), "2026-10-05")
+
+        let due = LaunchNotice.weeklyDue(now: now, shownForWeek: "2026-09-28", entries: lastWeek, timeZone: utc)
+        XCTAssertEqual(due?.chars, 300)
+        XCTAssertNil(LaunchNotice.weeklyDue(now: now, shownForWeek: "2026-10-05", entries: lastWeek, timeZone: utc),
+                     "这周报过了")
+        XCTAssertNil(LaunchNotice.weeklyDue(now: now, shownForWeek: nil, entries: [], timeZone: utc),
+                     "上周没数据")
+        let short = [UsageEntry(date: f.date(from: "2026-10-01T10:00:00Z")!, seconds: 59, chars: 40, command: false)]
+        XCTAssertNil(LaunchNotice.weeklyDue(now: now, shownForWeek: nil, entries: short, timeZone: utc),
+                     "上周不到 60 秒不报")
+        let exactly = [UsageEntry(date: f.date(from: "2026-10-01T10:00:00Z")!, seconds: 60, chars: 40, command: false)]
+        XCTAssertNotNil(LaunchNotice.weeklyDue(now: now, shownForWeek: nil, entries: exactly, timeZone: utc))
+
+        let week = due!
+        XCTAssertEqual(LaunchNotice.decide(updatedTo: nil, onboardingShowing: false, weekly: week), .weekly(week))
+        XCTAssertEqual(LaunchNotice.decide(updatedTo: "5.4.0", onboardingShowing: false, weekly: week),
+                       .updated(version: "5.4.0"))
+        XCTAssertEqual(LaunchNotice.decide(updatedTo: nil, onboardingShowing: true, weekly: week), .none)
+        XCTAssertEqual(LaunchNotice.decide(updatedTo: nil, onboardingShowing: false, weekly: .empty), .running)
+    }
+
+    func testWeeklyNoticeCopy() {
+        let week = UsageWeek(seconds: 43 * 60, chars: 6_200, sentences: 120, costUSD: 0.5)
+        L10n.shared.language = .zh
+        XCTAssertEqual(LaunchNotice.copy(for: .weekly(week)), "上周说了 43 分钟，打出 6,200 字")
+        L10n.shared.language = .en
+        XCTAssertEqual(LaunchNotice.copy(for: .weekly(week)), "Last week: 43 min spoken, 6,200 chars typed")
+    }
+
+    /// 菜单栏红点：错误挂着或没有 Key 就亮，两样都不在才熄
+    func testMenuBarAlertDot() {
+        XCTAssertFalse(MenuBarIcon.showsAlert(errorShowing: false, hasKey: true))
+        XCTAssertTrue(MenuBarIcon.showsAlert(errorShowing: true, hasKey: true))
+        XCTAssertTrue(MenuBarIcon.showsAlert(errorShowing: false, hasKey: false))
+        let image = MenuBarIcon.idleAlertImage()
+        XCTAssertFalse(image.isTemplate, "模板图会把红点也染成黑的")
+        XCTAssertEqual(image.size, NSSize(width: MenuBarIcon.menuBarSize, height: MenuBarIcon.menuBarSize))
+        let dot = MenuBarIcon.alertDotRect(in: NSRect(x: 0, y: 0, width: 18, height: 18))
+        XCTAssertTrue(NSRect(x: 0, y: 0, width: 18, height: 18).contains(dot), "红点不许画出画布")
+    }
+
     /// 闪的内容：不闪那一档没有文字；另外两档都要点名**按哪颗键**
     ///（这句提示的全部用意就是"它在哪 + 下一步按什么"），升级那一档还要带版本号
     func testLaunchNoticeCopySaysWhereItIsAndWhatToPress() {

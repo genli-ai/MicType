@@ -177,6 +177,8 @@ final class DictationController {
         let final: String
         let bundleID: String
         let at: Date
+        /// 这一句给词汇提议投的票（5.4.0）。换回原文时撤回：润色改的那几处用户不认
+        var suggestionPairs: [(wrong: String, right: String)] = []
     }
     /// 菜单要问「现在能不能换回原文」，答案分三档：没得撤 / 有但用户切走了 / 可以撤
     struct RevertOffer {
@@ -894,6 +896,10 @@ final class DictationController {
                         self.phase = .idle
                         switch outcome {
                         case .pasted:
+                            // 本周换回原文几次（5.4.0，设置「写作偏好」那一行的事实）。只记一个"次"
+                            UsageStore.shared.recordRevert()
+                            // 这一句给词汇提议投的票撤回（用户不认润色的改法）
+                            VocabularySuggestionStore.shared.retract(candidate.suggestionPairs)
                             self.overlay.flashSuccess(tr("已换回识别原文", "Raw transcript restored"))
                             Sounds.playSuccess()
                         case .clipboardOnly:
@@ -1376,8 +1382,11 @@ final class DictationController {
                                  generation: generation)
                 return
             }
+            // 词汇提议（5.4.0）：润色替识别改了哪些同音词 / 拼写，只数词对、不记句子；
+            // 到 3 次才在设置状态卡下提议一次，绝不自己往词汇表里写（铁律 P18）
+            let suggestionPairs = VocabularySuggestionStore.shared.observe(raw: rawText, polished: polishedText)
             // 唯一开放「换回识别原文」的路径：纯听写 + 润色真的动了字
-            self.deliver(raw: rawText, final: polishedText,
+            self.deliver(raw: rawText, final: polishedText, suggestionPairs: suggestionPairs,
                          note: light ? tr("已输入（轻清理）", "Inserted (light cleanup)")
                                      : tr("已输入", "Inserted"),
                          coldStart: isColdStart,
@@ -1699,7 +1708,9 @@ final class DictationController {
         }
     }
 
-    private func deliver(raw: String, final text: String, note: String, warning: Bool = false,
+    private func deliver(raw: String, final text: String,
+                         suggestionPairs: [(wrong: String, right: String)] = [],
+                         note: String, warning: Bool = false,
                          coldStart: Bool = false, revertible: Bool = false) {
         // 只做标点归一：词汇表硬替换已经在各产出点做过了（识别原文 / 润色结果 / 各技能结果），
         // 这里再做一趟等于对同一串文本替换两次，「萍果=苹果」+「苹果=Apple」会被串成链
@@ -1836,7 +1847,8 @@ final class DictationController {
             // 一个字没改的话换回原文也是原地踏步
             if outcome == .pasted, revertible, finalText != raw, !target.isEmpty {
                 self.revertCandidate = RevertCandidate(raw: raw, final: finalText,
-                                                       bundleID: target, at: Date())
+                                                       bundleID: target, at: Date(),
+                                                       suggestionPairs: suggestionPairs)
                 Log.info("Revert available for \(Int(Self.revertWindowSeconds))s target=\(target)")
             }
             switch outcome {

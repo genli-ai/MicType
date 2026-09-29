@@ -21,19 +21,50 @@ enum LaunchNotice {
         case running
         /// 刚升完级：版本号 + 同一句操作提示
         case updated(version: String)
+        /// 5.4.0：每周第一次启动、上周有数据 →「上周说了 43 分钟，打出 6,200 字」
+        case weekly(UsageWeek)
     }
 
     /// - updatedTo: 上一次自更新真的装好了的版本号（没升级就是 nil）
     /// - onboardingShowing: 这次启动把引导窗口弹出来了。
     ///   引导自己就是一份完整的说明书，底下再飘一句提示只会抢它的戏——
     ///   那一句改由引导**关掉**的时候补（见 OnboardingWindowController.windowWillClose）。
-    static func decide(updatedTo: String?, onboardingShowing: Bool) -> Kind {
+    /// - weekly: 这次启动该报的上周合计（见 weeklyDue；nil = 这周报过了 / 上周没数据）。
+    ///   与「已更新到 X」撞在同一次启动时**只闪更新那句**：同一时刻闪两条只会互相盖掉，
+    ///   而周报不标记为已报，下一次启动再闪（任务书 5.4.0）。
+    ///   它顶替平常那句「已在运行 · 轻点…」：一个每周都在用的人早就知道按哪颗键了。
+    static func decide(updatedTo: String?, onboardingShowing: Bool, weekly: UsageWeek? = nil) -> Kind {
         guard !onboardingShowing else { return .none }
         if let version = updatedTo?.trimmingCharacters(in: .whitespacesAndNewlines),
            !version.isEmpty {
             return .updated(version: version)
         }
+        if let weekly = weekly, !weekly.isEmpty { return .weekly(weekly) }
         return .running
+    }
+
+    // MARK: 每周一句（纯函数）
+
+    /// 某一刻所在那一周的键：本周一的日期（yyyy-MM-dd，本地时区，ISO 周——与 UsageStore 同一把尺子）
+    static func weekKey(for date: Date, timeZone: TimeZone = .current) -> String {
+        let start = UsageStore.weekStart(for: date, timeZone: timeZone)
+        var calendar = Calendar(identifier: .iso8601)
+        calendar.timeZone = timeZone
+        let c = calendar.dateComponents([.year, .month, .day], from: start)
+        return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+    }
+
+    /// 上周至少说了这么多秒才报（主会话 2026-09-29 定）：说了几句、不到一分钟的一周，
+    /// 报出来是「上周说了 1 分钟，打出 40 字」——那不是值得闪一次的消息
+    static let weeklyMinimumSeconds: Double = 60
+
+    /// 这次启动该不该报上周：这周还没报过（shownForWeek ≠ 本周一）且上周说了 ≥ 60 秒 → 上周合计；否则 nil
+    /// （不够 60 秒时调用方什么都不闪、也不记已报——只有真闪出来才记，见 flash）
+    static func weeklyDue(now: Date, shownForWeek: String?, entries: [UsageEntry],
+                          timeZone: TimeZone = .current) -> UsageWeek? {
+        guard shownForWeek != weekKey(for: now, timeZone: timeZone) else { return nil }
+        let previous = UsageStore.summarize(entries, now: now, week: .previous, timeZone: timeZone)
+        return previous.seconds >= weeklyMinimumSeconds ? previous : nil
     }
 
     /// 闪的内容。nil = 不闪。
@@ -51,6 +82,8 @@ enum LaunchNotice {
         case .updated(let version):
             // 升级那半句与「关于」页、与自更新提示同一处出处，不另写一份
             return UpdateChecker.installedNoticeCopy(version: version) + " · " + tapHint
+        case .weekly(let week):
+            return UserMessage.weeklyRecap(week)
         }
     }
 
@@ -67,6 +100,7 @@ enum LaunchNotice {
         case .none: return "none"
         case .running: return "running"
         case .updated: return "updated"
+        case .weekly: return "weekly"
         }
     }
 
@@ -82,6 +116,10 @@ enum LaunchNotice {
                 return
             }
             Log.info("Launch notice shown kind=\(logName(for: kind))")
+            // 周报**真闪出来了**才记这周已报：被正在进行的听写挡掉的那次，下次启动再报
+            if case .weekly = kind {
+                UserDefaults.standard.set(weekKey(for: Date()), forKey: SettingsKeys.weeklyNoticeShownForWeek)
+            }
             AppDelegate.sharedOverlay?.flashInfo(text, duration: UpdateChecker.installedNoticeDuration)
         }
     }

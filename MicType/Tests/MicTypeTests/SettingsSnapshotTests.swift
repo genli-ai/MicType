@@ -93,6 +93,11 @@ final class SettingsSnapshotTests: XCTestCase {
                 shoot(.overview, name: "settings-status-data-\(look)-\(tag)", dark: dark)
                 seedUsage(false)
                 shoot(.overview, name: "settings-status-empty-\(look)-\(tag)", dark: dark)
+                // 5.4.0：状态卡下面那一条词汇提议（有数据的状态卡 + 提议行）
+                seedUsage(true)
+                seedSuggestion(true)
+                shoot(.overview, name: "settings-status-suggestion-\(look)-\(tag)", dark: dark)
+                seedSuggestion(false)
             }
             UsageStore.shared.resetForTesting()
 
@@ -117,6 +122,17 @@ final class SettingsSnapshotTests: XCTestCase {
                        command: i % 10 == 0)
         }
         UsageStore.shared.resetForTesting(entries)
+    }
+
+    /// 一条到了阈值的提议（嘉士奇 → 加湿器，3 次）。跑在测试里时 suggestions.json 写的是临时目录
+    private func seedSuggestion(_ on: Bool) {
+        var ledger = VocabularySuggestionLedger()
+        if on {
+            for _ in 0..<VocabularySuggestions.threshold {
+                ledger.observe([(wrong: "嘉士奇", right: "加湿器")])
+            }
+        }
+        VocabularySuggestionStore.shared.resetForTesting(ledger)
     }
 
     /// 摆出"正在用这一档"的状态。5.0.0 起这就是全部：一条 llmProvider

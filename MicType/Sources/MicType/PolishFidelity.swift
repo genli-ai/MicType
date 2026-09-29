@@ -456,7 +456,8 @@ extension PolishFidelity {
     /// 引出一个人的字（跟汉明说、找小李、问老陈、给张总）。
     private static let nameIntroducers: Set<Character> = ["跟", "和", "找", "问", "给"]
     /// 在这里永远不算名字的一部分：代词、助词、最常用的虚词。
-    private static let nonNameChars: Set<Character> = Set("我你您他她它咱们的得地了着过吗呢吧啊呀嘛哦啦"
+    /// 5.4.0 起词汇提议（VocabularySuggestions）也用它：「他们 → 它们」不是识别错了一个词
+    static let nonNameChars: Set<Character> = Set("我你您他她它咱们的得地了着过吗呢吧啊呀嘛哦啦"
         + "是在再有和跟与给找问说就都也还又会要想能把被让对向往从到这那哪谁啥么个些不没很太")
 
     /// 确定性底线。候选是一个 2–3 字的汉字词，满足其一：

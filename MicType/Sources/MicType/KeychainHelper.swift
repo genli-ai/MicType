@@ -7,6 +7,10 @@ enum KeychainHelper {
     /// 改名前（VoiceFlow 时代）的钥匙串条目，首次读取时自动迁移到新条目
     private static let legacyService = "com.ligen.voiceflow"
 
+    /// 钥匙串里的 Key 存了 / 删了（5.4.0：菜单栏图标的「没有 Key」红点据此重查一次，
+    /// 不去轮询钥匙串）。只说"变了"，不带 Key、不带账户名
+    static let keysChangedNotification = Notification.Name("MicTypeKeychainKeysChanged")
+
     /// 不传 account 时默认操作"当前选中的服务商"的 Key
     static func saveAPIKey(_ value: String, account: String? = nil) {
         let acct = account ?? Settings.shared.llmProvider.keychainAccount
@@ -20,6 +24,12 @@ enum KeychainHelper {
             kSecValueData as String: data,
         ]
         SecItemAdd(query as CFDictionary, nil)
+        postKeysChanged()
+    }
+
+    private static func postKeysChanged() {
+        let post = { NotificationCenter.default.post(name: keysChangedNotification, object: nil) }
+        if Thread.isMainThread { post() } else { DispatchQueue.main.async(execute: post) }
     }
 
     /// 读取的替身。**App 里永远是 nil**，只有单测会装上它。
@@ -73,5 +83,6 @@ enum KeychainHelper {
             kSecAttrAccount as String: acct,
         ]
         SecItemDelete(query as CFDictionary)
+        postKeysChanged()
     }
 }

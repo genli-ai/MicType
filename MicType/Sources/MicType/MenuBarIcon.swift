@@ -51,6 +51,44 @@ enum MenuBarIcon {
         }
     }
 
+    // MARK: 出错态（5.4.0，UX 方案 §3 F）
+
+    /// 该不该点亮右下角那枚红点（纯函数）：悬浮窗上正挂着一条**错误**（红边那一种，
+    /// 不会自己消失的），或者**根本没有 Key**（识别也要它，听写一个字都出不来）。
+    /// 两样都不在了就熄灭。录音 / 处理中不画点：那两态的图形与 4.3.4 一样一点不变（见 recordingImage）。
+    static func showsAlert(errorShowing: Bool, hasKey: Bool) -> Bool {
+        errorShowing || !hasKey
+    }
+
+    /// 带红点的空闲图。**不是模板图**：模板图会被系统整张染成一种颜色，红点也会变黑。
+    /// 所以剪影改用 `labelColor` 画——绘制闭包在每次上屏时才执行，labelColor 按菜单栏
+    /// 当时的外观（浅色黑、深色白）解析，效果与模板图一致；红点单独用 danger 色。
+    /// 红点与剪影之间挖一圈空隙：18 pt 下红点贴着底座画，两者会糊成一团。
+    static func idleAlertImage() -> NSImage {
+        let image = NSImage(size: NSSize(width: menuBarSize, height: menuBarSize), flipped: false) { rect in
+            draw(in: rect, color: .labelColor)
+            let dot = alertDotRect(in: rect)
+            if let context = NSGraphicsContext.current {
+                context.saveGraphicsState()
+                context.compositingOperation = .clear
+                NSBezierPath(ovalIn: dot.insetBy(dx: -1.2, dy: -1.2)).fill()
+                context.restoreGraphicsState()
+            }
+            NSColor(red: 1.0, green: 0x3B / 255.0, blue: 0x30 / 255.0, alpha: 1).setFill()   // Theme.danger
+            NSBezierPath(ovalIn: dot).fill()
+            return true
+        }
+        image.isTemplate = false
+        image.accessibilityDescription = tr("MicType：需要处理", "MicType: needs attention")
+        return image
+    }
+
+    /// 红点的位置：画布右下角、直径 6 pt
+    static func alertDotRect(in rect: NSRect) -> NSRect {
+        let diameter: CGFloat = 6
+        return NSRect(x: rect.maxX - diameter - 0.5, y: rect.minY + 0.5, width: diameter, height: diameter)
+    }
+
     /// 空闲态：模板图。颜色交给系统（浅色菜单栏黑、深色菜单栏白、点开时自动反色）
     private static let idleImage: NSImage = {
         let image = mark(size: menuBarSize, color: .black)

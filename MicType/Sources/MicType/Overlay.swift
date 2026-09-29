@@ -585,6 +585,16 @@ final class OverlayController {
     var onRevertTapped: (() -> Void)?
     /// 错误形态「打开设置」那颗按钮（AppDelegate 接到设置窗口）
     var onOpenSettings: (() -> Void)?
+    /// 错误形态上屏 / 下屏（5.4.0：菜单栏图标的红点跟着它亮灭，AppDelegate 接）
+    var onErrorVisibilityChange: ((Bool) -> Void)?
+    /// 屏幕上此刻是不是挂着一条错误。进错误形态时置真；**任何**别的形态或 hide() 都会先走
+    /// clearAction()，在那里置假——所以不会有"错误早就被顶掉了、红点还亮着"的时候
+    private(set) var errorShowing = false {
+        didSet {
+            guard errorShowing != oldValue else { return }
+            onErrorVisibilityChange?(errorShowing)
+        }
+    }
     /// 当前这条错误上那颗按钮要干的事。每条提示自带一个，提示消失就清掉——
     /// 绝不让上一条的动作挂到下一条上。
     private var pendingAction: (() -> Void)?
@@ -944,6 +954,7 @@ final class OverlayController {
         hideGeneration += 1
         thinking = false
         clearAction()
+        errorShowing = true
         pendingAction = action
         state.buttonLabel = buttonLabel
         state.phase = .error(label)
@@ -995,6 +1006,7 @@ final class OverlayController {
 
     /// 按钮只属于当前这一条提示
     private func clearAction() {
+        errorShowing = false
         pendingAction = nil
         state.buttonLabel = nil
         state.buttonHitRect = .zero

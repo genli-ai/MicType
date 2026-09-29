@@ -227,6 +227,7 @@ enum SettingsKeys {
     // 导入的文件里带一条 fastTier 会被当成未知键忽略并计数，**绝不会**把 Fast 关掉。
     static let onboardingCompleted = "onboardingCompleted"  // 首启动引导是否走过（老用户按"已配置好"自动置真）
     static let onboardingSkippedEssentials = "onboardingSkippedEssentials"  // 他点过「先跳过」：引导不再每次启动拦他
+    static let weeklyNoticeShownForWeek = "weeklyNoticeShownForWeek"  // 5.4.0：「上周说了…」闪过的那一周（本周一，yyyy-MM-dd）。不是设置，不进导出
 }
 
 // MARK: - 5.0.0 删掉的那些设置键

@@ -14,7 +14,7 @@ Dictate for up to ten minutes without losing a word, transcribed twice — live 
 **Tap Right Option (⌥) = dictation.**
 
 ```
-Tap ⌥ → speak (optional live grey draft — off by default) → tap ⌥ again
+Tap ⌥ → speak (the indicator shows a red dot, a waveform and a running word count) → tap ⌥ again
    ↓
 Cloud transcription on OpenAI: realtime while you speak + the whole take once more on release (see Recognition)
    ↓
@@ -36,19 +36,21 @@ Tap is always pure dictation (what you say is what gets typed), hold is always a
 ## Why MicType
 
 - **Transcribed twice, the more accurate one wins** — audio streams to OpenAI's realtime recognizer (`gpt-live-transcribe`) while you talk, and on release the whole take (takes up to 60 s) is sent once more to `gpt-transcribe`. The full-take result is more accurate (6.2% vs 9.0% character error rate on a public Chinese / Chinese–English set), so it wins whenever it arrives within a short window (0.8–2 s); otherwise the realtime result is used. There is no on-device option in this version; your audio always leaves your Mac.
-- **Optional live draft** — turn on **Settings → Live draft** to see a grey draft in the floating indicator while you talk. It's off by default: realtime drafts lag your speech by 1–2 s, and a draft that has stopped moving looks like "done" when it isn't. It never goes into your document either way.
+- **A floating indicator with four shapes, and no text to read** — it sits just under the window you're typing in. **Listening**: a breathing red dot, a waveform and a word count (proof it's hearing you, without a draft that makes you wait for it to catch up). **Thinking**: a flowing band of light. **Done**: a check plus a "said → typed" line; click it within two seconds to put back what you actually said. **Error**: a red edge, one short line and one button (Open Settings, Add credit or Close); it stays until you act or press Esc. One quiet family of sounds marks start, done, error and cancel.
 - **One provider, one key** — OpenAI: `gpt-live-transcribe` + `gpt-transcribe` for recognition, `gpt-5.6-terra` for polish, `gpt-5.6-luna` for commands. Paste one key and MicType is fully set up.
 - **Never lose a word** — dictate for up to **ten minutes**, with a warning before the limit. Your clipboard (images, files, formatted text) is captured and restored around every insertion, and changing microphone mid-recording doesn't lose the take.
-- **Cancel at any point** — Esc, the menu bar, or a click on the indicator stops recording, transcription, polish or a running command; nothing already sent is inserted afterwards, and unsent audio simply never goes anywhere.
+- **Cancel at any point** — Esc or a click on the indicator stops recording, transcription, polish or a running command; nothing already sent is inserted afterwards, and unsent audio simply never goes anywhere.
 - **Voice commands in any app** — the hold gesture works wherever your cursor is: chat, mail, docs, browser.
-- **Adaptive AI polish, with a safety net** — short phrases get light cleanup; long rambling speech is restructured into ready-to-use text. If the polished version drifts from what you said (numbers, negations), MicType inserts the raw transcript and tells you — and for a minute afterwards the menu bar can swap a polished insertion back to the raw transcript.
-- **Custom vocabulary as hotwords** — names, brands, and jargon are fed into recognition and into AI polish; the #1 lever for proper-noun accuracy. Add `wrong=right` (or `wrong1|wrong2=right`) for homophones that no model gets right. Lives in the menu bar under **Writing Preferences…**, alongside a free-text box for your standing instructions to the AI (*sign as Gen*, *keep English jargon untranslated*).
-- **Searchable history** — the last 200 dictations stay on your Mac (⌘Y): search raw and polished text, re-insert an old result at the cursor, or send a mis-heard word to your vocabulary. Turn it off or clear it any time.
+- **Adaptive AI polish, with a safety net** — short phrases get light cleanup; long rambling speech is restructured into ready-to-use text. If the polished version drifts from what you said (numbers, negations), MicType inserts the raw transcript and tells you — and the "said → typed" line on the indicator swaps a polished insertion back to the raw transcript with one click.
+- **Custom vocabulary as hotwords** — names, brands, and jargon are fed into recognition and into AI polish; the #1 lever for proper-noun accuracy. Add `wrong=right` (or `wrong1|wrong2=right`) for homophones that no model gets right. Lives under **Settings → Writing**, alongside a free-text box for your standing instructions to the AI (*sign as Gen*, *keep English jargon untranslated*).
+- **Suggestions, never silent learning** — when AI polish keeps fixing the same mis-heard word (three times), Settings offers one line: *Add "Python" to your vocabulary?* **Add** writes a `wrong=right` entry; **Ignore** means it's never offered again. Nothing is added to your vocabulary unless you click. Only the word pair is counted — never the sentence.
+- **History as plain text** — transcripts are kept on your Mac as one plain-text file per day; **Settings → History** opens the folder. Switch it off under About → Privacy.
 - **One key, named in full** — the hotkey is **Right Option (⌥)**. There is no picker to get wrong: every place MicType asks you to press a key names that one.
 - **Setup is one step** — paste an **OpenAI** API key and it's verified on the spot; it lives in the macOS Keychain. The key is required for MicType to work at all — recognition itself runs on OpenAI.
-- **Settings you can read in one glance** — Settings is a single page: your OpenAI key and the Live draft switch. A permissions banner appears only when something's missing; a status line shows exactly what's connected and what it costs. Everything else — writing preferences, about, check for updates, review the guide — is one click away in the footer.
-- **A first run that finishes the job** — a five-screen guide: welcome (the two gestures, on Right Option), permissions, Connect OpenAI (step-by-step instructions for getting a key, then paste-to-verify), a dictation you try on the spot, and where to find MicType afterward. It is not over until dictation actually works: permissions granted and a verified key. You can walk through it again any time from the Settings footer.
-- **Bilingual UI** — English / 中文, switch instantly from the menu bar.
+- **Settings you can read in one glance** — Settings opens on a status card: *OpenAI · Connected*, the last four characters of your key, and this week's minutes spoken, characters typed and estimated cost (counted on your Mac from a local log of numbers only). Below it, a vocabulary suggestion when there is one, then three rows: OpenAI Key, Writing (vocabulary and rules, plus how many times you reverted to the raw transcript this week) and Language. A permissions banner appears only when something's missing. About, Privacy, Check for Updates, Review the guide and History sit in the footer. Once a week, the first launch also flashes last week's total (*Last week: 43 min spoken, 6,200 chars typed*).
+- **A first run that finishes the job** — a three-screen guide: **Hold Right Option** (the gesture, with Microphone and Accessibility ticking green in place), **Paste your OpenAI key** (a key already on your clipboard fills in and verifies itself) and **Try it** (a real dictation has to land before "Get started"). It is not over until dictation actually works. You can walk through it again any time from the Settings footer.
+- **Bilingual UI** — English / 中文, switch instantly under Settings → Language. Settings and the guide follow the system's light or dark appearance; the indicator stays dark.
+- **A menu bar icon that tells you when something's wrong** — a small red dot appears on it while an error is on screen or no key is set, and goes away once that's fixed. It never changes while you're recording.
 
 ## Quick Start (5 minutes)
 
@@ -57,7 +59,7 @@ Everything downloads from one page: **[Releases · latest](https://github.com/ge
 | | 🍎 macOS (Apple Silicon, macOS 15+) | 🪟 Windows (Win10 22H2+ / 11, x64 — beta, still on-device) |
 |---|---|---|
 | **1. Download & run** | `MicType-{version}-arm64.zip` → unzip → drag `MicType.app` to Applications. If blocked: System Settings → Privacy & Security → **Open Anyway** | `MicType-{version}-win-x64.zip` → unzip → run `MicType.exe`. SmartScreen: **More info → Run anyway** |
-| **2. One-time setup** | A five-screen first-run guide does all of it: learn the two gestures on **Right Option (⌥)**, allow **Microphone** (with a live level meter) and enable **Accessibility** (System Settings → Privacy & Security), paste an OpenAI key (verified there and then), and try a dictation on the spot — the text lands in the box on the page. The guide only finishes once dictation actually works | Right-click the tray icon → Settings → download the speech model (~250 MB) |
+| **2. One-time setup** | A three-screen first-run guide does all of it: learn the gesture on **Right Option (⌥)** while allowing **Microphone** and **Accessibility** (System Settings → Privacy & Security), paste an OpenAI key (verified there and then), and try a dictation on the spot — the text lands in the box on the page. The guide only finishes once dictation actually works | Right-click the tray icon → Settings → download the speech model (~250 MB) |
 | **3. Speak** | **Tap Right Option (⌥)** → talk → tap again. Text appears at your cursor | **Tap Right Ctrl** → talk → tap again. Text appears at your cursor |
 
 Speech recognition runs on OpenAI — there's no local recognition in this version, so audio always leaves your Mac. Settings → About → **Check for Updates** — on macOS it verifies the new build, installs it in place and relaunches.
@@ -92,7 +94,7 @@ MicType has no on-device speech model. Every dictation and voice command runs on
 - **Falling back is silent.** If the realtime connection is unavailable or drops, MicType uses the whole-take upload instead of interrupting what you're saying.
 - **Verified in one action.** Pasting a key runs a real check against the provider; a key that doesn't verify is never saved, and the status line always reflects what's actually working.
 
-**Arabic** is supported: Modern Standard Arabic works well; other dialects are not promised. English brand and product names spoken inside Arabic can come back written in Arabic letters — add them to your custom vocabulary under **Writing Preferences…** in the menu bar to fix this.
+**Arabic** is supported: Modern Standard Arabic works well; other dialects are not promised. English brand and product names spoken inside Arabic can come back written in Arabic letters — add them to your custom vocabulary under **Settings → Writing** to fix this.
 
 ## Long Dictation
 
@@ -100,15 +102,15 @@ A single take can run up to **ten minutes**, with a warning before you reach the
 
 ## AI: Polish and Commands
 
-Menu bar 🎤 → Settings. The whole page is: **OpenAI Key** (verified as you paste it — Checking… / Connected ✓ / Failed, with the reason and what to do) and the **Live draft** switch (off by default; drafts lag your speech by 1–2 s). A status line under the key names what's live and what it costs. There is nothing else to configure — model, polish behavior, and web search are fixed choices, not settings:
+Menu bar icon → Settings. The status card at the top says whether you're connected and roughly what this week cost; the one thing to set is your **OpenAI Key** (verified as you paste it — Checking… / Connected ✓ / Failed, with the reason and what to do). There is nothing else to configure — model, polish behavior, and web search are fixed choices, not settings:
 
 - **Models are fixed, chosen by measurement**: on OpenAI, polish runs on `gpt-5.6-terra` (in a 144-call fidelity test it changed meaning 1–2 times vs 9 for `gpt-5.6-luna`, for about 0.2 s more) and voice commands on `gpt-5.6-luna` (terra made commands no better, just slower and pricier). A model that thinks for several seconds on every utterance is a worse experience than one that answers in two.
 - **Web search is always on** for hold-to-command only (tap-to-dictate polish never searches) — about $0.01 per search.
 - **OpenAI always runs on its Fast tier** — lower, steadier latency at roughly twice the per-token price, stated once under About → Privacy.
 
-**Writing Preferences…**, reached from the menu bar (or the Settings footer), is where you manage what's actually yours to configure:
+**Settings → Writing** is where you manage what's actually yours to configure:
 
-- **Custom vocabulary**: hotwords for names, brands and jargon — used by recognition and by AI polish.
+- **Custom vocabulary**: hotwords for names, brands and jargon — used by recognition and by AI polish. A suggestion you accept on the status page lands here as a `wrong=right` line.
 - **Custom rules**: a free-text box of standing instructions to the AI (*sign as Gen*, *keep English jargon untranslated*), applied to every polish and every voice command.
 
 Polish modes: transcribe only (fastest, no AI) or AI polish (adaptive: light cleanup for short phrases, full restructuring for long spoken paragraphs) — selected automatically per utterance, not a setting you pick.
@@ -118,13 +120,13 @@ Polish modes: transcribe only (fastest, no AI) or AI polish (adaptive: light cle
 - **Your audio streams to OpenAI live, the moment you speak, and the whole take is sent once more when you let go** for a more accurate result. There is no local recognition in this version — this is a deliberate trade for the speed and quality of cloud transcription, and it's stated plainly here rather than as a switch you have to find.
 - The recognized **text** is then sent to OpenAI for AI polish or a voice command. On OpenAI, MicType sends `store: false` on every request, so your text is not retained for the 30 days the API otherwise keeps it.
 - API keys are stored in the macOS Keychain, not in plain-text files, and are never included in a settings export.
-- Transcript history is kept on your Mac only; you can switch it off or clear it at any time.
+- Transcript history is kept on your Mac only, as plain text; you can switch it off at any time. Vocabulary suggestions store word pairs and counts only, and the weekly usage log stores numbers only (seconds, characters); neither ever leaves your Mac.
 - Web search is on by default, billed per search by OpenAI — the price is stated in Settings, and only hold-to-command ever searches.
 - You pay OpenAI directly at their rates, roughly **$1.7 per hour of speech** for recognition (realtime plus the whole-take pass) and polish combined, billed by how much you actually spoke. MicType never proxies your requests and never adds a fee.
 
 ## Upgrading from an earlier version
 
-If you're updating from a 4.x release, MicType removes the old on-device speech model files on first launch and tells you how much disk space that freed. If you were using DeepSeek or a local model, you'll land on the "Connect OpenAI" screen of the first-run guide.
+If you're updating from a 4.x release, MicType removes the old on-device speech model files on first launch. If you were using DeepSeek or a local model, you'll land on the "Connect OpenAI" screen of the first-run guide.
 
 5.1.0 removes Alibaba Cloud: if that was your provider, you'll land on the same "Connect OpenAI" screen, and your Alibaba Cloud key is removed from the Keychain (it is never reused as an OpenAI key). Everything else about your setup (hotkey, vocabulary, history) carries over unchanged.
 
@@ -132,11 +134,11 @@ If you're updating from a 4.x release, MicType removes the old on-device speech 
 
 **Hotkey does not respond?** Check System Settings → Privacy & Security → Accessibility. If you build from source (ad-hoc signing), macOS usually requires removing the old permission entry and adding the app again after each rebuild; official notarized releases keep a stable identity, so upgrades don't need this.
 
-**Custom names or terms are wrong?** Add names, brands, products, and technical terms to Writing Preferences… → Custom vocabulary (menu bar). It's used by recognition and by AI polish. This is also the fix for English brand names spoken inside Arabic.
+**Custom names or terms are wrong?** Add names, brands, products, and technical terms to Settings → Writing → Custom vocabulary, or accept a suggestion when Settings offers one. It's used by recognition and by AI polish. This is also the fix for English brand names spoken inside Arabic.
 
 **AI polish failed, or MicType can't recognize speech at all?** Settings shows the connection state next to your key — enough to tell a bad key from a wrong region, rate limiting or exhausted credit. Since recognition itself runs on OpenAI, a failed connection means dictation won't work either until the key is fixed.
 
-**Text was not inserted into the target app?** If you switch windows during processing, MicType tries to bring the original app back before pasting. If insertion still fails, click the latest item in Menu bar → Recent Transcripts to copy it. Some fields, such as password fields, block paste.
+**Text was not inserted into the target app?** If you switch windows during processing, MicType tries to bring the original app back before pasting. If insertion still fails, the text is left on your clipboard (press ⌘V), and every transcript is also in Settings → History. Some fields, such as password fields, block paste.
 
 **Build fails with `Invalid manifest` or `PackageDescription` link errors?** Your Xcode command line tools may be broken, often after a system upgrade. Double-click `scripts/Fix Build Tools.command`.
 
@@ -167,17 +169,20 @@ MicType/
 │   ├── SelectionReader.swift      # Read selected text via Accessibility (⌘C fallback)
 │   ├── TextInserter.swift         # Clipboard + ⌘V insertion, full clipboard snapshot/restore
 │   ├── OwnWindowInserter.swift    # Direct text insertion into MicType's own windows
-│   ├── Overlay.swift              # Floating indicator (live draft, elapsed time, cancel)
-│   ├── HistoryStore.swift         # Last 200 transcripts, raw + polished, on disk
-│   ├── HistoryWindow.swift        # History window: search, compare, re-insert, add to vocabulary
-│   ├── OnboardingWindow.swift     # First-run guide (five screens: welcome, permissions, Connect OpenAI, try it, where to find it)
+│   ├── Overlay.swift              # Floating indicator: listening / thinking / done / error
+│   ├── Theme.swift                # Design tokens (colors, gradient, spring, glass) + shared components
+│   ├── UserMessage.swift          # Every error and notice line, one short sentence each
+│   ├── UsageStore.swift           # This week's minutes / characters / estimated cost (numbers only, local)
+│   ├── VocabularySuggestions.swift # Vocabulary suggestions from repeated polish fixes (you decide)
+│   ├── HistoryStore.swift         # Transcripts as plain text, one file per day, on disk
+│   ├── OnboardingWindow.swift     # First-run guide (three screens: hold Right Option + permissions, paste your key, try it)
 │   ├── FirstRunEssentials.swift   # What the first run must finish: permissions, a working provider
 │   ├── LocalModelCleanup.swift    # One-time cleanup of pre-5.0 on-device model files
 │   ├── UpdateChecker.swift        # Update check + verify, install and relaunch
 │   ├── SettingsBackup.swift       # Settings export / import (shared JSON with Windows)
-│   ├── Localization.swift         # In-line bilingual L10n (instant switch, from the menu bar)
+│   ├── Localization.swift         # In-line bilingual L10n (instant switch)
 │   ├── SettingsView.swift         # Settings window sizing and routing
-│   ├── SettingsEditors.swift      # The single settings page + Writing Preferences + About
+│   ├── SettingsEditors.swift      # Status page (status card, suggestion, key / writing / language) + Writing + About
 │   ├── CloudAIFields.swift        # Provider/key/host controls shared by Settings and onboarding
 │   └── SettingsCopy.swift         # Every caption and ⓘ in Settings, under a budget a test enforces
 ├── Resources/                      # Info.plist, app icon, notification sounds
@@ -216,7 +221,7 @@ This project was designed, implemented, debugged, and refined with AI collaborat
 **轻点 右 Option (⌥) = 听写**
 
 ```
-按 右⌥ → 说话（可选的灰字实时草稿——默认关）→ 再按 右⌥
+按 右⌥ → 说话（悬浮窗：红点 + 波形 + 实时字数）→ 再按 右⌥
    ↓
 OpenAI 云端识别：边说边识别 + 松手后整段再识别一遍（见「识别」）
    ↓
@@ -238,19 +243,21 @@ OpenAI 云端识别：边说边识别 + 松手后整段再识别一遍（见「�
 ## 为什么选 MicType
 
 - **识别两遍，更准的赢**——你说话时音频边传给 OpenAI 的实时识别（`gpt-live-transcribe`），松手后整段（60 秒以内的句子）再发给 `gpt-transcribe` 识别一遍。整段那一遍更准（公开中文 / 中英混说语料上字错率 6.2% 对 9.0%），只要它在一个很短的窗口（0.8–2 秒）内回来就用它，否则用实时那一份。这一版没有本地识别可选，录音一定会离开这台 Mac
-- **实时草稿可选**——在 **设置 → 实时草稿** 打开后，说话时悬浮窗显示灰字草稿。默认关：实时草稿比说话慢 1–2 秒，字停了不等于说完了，容易让人干等。开不开，草稿都绝不进入你的文档
+- **悬浮窗四种形态，没有要读的字**——它贴在你正在打字的那扇窗口下面。**听**：呼吸的红点 + 波形 + 字数（证明它在听，又不会有一段跟不上的草稿让你干等）。**想**：一条流动的光带。**落**：一个勾 + 「原文 → 润色」一行，两秒内点它就换回你原本说的话。**错**：红边 + 一句短话 + 一颗按钮（打开设置 / 去充值 / 关闭），你处理或按 Esc 之前不会自己消失。开始、完成、出错、取消各有一声，是同一组轻柔的提示音
 - **一家服务商，一把 Key**——OpenAI：识别用 `gpt-live-transcribe` + `gpt-transcribe`，润色用 `gpt-5.6-terra`，指令用 `gpt-5.6-luna`。贴一把 Key，MicType 就配好了
 - **一个字都不丢**——单次可以说到**十分钟**，到点前会提前提醒。每次插入前后完整快照并还原剪贴板（图片、文件、富文本都不会被吃掉）；录音中途换麦克风也不丢这一段
-- **任何阶段都能取消**——Esc、菜单栏、或者直接点悬浮窗：录音中、识别中、润色中、执行指令中都能停，已经传出去的不会再插进来，没传出去的干脆就没送到任何地方
+- **任何阶段都能取消**——Esc 或点悬浮窗：录音中、识别中、润色中、执行指令中都能停，已经传出去的不会再插进来，没传出去的干脆就没送到任何地方
 - **任何应用里都能下指令**——光标在哪，按住就在哪用：聊天、邮件、文档、浏览器
-- **自适应 AI 润色，带安全网**——短句轻清理；长段混乱口述重构成可直接使用的成品文字。润色结果若与原话出入过大（数字、否定词被改动）会自动改输出识别原文并明说；插入后一分钟内还能在菜单栏一键「换回识别原文」
-- **专有词汇表 = 热词**——人名、品牌、术语既送进识别，也送进 AI 润色，是专有名词准确率的第一杠杆。完全同音的词可以写 `错写=正写`（一个正写挂多个错写：`错1|错2=正写`）。这两样都收在菜单栏的**「写作偏好…」**里，旁边还有一个自由文本框，写给 AI 的长期偏好（「署名用 Gen」「英文术语保留原文」）
-- **可搜索的历史**——最近 200 条听写留在本机（⌘Y）：按识别原文和润色结果一起搜，重新插入到光标处，或把听错的词一键送进词汇表。随时可关、可清
+- **自适应 AI 润色，带安全网**——短句轻清理；长段混乱口述重构成可直接使用的成品文字。润色结果若与原话出入过大（数字、否定词被改动）会自动改输出识别原文并明说；悬浮窗上那行「原文 → 润色」点一下就能换回识别原文
+- **专有词汇表 = 热词**——人名、品牌、术语既送进识别，也送进 AI 润色，是专有名词准确率的第一杠杆。完全同音的词可以写 `错写=正写`（一个正写挂多个错写：`错1|错2=正写`）。这两样都收在 **设置 → 写作偏好** 里，旁边还有一个自由文本框，写给 AI 的长期偏好（「署名用 Gen」「英文术语保留原文」）
+- **只提议，绝不偷偷学**——同一个听错的词被 AI 润色改对了三次，设置里就出现一行：「把「加湿器」加进词汇表？」点**加入**写一条 `错写=正写`，点**忽略**永不再提。你不点，词汇表一个字都不会变。只数词对，从不记句子
+- **历史就是纯文本**——听写记录按天一个纯文本文件存在本机，**设置 → 历史记录** 直接打开那个文件夹；关于 → 隐私 里可以关掉
 - **快捷键就一颗：右 Option (⌥)**——没有选择器可选错，凡是让你按键的地方写的都是它且写全名
 - **配置只有一步**——粘贴一把 **OpenAI** API Key 当场验证，Key 存 macOS 钥匙串。这把 Key 是必须的：识别本身就跑在 OpenAI 上
-- **设置一眼看完**——设置就是一页：OpenAI Key 和「实时草稿」开关。有事要办才出现权限横幅；一行状态文字写清此刻连的是谁、多少钱。写作偏好、关于、检查更新、重看引导都在页底一键可达
-- **引导不走到能听写不算完**——首次启动五屏：欢迎（两种手势，就在右 Option 上）→ 权限 → 连接 OpenAI（申请 Key 的步骤说明，粘贴即验证）→ 就地试一句 → 它在哪。两项权限都给了、Key 验证通过，这两件事办完才算走完，设置页底部随时能重走一遍
-- **中英双语界面**——菜单栏里即时切换
+- **设置一眼看完**——打开设置先看到一张状态卡：「OpenAI · 已连接」、Key 末四位、本周说了几分钟 / 打出多少字 / 大约花了多少钱（在本机按一份只有数字的账本算）。有提议时下面出现一行词汇提议，再下面三行：OpenAI Key、写作偏好（词汇表几条、规则几条，外加本周换回原文几次）、界面语言。缺权限才出现权限横幅。关于、隐私、检查更新、重看引导、历史记录在页底。每周第一次启动时，悬浮窗还会闪一句上周的合计（「上周说了 43 分钟，打出 6,200 字」）
+- **引导不走到能听写不算完**——首次启动三屏：**按住右 Option**（学手势，麦克风与辅助功能就地打勾变绿）→ **贴上你的 OpenAI Key**（剪贴板里已有 Key 会自动填入并验证）→ **试一下**（真的有一句话落进来才能点「开始使用」）。要到真的能听写才算走完，设置页底部随时能重走一遍
+- **中英双语界面**——设置 → 界面语言 即时切换。设置与引导跟随系统的浅色 / 深色外观，悬浮窗永远是深色
+- **菜单栏图标会提醒你出事了**——屏幕上挂着错误、或者还没填 Key 时，图标右下角亮一个小红点，问题解决就熄灭。录音时图标不变
 
 ## 快速上手（5 分钟）
 
@@ -259,7 +266,7 @@ OpenAI 云端识别：边说边识别 + 松手后整段再识别一遍（见「�
 | | 🍎 macOS（Apple Silicon，macOS 15+） | 🪟 Windows（Win10 22H2+/11，x64，公测，仍是本地识别） |
 |---|---|---|
 | **1. 下载运行** | `MicType-{版本}-arm64.zip` → 解压 → 把 `MicType.app` 拖进应用程序。被拦时：系统设置 → 隐私与安全性 → **「仍要打开」** | `MicType-{版本}-win-x64.zip` → 解压 → 运行 `MicType.exe`。SmartScreen 拦截点 **「更多信息 → 仍要运行」** |
-| **2. 一次性设置** | 首次启动的五屏引导会带着走完：先在**右 Option（⌥）**上学会两种手势，允许**麦克风**（当场看电平条）、开启**辅助功能**（系统设置 → 隐私与安全性），粘贴 OpenAI Key（当场验证），最后就地试说一句，文字直接落进那一屏的框里。引导要到**真的能听写**才算走完 | 右键托盘图标 → 设置 → 下载识别模型（约 250MB） |
+| **2. 一次性设置** | 首次启动的三屏引导会带着走完：在**右 Option（⌥）**上学手势的同时允许**麦克风**、开启**辅助功能**（系统设置 → 隐私与安全性），粘贴 OpenAI Key（当场验证），最后就地试说一句，文字直接落进那一屏的框里。引导要到**真的能听写**才算走完 | 右键托盘图标 → 设置 → 下载识别模型（约 250MB） |
 | **3. 开口说话** | **轻点右 Option（⌥）**→ 说话 → 再点一下，文字出现在光标处 | **轻点右 Ctrl** → 说话 → 再点一下，文字出现在光标处 |
 
 语音识别跑在 OpenAI 那边——这一版没有本地识别，录音一定会离开这台 Mac。升级：设置 → 关于 → **检查更新**——Mac 端会验签后就地安装并自动重启。
@@ -294,7 +301,7 @@ MicType 没有本机识别模型。听写和语音指令全都跑在 **OpenAI** 
 - **回落是静默的。** 实时连接用不了或者中途断了，MicType 就用整段上传那一份，而不是打断你正在说的话。
 - **只有一个验证动作。** 粘贴 Key 就会对服务商发一次真实请求做验证；验证不过的 Key 不会被存下来，状态行永远如实反映当下能不能用。
 
-**阿拉伯语**可用：标准阿语（MSA）表现不错，其他方言不做承诺。阿语口述里夹的英文品牌 / 产品名可能被写成阿拉伯字母——把它们加进菜单栏 **「写作偏好…」** 里的专有词汇表即可解决。
+**阿拉伯语**可用：标准阿语（MSA）表现不错，其他方言不做承诺。阿语口述里夹的英文品牌 / 产品名可能被写成阿拉伯字母——把它们加进 **设置 → 写作偏好** 里的专有词汇表即可解决。
 
 ## 长录音
 
@@ -302,15 +309,15 @@ MicType 没有本机识别模型。听写和语音指令全都跑在 **OpenAI** 
 
 ## AI：润色与指令
 
-菜单栏 🎤 → 设置。整页就是：**OpenAI Key**（粘贴当下就验证：正在验证… / 已连通 ✓ / 连不上 + 原因与下一步）和 **实时草稿** 开关（默认关；草稿比说话慢 1–2 秒）。Key 下面一行状态文字写清此刻连的是谁、大约多少钱。没有别的要配了——模型、润色行为、联网搜索都是写死的选择，不是设置项：
+菜单栏图标 → 设置。顶上的状态卡写着连上没有、这周大约花了多少；要你设的只有 **OpenAI Key**（粘贴当下就验证：正在验证… / 已连通 ✓ / 连不上 + 原因与下一步）。没有别的要配了——模型、润色行为、联网搜索都是写死的选择，不是设置项：
 
 - **模型写死，按实测挑**：OpenAI 润色用 `gpt-5.6-terra`（144 次保真评测里改意 1–2 次，`gpt-5.6-luna` 是 9 次，只慢约 0.2 秒），指令用 `gpt-5.6-luna`（terra 做指令不见更好、只是更慢更贵）。每句话都要跑一次的东西，想好几秒才答的模型不如两秒内答的用着顺手。
 - **联网搜索默认开着**，只在按住说指令时才可能用到（轻点听写的润色永远不联网）——每次约 $0.01。
 - **OpenAI 一律走 Fast 档**——更低更稳的延迟，代价是约两倍的 token 单价，这句话只在 关于 → 隐私 里出现一次。
 
-菜单栏（或设置页底部）的 **「写作偏好…」** 是你真正能管的那部分：
+**设置 → 写作偏好** 是你真正能管的那部分：
 
-- **专有词汇表**：人名、品牌、术语的热词——识别会用到它，AI 润色也会用到它。
+- **专有词汇表**：人名、品牌、术语的热词——识别会用到它，AI 润色也会用到它。状态页上的词汇提议，点「加入」后就作为一行 `错写=正写` 写到这里。
 - **自定义规则**：一个自由文本框，写给 AI 的长期偏好（「署名用 Gen」「英文术语保留原文」），每次润色和每条语音指令都会带上它。
 
 润色档位：仅识别（最快，不联网）或 AI 润色（自适应：短句轻清理，长段口述自动重构）——按每句话自动选择，不是你要手动挑的设置。
@@ -320,13 +327,13 @@ MicType 没有本机识别模型。听写和语音指令全都跑在 **OpenAI** 
 - **你说话的同时，音频就实时传给 OpenAI；松手后整段再发送一次**，以获得更准的结果。这一版没有本地识别——这是为了云端识别的速度与质量做出的有意取舍，直接写在这里，不是一个要你自己找的开关。
 - 识别出的**文本**随后会发给 OpenAI 做 AI 润色或执行语音指令。OpenAI 侧每次请求都带 `store: false`，你的文本不会被留在服务端 30 天。
 - API Key 存放在 macOS 钥匙串，不落明文文件，导出设置时也从不包含。
-- 听写历史只存在本机，随时可以关闭或清空。
+- 听写历史以纯文本只存在本机，随时可以关闭。词汇提议只存词对和次数，本周用量账本只存数字（秒数、字数），两者都不会离开这台 Mac。
 - 联网搜索默认开着，由 OpenAI 按次计费——单价就在设置里写着，而且只有按住说指令那条路才会联网。
 - 费用由你直接结给 OpenAI，按它的标准价计：识别（实时 + 整段那一遍）加润色，大约 **每小时说话 $1.7**，按你实际说话的时长算。MicType 不代理你的请求，也不加价。
 
 ## 从旧版本升级
 
-如果你是从 4.x 版本升级过来的，MicType 首次启动会自动删掉旧的本机识别模型文件，并告诉你释放了多少空间。如果你之前用的是 DeepSeek 或本机模型，引导会带你走到「连接 OpenAI」那一屏。
+如果你是从 4.x 版本升级过来的，MicType 首次启动会自动删掉旧的本机识别模型文件。如果你之前用的是 DeepSeek 或本机模型，引导会带你走到「连接 OpenAI」那一屏。
 
 5.1.0 移除了阿里云：如果你之前用的是阿里云，同样会落到「连接 OpenAI」那一屏，你的阿里云 Key 会从钥匙串里删掉（绝不会被当成 OpenAI 的 Key 用）。快捷键、词汇表、历史记录这些照旧不受影响。
 
@@ -334,11 +341,11 @@ MicType 没有本机识别模型。听写和语音指令全都跑在 **OpenAI** 
 
 **按快捷键没反应？** 检查 系统设置 → 隐私与安全性 → 辅助功能。从源码自行编译（ad-hoc 签名）每次重装后通常需要删除旧授权条目再重新添加；官方公证版签名身份稳定，升级不需要这一步。
 
-**识别专有名词不准？** 把常用人名、品牌、产品、术语写进菜单栏 「写作偏好…」→ 专有词汇表。识别会用到它，AI 润色也会用到它。阿语口述里夹的英文品牌名同样靠它。
+**识别专有名词不准？** 把常用人名、品牌、产品、术语写进 设置 → 写作偏好 → 专有词汇表，或者在设置提议时点「加入」。识别会用到它，AI 润色也会用到它。阿语口述里夹的英文品牌名同样靠它。
 
 **润色失败，或者根本识别不出来？** 设置里 Key 旁边直接显示连接状态，能分清是 Key 无效、地区不支持、被限流还是余额不足。识别本身也跑在 OpenAI 那边，所以连不上时听写也一起不工作，把 Key 修好即可。
 
-**文字没有输入到目标应用？** 处理期间切走窗口的话，MicType 会自动把目标应用拉回前台再粘贴；如果还是丢了，菜单栏 → 最近记录 里点一下即可复制找回。个别输入框（如密码框）禁止粘贴。
+**文字没有输入到目标应用？** 处理期间切走窗口的话，MicType 会自动把目标应用拉回前台再粘贴；如果还是没贴进去，文字留在剪贴板里（按 ⌘V），每一句也都在 设置 → 历史记录 里。个别输入框（如密码框）禁止粘贴。
 
 **编译时报 `Invalid manifest` / `PackageDescription` 链接错误？** Xcode 命令行工具可能损坏（多见于系统升级后），双击 `scripts/Fix Build Tools.command` 重装即可。
 

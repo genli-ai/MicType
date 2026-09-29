@@ -12,6 +12,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// ——它必须和窗口里的语言一致
     private var menuLanguageObserver: AnyCancellable?
 
+    /// 菜单栏图标红点的两个来源（5.4.0，UX 方案 §3 F）。**都存着**而不是每次现查：
+    /// 读钥匙串是 Security 调用，不许坐在每次换图标的路径上——它只在启动与「Key 变了」时重查
+    private var hasKey = true
+    private var overlayErrorShowing = false
+    private var currentPhase: DictationController.Phase = .idle
+    private var keysObserver: NSObjectProtocol?
+
     /// 给其它窗口借用的悬浮提示层。历史窗口把文字留在剪贴板时要提示「按 ⌘V」，
     /// 但那一刻它已经让出前台、窗口也收起来了：窗口内的状态条既看不见，
     /// 把窗口拉回来又会从目标应用抢走焦点（用户的 ⌘V 会落进搜索框）。
@@ -47,7 +54,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         setupStatusItem()
 
+        // 红点：没有 Key → 亮；悬浮窗挂着错误 → 亮。Key 填好 / 错误关掉 → 熄
+        refreshKeyPresence()
+        keysObserver = NotificationCenter.default.addObserver(
+            forName: KeychainHelper.keysChangedNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.refreshKeyPresence()
+        }
+        dictation.overlay.onErrorVisibilityChange = { [weak self] showing in
+            guard let self = self else { return }
+            self.overlayErrorShowing = showing
+            self.updateIcon(for: self.currentPhase)
+        }
+
         dictation.onPhaseChange = { [weak self] phase in
+            self?.currentPhase = phase
             self?.updateIcon(for: phase)
             // 录音中 *和* 处理中都要保持 Esc 拦截：处理中 Esc 是用户唯一的出口
             self?.hotkeys.setCancellable(phase != .idle)
@@ -140,8 +160,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // flashInfo 而不是 flashNotice：.notice 那一档画的是一枚 ✗（「已取消」用它），
         // 摆在"已更新到 4.1.1"旁边正好把话说反
+        // 每周第一次启动：上周说了多少（5.4.0）。只读本机账本里的数字
+        let weekly = LaunchNotice.weeklyDue(
+            now: Date(),
+            shownForWeek: UserDefaults.standard.string(forKey: SettingsKeys.weeklyNoticeShownForWeek),
+            entries: UsageStore.shared.recent)
         LaunchNotice.flash(LaunchNotice.decide(updatedTo: updatedTo,
-                                               onboardingShowing: onboardingShowing),
+                                               onboardingShowing: onboardingShowing,
+                                               weekly: weekly),
                            after: UpdateChecker.installedNoticeDelay)
     }
 
@@ -245,7 +271,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let button = statusItem.button else { return }
         switch phase {
         case .idle:
-            button.image = MenuBarIcon.image(.idle)
+            // 红点只画在空闲态上：录音 / 处理中的图形不变（一件事只由一个信号说）
+            let alert = MenuBarIcon.showsAlert(errorShowing: overlayErrorShowing, hasKey: hasKey)
+            button.image = alert ? MenuBarIcon.idleAlertImage() : MenuBarIcon.image(.idle)
             button.contentTintColor = nil
         case .recording:
             button.image = MenuBarIcon.image(.recording)
@@ -254,6 +282,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             button.image = MenuBarIcon.image(.processing)
             button.contentTintColor = .systemOrange
         }
+    }
+
+    /// 钥匙串里有没有 OpenAI 那把 Key（点名账户，不依赖"当前服务商"）。有变化才换图标
+    private func refreshKeyPresence() {
+        let present = KeychainHelper.loadAPIKey(account: LLMProvider.openai.keychainAccount) != nil
+        guard present != hasKey || statusItem.button?.image == nil else { return }
+        hasKey = present
+        Log.info("Menu bar key presence=\(present)")
+        updateIcon(for: currentPhase)
     }
 
     /// 菜单栏那份菜单 5.0.1 起**只有三项**（用户 2026-09-22 拍板）：设置 / 检查更新 / 退出。

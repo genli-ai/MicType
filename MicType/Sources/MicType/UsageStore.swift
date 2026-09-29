@@ -13,6 +13,49 @@ struct UsageEntry: Codable, Equatable {
     let chars: Int
     /// 按住说的指令（true）还是轻点听写（false）
     let command: Bool
+    /// 5.4.0：这一行不是一句话，而是一次「换回原文」（悬浮窗「原文 → 润色」那一行被点了、
+    /// 原文真的贴回去了）。这种行 seconds / chars 都是 0，**不算进分钟 / 字数 / 句数 / 费用**，
+    /// 只给「写作偏好」那一行数"本周换回原文 N 次"。旧账本没有这个字段，读作 false。
+    var revert: Bool = false
+
+    init(date: Date, seconds: Double, chars: Int, command: Bool, revert: Bool = false) {
+        self.date = date
+        self.seconds = seconds
+        self.chars = chars
+        self.command = command
+        self.revert = revert
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case date, seconds, chars, command, revert
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        date = try c.decode(Date.self, forKey: .date)
+        seconds = try c.decode(Double.self, forKey: .seconds)
+        chars = try c.decode(Int.self, forKey: .chars)
+        command = try c.decode(Bool.self, forKey: .command)
+        // 5.3.0 写的行没有这个字段
+        revert = try c.decodeIfPresent(Bool.self, forKey: .revert) ?? false
+    }
+
+    /// revert 只在为真时写：普通的一句话仍然只有四样（UsageStoreTests 钉着"只有这四个键"），
+    /// 账本不为一个几乎总是 false 的字段每行多背十几个字节
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(date, forKey: .date)
+        try c.encode(seconds, forKey: .seconds)
+        try c.encode(chars, forKey: .chars)
+        try c.encode(command, forKey: .command)
+        if revert { try c.encode(true, forKey: .revert) }
+    }
+}
+
+/// 汇总哪一周：本周（设置状态卡）或上周（每周第一次启动闪的那一句）
+enum UsageWeekSpan {
+    case current
+    case previous
 }
 
 /// 设置状态卡上那三格：分钟 / 字数 / 约多少美元
@@ -21,6 +64,8 @@ struct UsageWeek: Equatable {
     let chars: Int
     let sentences: Int
     let costUSD: Double
+    /// 这周点了几次「换回原文」（不是句子，不进上面四个数）
+    var reverts: Int = 0
 
     static let empty = UsageWeek(seconds: 0, chars: 0, sentences: 0, costUSD: 0)
 
@@ -43,7 +88,7 @@ final class UsageStore: ObservableObject {
     /// 落盘位置。跑在 XCTest 里时写到临时目录（Log.isUnderTest）：单测绝不碰用户真实的账本
     let fileURL: URL
 
-    /// 最近这段时间的记录（只装本周一起往前 7 天的，够算"本周"又不会把一年的账都读进内存）
+    /// 最近这段时间的记录（只装往前 15 天的，够算本周与上周，又不会把一年的账都读进内存）
     @Published private(set) var recent: [UsageEntry] = []
 
     private let ioQueue = DispatchQueue(label: "com.mictype.usage.io", qos: .utility)
@@ -67,7 +112,15 @@ final class UsageStore: ObservableObject {
     /// 记一句（**只在主线程调**：DictationController 交付成功那一处）。
     /// 文件追加放后台队列——交付路径上主线程一毫秒都不该浪费。
     func record(seconds: Double, chars: Int, command: Bool, date: Date = Date()) {
-        let entry = UsageEntry(date: date, seconds: max(0, seconds), chars: max(0, chars), command: command)
+        append(UsageEntry(date: date, seconds: max(0, seconds), chars: max(0, chars), command: command))
+    }
+
+    /// 记一次「换回原文」（5.4.0，只在主线程调：revertToRaw 贴回原文成功那一处）
+    func recordRevert(date: Date = Date()) {
+        append(UsageEntry(date: date, seconds: 0, chars: 0, command: false, revert: true))
+    }
+
+    private func append(_ entry: UsageEntry) {
         recent.append(entry)
         guard let line = Self.encode(entry) else { return }
         let url = fileURL
@@ -119,12 +172,38 @@ final class UsageStore: ObservableObject {
 
     /// 本周（周一起）的合计
     static func summarize(_ entries: [UsageEntry], now: Date, timeZone: TimeZone = .current) -> UsageWeek {
-        let start = weekStart(for: now, timeZone: timeZone)
-        let week = entries.filter { $0.date >= start && $0.date <= now }
-        let seconds = week.reduce(0) { $0 + $1.seconds }
-        let chars = week.reduce(0) { $0 + $1.chars }
-        return UsageWeek(seconds: seconds, chars: chars, sentences: week.count,
-                         costUSD: estimatedCostUSD(seconds: seconds, sentences: week.count))
+        summarize(entries, now: now, week: .current, timeZone: timeZone)
+    }
+
+    /// 某一周的合计。
+    ///   • 本周 = 周一 00:00 到**这一刻**（未来时间不算：时钟被调过的那几行别混进来）；
+    ///   • 上周 = 上周一 00:00 到本周一 00:00（不含）。
+    /// 「换回原文」那几行只进 reverts，不进分钟 / 字数 / 句数 / 费用——它不是一次新的说话
+    static func summarize(_ entries: [UsageEntry], now: Date, week span: UsageWeekSpan,
+                          timeZone: TimeZone = .current) -> UsageWeek {
+        let thisStart = weekStart(for: now, timeZone: timeZone)
+        let range: (Date, Date, Bool)   // 起、止、止是否包含
+        switch span {
+        case .current:
+            range = (thisStart, now, true)
+        case .previous:
+            let previousStart = weekStart(for: thisStart.addingTimeInterval(-3600), timeZone: timeZone)
+            range = (previousStart, thisStart, false)
+        }
+        let inWeek = entries.filter {
+            $0.date >= range.0 && (range.2 ? $0.date <= range.1 : $0.date < range.1)
+        }
+        let spoken = inWeek.filter { !$0.revert }
+        let seconds = spoken.reduce(0) { $0 + $1.seconds }
+        let chars = spoken.reduce(0) { $0 + $1.chars }
+        return UsageWeek(seconds: seconds, chars: chars, sentences: spoken.count,
+                         costUSD: estimatedCostUSD(seconds: seconds, sentences: spoken.count),
+                         reverts: inWeek.count - spoken.count)
+    }
+
+    /// 上周这一刻看来的合计（每周第一次启动那一句用）
+    func previousWeek(now: Date = Date()) -> UsageWeek {
+        Self.summarize(recent, now: now, week: .previous)
     }
 
     /// **估算**的费用（美元）：识别按秒 + 每句一次润色。
@@ -158,9 +237,10 @@ final class UsageStore: ObservableObject {
         return try? decoder.decode(UsageEntry.self, from: Data(trimmed.utf8))
     }
 
-    /// 启动时只装这一刻往前 8 天的：本周最多 7 天，多一天给时区与周一零点留余量
+    /// 启动时只装这一刻往前 15 天的：5.4.0 起还要算**上周**（周日晚上启动时，上周一在 13 天前），
+    /// 多一天给时区与周一零点留余量。再早的账不进内存
     static func loadCutoff(now: Date) -> Date {
-        now.addingTimeInterval(-8 * 24 * 3600)
+        now.addingTimeInterval(-15 * 24 * 3600)
     }
 
     static func load(from url: URL, since cutoff: Date) -> [UsageEntry] {
