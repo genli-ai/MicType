@@ -6,7 +6,12 @@ import ApplicationServices
 
 struct MTError: Error {
     let message: String
-    init(_ message: String) { self.message = message }
+    /// 这条错误摆到悬浮窗上时带哪颗按钮（5.3.0 起由产生错误的地方点名，见 OverlayErrorAction）
+    let action: OverlayErrorAction
+    init(_ message: String, action: OverlayErrorAction = .dismiss) {
+        self.message = message
+        self.action = action
+    }
 }
 
 // MARK: - 路径

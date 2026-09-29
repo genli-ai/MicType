@@ -3,11 +3,11 @@ import SwiftUI
 import AppKit
 @testable import MicType
 
-/// 引导五屏的离屏截图。**不是一条断言，是一台相机**（同 SettingsSnapshotTests）。
+/// 引导三屏的离屏截图：3 屏 × 中英 × 深浅 = 12 张。**不是一条断言，是一台相机**（同 SettingsSnapshotTests）。
 ///
 /// 为什么非要有它：这台 Mac 没给终端屏幕录制权限，而引导是**只有第一次打开 MicType 的人
-/// 才看得到**的界面——改完之后连"它现在长什么样"都没办法确认一次。
-/// 4.3.4 给它加了键盘示意图和一整屏「它在哪」，正是最容易在英文下被撑破版式的两处。
+/// 才看得到**的界面——改完之后连"它现在长什么样"都没办法确认一次。5.3.0 起它还跟系统外观走，
+/// 浅色那一套只有在这里才看得见。
 ///
 /// 平时不跑（没有 `MICTYPE_SNAPSHOT_DIR` 就整组跳过）。要看图：
 ///
@@ -19,9 +19,7 @@ import AppKit
 /// 三条纪律（这是一个会在别人机器上跑的测试）：
 ///   • **不碰钥匙串**（KeychainHelper.lookupOverride 装一个假的）；
 ///   • **不弄脏用户的设置**（用到的键 setUp 里存下来，tearDown 原样写回）；
-///   • **不许有任何真实副作用**——识别档摆成云端，免得权限页的 onAppear 在一台
-///     没下过模型的机器上真的开始下 860MB；引导窗口没开着，所以最后一屏
-///     不会去动系统登录项（见 DonePage.armLaunchAtLogin）。
+///   • **不许有任何真实副作用**——引导窗口没开着，所以 ② 不读剪贴板、③ 不动系统登录项。
 final class OnboardingSnapshotTests: XCTestCase {
 
     /// 和真窗口一样的宽度，否则量出来的换行都不算数（高度按内容现算，见 shoot）
@@ -51,7 +49,6 @@ final class OnboardingSnapshotTests: XCTestCase {
         let defaults = UserDefaults.standard
         for key in Self.touchedKeys { savedDefaults[key] = defaults.object(forKey: key) }
         KeychainHelper.lookupOverride = { _ in "sk-snapshot-placeholder" }
-        // 5.1.0 起只有 OpenAI 一家（第三屏：标题「连接 OpenAI」+ 申请三步 + Key 框）
         defaults.set(LLMProvider.openai.rawValue, forKey: SettingsKeys.llmProvider)
     }
 
@@ -68,17 +65,17 @@ final class OnboardingSnapshotTests: XCTestCase {
     @MainActor
     func testRenderOnboardingPages() throws {
         let names: [(OnboardingPage, String)] = [
-            (.welcome, "onboarding-1-welcome"),
-            (.permissions, "onboarding-2-permissions"),
-            (.howYouUse, "onboarding-3-how-you-use"),
-            (.tryIt, "onboarding-4-try-it"),
-            (.done, "onboarding-5-done"),
+            (.hold, "onboarding-1-hold"),
+            (.key, "onboarding-2-key"),
+            (.tryIt, "onboarding-3-try-it"),
         ]
-        for language in [AppLanguage.zh, .en] {
-            L10n.shared.language = language
-            let tag = language == .zh ? "zh" : "en"
-            for (page, name) in names {
-                shoot(page, name: "\(name)-\(tag)")
+        for dark in [true, false] {
+            for language in [AppLanguage.zh, .en] {
+                L10n.shared.language = language
+                let tag = (language == .zh ? "zh" : "en") + (dark ? "-dark" : "-light")
+                for (page, name) in names {
+                    shoot(page, name: "\(name)-\(tag)", dark: dark)
+                }
             }
         }
         print("[snapshot] PNGs written to \(outputDirectory.path)")
@@ -86,37 +83,41 @@ final class OnboardingSnapshotTests: XCTestCase {
 
     /// 一屏 → 一张 PNG
     @MainActor
-    private func shoot(_ page: OnboardingPage, name: String) {
+    private func shoot(_ page: OnboardingPage, name: String, dark: Bool) {
         let model = OnboardingModel()
         model.page = page
-        // 权限那一屏拍"未授权"态：那才是第一次打开的人看到的样子，
-        // 而且 micOK = false 时不会渲染 MicCheckPanel（它会真的打开麦克风）
-        model.micOK = false
+        // ① 拍"一项已授权、一项没有"的样子：两种状态圆同一张图里都看得见
+        model.micOK = true
         model.axOK = false
         model.refreshAIReady()
+        // ③ 拍"字已经落进来"的那一刻（「就是这样…」+「开始使用」）——那是这一屏要被看的样子。
+        // 权限摆成齐的：否则按钮是「先跳过」
+        if page == .tryIt {
+            model.axOK = true
+            model.appendTryItText(language == .zh ? "明天下午三点开会。" : "Meeting tomorrow at 3 pm.")
+        }
 
         let host = NSHostingView(rootView: AnyView(OnboardingView(model: model)))
-        // **和真窗口同一条路**（OnboardingWindowController.applyFittedHeight）：
-        // 按目标宽度排一遍版 → 问 fittingSize → 过一遍 OnboardingWindowSizing。
-        // 写死 470 的话这组图既看不出留白也看不出裁切，而这一版要看的正是这两件事
         host.frame = NSRect(x: 0, y: 0, width: width, height: OnboardingWindowSizing.minContentHeight)
+        let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        host.appearance = appearance
         host.layoutSubtreeIfNeeded()
         let natural = host.fittingSize.height
         let fitted = OnboardingWindowSizing.contentHeight(natural: natural,
                                                           visibleScreenHeight: screenHeight)
-        // 图上看不出"差一点点"：裁掉两三个像素的截图和没裁的长得一样，所以这里断言一次
         XCTAssertGreaterThanOrEqual(fitted, natural, "\(name)：窗口给的高度装不下这一屏")
         let frame = NSRect(x: 0, y: 0, width: width, height: fitted)
         host.frame = frame
         let window = NSWindow(contentRect: frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
+        window.appearance = appearance
         window.contentView = host
         // 屏幕外面：这组测试跑的时候人可能正在用这台 Mac，别往他脸上弹窗
         window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
         window.orderFrontRegardless()
 
         host.layoutSubtreeIfNeeded()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.35))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
         host.layoutSubtreeIfNeeded()
         host.displayIfNeeded()
 
@@ -124,6 +125,8 @@ final class OnboardingSnapshotTests: XCTestCase {
         window.orderOut(nil)
         print("[snapshot] \(name): natural=\(Int(natural)) window=\(Int(fitted))")
     }
+
+    private var language: AppLanguage { L10n.shared.language }
 
     @MainActor
     private func write(host: NSView, to name: String) {

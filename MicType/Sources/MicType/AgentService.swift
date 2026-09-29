@@ -324,12 +324,12 @@ enum LLMClient {
         let candidate = candidateKey?.trimmingCharacters(in: .whitespacesAndNewlines)
         if candidate == nil || candidate!.isEmpty {
             guard credential(for: provider) != nil else {
-                completion(false, tr("还没有填 API Key", "No API key yet"))
+                completion(false, UserMessage.keyMissing)
                 return
             }
         }
         guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            completion(false, tr("还没有填模型名", "No model name yet"))
+            completion(false, UserMessage.noModelName)
             return
         }
         let start = Date()
@@ -346,7 +346,7 @@ enum LLMClient {
             if let r = result {
                 completion(true, "\(secs)s · " + tr("返回：", "Response: ") + String(r.prefix(20)))
             } else {
-                completion(false, failure ?? tr("未知原因", "unknown"))
+                completion(false, failure ?? UserMessage.unknownError)
             }
         }
     }
@@ -596,10 +596,7 @@ enum LLMClient {
 
     /// 撞上输出上限时对用户说的那一句。两条路说的是同一件事（Responses 的 `status == "incomplete"`
     /// 与 chat 的 `finish_reason == "length"`），所以逐字共用一句。
-    static var truncatedOutputCopy: String {
-        tr("模型输出被长度上限截断了，请缩短这段口述再试",
-           "The model output hit the length limit — try a shorter dictation")
-    }
+    static var truncatedOutputCopy: String { UserMessage.outputTruncated }
 
     /// 官方明确警告不要假设 `output[0].content[0].text`：推理条目、web_search 调用都会排在 message 前面。
     /// 所以按 `type == "message"` 找条目，再在它的 content 里按 `type == "output_text"` 取文本。
@@ -701,7 +698,10 @@ enum LLMClient {
         guard !handle.isCancelled else { return }
         // 候选 Key（验证中）优先；它只存在于这一趟请求里，别处读不到，也没写进钥匙串
         guard let apiKey = apiKeyOverride ?? credential(for: provider) else {
-            DispatchQueue.main.async { completion(nil, tr("未配置 API Key", "No API key configured")) }
+            DispatchQueue.main.async {
+                LLMUsageSink.shared.record(LLMUsage(failureAction: .openSettings))
+                completion(nil, UserMessage.keyMissing)
+            }
             return
         }
         // 模型名为空（自定义端点 / 本机模型这两档没有预设默认值）：直接说清楚。
@@ -709,8 +709,7 @@ enum LLMClient {
         if let model = body["model"] as? String,
            model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             DispatchQueue.main.async {
-                completion(nil, tr("还没填模型名——在设置里填一个，或点「刷新模型列表」从端点取",
-                                   "No model name yet - type one in Settings, or hit Refresh model list"))
+                completion(nil, UserMessage.noModelName)
             }
             return
         }
@@ -723,8 +722,7 @@ enum LLMClient {
         // 5.0.x 这句话指着「API Host」那一栏，5.1.0 那一栏随阿里云删掉，只说事实本身。
         guard !base.isEmpty else {
             DispatchQueue.main.async {
-                completion(nil, tr("这一档的接口地址不完整",
-                                   "This provider's endpoint is incomplete"))
+                completion(nil, UserMessage.endpointIncomplete)
             }
             return
         }
@@ -737,7 +735,7 @@ enum LLMClient {
             return
         }
         guard let url = URL(string: base + path) else {
-            DispatchQueue.main.async { completion(nil, tr("Base URL 格式不对", "Invalid base URL")) }
+            DispatchQueue.main.async { completion(nil, UserMessage.invalidEndpoint) }
             return
         }
         send(path: path, url: url, body: body, apiKey: apiKey, timeout: timeout, endpoint: endpoint,
@@ -817,9 +815,15 @@ enum LLMClient {
                     }
                     return
                 }
-                failure = nsError.code == NSURLErrorTimedOut
-                    ? LLMCatalog.timeoutCopy(retried: didRetry).fullText
-                    : error.localizedDescription + (didRetry ? tr("（已重试）", " (retried)") : "")
+                // 系统给的那句 localizedDescription 可能是另一种语言、也可能很长：只进日志，
+                // 屏幕上一句话（UX 方案 §3 H）
+                if nsError.code == NSURLErrorTimedOut {
+                    failure = LLMCatalog.timeoutCopy(retried: didRetry).text
+                } else {
+                    Log.warn("LLM network error code=\(nsError.code) retried=\(didRetry) "
+                             + String(error.localizedDescription.prefix(160)))
+                    failure = UserMessage.networkError
+                }
             } else if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                 let err = json?["error"] as? [String: Any]
                 let message = err?["message"] as? String
@@ -843,10 +847,16 @@ enum LLMClient {
                         return
                     }
                 }
-                failure = LLMCatalog.describeHTTPError(status: http.statusCode,
-                                                       provider: provider,
-                                                       code: code.isEmpty ? nil : code,
-                                                       message: message).fullText
+                let copy = LLMCatalog.describeHTTPError(status: http.statusCode,
+                                                        provider: provider,
+                                                        code: code.isEmpty ? nil : code,
+                                                        message: message)
+                // 服务商的原话只进日志（它说的是服务商那一侧的原因，不含用户说的内容）；
+                // 屏幕上只有一句话 + 一颗按钮（UX 方案 §3 H）
+                Log.warn("LLM HTTP \(http.statusCode) provider=\(provider.rawValue) code=\(code) "
+                         + "message=" + String((message ?? "").prefix(200)))
+                failure = copy.text
+                usage.failureAction = copy.action
             } else if let json = json {
                 switch endpoint {
                 case .responses:
@@ -859,7 +869,7 @@ enum LLMClient {
                     } else if payload.truncated {
                         failure = truncatedOutputCopy
                     } else {
-                        failure = tr("模型返回了空内容", "Model returned empty content")
+                        failure = UserMessage.modelReturnedNothing
                     }
                 case .chat:
                     let payload = parseChatPayload(json)
@@ -872,13 +882,13 @@ enum LLMClient {
                         // 与 Responses 那条路同一条纪律：半截输出不是结果，绝不当成功交付
                         failure = truncatedOutputCopy
                     } else if payload.unparsable {
-                        failure = tr("返回格式无法解析", "Could not parse the response")
+                        failure = UserMessage.unreadableResponse
                     } else {
-                        failure = tr("模型返回了空内容", "Model returned empty content")
+                        failure = UserMessage.modelReturnedNothing
                     }
                 }
             } else {
-                failure = tr("返回格式无法解析", "Could not parse the response")
+                failure = UserMessage.unreadableResponse
             }
             finish(result, failure, usage: usage)
         }
@@ -982,7 +992,7 @@ enum AgentService {
             }
             let body = result.trimmingCharacters(in: .whitespacesAndNewlines)
             if body.isEmpty {
-                completion(nil, tr("模型没有返回内容", "Model returned no content"))
+                completion(nil, UserMessage.modelReturnedNothing)
             } else {
                 completion(body, nil)
             }

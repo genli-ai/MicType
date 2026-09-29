@@ -74,13 +74,16 @@ enum SettingsCopy {
 
     // MARK: - 专有词汇表（自己的一页，从设置底部那排小字点开）
 
-    /// 这一页的名字。**只写一处**：脚注那条链接、子页顶栏的标题念的是同一串。
+    /// 这一页的名字。**只写一处**：设置状态页那一行的栏名、子页顶栏的标题念的是同一串。
+    ///
+    /// 5.3.0 改回「写作偏好 / Writing」（用户 2026-09-29 拍板）：状态页那一行叫「写作偏好」，
+    /// 点进去的页名必须一样；「专有词汇表」只留作页里第一个框的栏名。
     ///
     /// 5.0.2 从「写作偏好 / Writing preferences」改名（用户 2026-09-23 拍板）：
     /// 那一页里就是一张词表加一段规则，而「写作偏好」听着像一整套排版设置——
     /// 用户按名字去找"怎么让它别听错我的名字"时，不会点进一个叫"写作偏好"的地方。
     static var vocabularyPageTitle: String {
-        tr("专有词汇表", "Custom Vocabulary")
+        tr("写作偏好", "Writing")
     }
 
     // writingPreferencesIntro（页面开头那句「人名、术语、写作习惯——识别与润色都会参考」）
@@ -209,12 +212,8 @@ enum SettingsCopy {
     // 「润色在菜单栏里关着」与两条「识别停在旧档」5.0.0 删掉：润色没有开关了，
     // 识别引擎跟着生效服务商走，这三种说不通的状态都不再可能出现。
 
-    /// 登录项没改成：受管的 Mac 上它可能被 MDM 挡住，开关自己弹回去而屏幕上一个字都没有，
-    /// 用户只会觉得这个开关坏了。原因（系统给的那句话）记进日志，界面上只留结论与去处。
-    static var launchAtLoginFailed: String {
-        tr("系统没让改登录项，可能被管理策略挡住。",
-           "The system refused to change the login item, possibly blocked by a policy.")
-    }
+    // launchAtLoginFailed（「系统没让改登录项」）5.3.0 删掉：引导最后那一屏的登录自启开关没有了，
+    // ③ 那一行直接照实写「已开启 / 未开启」（OnboardingCopy.launchAtLogin），原因只进日志。
 
     /// 官方几档的地址被老版本改过：看不见的自定义地址是查不出来的故障
     static var endpointOverridden: String {
@@ -225,7 +224,7 @@ enum SettingsCopy {
     // 自定义端点那一档没有了，本机模型也没有了。
 
     static var boundaryLines: [String] {
-        [launchAtLoginFailed, endpointOverridden]
+        [endpointOverridden]
     }
 
     // MARK: - 预算表（单测按这几张表逐条量）

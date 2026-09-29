@@ -94,18 +94,17 @@ final class CloudASRIntegrationTests: XCTestCase {
                        .cloudKeyMissing(.openai), "没 Key 优先于没网")
     }
 
-    /// 每一种"开不了工"都必须有一句话；缺 Key 那一档还要有可点的胶囊
+    /// 每一种"开不了工"都必须有一句话；缺 Key 那一档的按钮是「打开设置」
     func testReadinessMessagesAndChips() {
         XCTAssertTrue(RecognitionEngineReadiness.ready.isReady)
         XCTAssertTrue(RecognitionEngineReadiness.ready.message.isEmpty)
-        XCTAssertNil(RecognitionEngineReadiness.ready.settingsChipLabel)
-        // 没网那一档不给胶囊：设置页上没有任何一个开关能把网接回来
-        XCTAssertNil(RecognitionEngineReadiness.offline.settingsChipLabel)
+        // 没网那一档只给「关闭」：设置页上没有任何一个开关能把网接回来
+        XCTAssertEqual(RecognitionEngineReadiness.offline.overlayAction, .dismiss)
         for state: RecognitionEngineReadiness in [.offline, .cloudKeyMissing(.openai)] {
             XCTAssertFalse(state.isReady)
             XCTAssertFalse(state.message.trimmingCharacters(in: .whitespaces).isEmpty)
         }
-        XCTAssertNotNil(RecognitionEngineReadiness.cloudKeyMissing(.openai).settingsChipLabel)
+        XCTAssertEqual(RecognitionEngineReadiness.cloudKeyMissing(.openai).overlayAction, .openSettings)
     }
 
     // MARK: - 云端炸了之后
@@ -128,11 +127,17 @@ final class CloudASRIntegrationTests: XCTestCase {
                        .reportFailure)
     }
 
-    func testRetryNoteNamesTheReasonAndStaysShort() {
-        let note = CloudFallbackDecision.retryNote(reason: "429 Throttling")
-        XCTAssertTrue(note.contains("429 Throttling"), "原因要原样摆出来：用户据此判断要不要重试")
-        let long = CloudFallbackDecision.retryNote(reason: String(repeating: "x", count: 400))
-        XCTAssertLessThan(long.count, 200, "悬浮窗一行放不下 400 个字符的云端原话")
+    /// 5.3.0 起原因**不上屏**（进日志）：悬浮窗上只说"在重试"，一句话（UX 方案 §3 H）
+    func testRetryNoteIsOneShortLine() {
+        let saved = L10n.shared.language
+        defer { L10n.shared.language = saved }
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            let note = CloudFallbackDecision.retryNote
+            XCTAssertFalse(note.isEmpty)
+            XCTAssertLessThanOrEqual(note.count, language == .zh ? 16 : 40, note)
+            XCTAssertTrue(UserMessage.all.contains(note))
+        }
     }
 
     /// 重试也没成那一句**不报技术细节**：他已经等了两趟，现在唯一有用的信息是"再说一次"

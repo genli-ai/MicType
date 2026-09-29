@@ -60,7 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 缺系统权限时同样去引导（OWNER 规则 2026-09-20：三件必办的事都在引导里办完）。
         // 那一页两项权限各一行、各一颗按钮，勾上之后自己变绿并往下走
         dictation.onNeedPermissions = {
-            OnboardingWindowController.shared.show(startAt: .permissions)
+            OnboardingWindowController.shared.show(startAt: .hold)
         }
 
         // 悬浮窗上的「去配置」/「去设置」：5.0.0 起设置就是一页，两条深链都落在它上面
@@ -197,7 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 关掉窗口、模型在后台继续下）被判成"已经配好"，引导从此再也不出现，
         // 而他的第一次轻点撞上的是系统授权框 +「请再按一次」，不是那一页。
         let essentials = FirstRunEssentials.current()
-        let alreadyUsable = essentials.permissionsGranted && essentials.modelReady
+        let alreadyUsable = essentials.canFinish
 
         if !Settings.shared.onboardingCompleted {
             if alreadyUsable {
@@ -214,11 +214,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                   !Settings.shared.onboardingSkippedEssentials {
             // 走过引导、但这一刻**没有 Key**（5.0.0 把 DeepSeek / 自定义端点 / 本机大模型
             // 三档删掉了，5.1.0 又删掉了阿里云——用那几档的老用户升上来就落在这里）。
-            // 识别也在云端，没有 Key 连听写都不能用——所以把他接回引导第三屏，
+            // 识别也在云端，没有 Key 连听写都不能用——所以把他接回引导第二屏（贴 Key），
             // 而不是让他按一次热键才发现。
             // 点过「先跳过」的人例外：他已经知道，每次启动再弹一遍就成了催促。
             Log.info("Onboarding reopened: no API key after the 5.0 upgrade")
-            OnboardingWindowController.shared.show(startAt: .howYouUse)
+            OnboardingWindowController.shared.show(startAt: .key)
             return true
         }
 

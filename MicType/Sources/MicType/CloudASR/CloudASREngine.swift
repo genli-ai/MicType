@@ -264,8 +264,7 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
         }
 
         guard client.hasCredentials else {
-            finish(.failure(CloudASRFailure(tr("还没填 API Key（去「设置」）",
-                                               "No API key yet (open Settings)"))))
+            finish(.failure(CloudASRFailure(UserMessage.keyMissing, action: .openSettings)))
             return handle
         }
         guard !samples.isEmpty else {

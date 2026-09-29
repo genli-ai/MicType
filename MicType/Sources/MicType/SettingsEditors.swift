@@ -3,32 +3,42 @@ import AppKit
 import ServiceManagement
 import Combine
 
-// MARK: - 设置正页（5.0.0 起**整个设置就是这一页**）
+// MARK: - 设置正页（5.3.0 起是一张**状态页**）
 
 /// ```
 /// 麦克风还没授权，录不到声音                    [打开麦克风设置]   ← 只在缺权限时出现
-/// 辅助功能没授权：热键和输入都无效              [打开辅助功能设置]
 ///
-/// OpenAI Key [••••••••]  [去申请 Key ↗]                          ⓘ
-/// 已连通 ✓ 云端·OpenAI · gpt-transcribe · …        ← 状态行，只在有话说时出现
-///
-/// ─────────────────────────────────────────────────────
-///            关于 · 专有词汇表 · 历史记录 · 语言 · 重看引导
+/// ┌ [图标] OpenAI · 已连接                               本周 ┐
+/// │        Key ···7f3a                                        │
+/// │ ───────────────────────────────────────────────────────── │
+/// │ 43 分钟            6,200 字            约 $0.12            │
+/// └───────────────────────────────────────────────────────────┘
+/// ┌ OpenAI Key  [••••••••]  [去申请 Key ↗]                 ⓘ ┐
+/// │ 写作偏好    词汇表 12 条 · 规则 2 条                     › │
+/// │ 界面语言    中文                                         › │
+/// └───────────────────────────────────────────────────────────┘
+///          关于 · 隐私 · 检查更新 · 重看引导 · 历史记录
 /// ```
 ///
-/// 4.x 拿掉了什么、为什么，见 SettingsRoute 的注释。这一页自己的纪律：
-///   • **5.1.0 起只有 OpenAI 一家**（用户 2026-09-28 拍板）：没有服务商那一行，栏名就叫「OpenAI Key」，
-///     用户在这一页只做一件事——贴 Key。选择器、「正在使用 ✓」、阿里云的接入地址都删了。
-///   • ⓘ 只挂在一行上：API Key（Key 存钥匙串、费用直付、每小时大概多少钱）。
-///     5.1.0 加的「实时草稿」开关 5.2.0 删掉：悬浮窗改成右端一个字数计数，没有什么可开关的了。
-///   • 权限横幅只在**缺项时**出现：两项都齐的时候，它每天占着首屏最贵的位置说一句"没事"。
+/// 为什么从「配置页」变成「状态页」（UX 方案 §3 D，用户 2026-09-29 拍板）：打开设置的人最想知道的
+/// 是三件事——连上了没有、这周用了多少、大概花了多少钱；而要改的东西只剩一把 Key。
+/// 5.2.0 打开设置只看到一个 Key 框，"它为我做了什么"一个字都没有。
+///
+/// 这一页自己的纪律：
+///   • **5.1.0 起只有 OpenAI 一家**：没有服务商那一行，栏名就叫「OpenAI Key」；
+///   • 用量是**本机账本**算的（UsageStore，永不上传），费用一律写「约」；
+///   • 权限横幅只在**缺项时**出现：两项都齐的时候，它每天占着首屏最贵的位置说一句"没事"；
+///   • 跟系统外观走（Theme.palette）：浅色模式下是浅色 tokens，不是反色。
 struct MainSettingsPage: View {
     @ObservedObject private var l10n = L10n.shared
+    @ObservedObject private var usage = UsageStore.shared
     @AppStorage(SettingsKeys.openaiBaseURL) private var baseURL = "https://api.openai.com/v1"
+    @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
+    @AppStorage(SettingsKeys.customPolishRules) private var customRules = ""
+    @Environment(\.colorScheme) private var scheme
 
-    /// 上半那张表量出来有多高、底栏有多高。两个数加起来才是这一页要报给窗口的高度
-    /// （底栏 5.0.3 起在表**外面**，见 body）
-    @State private var formHeight: CGFloat = 0
+    /// 上半那一叠量出来有多高、底栏有多高。两个数加起来才是这一页要报给窗口的高度
+    @State private var bodyHeight: CGFloat = 0
     @State private var footerHeight: CGFloat = 0
 
     @State private var micOK = Permissions.microphoneGranted
@@ -38,40 +48,35 @@ struct MainSettingsPage: View {
     @State private var permissionPoll: AnyCancellable?
     @ObservedObject private var windowState = SettingsWindowController.shared
 
+    /// 钥匙串里那把 Key 的尾号（nil = 没有 Key）。**存着**而不是在 body 里现读：
+    /// 读钥匙串是 Security 框架的调用，不许坐在每次重绘的路径上（Settings.swift 里那条规矩）。
+    /// 刷新点：这一页出现、Key 验证有了结论
+    @State private var keyTail: String?
 
-    /// 这一页要报给窗口的高度。
-    ///
-    /// **就是内容本身的高度，没有地板**（5.0.5）。5.0.3 在这里垫了个 320 的地板，
-    /// 理由是"换服务商时窗口不许跳"；那个数字是从快照量来的，而快照里两条权限横幅
-    /// 永远是亮的（离屏渲染拿不到这台机器的授权状态）。于是真机上——权限都给了、
-    /// 横幅不出现——这一页只有两三行控件，却被撑到 320，底栏上面空着一大块，
-    /// 正是用户 2026-09-23 截图里那扇窗。
+    /// 这一页要报给窗口的高度：内容本身，没有地板（5.0.5 的教训）
     private var naturalHeight: CGFloat {
         // +1：底栏上面那条 Divider
-        formHeight + footerHeight + 1
+        bodyHeight + footerHeight + 1
     }
 
     var body: some View {
+        let palette = Theme.palette(scheme)
         VStack(spacing: 0) {
-            // 上半：控件。**滚动容器占满剩下的高度**，所以底栏永远贴着窗底
+            // 上半：卡片。**滚动容器占满剩下的高度**，所以底栏永远贴着窗底
             ScrollView {
-                Form {
+                VStack(alignment: .leading, spacing: 14) {
                     if !micOK || !axOK {
-                        Section { permissionsBanner }
+                        MTCard { permissionsBanner }
                     }
-                    // Key：与引导 ③ **同一个视图**
-                    // （CloudSetupCore），顺序、说明、那颗 ⓘ 全都只写一处。
-                    CloudSetupCore(style: .settings) {
-                        providerNotices
-                    }
+                    SettingsStatusCard(keyTail: keyTail, week: usage.thisWeek())
+                    rowsCard
                 }
-                .formStyle(.grouped)
+                .padding(20)
                 .frame(width: SettingsWindowSizing.width)
-                // Form(.grouped) 自带一层滚动，不 fixedSize 的话问它"你多高"永远等于窗口那么高
                 .fixedSize(horizontal: false, vertical: true)
                 .background(GeometryReader { geo in
-                    Color.clear.onAppear { formHeight = geo.size.height }
-                        .onChange(of: geo.size.height) { _, height in formHeight = height }
+                    Color.clear.onAppear { bodyHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { _, height in bodyHeight = height }
                 })
             }
             .scrollBounceBehavior(.basedOnSize)
@@ -87,21 +92,115 @@ struct MainSettingsPage: View {
                 })
         }
         .frame(width: SettingsWindowSizing.width)
-        // 窗口高度走的还是原来那条路（SettingsPageHeightKey → SettingsView → 窗口），
-        // 只是这一页自己算这个数：表 + 底栏，再垫到那个地板上
+        .background(palette.bg)
+        .foregroundColor(palette.text)
         .preference(key: SettingsPageHeightKey.self, value: [.overview: naturalHeight])
-        .onAppear { startPermissionPolling() }
+        .onAppear {
+            refreshKeyTail()
+            startPermissionPolling()
+        }
         .onDisappear { stopPermissionPolling() }
         // 关窗时这一页并不会被销毁（窗口复用），所以停轮询这件事只能由窗口来说
         .onChange(of: windowState.isOpen) { _, open in
-            if open { startPermissionPolling() } else { stopPermissionPolling() }
+            if open {
+                refreshKeyTail()
+                startPermissionPolling()
+            } else {
+                stopPermissionPolling()
+            }
         }
         // 从系统设置回来（刚勾完权限）时重问一次
         .onReceive(NotificationCenter.default.publisher(
             for: NSApplication.didBecomeActiveNotification)) { _ in refreshPermissions() }
     }
 
-    /// 服务商下面的边界状态。正常情况下这里一个字都不显示。
+    // MARK: 下面那张卡：三行
+
+    private var rowsCard: some View {
+        MTCard {
+            VStack(alignment: .leading, spacing: 0) {
+                providerNotices
+                // Key：与引导 ② **同一个控件**（CloudSetupCore → KeyEntryView），验证与存储只写一处
+                CloudSetupCore(style: .settings,
+                               onKeyStatus: { _ in refreshKeyTail() }) {
+                    EmptyView()
+                }
+                .padding(.vertical, 6)
+                rowDivider
+                writingRow
+                rowDivider
+                languageRow
+            }
+        }
+    }
+
+    private var rowDivider: some View {
+        Rectangle()
+            .fill(scheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.06))
+            .frame(height: 1)
+    }
+
+    /// 「写作偏好」一行：值是事实（几条词、几条规则），点进去是那一页编辑器
+    private var writingRow: some View {
+        Button {
+            SettingsNavigator.shared.go(to: .writing)
+        } label: {
+            SettingsFieldRow(label: SettingsCopy.vocabularyPageTitle) {
+                HStack {
+                    Text(WritingPreferencesSummary.line(vocabulary: vocabulary, rules: customRules))
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    chevron
+                }
+            }
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 「界面语言」一行：点一下弹一个两项的小菜单、当前那项打勾，**选了才切**
+    ///（5.0.2 的规矩：误点一次的人不该要在他看不懂的界面里找回来）
+    private var languageRow: some View {
+        SettingsFieldRow(label: tr("界面语言", "Language")) {
+          HStack(spacing: 0) {
+            Menu {
+                Picker("", selection: Binding(get: { l10n.language },
+                                              set: { next in
+                                                  guard next != l10n.language else { return }
+                                                  Log.info("UI language switched to=\(next.rawValue)")
+                                                  l10n.language = next
+                                              })) {
+                    ForEach(AppLanguage.allCases, id: \.rawValue) { language in
+                        Text(language.displayName).tag(language)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            } label: {
+                Text(l10n.language.displayName)
+            }
+            // .button + .plain：标签就是一行普通的字。.borderlessButton 会把标签画粗、
+            // 还自带一枚箭头挤在字前面（5.3.0 首版快照里的「> 中文」）
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            Spacer(minLength: 8)
+            chevron
+          }
+        }
+        .frame(minHeight: 44)
+    }
+
+    private var chevron: some View {
+        Image(systemName: "chevron.right")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(Theme.palette(scheme).muted)
+            .accessibilityHidden(true)
+    }
+
+    /// Key 上面的边界状态。正常情况下这里一个字都不显示。
     @ViewBuilder
     private var providerNotices: some View {
         // OpenAI 的地址被老版本（或导入的设置文件）改过时必须看得见：
@@ -115,7 +214,12 @@ struct MainSettingsPage: View {
                     baseURL = LLMProvider.openai.defaultBaseURL
                 }
             }
+            .padding(.vertical, 8)
         }
+    }
+
+    private func refreshKeyTail() {
+        keyTail = SettingsStatusCard.keyTail(KeychainHelper.loadAPIKey(account: LLMProvider.openai.keychainAccount))
     }
 
     // MARK: 权限横幅（缺了才出现）
@@ -161,78 +265,155 @@ struct MainSettingsPage: View {
 
     // MARK: 脚注：五个入口，一颗按钮都没有
 
-    /// 「重看引导」住在这里（用户 2026-09-20 拍板）：那份引导讲的是整个产品怎么用，
-    /// 不是一条设置。「专有词汇表」4.3.3 之前是「输入」页上的一段，5.0.0 起从这里点开
-    /// ——它改得不勤，但改的是用户自己的文字，值一个自己的地方。
-    ///
-    /// 5.0.2 的三处改动（用户 2026-09-23 拍板）：
-    ///   • 「写作偏好」改叫**「专有词汇表」**——那一页里就是一张词表加一段规则，
-    ///     「写作偏好」四个字听着像一整套排版设置；
-    ///   • 「历史记录」不再开一扇自己的窗（那扇窗整个删掉了），直接打开日志文件夹——
-    ///     要翻记录的人本来就是要去看文件的；
-    ///   • 「语言」点一下弹一个两项的小菜单、当前那项打勾，**选了才切**：
-    ///     原先点一下就当场换掉整个界面，误点一次的人要在他看不懂的界面里找回来。
+    /// 设计稿 Settings-Status 的那一行：关于 · 隐私 · 检查更新 · 重看引导 · 历史记录。
+    /// 「专有词汇表」与「语言」5.3.0 从这里搬进上面那张卡（写作偏好 / 界面语言两行）：
+    /// 它们是"我的设置"，不是"关于这个 App"。
+    ///   • 「重看引导」住在这里（用户 2026-09-20 拍板）：那份引导讲的是整个产品怎么用，不是一条设置；
+    ///   • 「历史记录」直接打开 Transcripts 目录（5.0.2 起没有历史窗口）。
     private var footer: some View {
-        HStack(spacing: 16) {
-            Button(tr("关于 MicType", "About MicType")) {
+        HStack(spacing: 8) {
+            Spacer()
+            footerLink(tr("关于", "About")) {
                 SettingsNavigator.shared.go(to: .about)
             }
-            Button(SettingsCopy.vocabularyPageTitle) {
-                SettingsNavigator.shared.go(to: .writing)
+            dot
+            footerLink(tr("隐私", "Privacy")) {
+                SettingsNavigator.shared.go(to: .about, intent: .privacy)
             }
-            Button(tr("历史记录", "History")) {
+            dot
+            footerLink(tr("检查更新", "Check for Updates")) {
+                SettingsNavigator.shared.go(to: .about, intent: .checkUpdate)
+            }
+            dot
+            footerLink(tr("重看引导", "Review the guide")) {
+                OnboardingWindowController.shared.show()
+            }
+            dot
+            footerLink(tr("历史记录", "History")) {
                 // 5.0.5 起听写记录是 Logs/MicType/Transcripts 里按天的纯文本，
-                // 这颗按钮直接打开那个目录（不是它上一级的日志目录）：用户点「历史记录」
-                // 要的是记录本身，让他在一堆 mictype-*.log 里再找一次是多余的一步。
-                // 目录还没建（今天一次都没听写过）就先建再开，免得点了什么都不发生。
+                // 这颗按钮直接打开那个目录。目录还没建就先建再开，免得点了什么都不发生
                 let dir = HistoryStore.shared.directory
                 try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                 Log.info("Open transcripts folder from settings footer")
                 NSWorkspace.shared.open(dir)
             }
-            languageMenu
-            Button(tr("重看引导", "Review the guide")) {
-                OnboardingWindowController.shared.show()
-            }
             Spacer()
         }
-        .buttonStyle(.link)
-        .font(.caption)
+        .font(.system(size: 11))
     }
 
-    /// 「语言」那一项。用内嵌 Picker 而不是两颗 Button：当前那一项要**打勾**，
-    /// 而勾是 Picker 自带的——自己画一个 checkmark 迟早和系统的样式对不上。
-    private var languageMenu: some View {
-        Menu {
-            Picker("", selection: Binding(get: { l10n.language },
-                                          set: { next in
-                                              guard next != l10n.language else { return }
-                                              Log.info("UI language switched to=\(next.rawValue)")
-                                              l10n.language = next
-                                          })) {
-                ForEach(AppLanguage.allCases, id: \.rawValue) { language in
-                    Text(language.displayName).tag(language)
+    private var dot: some View {
+        Text("·").foregroundColor(Theme.palette(scheme).muted)
+    }
+
+    private func footerLink(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.plain)
+            .foregroundColor(Theme.palette(scheme).muted)
+            .fixedSize()
+    }
+}
+
+// MARK: - 顶上那张状态卡
+
+/// 左：连接状态 + Key 尾号；右：本周三格（分钟 / 字数 / 约 $）。设计稿 Settings-Status。
+struct SettingsStatusCard: View {
+    /// Key 的尾号（nil = 没有 Key → 「未连接」）
+    let keyTail: String?
+    let week: UsageWeek
+    @Environment(\.colorScheme) private var scheme
+
+    /// Key 尾号：末 4 位（纯函数，单测钉住"不够长就不显示"——
+    /// 尾号是给人认"是不是那一把"用的，一把 6 位的 Key 露 4 位就等于没藏）
+    static func keyTail(_ key: String?) -> String? {
+        guard let key = key?.trimmingCharacters(in: .whitespacesAndNewlines), key.count >= 12 else {
+            return nil
+        }
+        return String(key.suffix(4))
+    }
+
+    static func connectionLine(connected: Bool) -> String {
+        connected ? tr("OpenAI · 已连接", "OpenAI · Connected")
+                  : tr("OpenAI · 未连接", "OpenAI · Not connected")
+    }
+
+    var body: some View {
+        let palette = Theme.palette(scheme)
+        MTCard {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .center, spacing: 12) {
+                    Image(nsImage: NSApp?.applicationIconImage ?? NSImage())
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 40, height: 40)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(keyTail != nil ? Color(hex: 0x30D158) : palette.muted)
+                                .frame(width: 7, height: 7)
+                            Text(Self.connectionLine(connected: keyTail != nil))
+                                .font(.system(size: 14, weight: .semibold))
+                        }
+                        if let tail = keyTail {
+                            Text("Key ···" + tail)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundColor(palette.muted)
+                        }
+                    }
+                    Spacer()
+                    Text(tr("本周", "THIS WEEK"))
+                        .font(.system(size: 11, weight: .semibold))
+                        .tracking(0.8)
+                        .foregroundColor(palette.muted)
+                }
+                Rectangle()
+                    .fill(scheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.06))
+                    .frame(height: 1)
+                HStack(spacing: 12) {
+                    cell(UsageFormat.minutes(week))
+                    cell(UsageFormat.chars(week))
+                    cell(UsageFormat.cost(week))
                 }
             }
-            .pickerStyle(.inline)
-            .labelsHidden()
-        } label: {
-            // 5.0.3：和左右四条链接**完全一样的字**——字号、颜色都写在标签自己身上。
-            // Menu 不继承外面 HStack 上的 .font(.caption) 与 .buttonStyle(.link)
-            //（用户 2026-09-23：这一项比旁边大一号），而换成 .menuStyle(.button) 又会
-            // 给它画一个按钮底框，在一排纯链接里更扎眼。所以留 .borderlessButton（没有底框），
-            // 字号和颜色自己说。
-            Text(tr("语言", "Language"))
-                .font(.caption)
-                .foregroundColor(.accentColor)
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
     }
 
-    // 「换服务商」那一段（providerBinding / adoptIfUsable：预览一档、验证通过才采纳）
-    // 5.1.0 删掉：只剩 OpenAI 一家，没有第二档可换。
+    private func cell(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 24, weight: .semibold).monospacedDigit())
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - 「写作偏好」那一行的值（纯函数）
+
+enum WritingPreferencesSummary {
+    /// 词汇表几条：与热词解析同一套分隔符（Settings.listSeparators），
+    /// 「杰文|捷纹=捷文」算一条（它是一个名字的几种听错法）
+    static func vocabularyCount(_ text: String) -> Int {
+        Settings.parseList(text).count
+    }
+
+    /// 规则几条：按换行与分号、句号切（「署名用 Gen；邮件偏正式。」是两条）。
+    /// 全角分号与句号写成 \u{…}：它们是切分规则，不是界面文案（CJKUIStringGuardTests 扫的是字面量）
+    static func ruleCount(_ text: String) -> Int {
+        text.components(separatedBy: CharacterSet(charactersIn: "\n\r\u{FF1B};\u{3002}"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .count
+    }
+
+    static func line(vocabulary: String, rules: String) -> String {
+        let terms = vocabularyCount(vocabulary)
+        let count = ruleCount(rules)
+        // 英文要分单复数：「1 rules」在一张写着"高级"的卡片上是最扎眼的那种错
+        let termWord = terms == 1 ? "term" : "terms"
+        let ruleWord = count == 1 ? "rule" : "rules"
+        return tr("词汇表 \(terms) 条 · 规则 \(count) 条", "\(terms) \(termWord) · \(count) \(ruleWord)")
+    }
 }
 
 // MARK: - 专有词汇表（从设置底部那排小字点开）

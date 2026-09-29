@@ -16,7 +16,7 @@ import Combine
 ///   • 专有词汇表（词汇表 + 自定义规则）——改得不勤，但改的是用户自己的文字；
 ///   • 关于（版本 / 更新 / 诊断 / 备份 / 隐私六句）。
 enum SettingsRoute: String, Hashable, CaseIterable {
-    /// **这一页就是设置**：OpenAI Key + 实时草稿 + 权限横幅 + 脚注那排链接
+    /// **这一页就是设置**（5.3.0 起是状态页）：状态卡 + OpenAI Key / 写作偏好 / 界面语言 + 脚注那排链接
     case overview
     /// 专有词汇表 + 自定义规则（5.0.2 之前这一页叫「写作偏好」）
     case writing

@@ -177,7 +177,9 @@ enum LLMCatalog {
             ConsoleStep(text: tr("充值", "Add credit"),
                         links: [.init(label: tr("打开", "Open"),
                                       url: "https://platform.openai.com/settings/organization/billing/overview")]),
-            ConsoleStep(text: tr("创建 API Key，复制", "Create an API key and copy it"),
+            // 5.3.0 去掉「，复制」（设计稿 Onboarding-2）：复制之后那一步是 App 自己做的——
+            // 这一屏出现时会读一次剪贴板，认出 sk- 开头的就替他填进去（ClipboardKey）
+            ConsoleStep(text: tr("创建 API Key", "Create an API key"),
                         links: [.init(label: tr("打开", "Open"),
                                       url: apiKeyConsoleURL(for: provider))]),
         ]
@@ -461,76 +463,50 @@ enum LLMCatalog {
 
     // MARK: - 错误话术
 
-    /// 一条可以直接摆给用户看的失败说明 + 可选的「下一步」链接。
-    /// 纪律：每条都要说清**该做什么**（换服务商 / 等几秒 / 去充值），不能只报一个数字。
+    /// 一条可以直接摆给用户看的失败说明 + 这条错误在悬浮窗上带哪颗按钮。
+    ///
+    /// 5.3.0 起（UX 方案 §3 H）：**一句话 ≤ 16 字，细节进日志**。5.2.0 之前句尾还拼着
+    /// 服务商的原话（截 60 字）和充值页的整串 URL（fullText），悬浮窗两行都装不下；
+    /// 现在原话由调用方记日志（AgentService.send），充值页变成一颗「去充值」按钮（.addCredit）。
     struct ErrorCopy: Equatable {
         let text: String
-        /// 有下一步可点时给链接（目前只有余额不足），没有则 nil
-        let actionLabel: String?
-        let actionURL: String?
+        /// 悬浮窗上那颗按钮：401 → 打开设置；余额不足 → 去充值；其余 → 关闭
+        let action: OverlayErrorAction
 
-        /// 悬浮窗那类只能显示纯文本的地方用这个：把下一步拼在句尾
-        var fullText: String {
-            guard let label = actionLabel, let url = actionURL else { return text }
-            return text + tr("（", " (") + label + tr("：", ": ") + url + tr("）", ")")
-        }
+        /// 有下一步链接的那一档（目前只有余额不足）指向哪儿；没有则 nil
+        var actionURL: String? { action == .addCredit ? LLMCatalog.billingURL : nil }
     }
 
-    /// HTTP 失败 → 双语话术（纯函数，单测钉死 6 个分支）。
-    /// - status：HTTP 状态码
-    /// - provider：决定「去充值」指向哪个控制台，以及 403 时建议换去哪
+    /// HTTP 失败 → 双语话术（纯函数，单测钉死每个分支）。
+    /// - status：HTTP 状态码（照样写进那句话：用户抄给别人问的时候，这个数最值钱）
+    /// - provider：5.1.0 起只有 OpenAI；留着参数是为了"Key 永不串槽"那条纪律（调用处点名）
     /// - code：响应里的 `error.code` / `error.type`（429 靠它区分限流与余额不足）
-    /// - message：响应里的 `error.message`，截断后附在句尾（服务商常在这里写明真正原因）
+    /// - message：响应里的 `error.message`——**只用来判类别，不上屏**（原话由调用方进日志）
     static func describeHTTPError(status: Int, provider: LLMProvider,
                                   code: String?, message: String?) -> ErrorCopy {
-        let detail: String = {
-            guard let message = message?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !message.isEmpty else { return "" }
-            return tr("：", ": ") + String(message.prefix(60))
-        }()
         let hay = ((code ?? "") + " " + (message ?? "")).lowercased()
 
         switch status {
         case 401:
-            return ErrorCopy(text: tr("API Key 无效或已失效 (401)，请检查是否粘贴完整、有没有被撤销",
-                                      "Invalid or revoked API key (401) — check that it was pasted in full") + detail,
-                             actionLabel: nil, actionURL: nil)
+            return ErrorCopy(text: UserMessage.keyRejected, action: .openSettings)
         case 403:
-            return ErrorCopy(text: forbiddenText(for: provider) + detail,
-                             actionLabel: nil, actionURL: nil)
+            // OpenAI 的 403 几乎总是国家/地区封锁（用户在 UAE，这条命中率不低）。
+            // 5.1.0 阿里云那一档删掉之后没有另一家可以指给他——**不编一个不存在的下一步**
+            return ErrorCopy(text: UserMessage.regionBlocked(status), action: .dismiss)
         case 404:
-            return ErrorCopy(text: tr("找不到这个模型 (404)，请检查模型名和 Base URL",
-                                      "Model not found (404) — check the model id and the base URL") + detail,
-                             actionLabel: nil, actionURL: nil)
+            return ErrorCopy(text: UserMessage.modelNotFound(status), action: .dismiss)
         case 429:
             // 「等一会儿」和「去充钱」是两件完全不同的事，并成一句话用户根本不知道该干什么。
             if hay.contains("insufficient_quota") || hay.contains("quota") || hay.contains("billing")
                 || hay.contains("balance") {
-                return ErrorCopy(text: tr("账户余额不足 (429)，充值后即可继续",
-                                          "Out of credit (429) — add credit to continue") + detail,
-                                 actionLabel: tr("去充值", "Add credit"),
-                                 actionURL: billingURL(for: provider))
+                return ErrorCopy(text: UserMessage.outOfCredit(status), action: .addCredit)
             }
-            return ErrorCopy(text: tr("请求太密，被服务商限流了 (429)，等几秒再说一次",
-                                      "Rate limited by the provider (429) — wait a few seconds and try again") + detail,
-                             actionLabel: nil, actionURL: nil)
+            return ErrorCopy(text: UserMessage.rateLimited(status), action: .dismiss)
         case 503:
-            return ErrorCopy(text: tr("服务商暂时没有容量 (503)，稍后再试",
-                                      "The provider has no capacity right now (503) — try again shortly") + detail,
-                             actionLabel: nil, actionURL: nil)
+            return ErrorCopy(text: UserMessage.serviceBusy(status), action: .dismiss)
         default:
-            return ErrorCopy(text: tr("接口返回 ", "API returned ") + "\(status)" + detail,
-                             actionLabel: nil, actionURL: nil)
+            return ErrorCopy(text: UserMessage.serverError(status), action: .dismiss)
         }
-    }
-
-    /// OpenAI 的 403 几乎总是国家/地区封锁（用户在 UAE，这条命中率不低）。
-    ///
-    /// 5.0.x 这句后面还跟着「可以在设置里改用阿里云」；5.1.0 阿里云那一档删掉了，
-    /// 没有另一家可以指给他——**不编一个不存在的下一步**，只把原因说清楚。
-    private static func forbiddenText(for provider: LLMProvider) -> String {
-        tr("你所在的国家/地区不支持这个服务 (403)",
-           "This service is not supported in your country or region (403)")
     }
 
     /// 超时话术。
@@ -538,20 +514,14 @@ enum LLMCatalog {
     ///   （PolishService / AgentService 的 networkRetries = 0），而超时又是 UAE 这条链路上
     ///   最常见的那一句——无条件写着"已重试一次"就是每天在对用户说假话，日志里也一样。
     ///   仍会重试的只剩验证 / 测试那几条路。
+    ///   不指认"网络"：4.1.2 的日志里那几趟超时，服务端自己就算了 ~17 s（思考模式），
+    ///   我们只知道"没等到"，就只说这个。
     static func timeoutCopy(retried: Bool = false) -> ErrorCopy {
-        let text = retried
-            // 不指认"网络"：4.1.2 的日志里那几趟超时，服务端自己就算了 ~17 s（思考模式），
-            // 而这句话让用户去怀疑自己的网络和 Key。我们只知道"没等到"，就只说这个。
-            ? tr("请求超时（已重试一次，服务商响应太慢）",
-                 "Request timed out (retried once — the provider took too long to respond)")
-            : tr("请求超时（服务商响应太慢）", "Request timed out — the provider took too long to respond")
-        return ErrorCopy(text: text, actionLabel: nil, actionURL: nil)
+        ErrorCopy(text: retried ? UserMessage.timedOutRetried : UserMessage.timedOut, action: .dismiss)
     }
 
     /// 「去充值」指向哪个控制台。5.1.0 起只有 OpenAI 一档，永远有这条地址。
     /// （阿里云那一档没有可以打包票的充值地址，当年宁可不给按钮；那一档已删。）
     // qwenUnverifiedHost401（阿里云接入地址还没试对时的 401 话术）5.1.0 删掉。
-    private static func billingURL(for provider: LLMProvider) -> String {
-        "https://platform.openai.com/settings/organization/billing"
-    }
+    static let billingURL = "https://platform.openai.com/settings/organization/billing"
 }

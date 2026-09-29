@@ -127,15 +127,17 @@ final class AISetupTests: XCTestCase {
         XCTAssertEqual(KeyVerifier.statusText(.verifying), "正在验证…")
         XCTAssertEqual(KeyVerifier.statusText(.connected(provider: "OpenAI", model: "gpt-5.6-luna")),
                        "已连通 ✓ OpenAI · gpt-5.6-luna")
-        let failed = KeyVerifier.statusText(.failed(reason: "API Key 无效或已失效 (401)", keptPrevious: false))
-        XCTAssertEqual(failed, "连不上：API Key 无效或已失效 (401)")
+        // 5.3.0：原因本身就是一句结论（UserMessage），前面不再垫「连不上：」
+        let failed = KeyVerifier.statusText(.failed(reason: UserMessage.keyRejected, keptPrevious: false))
+        XCTAssertEqual(failed, "Key 无效或已撤销 (401)")
+        XCTAssertEqual(KeyVerifier.statusText(.cleared), UserMessage.keyRemoved)
     }
 
     /// 失败时不动钥匙串：屏幕上必须说清"还在用上一把"，否则输入框里的字和真正生效的 Key 对不上
     func testFailedStatusSaysWhenThePreviousKeyIsStillInUse() {
         L10n.shared.language = .zh
         let text = KeyVerifier.statusText(.failed(reason: "404", keptPrevious: true)) ?? ""
-        XCTAssertTrue(text.contains("没有被覆盖"), text)
+        XCTAssertTrue(text.contains(UserMessage.previousKeyKept), text)
     }
 
     func testVerifierStatusTextHasNoCJKOnTheEnglishSide() {

@@ -93,26 +93,29 @@ final class LLMCatalogTests: XCTestCase {
     // 4.x 的三组型号迁移测试（migrationTo56 / migrationToBestDefault / migrationToFastDefault）
     // 5.0.0 随那几个函数一起删掉：型号不再是一条设置，没有东西可迁。
 
-    // MARK: - 错误话术
+    // MARK: - 错误话术（5.3.0：一句话 + 一颗按钮，细节进日志）
 
     func testInvalidKeyAndRegionAndModelErrors() {
         L10n.shared.language = .en
         let key = LLMCatalog.describeHTTPError(status: 401, provider: .openai, code: nil, message: nil)
         XCTAssertTrue(key.text.contains("401"))
+        // Key 被拒只能去设置里换：按钮由这里点名，不再靠悬浮窗去文案里找「401」
+        XCTAssertEqual(key.action, .openSettings)
         XCTAssertNil(key.actionURL)
 
         let region = LLMCatalog.describeHTTPError(status: 403, provider: .openai,
                                                  code: "unsupported_country_region_territory",
                                                  message: "Country, region, or territory not supported")
         XCTAssertTrue(region.text.contains("403"))
-        // 5.1.0 起没有另一家可以指给他：只说清原因，不编一个不存在的下一步
-        XCTAssertTrue(region.text.lowercased().contains("country"), region.text)
+        XCTAssertTrue(region.text.lowercased().contains("region"), region.text)
         XCTAssertFalse(region.text.contains("Alibaba"), region.text)
+        XCTAssertEqual(region.action, .dismiss)
 
         let model = LLMCatalog.describeHTTPError(status: 404, provider: .openai, code: nil,
                                                 message: "The model `gpt-9` does not exist")
         XCTAssertTrue(model.text.contains("404"))
-        XCTAssertTrue(model.text.contains("gpt-9"))
+        // 服务商的原话**不上屏**（它进日志）：屏幕上只有一句结论
+        XCTAssertFalse(model.text.contains("gpt-9"), model.text)
     }
 
     /// 403 不再建议"改用阿里云"（5.1.0 那一档删掉了）：指着一个不存在的选项比不说更糟
@@ -127,34 +130,33 @@ final class LLMCatalogTests: XCTestCase {
         }
     }
 
-    /// 429 的两种含义必须分开说：一个该等几秒，一个该去充钱
+    /// 429 的两种含义必须分开说：一个该等几秒，一个该去充钱（后者带一颗「去充值」）
     func testRateLimitAndQuotaAreDifferentCopy() {
         L10n.shared.language = .en
         let limited = LLMCatalog.describeHTTPError(status: 429, provider: .openai,
                                                    code: "rate_limit_exceeded",
                                                    message: "Rate limit reached for gpt-5.6-luna")
         XCTAssertNil(limited.actionURL)
+        XCTAssertEqual(limited.action, .dismiss)
         XCTAssertTrue(limited.text.lowercased().contains("rate limited"))
 
         let broke = LLMCatalog.describeHTTPError(status: 429, provider: .openai,
                                                  code: "insufficient_quota",
                                                  message: "You exceeded your current quota")
-        XCTAssertEqual(broke.actionLabel, "Add credit")
+        XCTAssertEqual(broke.action, .addCredit)
         XCTAssertEqual(broke.actionURL, "https://platform.openai.com/settings/organization/billing")
-        // 悬浮窗只能显示纯文本 → 链接要拼进句子里，用户才看得到该去哪儿
-        XCTAssertTrue(broke.fullText.contains("https://platform.openai.com"))
-        XCTAssertTrue(broke.fullText.contains("Add credit"))
+        // 5.3.0 起充值页是一颗按钮，不再拼进句尾（16 字一句装不下一整串 URL）
+        XCTAssertFalse(broke.text.contains("https://"), broke.text)
+        XCTAssertEqual(OverlayErrorAction.addCredit.label, "Add credit")
     }
 
-    /// 4.1.1 起润色与指令都只发一次（networkRetries = 0），超时那句就不许再写"已重试一次"——
-    /// 它是 UAE 这条链路上最常见的一句，写错等于每天对用户说一次假话，日志里也一样。
-    /// 仍然会重试的只剩验证 / 测试那几条路，那一档才缀得上。
+    /// 4.1.1 起润色与指令都只发一次（networkRetries = 0），超时那句就不许再写"已重试一次"
     func testTimeoutCopyOnlyClaimsARetryWhenOneHappened() {
         for language in AppLanguage.allCases {
             L10n.shared.language = language
-            let once = LLMCatalog.timeoutCopy().fullText.lowercased()
+            let once = LLMCatalog.timeoutCopy().text.lowercased()
             XCTAssertFalse(once.contains("重试") || once.contains("retried"), once)
-            let retried = LLMCatalog.timeoutCopy(retried: true).fullText.lowercased()
+            let retried = LLMCatalog.timeoutCopy(retried: true).text.lowercased()
             XCTAssertTrue(retried.contains("重试") || retried.contains("retried"), retried)
         }
     }
@@ -170,11 +172,11 @@ final class LLMCatalogTests: XCTestCase {
     /// 英文界面下这几条话术里不能混进中文或全角标点（英文用户看到「：」就是 bug）
     func testEnglishCopyHasNoCJKOrFullWidthPunctuation() {
         L10n.shared.language = .en
-        var texts = [LLMCatalog.timeoutCopy().fullText, LLMCatalog.timeoutCopy(retried: true).fullText]
+        var texts = [LLMCatalog.timeoutCopy().text, LLMCatalog.timeoutCopy(retried: true).text]
         for status in [401, 403, 404, 429, 503, 500] {
             texts.append(LLMCatalog.describeHTTPError(status: status, provider: .openai,
                                                       code: "insufficient_quota",
-                                                      message: "detail").fullText)
+                                                      message: "detail").text)
         }
         let forbidden = CharacterSet(charactersIn: "：，。；？！（）、「」").union(
             CharacterSet(charactersIn: UnicodeScalar(0x4E00)!...UnicodeScalar(0x9FFF)!))
@@ -183,14 +185,31 @@ final class LLMCatalogTests: XCTestCase {
         }
     }
 
-    /// 中文界面下同样要是完整的中文句子（带「：」分隔，不是半截英文）
+    /// 中文界面下同样要是完整的中文句子
     func testChineseCopyIsChinese() {
         L10n.shared.language = .zh
         let broke = LLMCatalog.describeHTTPError(status: 429, provider: .openai,
                                                  code: "insufficient_balance", message: nil)
-        XCTAssertEqual(broke.actionLabel, "去充值")
+        XCTAssertEqual(broke.action, .addCredit)
         XCTAssertTrue(broke.text.contains("余额不足"))
-        XCTAssertTrue(broke.fullText.contains("https://platform.openai.com"))
+        XCTAssertEqual(OverlayErrorAction.addCredit.label, "去充值")
+    }
+
+    /// 每一句都要走 UserMessage 那张集中表（它被 UserMessageCopyTests 逐条量长度）
+    func testHTTPErrorsComeFromTheCentralTable() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            for status in [401, 403, 404, 429, 503, 500] {
+                for code in ["insufficient_quota", "rate_limit_exceeded"] {
+                    let text = LLMCatalog.describeHTTPError(status: status, provider: .openai,
+                                                            code: code, message: "detail").text
+                    XCTAssertTrue(UserMessage.all.contains(text) || text == UserMessage.rateLimited(status)
+                                  || text == UserMessage.serverError(status)
+                                  || text == UserMessage.outOfCredit(status),
+                                  "不在集中表里：\(text)")
+                }
+            }
+        }
     }
 
     // MARK: - 新服务商（B9）

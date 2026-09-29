@@ -61,6 +61,11 @@ struct LLMUsage: Equatable {
     var serviceTier: String?
     /// 联网搜索的来源。只有开着搜索开关的指令调用才可能非空。
     var citations: [Citation] = []
+    /// 这一趟失败了的话，悬浮窗上该给哪颗按钮（401 → 打开设置、余额不足 → 去充值）。
+    /// 5.3.0 起按钮由产生错误的那一层点名（见 OverlayErrorAction）——失败的话本身穿过的是
+    /// (String?, String?) 回调，而按钮要跟着它一起到 DictationController，走的就是这个沉淀点。
+    /// nil = 成功，或者这一趟的失败没有可点的下一步。
+    var failureAction: OverlayErrorAction?
 }
 
 /// 最近一次大模型往返的用量沉淀点。

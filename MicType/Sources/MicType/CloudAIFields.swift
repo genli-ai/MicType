@@ -82,13 +82,18 @@ struct SettingsToggleRow: View {
 ///
 /// 5.1.0 之前这里还收着服务商选择器、阿里云的接入地址框和"看着的那一档验证通过才采纳"那一套；
 /// 只剩一家之后，这些都没有第二个答案了。
+///
+/// 5.3.0 引导 ②（设计稿 Onboarding-2）：顺序倒过来——**大框在上、三步在下**。
+/// 那一屏的标题已经是「贴上你的 OpenAI Key」，要做的事就是那个框；三步是给还没有 Key 的人的。
 struct CloudSetupCore<Notices: View>: View {
 
-    /// 摆成 Form 的分段（设置页），还是摆成一串行（引导 ③ 那一屏是 VStack）
+    /// 摆成 Form 的分段（设置页），还是摆成一串行（引导 ② 那一屏是 VStack）
     enum Style { case settings, onboarding }
 
     let style: Style
     var onKeyStatus: ((KeyVerifier.Status) -> Void)? = nil
+    /// 引导 ②：这一屏出现时从剪贴板认出来的 Key（见 ClipboardKey）。设置页永远 nil
+    var prefill: String? = nil
     /// Key 上面的边界状态（例如 OpenAI 的地址被改过）。正常情况下一个字都不显示
     @ViewBuilder var notices: () -> Notices
 
@@ -112,20 +117,21 @@ struct CloudSetupCore<Notices: View>: View {
         }
     }
 
-    // MARK: 引导 ③：申请步骤 + 同样那个框
+    // MARK: 引导 ②：大框 + 申请步骤
 
     @ViewBuilder
     private var onboardingRows: some View {
         notices()
-        ConsoleStepsView(provider: provider)
         keyField
+        ConsoleStepsView(provider: provider)
+            .padding(.top, 14)
     }
 
     // MARK: 控件本体
 
     /// 验通之后那一行末尾还要补什么。**两处补的不是同一个单位**，因为两处的人在问不同的问题：
     ///   • 设置页：「一小时大概花多少」（他已经在用了，关心的是月底账单）；
-    ///   • 引导 ③：「我说一句话要多少钱」（他还没用过，一小时对他没有概念）。
+    ///   • 引导 ②：「我说一句话要多少钱」（他还没用过，一小时对他没有概念）。
     /// 两个数都从 LLMCatalog 同一套单价算出来（那是全 App 唯一的价格出处）。
     private var connectedNote: String {
         switch style {
@@ -140,38 +146,49 @@ struct CloudSetupCore<Notices: View>: View {
                      probe: .cloudASR(.openai),
                      connectedNote: connectedNote,
                      showsConsoleLink: style == .settings,
-                     onStatusChange: { status in onKeyStatus?(status) })
+                     onStatusChange: { status in onKeyStatus?(status) },
+                     layout: style == .onboarding ? .hero : .row,
+                     prefill: style == .onboarding ? prefill : nil)
     }
 }
 
-// MARK: - 申请步骤（引导 ③ 下半）
+// MARK: - 申请步骤（引导 ② 下半）
 
-/// 编号一行一步，右边跟着能直接打开那一页的按钮。文字与链接的唯一出处是
+/// 编号一行一步，右边跟着能直接打开那一页的链接。文字与链接的唯一出处是
 /// `LLMCatalog.consoleSteps(for:)`——这里只负责摆。
 ///
 /// 为什么值一个组件：这是**整个产品最容易卡死人的一分钟**。用户手上没有 Key，
 /// 而"去哪儿点"这件事我们知道、他不知道；写成一句"去服务商控制台申请一把 Key"
 /// 等于把最难的一步留给他自己。
+///
+/// 5.3.0 的长相（设计稿 Onboarding-2）：编号装进一枚 18 pt 的细圈里，正文 13 pt，
+/// 链接「打开 ↗」用强调色的单色字（渐变在小字上读不清，见 Theme.accentText）。
 struct ConsoleStepsView: View {
     let provider: LLMProvider
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let palette = Theme.palette(scheme)
+        VStack(alignment: .leading, spacing: 12) {
             ForEach(Array(LLMCatalog.consoleSteps(for: provider).enumerated()), id: \.offset) { pair in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    // 编号用文字而不是列表符号：它要和右边那颗「打开」按钮在同一条基线上
-                    Text("\(pair.offset + 1).")
-                        .font(.caption.monospacedDigit())
-                        .foregroundColor(.secondary)
-                        .frame(width: 16, alignment: .trailing)
+                HStack(alignment: .center, spacing: 10) {
+                    Text("\(pair.offset + 1)")
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundColor(palette.muted)
+                        .frame(width: 18, height: 18)
+                        .overlay(Circle().stroke(scheme == .dark ? Color.white.opacity(0.18)
+                                                                 : Color.black.opacity(0.15),
+                                                 lineWidth: 1))
                     Text(pair.element.text)
-                        .font(.caption)
+                        .font(.system(size: 13))
+                        .foregroundColor(palette.text)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
                     ForEach(pair.element.links, id: \.url) { link in
                         Button(link.label + " ↗") { open(link.url) }
-                            .buttonStyle(.link)
-                            .font(.caption)
+                            .buttonStyle(.plain)
+                            .font(.system(size: 13))
+                            .foregroundColor(scheme == .dark ? Theme.accentText : Theme.accentA)
                             .fixedSize()
                     }
                 }

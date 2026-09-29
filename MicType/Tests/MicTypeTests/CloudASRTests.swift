@@ -233,14 +233,16 @@ final class CloudASRTests: XCTestCase {
 
     private func json(_ s: String) -> Data { Data(s.utf8) }
 
-    /// 服务商原话前面那个冒号必须是 ASCII：这串会整条显示在悬浮窗/设置页上，
-    /// 英文界面里混一个全角「：」就是一处中文泄漏（CJKUIStringGuardTests 拦的正是这一类）。
-    func testProviderDetailUsesAnASCIIColon() {
+    /// 5.3.0 起服务商的原话与错误码**不上屏**（UX 方案 §3 H：细节进日志）：
+    /// 屏幕上只有集中表里那一句，错误码仍留在 failure.code 里给探针与日志用。
+    func testProviderDetailStaysOffScreen() {
         let openai = OpenAITranscribeClient.failure(status: 401, code: "invalid_api_key",
                                                    message: "Incorrect API key provided: sk-***")
-        XCTAssertTrue(openai.message.hasSuffix("(401 invalid_api_key): Incorrect API key provided: sk-***"),
-                      "实际是：\(openai.message)")
-        XCTAssertFalse(openai.message.contains("：Incorrect"))
+        XCTAssertEqual(openai.message, UserMessage.keyRejected, "实际是：\(openai.message)")
+        XCTAssertFalse(openai.message.contains("Incorrect"))
+        XCTAssertFalse(openai.message.contains("sk-"))
+        XCTAssertEqual(openai.code, "invalid_api_key")
+        XCTAssertEqual(openai.error.action, .openSettings)
     }
 
     // MARK: - OpenAI：multipart
@@ -336,13 +338,14 @@ final class CloudASRTests: XCTestCase {
 
         let quota = OpenAITranscribeClient.failure(status: 429, code: "insufficient_quota", message: nil)
         XCTAssertFalse(quota.retryable, "额度不足重试也没用")
-        XCTAssertTrue(quota.message.contains("充值") || quota.message.contains("credit"))
+        XCTAssertTrue(quota.message.contains("余额") || quota.message.contains("credit"))
+        XCTAssertEqual(quota.error.action, .addCredit)
 
         let badRequest = OpenAITranscribeClient.failure(status: 400, code: "invalid_request_error",
                                                         message: "file too large")
         XCTAssertFalse(badRequest.retryable)
-        XCTAssertTrue(badRequest.message.contains("25MB"))
-        XCTAssertTrue(badRequest.message.contains("file too large"))
+        XCTAssertTrue(badRequest.message.contains("400"))
+        XCTAssertFalse(badRequest.message.contains("file too large"), "服务商原话只进日志")
 
         XCTAssertTrue(OpenAITranscribeClient.failure(status: 503, code: nil, message: nil).retryable)
         XCTAssertFalse(OpenAITranscribeClient.failure(status: 404, code: nil, message: nil).retryable)

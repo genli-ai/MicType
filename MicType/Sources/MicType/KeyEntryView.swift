@@ -184,8 +184,7 @@ final class KeyVerifier: ObservableObject {
                 // 否则他抄着这句话来问，日志里一个字都找不到（4.0.1 立的规矩）。
                 Log.warn("API key verification skipped provider=\(provider.rawValue) "
                          + "reason=effective provider changed mid-flight")
-                status = .failed(reason: tr("服务商刚被改过，请再粘一次这把 Key",
-                                            "The provider just changed — paste this key again"),
+                status = .failed(reason: UserMessage.providerChangedPasteAgain,
                                  keptPrevious: hadPrevious)
                 return
             }
@@ -212,13 +211,12 @@ final class KeyVerifier: ObservableObject {
         case .connected(let provider, let model):
             return tr("已连通 ✓ ", "Connected ✓ ") + provider + " · " + model
         case .failed(let reason, let keptPrevious):
-            let base = tr("连不上：", "Could not connect: ") + reason
-            guard keptPrevious else { return base }
-            return base + tr("（上一把已验证过的 Key 仍在用，没有被覆盖）",
-                             " (your previously verified key is still in use and was not overwritten)")
+            // 5.3.0（UX 方案 §3 H）：原因本身就是一句结论（UserMessage），前面不再垫「连不上：」；
+            // 钥匙串里原来那把没动的话补半句——输入框里的字和真正生效的 Key 对不上，必须当面说
+            guard keptPrevious else { return reason }
+            return reason + " · " + UserMessage.previousKeyKept
         case .cleared:
-            return tr("已清空：这个服务商的 Key 已从钥匙串删除。",
-                      "Cleared: this provider's key was removed from the Keychain.")
+            return UserMessage.keyRemoved
         }
     }
 
@@ -251,7 +249,19 @@ struct KeyEntryView: View {
     /// 验证结束时通知外面（true = 通过）。菜单栏的「配置 AI…」之类要据此刷新。
     var onStatusChange: ((KeyVerifier.Status) -> Void)? = nil
 
+    /// 长相。**验证逻辑两种长相一模一样**，只有外观不同：
+    ///   • `.row`：设置页那一行（栏名「OpenAI Key」+ 框 + ⓘ，下面一行状态）；
+    ///   • `.hero`（5.3.0 引导 ②）：一个 44 pt 高的大框，右端就是状态——验证中一个渐变进度环、
+    ///     通过变成一枚渐变勾（UX 方案 §3 B：验证中用渐变进度环，通过变成勾）。
+    enum Layout { case row, hero }
+    var layout: Layout = .row
+    /// 引导 ② 从剪贴板里认出来的那把 Key（见 ClipboardKey.candidate）。
+    /// **只在框是空的时候填**：钥匙串里已经有一把的人，不该被剪贴板里另一把悄悄换掉。
+    /// 填进来之后走的是和粘贴一模一样的那条路（当场验证，通过才进钥匙串）
+    var prefill: String? = nil
+
     @ObservedObject private var l10n = L10n.shared
+    @Environment(\.colorScheme) private var scheme
     @StateObject private var verifier = KeyVerifier()
     @State private var key = ""
     /// 输入框里这串字是**为哪一档**读进来/敲进来的。切服务商的那一刹那，失焦事件可能先于
@@ -272,6 +282,90 @@ struct KeyEntryView: View {
     }
 
     var body: some View {
+        content
+            .onAppear { load() }
+            .onChange(of: provider) { _, _ in load() }
+            .onChange(of: key) { oldValue, newValue in
+                // 粘贴（一次跳一大截）当场验证；手改则先把旧结论撤掉，等失焦/回车再验
+                if newValue.count - oldValue.count >= KeyEntryView.pasteJump {
+                    verifyNow()
+                } else {
+                    verifier.invalidate()
+                }
+            }
+            .onChange(of: focused) { _, isFocused in
+                if !isFocused { verifyNow() }
+            }
+            .onChange(of: verifier.status) { _, newValue in
+                onStatusChange?(newValue)
+            }
+            // 状态行是一次性快照，切语言要跟着换（见 CLAUDE.md「i18n 快照字符串」）
+            .onChange(of: l10n.language) { _, _ in verifier.invalidate() }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch layout {
+        case .row: rowContent
+        case .hero: heroContent
+        }
+    }
+
+    // MARK: 引导 ② 的大框
+
+    private var heroContent: some View {
+        let palette = Theme.palette(scheme)
+        let connected: Bool = { if case .connected = verifier.status { return true } else { return false } }()
+        return VStack(alignment: .leading, spacing: 8) {
+            ZStack(alignment: .trailing) {
+                SecureField(text: $key, prompt: Text(tr("粘贴到这里", "Paste it here"))) { Text("OpenAI Key") }
+                    .labelsHidden()
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundColor(palette.text)
+                    .focused($focused)
+                    .onSubmit { verifyNow() }
+                    .padding(.leading, 14)
+                    .padding(.trailing, 44)
+                    .frame(height: 44)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(palette.bg))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            // 验证中 / 通过时描边换成强调色的淡紫：框本身也在说"它在动"
+                            .stroke(verifier.isVerifying || connected
+                                    ? Theme.accentText.opacity(0.45)
+                                    : (scheme == .dark ? Theme.hairline : Color.black.opacity(0.1)),
+                                    lineWidth: 1))
+                heroIndicator
+                    .padding(.trailing, 12)
+            }
+            // 失败原因 / 通过之后那半句价钱。验证中不重复写「正在验证…」：右端那个环已经在说了
+            if !verifier.isVerifying, let text = KeyVerifier.statusText(verifier.status) {
+                Text(text + Self.connectedSuffix(verifier.status, note: connectedNote))
+                    .font(.caption)
+                    .foregroundColor(KeyVerifier.statusColor(verifier.status))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var heroIndicator: some View {
+        switch verifier.status {
+        case .verifying:
+            MTProgressRing(size: 20)
+        case .connected:
+            MTCheckCircle(size: 20)
+        case .idle, .failed, .cleared:
+            EmptyView()
+        }
+    }
+
+    // MARK: 设置页那一行
+
+    private var rowContent: some View {
         VStack(alignment: .leading, spacing: 6) {
             if provider.requiresAPIKey {
                 // 栏名就写 "API Key"（4.3.2）：是哪一家，上面那一行（设置页）/ 标题（引导 ③）已经写着了
@@ -295,24 +389,6 @@ struct KeyEntryView: View {
             // 5.0.0 起没有"这一档不需要 Key"的分支了（本机大模型那一档删掉了），
             // 但 requiresAPIKey 这道闸留着：它是「有没有 Key 可验」的唯一判据。
         }
-        .onAppear { load() }
-        .onChange(of: provider) { _, _ in load() }
-        .onChange(of: key) { oldValue, newValue in
-            // 粘贴（一次跳一大截）当场验证；手改则先把旧结论撤掉，等失焦/回车再验
-            if newValue.count - oldValue.count >= KeyEntryView.pasteJump {
-                verifyNow()
-            } else {
-                verifier.invalidate()
-            }
-        }
-        .onChange(of: focused) { _, isFocused in
-            if !isFocused { verifyNow() }
-        }
-        .onChange(of: verifier.status) { _, newValue in
-            onStatusChange?(newValue)
-        }
-        // 状态行是一次性快照，切语言要跟着换（见 CLAUDE.md「i18n 快照字符串」）
-        .onChange(of: l10n.language) { _, _ in verifier.invalidate() }
     }
 
     /// Key 输入框本体。拆出来是为了让 body 的类型检查跑得动（整串修饰符写在 body 里
@@ -347,6 +423,13 @@ struct KeyEntryView: View {
         verifier.reset(loadedKey: stored, provider: provider)
         loadedProvider = provider
         key = stored ?? ""
+        // 引导 ②：剪贴板里认出来一把、而钥匙串里还没有 → 替他粘进来，当场验证。
+        // 和手动粘贴走同一条路（verifyNow），通过才写钥匙串，没过一个字节都不写
+        if stored == nil, let prefill = prefill, !prefill.isEmpty {
+            key = prefill
+            Log.info("Key prefilled from clipboard chars=\(prefill.count)")
+            verifyNow()
+        }
     }
 
     /// 验证入口：空框（且钥匙串里有东西）= 要删；没变过的 Key 不重复跑一趟网络

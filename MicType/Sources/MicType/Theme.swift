@@ -36,7 +36,8 @@ enum Theme {
     static let accentGradientVertical = LinearGradient(colors: [accentA, accentB],
                                                        startPoint: .top, endPoint: .bottom)
 
-    /// 浅色模式的映射（设置 / 引导窗口 5.3 用；**本版只定义，不接进任何页面**）。
+    /// 浅色模式的映射。5.3.0 起设置与引导窗口跟系统外观走（`palette(_:)`），
+    /// **悬浮窗不用它**——胶囊永远是黑玻璃（白字压在任意壁纸上都要读得清）。
     /// 不是简单反色：强调色两套一样，底/面/字/次各自重取。
     enum Light {
         static let bg = Color(hex: 0xF5F5F7)
@@ -248,7 +249,7 @@ struct MTCapsule<Content: View>: View {
     }
 }
 
-/// 卡片：面色底 + 发丝边 + 14 pt 圆角。5.3 的引导 / 设置状态页用，本版只有预览
+/// 卡片：面色底 + 发丝边 + 14 pt 圆角。跟系统外观走（5.3.0 起设置状态页与权限横幅用它）
 struct MTCard<Content: View>: View {
     @Environment(\.colorScheme) private var scheme
     @ViewBuilder var content: Content
@@ -268,6 +269,10 @@ struct MTCard<Content: View>: View {
 
 /// 按钮两种：primary = 品牌渐变（一屏至多一颗，"就是这一步"）；quiet = 14% 白（悬浮窗里的次要动作）。
 /// 纯外观：点击由调用方决定怎么接（悬浮窗整块不接鼠标，靠全局监听判坐标，见 OverlayController）。
+///
+/// adaptive（5.3.0）：引导与设置窗口跟系统外观走，quiet 那一档在浅色底上要换成 6% 黑 + 深字
+/// ——14% 白压在 #F5F5F7 上等于没有底、白字直接看不见。**默认 false**：悬浮窗永远是黑玻璃，
+/// 它的按钮不许跟着系统外观变（那扇面板的外观不归我们设，跟系统走的话浅色模式下按钮就花了）。
 struct MTButton: View {
     enum Style: Equatable {
         case primary
@@ -276,7 +281,11 @@ struct MTButton: View {
 
     let title: String
     var style: Style = .quiet
+    var adaptive: Bool = false
     var action: (() -> Void)? = nil
+
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         if let action = action {
@@ -287,15 +296,21 @@ struct MTButton: View {
         }
     }
 
+    /// 这一刻按哪套颜色画：只有 adaptive 且系统是浅色时才换成浅色那套
+    private var light: Bool { adaptive && scheme == .light }
+
     private var label: some View {
         Text(title)
             .font(.system(size: 13, weight: .medium))
-            .foregroundColor(style == .primary ? .white : Theme.text)
+            .foregroundColor(style == .primary ? .white : (light ? Theme.Light.text : Theme.text))
             .lineLimit(1)
             .fixedSize()
             .padding(.horizontal, 16)
             .frame(height: 34)
             .background(background)
+            .contentShape(Capsule())
+            // 点不动的时候看得出来点不动（引导里「继续」在权限没齐时是灰的）
+            .opacity(isEnabled ? 1 : 0.45)
     }
 
     @ViewBuilder
@@ -305,8 +320,81 @@ struct MTButton: View {
             Capsule().fill(Theme.accentGradient)
                 .overlay(Capsule().stroke(Color.white.opacity(0.22), lineWidth: 1))
         case .quiet:
-            Capsule().fill(Color.white.opacity(0.14))
+            Capsule().fill(light ? Color.black.opacity(0.06) : Color.white.opacity(0.14))
         }
+    }
+}
+
+// MARK: - 两个状态小件（5.3.0，引导与设置共用）
+
+/// 「办好了」的那枚圆：品牌渐变底 + 白勾，勾是 0.25 s 描出来的（减弱动态效果时直接画满）。
+/// 渐变只用在"正在发生 / 一次性的确认"上（§0 规矩），这枚勾正是那一次确认。
+struct MTCheckCircle: View {
+    var size: CGFloat = 22
+    @State private var drawn: CGFloat = 0
+
+    var body: some View {
+        ZStack {
+            Circle().fill(Theme.accentGradient)
+            CheckShape()
+                .trim(from: 0, to: drawn)
+                .stroke(Color.white, style: StrokeStyle(lineWidth: max(1.6, size * 0.1),
+                                                        lineCap: .round, lineJoin: .round))
+                .padding(size * 0.27)
+        }
+        .frame(width: size, height: size)
+        .onAppear {
+            guard !Theme.reduceMotion else { drawn = 1; return }
+            withAnimation(.easeOut(duration: 0.25)) { drawn = 1 }
+        }
+        .accessibilityHidden(true)
+    }
+
+    private struct CheckShape: Shape {
+        func path(in rect: CGRect) -> Path {
+            var path = Path()
+            path.move(to: CGPoint(x: rect.minX, y: rect.midY + rect.height * 0.05))
+            path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.38, y: rect.maxY - rect.height * 0.08))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + rect.height * 0.1))
+            return path
+        }
+    }
+}
+
+/// 「还没办」的那枚圆：1.5 pt 灰圈，里面什么都没有
+struct MTPendingCircle: View {
+    var size: CGFloat = 20
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        Circle()
+            .stroke(scheme == .dark ? Color(hex: 0x5A5F68) : Color(hex: 0xC7C7CC), lineWidth: 1.5)
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+}
+
+/// 验证中的渐变进度环（一段 3/4 的弧在转）。减弱动态效果时不转，只画一段静止的弧
+struct MTProgressRing: View {
+    var size: CGFloat = 20
+    @State private var spinning = false
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(scheme == .dark ? Color.white.opacity(0.1) : Color.black.opacity(0.08),
+                            lineWidth: 2.5)
+            Circle()
+                .trim(from: 0, to: 0.72)
+                .stroke(Theme.accentGradient, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .rotationEffect(.degrees(spinning ? 360 : 0))
+        }
+        .frame(width: size, height: size)
+        .onAppear {
+            guard !Theme.reduceMotion else { return }
+            withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { spinning = true }
+        }
+        .accessibilityLabel(tr("正在验证", "Checking"))
     }
 }
 

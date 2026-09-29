@@ -182,26 +182,32 @@ enum RecognitionEngineReadiness: Equatable {
 
     var isReady: Bool { self == .ready }
 
+    /// 钥匙串里有没有 Key（不管这会儿有没有网）。引导那三件必办的事问的是这个
+    /// （FirstRunEssentials.keyReady）：没网是一时的，不该把一个配好了的人拽回引导去贴 Key
+    var hasKey: Bool {
+        if case .cloudKeyMissing = self { return false }
+        return true
+    }
+
     /// 悬浮窗上那句话。缺 Key 那一档明确指向设置（胶囊按钮会把设置窗口直接打开）。
     var message: String {
         switch self {
         case .ready:
             return ""
-        case .cloudKeyMissing(let provider):
-            return tr("还没填\(provider.displayName)的 API Key——听写和指令都要用它",
-                      "No API key for \(provider.displayName) yet - dictation and commands both need one")
+        case .cloudKeyMissing:
+            // 5.1.0 起只有 OpenAI 一家：直接点名，不再拼 displayName（「云端 · OpenAI的 API Key」）
+            return UserMessage.keyMissing
         case .offline:
-            return tr("这台 Mac 现在没有网络，识别要联网才能跑",
-                      "This Mac is offline, and recognition needs a connection")
+            return UserMessage.offline
         }
     }
 
-    /// 缺 Key 那一档给一颗可点的按钮（5.2.0 起所有"去设置"类按钮统一叫「打开设置」）。
-    /// 没网那一档不给：设置页上没有任何一个开关能把网接回来。
-    var settingsChipLabel: String? {
+    /// 悬浮窗上那颗按钮（5.3.0 起由这里点名，见 OverlayErrorAction）。
+    /// 缺 Key 那一档 → 打开设置；没网那一档 → 关闭：设置页上没有任何一个开关能把网接回来。
+    var overlayAction: OverlayErrorAction {
         switch self {
-        case .ready, .offline: return nil
-        case .cloudKeyMissing: return OverlayCopy.openSettings
+        case .ready, .offline: return .dismiss
+        case .cloudKeyMissing: return .openSettings
         }
     }
 }
@@ -230,18 +236,13 @@ enum CloudFallbackDecision: Equatable {
     }
 
     /// 重试那一下悬浮窗上的提示。原因串来自云端客户端，本来就是双语的。
-    static func retryNote(reason: String) -> String {
-        let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-        let detail = trimmed.count > 120 ? String(trimmed.prefix(120)) : trimmed
-        return tr("云端识别失败（\(detail)），正在重试一次",
-                  "Cloud recognition failed (\(detail)) - retrying once")
-    }
+    ///
+    /// 5.3.0 起原因不上屏（UX 方案 §3 H）：由调用方记进日志，悬浮窗只说"在重试"。
+    static var retryNote: String { UserMessage.retryingRecognition }
 
     /// 重试也没成时交给用户的那一句。不报技术细节：他已经等了两趟，
     /// 现在唯一有用的信息是"这一段没了，再说一次"（原因照常进日志）。
-    static var retryExhausted: String {
-        tr("没识别到，请重试", "Nothing came back - please try again")
-    }
+    static var retryExhausted: String { UserMessage.nothingCameBack }
 }
 
 // MARK: - 连通性探针（粘贴即验证 / 把云端识别开关拨开那一下）

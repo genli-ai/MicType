@@ -2,69 +2,64 @@ import SwiftUI
 import AppKit
 import AVFoundation
 import Combine
-// 最后一屏那颗「登录时自动启动」（与设置页「输入」那一段同一套写法）
+// 第三屏那一行「登录时自动启动 · 已开启」（默认开，不做开关）
 import ServiceManagement
 
 // MARK: - 首次启动引导
 
-/// **五屏**：这是什么 + 按哪个键 → 权限（模型在这里后台开始下） → 怎么用（本地 / 本地 + AI）
-/// → 试一下 → 它在哪。
+/// **三屏**（5.3.0，UX 方案 §3 B，用户 2026-09-29 拍板，推翻 09-22「5 屏」）：
+///   ① 按住右 Option (⌥) 说话 —— 一颗发光的键 + 两项权限；
+///   ② 贴上你的 OpenAI Key —— 一个大框 + 三步小字，剪贴板里有 Key 就自动填入并验证；
+///   ③ 试一下 —— 一个大框，真落一次字才出现「开始使用」。
 ///
-/// 为什么值得单独做一个窗口而不是塞进设置页：第一次打开的人不知道"轻点/按住"是两回事，
-/// 也不知道要先下一个几百 MB 的模型；设置页是给已经会用的人改参数的，不是教人上手的。
+/// 去掉的：「这是什么」屏（并进 ①：标题就是那个手势，副标题一行说清轻点 / 按住）、
+/// 「它在哪」屏（并进 ③ 那一行「它在菜单栏和 Dock 里」）、登录自启开关（默认开，③ 一行小字）。
+/// 目标是 30 秒内完成第一次成功——5 屏的时候用户"学到了怎么用"，却没"体验到多爽"。
 ///
-/// 为什么从六屏砍到四屏（用户 2026-09-19 实测后拍板）：下模型和配 AI 各占一整屏，
-/// 可这两件事都不需要用户盯着——模型可以后台下，AI 只是"要不要 + 哪一家 + 一把 Key"。
+/// 仍然成立的四条硬要求（都是过去踩过的坑）：
+///   • 权限授予后自己变勾、自己往下走，绝不要求重启或"请再按一次"；
+///   • Key 粘贴即验证，通过才进钥匙串（KeyVerifier）；
+///   • 结尾必须能就地试一次——引导窗口自己是前台 App，识别结果直接写进框里（TranscriptSink），
+///     不依赖 ⌘V（焦点不可靠，4.0.1 踩过）；
+///   • **「走完引导」= 真做过一次听写**（UX 方案 §2，学 Wispr Flow）：③ 没落过字，
+///     那颗按钮就只是「先跳过」。
 ///
-/// **4.3.4 加回第五屏「它在哪」**（用户 2026-09-22 拍板，推翻 09-19「引导最多四屏」那条）：
-/// 新用户的原话是"走完引导之后不知道它去哪了、也不知道接下来干什么"——当时是个纯菜单栏应用，
-/// 关掉最后一扇窗之后屏幕上什么都不剩，而前四屏没有任何一屏回答过"它在哪"。
-/// 这一屏把那枚图标画出来指给他看，并且把「登录时自动启动」摆在当面（默认开）——
-/// 否则第二天开机 App 根本没在跑，"它在哪"会原样再来一遍。
-/// （4.3.5 起 MicType 常驻 Dock，这一屏因此同时指 Dock 和菜单栏两处。）
-///
-/// 四条硬要求（都是过去踩过的坑）：
-///   • 权限授予后自己变绿、自己往下走，绝不要求重启或"请再按一次"；
-///   • 模型下载不阻塞界面，可取消；进度条一直挂在底部，走到哪一屏都看得见；
-///   • 结尾必须能就地试一次——引导窗口自己是前台 App，正常插入链路原样可用；
-///   • AI 那一段**必须能整屏跳过**：轻点听写不需要 Key，把它做成一道关卡等于骗人。
-///
-/// **三件必办的事**（用户 2026-09-20 拍板，见 FirstRunEssentials）：快捷键确认过、
-/// 两项权限都给了、识别模型下好了——办不完就走不完这份引导。4.0.1 四屏全都能一路
-/// 「继续」点到底，于是"走完引导"和"能用"是两回事：用户回到自己的文档里轻点，什么都
-/// 没发生，而他不会认为是权限没给，他会认为这个 App 坏了。唯一的出口是那条写明代价的
-/// 「先跳过」；中途关窗口不算走完，下次启动接在第一件没办完的事那一屏。AI 仍然可选。
+/// **三件必办的事**（用户 2026-09-20 拍板，见 FirstRunEssentials）：两项权限 + 一把 Key。
+/// 唯一的出口是写明代价的「先跳过」；每屏右上角的「稍后」= 关窗，不算走完，下次启动接着来。
 enum OnboardingPage: Int, CaseIterable {
-    case welcome
-    case permissions
-    case howYouUse
+    /// ① 按住右 Option (⌥) 说话 + 两项权限
+    case hold
+    /// ② 贴上你的 OpenAI Key
+    case key
+    /// ③ 试一下 + 开始使用
     case tryIt
-    /// 「它在哪」：菜单栏图标 + 开机自启 + 那颗「完成」（4.3.4 起）
-    case done
 }
 
 /// 页码 + 权限状态：窗口控制器与各页共享的唯一状态源
 final class OnboardingModel: ObservableObject {
-    @Published var page: OnboardingPage = .welcome
+    @Published var page: OnboardingPage = .hold
     @Published var micOK = Permissions.microphoneGranted
     @Published var axOK = Permissions.isAccessibilityTrusted
-    /// 用户点过那条「先跳过」（跳过后「继续」/「完成」放行，但那一行警告一直留着）。
-    /// 权限页和「试一下」那一页共用这一位：两处跳的是同一件事——带着缺口走出引导。
+    /// 用户点过那条「先跳过」（跳过后「继续」放行，但那一行警告一直留着）。
+    /// 三屏共用这一位：跳的是同一件事——带着缺口走出引导。
     @Published var skippedEssentials = false
     /// 权限齐了自动往下翻，但**只翻一次**：翻回来再看一眼的人不该被又推走
     @Published var autoAdvanced = false
-    /// AI 现在真的跑得起来吗（不是"点过没点过"）。最后一屏的三种收尾读这一个值。
+    /// AI 现在真的跑得起来吗（不是"点过没点过"）
     @Published var aiStatus: LLMCatalog.AIStatus = .off
     /// 「试一下」那一页输入框里的字。放在模型里而不是页面的 @State 里，只为一件事：
     /// 识别结果由窗口控制器**直接**写进来（TranscriptSink），视图外面够不着 @State。
     @Published var tryItText = ""
-    /// 最近一次"字落进来了"的时刻，页面据此闪一下「已收到 ✓」。
+    /// 最近一次"字落进来了"的时刻。③ 那一行「就是这样…」和「开始使用」都看它：
     /// 没有这道确认，用户分不清"没识别到"和"字落到别处去了"——4.0.1 那次正是后者。
     @Published var tryItReceivedAt: Date?
-    /// 最后一屏那颗「登录时自动启动」这一轮已经替他打开过了。
+    /// ③ 那一行「登录时自动启动」这一轮已经替他打开过了。
     /// 存在模型里而不是页面的 @State 里：那一页翻出去再翻回来会重建，
-    /// 而"默认开"只该发生一次——用户在这一屏关掉之后翻回去再进来，不许又被打开
+    /// 而"默认开"只该发生一次
     @Published var launchAtLoginArmed = false
+
+    /// ③ 真落过一次字了吗（acceptTranscript 成功过）。「开始使用」只认这一位
+    var tryItLanded: Bool { tryItReceivedAt != nil }
 
     /// 追加一段识别结果（只在主线程调）。追加而不是覆盖：这一页本来就该让人多试几次。
     func appendTryItText(_ text: String) {
@@ -78,28 +73,22 @@ final class OnboardingModel: ObservableObject {
         tryItReceivedAt = Date()
     }
 
-    /// 「配好了而且润色开着」。footer 里那颗「跳过（只用本地）」按钮按它决定露不露面。
     var aiReady: Bool { aiStatus == .ready }
 
-    /// 当前这一档识别引擎能不能开工。**存着**而不是每次读界面时现算：
-    /// RecognitionEngineReadiness.current() 对本地档要 stat 一串模型文件、对云端档要读钥匙串，
-    /// 而 essentials() 一次 body 就被读两次（「继续」和那条「先跳过」各读一次），
-    /// 下载期间进度每跳一格整个引导都重算一遍——Security 框架的调用不许坐在这种路径上
+    /// 钥匙串里有没有那把 Key。**存着**而不是每次读界面时现算：它要读钥匙串，
+    /// 而 essentials() 一次 body 就被读好几次——Security 框架的调用不许坐在这种路径上
     /// （Settings.swift 里那条规矩）。刷新点只有真会改变它的那几处：打开引导、两个 1 秒轮询、
-    /// 改识别档、Key 验证有了结论。
-    @Published private(set) var engineReady = RecognitionEngineReadiness.current().isReady
+    /// Key 验证有了结论。
+    @Published private(set) var keyReady = RecognitionEngineReadiness.current().hasKey
 
-    func refreshEngineReady() {
-        let ready = RecognitionEngineReadiness.current().isReady
-        if ready != engineReady { engineReady = ready }
+    func refreshKeyReady() {
+        let ready = RecognitionEngineReadiness.current().hasKey
+        if ready != keyReady { keyReady = ready }
     }
 
-    /// 三件必办的事此刻办到哪一步。权限和模型读的都是这里存着的那几位（界面上看到什么，
-    /// 判据就是什么）。判断本身全在 FirstRunEssentials 里。
+    /// 三件必办的事此刻办到哪一步（界面上看到什么，判据就是什么）。判断本身全在 FirstRunEssentials 里。
     func essentials() -> FirstRunEssentials {
-        FirstRunEssentials(microphone: micOK,
-                           accessibility: axOK,
-                           modelReady: engineReady)
+        FirstRunEssentials(microphone: micOK, accessibility: axOK, keyReady: keyReady)
     }
 
     /// 重算 aiStatus。5.0.0 起只有两档（配好了 / 没配），因为润色不再有开关。
@@ -108,207 +97,165 @@ final class OnboardingModel: ObservableObject {
                                        baseURL: Settings.shared.currentBaseURL,
                                        polishModel: Settings.shared.currentPolishModel)
     }
-
-    // startModelDownloadIfNeeded 5.0.0 删掉：没有本机模型可下了。
 }
 
-/// 引导里那几句"要按状态二选一"的话，抽成纯函数只为一件事：单测钉得住
-/// ——英文侧不许出现中文字符或全角标点，而且有 Key / 没 Key 两种收尾不能串台。
+// MARK: - 剪贴板里那把 Key（纯函数）
+
+/// 引导 ② 出现的那一刻看一眼剪贴板：像一把 OpenAI Key 就替他填进去、当场验证。
+///
+/// 为什么值得做（UX 方案 §3 B）：② 这一屏上用户要做的唯一一件事，是把刚在控制台复制的那串字
+/// 贴进来——而 4.3.4 之前自家窗口里 ⌘V 是坏的，「粘不进去」一直是首配最常卡住的一步。
+///
+/// 判据故意很窄，宁可认不出也不许认错（认错 = 把用户剪贴板里的别的东西发给 OpenAI 去验）：
+///   • 去掉首尾空白之后以 `sk-` 开头；
+///   • 至少 20 个字符（OpenAI 的 Key 远长于此；`sk-` 加几个字的笔记不算）、至多 512 个；
+///   • 只含字母、数字、`-`、`_`——中间夹一个空格或换行，就是一段话而不是一把 Key。
+/// 只在这一屏出现时读一次，**不轮询**（剪贴板是用户的东西，不该被一直盯着）；
+/// 填进去之前不写钥匙串，验证通过才存（KeyVerifier 的老规矩）。
+enum ClipboardKey {
+    static let prefix = "sk-"
+    static let minimumLength = 20
+    static let maximumLength = 512
+
+    static func candidate(from clipboard: String?) -> String? {
+        guard let raw = clipboard else { return nil }
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.hasPrefix(prefix),
+              text.count >= minimumLength, text.count <= maximumLength else { return nil }
+        let allowed = CharacterSet(charactersIn:
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+        guard text.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        return text
+    }
+}
+
+// MARK: - 文案
+
+/// 引导里的每一句话（唯一出处，由 OnboardingCopyTests / SettingsCopyBudgetTests 量）。
+/// 5.3.0 按 Apple 系统提示的口吻重写（UX 方案 §3 H）：没有「请」、没有感叹号、没有长破折号。
 enum OnboardingCopy {
 
-    /// 唯一的出口（用户 2026-09-20 拍板）。做成一条链接而不是按钮：它不是「继续」的同级选项，
-    /// 而是"我知道会怎样，先这样"——按钮会让人以为这是两条一样正当的路。
+    // MARK: 每一屏都有的
+
+    /// 右上角那条小字 = 关窗（不算走完，下次启动接着来）
+    static var later: String { tr("稍后", "Later") }
+    static var continueLabel: String { tr("继续", "Continue") }
+    static var backLabel: String { tr("上一步", "Back") }
+
+    /// 唯一的出口（用户 2026-09-20 拍板）。做成一条链接而不是按钮（①②）：它不是「继续」的
+    /// 同级选项，而是"我知道会怎样，先这样"。③ 那一处是一颗安静的按钮（用户 2026-09-29 拍板）。
     static var skipForNow: String { tr("先跳过", "Skip for now") }
 
-    /// 点过「先跳过」之后露出来的那一行。只说事实，不劝也不吓唬——
-    /// 他已经做了决定，这一行是为了让他以后看到"轻点没反应"时知道是怎么回事。
+    /// 点过「先跳过」之后露出来的那一行。只说事实，不劝也不吓唬
     static var dictationUnavailable: String {
         tr("听写暂不可用", "Dictation will not work yet")
     }
 
-    /// 最后一屏「完成」点不动时，下面那一行说的是**为什么**。
-    /// 灰着可以，灰着还不说为什么不行——按钮亮着、点下去只在日志里留一行，
-    /// 界面上一个字都不解释，是 4.1.0 踩过的坑。
-    /// 卡在权限上的那一种（点过「先跳过」的人才可能带着这个缺口走到最后一屏）
+    /// ③ 那颗按钮点不动（权限还缺）时，下面那一行说的是**为什么**
     static var permissionsStillMissing: String {
         tr("还差两项系统权限", "Two system permissions are still missing")
     }
 
-    /// 「完成」为什么点不动。nil = 点得动，或者卡的是模型——模型那一件在这一页
-    /// 早有自己的一行（带「下载模型」按钮），不必再说第二遍。
+    /// 「开始使用」为什么点不动。nil = 点得动，或者卡的是 Key（那一件在 ③ 有自己的一行）
     static func finishBlockedReason(_ essentials: FirstRunEssentials) -> String? {
         if !essentials.permissionsGranted { return permissionsStillMissing }
         return nil
     }
 
-    // MARK: 四屏上那些 caption 字号的句子
-    //
-    // 为什么非收进来不可：它们原来是散在视图里的 Text(tr(...))，一个都没被量过，
-    // 而窗口高度写死 470——每加一句话都在往 ScrollView 里塞，谁也看不出这一屏一共说了多少字。
-    // 收进来之后由 `paragraphs` 逐条量（见 SettingsCopyBudgetTests）。
+    // MARK: ① 按住右 Option (⌥) 说话
 
-    // MARK: 第一屏（5.0.1 重做）
-
-    /// 这一屏只回答三件事：按哪颗键、轻点做什么、按住做什么。
-    /// 5.0.1 拿掉了键盘示意图（画出来的那一排键帽和用户手底下的键盘未必一样，
-    /// 而"右 Option"这四个字配上 ⌥ 符号已经够认）、隐私那一句（它在「关于 → 隐私」里，
-    /// 那是唯一出处）和「两种手势泾渭分明」（那是我们的设计原则，不是他此刻要学的动作）。
-
-    /// 快捷键那一行。键名走 HotkeyChoice（只有右 Option 一颗），绝不在这里手写
-    static var hotkeyLine: String {
-        tr("快捷键：\(HotkeyChoice.rightOption.displayName)",
-           "Hotkey: \(HotkeyChoice.rightOption.displayName)")
+    /// 标题就是那个手势。键名走 HotkeyChoice（只有右 Option 一颗），绝不在这里手写
+    static var holdTitle: String {
+        let key = HotkeyChoice.rightOption.displayName
+        return tr("按住\(key) 说话", "Hold \(key) and speak")
     }
 
-    /// 轻点那张卡的正文
-    static var dictateCardDetail: String {
-        tr("轻点开始，说话，再轻点结束；文字落在光标处。",
-           "Tap to start, speak, tap again to stop; the text lands at your cursor.")
+    /// 两种手势一行说完（「这是什么」那一屏 5.3.0 并进这里）
+    static var gestureLine: String {
+        tr("轻点 = 听写 · 按住 = 指令", "Tap = dictate · Hold = command")
     }
 
-    /// 按住那张卡的两条。**分两条写**是因为它们的结果真的不一样，而这正是 5.0.1
-    /// 把投递改成确定性规则之后，用户必须提前知道的那件事（见 DictationController.selectionDelivery）
-    static var commandCardNoSelection: String {
-        tr("没选中文字：说你要什么，结果落在光标处。",
-           "Nothing selected: say what you want, the result lands at the cursor.")
-    }
+    static var allowMicrophone: String { tr("允许麦克风", "Allow the microphone") }
+    static var enableAccessibility: String { tr("开启辅助功能", "Turn on Accessibility") }
+    static var openLabel: String { tr("打开", "Open") }
 
-    static var commandCardSelection: String {
-        tr("选中了文字：在输入框里 → 原地改写；在别处 → 复制到剪贴板",
-           "Text selected: in a text field → rewritten in place; elsewhere → copied to the clipboard")
-    }
-
-    /// 权限页两条权限各自的用途
-    /// 5.1.0 起只有 OpenAI 一家：点名说它，不再说"你选的服务商"
-    static var microphonePurpose: String {
-        tr("录下你说的话，边说边传给 OpenAI 识别。",
-           "Records your voice and streams it to OpenAI for recognition.")
-    }
-
-    static var accessibilityPurpose: String {
-        tr("监听快捷键，并把文字粘贴到光标处。", "Listens for the hotkey and pastes text at your cursor.")
-    }
-
+    /// 辅助功能那一行的 ⓘ：勾了还不变的那种情况怎么办（细节进 ⓘ，不占屏幕）
     static var permissionsStuckHint: String {
-        tr("在系统设置里勾上 MicType；已经勾了还是红叉，就把它删掉再加回来。",
-           "Tick MicType in System Settings; if it is ticked but still red, remove it from the list and add it back.")
+        tr("在系统设置里勾上 MicType；已经勾了还没变勾，就把它删掉再加回来。",
+           "Tick MicType in System Settings. If it is ticked and nothing changes here, remove it from the list and add it back.")
     }
 
-    // providerNotAdoptedYet（「验证通过才会换过去，在此之前仍用 X」）5.1.0 删掉：
-    // 第三屏只剩 OpenAI 一家，没有"看着的那一档还没生效"这回事。
+    // MARK: ② 贴上你的 OpenAI Key
 
-    /// 第四屏的两步。**编号写出来**（5.0.1）：这一屏要他真的动手做两件事，
-    /// 而第二件（选中刚打出来的字、按住说指令）是这个产品最不直觉、也最值钱的一步——
-    /// 4.3.6 之前它只是底下一条 tip，几乎没人会照着做。
-    static func tryItStepDictate(hotkey: String) -> String {
-        tr("轻点 \(hotkey)，说一句话，再轻点 → 文字出现在上面",
-           "Tap \(hotkey), say something, tap again → the text appears above")
+    /// 5.0.0 起它**不再写「可选」**：识别、润色、指令三件事全在云端，没有 Key 一件都做不了
+    static var keyTitle: String { tr("贴上你的 OpenAI Key", "Paste your OpenAI key") }
+
+    static var keySubtitle: String {
+        tr("剪贴板里有 Key 会自动填入", "A key on your clipboard fills in by itself")
     }
 
-    static func tryItStepCommand(hotkey: String) -> String {
-        tr("选中上面的文字，按住 \(hotkey) 说「翻译成英文」，松手 → 原地改写",
-           "Select the text above, hold \(hotkey) and say \"translate to English\", release → rewritten in place")
+    // MARK: ③ 试一下
+
+    static var tryTitle: String { tr("试一下", "Try it") }
+
+    /// 给一句能照着念的话：第一次开口的人最怕的是"说什么"
+    static var trySubtitle: String {
+        let key = HotkeyChoice.rightOption.displayName
+        return tr("轻点\(key)，说：明天下午三点开会", "Tap \(key) and say: meeting tomorrow at 3 pm")
     }
 
-    /// 「试一下」那一页：Key 还没配好，现在轻点是说不出字的（5.0.0 起识别也要那把 Key）
+    /// 字落进来之后那一行（「它在哪」那一屏 5.3.0 并进这里）。4.3.5 起 MicType 常驻
+    /// Dock + 菜单栏，两处都要点名
+    static var thatsIt: String {
+        tr("就是这样。它在菜单栏和 Dock 里，随时可用。",
+           "That's it. It lives in the menu bar and the Dock, ready any time.")
+    }
+
+    static var startUsing: String { tr("开始使用", "Get started") }
+
+    /// 登录自启那一行（默认开，不做开关）。照实写系统里的状态：写着"已开启"而系统里没有，
+    /// 是这一行最不该出的错（受管的 Mac 上注册可能被挡）
+    static func launchAtLogin(on: Bool) -> String {
+        on ? tr("登录时自动启动 · 已开启", "Opens at login · On")
+           : tr("登录时自动启动 · 未开启", "Opens at login · Off")
+    }
+
+    /// Key 还没配好：现在轻点是说不出字的（5.0.0 起识别也要那把 Key）
     static var keyMissingForTryIt: String {
-        tr("还没填 API Key，现在轻点是说不出字的——回上一屏粘一把。",
-           "No API key yet, so tapping now will not produce any text - go back a screen and paste one.")
+        tr("还没有 Key，回上一屏贴一把", "No key yet. Go back and paste one.")
     }
 
-    // escCancels / holdToCommandTip / vocabularyTip / reopenGuide / keyboardHint
-    // 5.0.1 一并删掉。它们都是"顺便再说一句"堆出来的：
-    //   • Esc 取消、按住说指令、词汇表怎么填 —— ④ 只留那两条编号步骤，其余进不了那一屏；
-    //   • 「重看引导」那句写在最后一屏，而那一屏现在只剩三样东西；
-    //   • 键盘示意图连同它下面那行说明一起没了（画出来的键帽和用户手底下的键盘未必一样）。
+    // MARK: 预算表
 
-    /// 第三屏 Key 输入框上面那一行。只在引导里出现——设置页那一处的用户早就贴过一次了。
-    /// 4.3.4 之前 ⌘V 在自家窗口里是坏的（没有主菜单，见 AppMenu），用户只能右键粘贴，
-    /// 于是"粘不进去"成了首配最常卡住的一步
-    static var pasteKeyHere: String {
-        tr("从 OpenAI 控制台复制 Key，⌘V 粘贴到这里",
-           "Copy the key from the OpenAI console and paste it here with ⌘V")
-    }
-
-    // MARK: 第五屏「它在哪」
-
-    /// 4.3.5 起 MicType 是普通应用：Dock 图标和菜单栏图标两个都一直在
-    ///（用户 2026-09-22 拍板，和 Wispr Flow 一样），所以这一屏得把两个都指出来——
-    /// 只说菜单栏的话，Dock 里那枚图标点下去会是个惊喜
-    static var menuBarHome: String {
-        tr("它在 Dock 和菜单栏里", "It lives in the Dock and the menu bar")
-    }
-
-    // menuBarHolds（「菜单栏图标里有…」）与 rarelyNeeded（「平时不用找它…」）5.0.1 删掉：
-    // 前者念的那几项 5.0.1 已经不在菜单里了（那份菜单只剩三项），后者说的事前四屏都教过。
-    // 这一屏只剩：那枚图标 + 「它在 Dock 和菜单栏里」 + 开机自启 + 「完成」。
-
-    /// 开机自启这一行的说明。默认开（用户 2026-09-22 拍板）：不开的话第二天开机
-    /// MicType 根本没在跑，而他只会觉得"昨天装的那个东西没了"
-    static var launchAtLoginWhy: String {
-        tr("开着机就在，不必每次自己打开。",
-           "MicType is there when you log in, so you never have to launch it.")
-    }
-
-    /// 权限页开头那一句。5.0.0 起没有"模型正在后台下载"那半句了（没有本机模型）。
-    static var permissionsIntro: String {
-        tr("授权后这一页会自己变绿并继续，不用重启 MicType。",
-           "The badges turn green on their own once granted and the guide moves on — no restart needed.")
-    }
-
-    /// 挂在控件下面、走设置页那条 16 字线的几行（SettingsCopy.allCaptions 把它们并进同一张表
-    /// 逐条量：第一次打开 MicType 的人最没耐心读字，凭什么反而不受那条线约束）。
+    /// 挂在控件下面、走设置页那条 16 字线的几行（SettingsCopy.allCaptions 把它们并进同一张表）
     static var captions: [String] {
-        [dictationUnavailable, permissionsStillMissing]
+        [dictationUnavailable, permissionsStillMissing, keyMissingForTryIt]
     }
 
-    /// 引导里那些**整句的说明**。它们说的是"这一步要做什么、现在是什么状态"，装不进 16 字，
-    /// 所以另算一条线（中文 ≤ 60 字、英文 ≤ 200 字符，由 OnboardingCopyTests 量）。
-    ///
-    /// 这张表存在的理由和设置页那三张一样：窗口高度写死 470，一句一句加下去谁也不觉得自己是
-    /// "那一句"，而加到装不下只会变成默默多出一段滚动，没有任何测试会红。
+    /// 引导里那些**整句**（标题、副标题、收尾那一行）。另算一条线
+    /// （中文 ≤ 60 字、英文 ≤ 200 字符，由 OnboardingCopyTests 量）。
     static var paragraphs: [String] {
-        [hotkeyLine, dictateCardDetail, commandCardNoSelection, commandCardSelection,
-         permissionsIntro, microphonePurpose, accessibilityPurpose, permissionsStuckHint,
-         pasteKeyHere,
-         tryItStepDictate(hotkey: "⌥"), tryItStepCommand(hotkey: "⌥"), keyMissingForTryIt,
-         menuBarHome, launchAtLoginWhy]
+        [holdTitle, gestureLine, allowMicrophone, enableAccessibility, permissionsStuckHint,
+         keyTitle, keySubtitle,
+         tryTitle, trySubtitle, thatsIt, launchAtLogin(on: true), launchAtLogin(on: false)]
     }
-
-    /// 第三屏的标题。5.0.0 起它**不再写「可选」**：识别、润色、指令三件事全在云端，
-    /// 没有 Key 一件都做不了。5.1.0 从「选你的 AI」改成「连接 OpenAI」：只剩一家，
-    /// 这一屏要他做的不是"选"，是把那一家连上（用户 2026-09-28 拍板）。
-    static var usageHeadline: String {
-        tr("连接 OpenAI", "Connect OpenAI")
-    }
-
-    // usageExplanation（「听写、润色、语音指令都用这一把 Key…」）5.0.1 删掉：
-    // 那一屏开头再摆一整段说明，用户要往下翻才看得见真正要做的事（贴一把 Key），
-    // 而那三步申请说明本来就把这件事说全了。费用与隐私在「关于 → 隐私」。
-    //
-    // doneAIStatus（最后一屏那句 AI 收尾）同样删掉：最后一屏只回答"它在哪"。
-    // 没配 Key 的人在 ③ 已经被那条「先跳过」明确告知过代价了。
 }
 
 // MARK: - 窗口高度跟着这一屏的内容走（5.0.1 起；5.0.2 改成直接量）
 
 /// 引导窗口的尺寸算术。**和设置窗口分开**（5.0.2）：设置那套有一条 760 的硬上限，
-/// 而引导 ③ 在英文界面下比 760 还高——夹在 760 上的结果正是用户 2026-09-23 报的那个
-/// "第 ②③④⑤ 屏都显示不全"。这里的上限只有一条：**可见屏高 − 120**。
+/// 引导的上限只有一条：**可见屏高 − 120**。
 enum OnboardingWindowSizing {
-    /// 宽度不变（整套文案的换行都是按它调的）
-    static let width: CGFloat = 560
-    /// 下限。**5.0.3 从 220 提到 420**（用户 2026-09-23 实机反馈"重看引导打开的窗口太小"）：
-    /// 五屏的自然高度是 258–342，按内容给的话，第一次打开 MicType 的人看到的是一扇
-    /// 比设置窗口还矮的小框——"刚好装下"和"像回事"是两件事，而这扇窗是这个产品的门面。
-    /// 矮于内容的那一屏照常长高（这是地板不是天花板），多出来的高度留在内容下面，
-    /// 底部那排按钮仍然钉在窗底（见 OnboardingView 的 VStack）。
-    static let minContentHeight: CGFloat = 420
+    /// 宽度 640（5.3.0 设计稿 640 × 480）：大字标题与那颗 120 pt 的键帽要留得出呼吸
+    static let width: CGFloat = 640
+    /// 下限 480（设计稿的高度）。矮于内容的那一屏照常长高（这是地板不是天花板），
+    /// 多出来的高度留在内容下面，底部那排导航仍然钉在卡片底（见 OnboardingView 的 VStack）。
+    /// 5.0.3 的教训仍然成立：「刚好装下」和「像回事」是两件事，这扇窗是这个产品的门面。
+    static let minContentHeight: CGFloat = 480
     /// 离屏幕可见区域上下各留的余量：窗口顶到菜单栏、底到程序坞边上，既难拖也难看
     static let screenMargin: CGFloat = 120
 
     /// 这一屏该给多高。**纯函数**（单测钉住"够放下 + 不出屏"这两条）。
-    /// natural 是整个 OnboardingView 的自然高度（含上下留白与底部导航）。
     static func contentHeight(natural: CGFloat, visibleScreenHeight: CGFloat) -> CGFloat {
         let ceiling = max(minContentHeight, visibleScreenHeight - screenMargin)
         guard natural.isFinite, natural > 0 else { return minContentHeight }
@@ -316,12 +263,7 @@ enum OnboardingWindowSizing {
     }
 }
 
-/// "这一屏的内容变了"的信号。
-///
-/// **5.0.2 起只当信号用，不再用它报上来的数字**：那条路上的高度要先经过 @State、
-/// 再在同一个闭包里被读出来（SwiftUI 不保证读到的是刚写进去的值），于是窗口会按
-/// **上一屏**的高度去开——用户看到的就是"②③④⑤ 都被裁掉一截"。
-/// 现在窗口高度由控制器直接问 NSHostingView 要（fittingSize），这里只负责说一句"该重量了"。
+/// "这一屏的内容变了"的信号（5.0.2 起只当信号用，窗口高度由控制器直接问 NSHostingView 要）
 struct OnboardingPageHeightKey: PreferenceKey {
     static var defaultValue: [OnboardingPage: CGFloat] = [:]
 
@@ -332,8 +274,7 @@ struct OnboardingPageHeightKey: PreferenceKey {
 }
 
 extension View {
-    /// 量这一屏的自然高度（贴在每一屏 ScrollView 里那个 VStack 上）。
-    /// 内容一变就推一次信号：权限徽章变绿、Key 状态行冒出来、语言切换……都会走到这里
+    /// 量这一屏的自然高度。内容一变就推一次信号：权限变勾、Key 状态冒出来、语言切换……
     func measuresOnboardingPage(_ page: OnboardingPage) -> some View {
         background(GeometryReader { geo in
             Color.clear.preference(key: OnboardingPageHeightKey.self,
@@ -342,38 +283,32 @@ extension View {
     }
 }
 
+// MARK: - 窗口控制器
+
 /// 窗口是复用的（isReleasedWhenClosed = false），关窗并不会销毁里面那几页，所以
-/// "这扇窗这会儿开着没有"是**只有这一层知道**的事实。权限页和「试一下」那一页各挂着
-/// 一个 1 秒轮询，靠它停下来——否则窗口开过一次之后，这两个 Timer 一路跑到退出为止，
-/// 而且权限页那个还会在一扇关着的窗里把页码推到第三屏。
+/// "这扇窗这会儿开着没有"是**只有这一层知道**的事实。① 和 ③ 各挂着一个 1 秒轮询，靠它停下来。
 final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableObject {
     static let shared = OnboardingWindowController()
 
-    /// 这扇窗开着没有。两页的轮询订阅它来开关
+    /// 这扇窗开着没有。几页的轮询订阅它来开关；② 只在它为真时读剪贴板
     @Published private(set) var isOpen = false
 
     private var window: NSWindow?
-    /// 装着 OnboardingView 的那个宿主。**窗口高度就是问它要的**（见 remeasure）
+    /// 装着 OnboardingView 的那个宿主。**窗口高度就是问它要的**（见 applyFittedHeight）
     private var hosting: NSHostingController<OnboardingView>?
     private var langObserver: AnyCancellable?
     private var pageObserver: AnyCancellable?
     private let model = OnboardingModel()
-    /// 防抖：一次翻页会连着报好几次变化（旧页退场、新页登场、状态行冒出来）
+    /// 防抖：一次翻页会连着报好几次变化
     private var resizeWork: DispatchWorkItem?
     /// 这扇窗还没按内容摆过位置：第一次量到高度时居中一次，之后一律保住顶边
     private var needsInitialPlacement = true
-    /// 上一次真正下发的内容高度。**动画期间要靠它判"还用不用再动"**：
-    /// 窗口在那 0.2 秒里每一帧都在变高，拿当前 frame 去比会把自己的动画打断
+    /// 上一次真正下发的内容高度（动画期间靠它判"还用不用再动"）
     private var lastAppliedContentHeight: CGFloat?
 
-    // MARK: 高度跟着内容走（5.0.1 起；5.0.2 改成直接量）
+    // MARK: 高度跟着内容走
 
     /// "内容可能变了，该重新量一次了"。视图层每次变化、每次翻页都会叫它。
-    ///
-    /// 5.0.1 是让视图把量到的高度**报上来**，结果那个数要先经过 @State、再在同一个闭包里
-    /// 被读回去——SwiftUI 不保证读到的是刚写进去的值，于是窗口常常按**上一屏**的高度开，
-    /// 短屏换长屏时内容就被裁掉一截（用户 2026-09-23 实机报的正是 ②③④⑤ 显示不全）。
-    /// 现在不再相信任何传上来的数字：到点了自己去问 NSHostingView 这一刻多高。
     func scheduleRemeasure() {
         resizeWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.applyFittedHeight() }
@@ -383,11 +318,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
     }
 
     /// 真正改窗口的那一下。**顶边不动**（算术在 SettingsWindowSizing.frame 里，单测钉死）。
-    /// 高度取整个 OnboardingView 的自然高度（fittingSize 已经含了上下留白和底部那排按钮）。
-    ///
-    /// - immediately: 窗口还没露面，当场量、当场定尺寸（不排队、不做动画）。
-    ///   「重看引导」那条路非它不可：那一刻 hosting 刚建好、或者停在上一轮那一屏的高度上，
-    ///   等 0.05 秒那一跳的话，用户先看到的是一扇 420 的空窗然后才跳一下（5.0.2 的表现）。
+    /// - immediately: 窗口还没露面，当场量、当场定尺寸（不排队、不做动画）
     private func applyFittedHeight(immediately: Bool = false) {
         guard let window = window, let hosting = hosting else { return }
         // 先按目标宽度排一遍版：换行是按宽度算的，不排就量不准
@@ -412,12 +343,11 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
         lastAppliedContentHeight = content
         let target = SettingsWindowSizing.frame(current: window.frame, frameHeight: frameHeight,
                                                 visible: visible)
-        // 还没露面：直接定好，别让用户看见窗口自己跳一下
         guard !immediately else {
             window.setFrame(target, display: false)
             return
         }
-        guard !SettingsNavigator.reduceMotion else {
+        guard !Theme.reduceMotion else {
             window.setFrame(target, display: true)
             return
         }
@@ -428,19 +358,16 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
         }
     }
 
-    /// 打开引导。startAt 用于"模型缺失"这类定点跳转（落到权限那一屏，模型在那里开始下）。
+    /// 打开引导。startAt 用于定点跳转（缺权限 → ①，缺 Key → ②）。
     ///
     /// 两道护栏，护的都是"别把用户自己的状态弄丢"：
-    ///   • **窗口已经开着就什么都不重置**，只把它带到前台。这类定点跳转多半正是用户
-    ///     在引导里照着提示轻点了一下（模型还没下完），把他从「试一下」弹回第二屏、
-    ///     顺手清掉他刚试出来的那几句字和「先跳过」那一位，是在惩罚他照做；
-    ///   • **落点不许跳过还没办完的那一屏**：跳过去的那一屏正是他此刻卡住的地方，
-    ///     最后那颗「完成」读的是同一把尺子（FirstRunEssentials），跳了也点不动。
-    func show(startAt requested: OnboardingPage = .welcome) {
+    ///   • **窗口已经开着就什么都不重置**，只把它带到前台（他多半正照着 ③ 的提示轻点了一下）；
+    ///   • **落点不许跳过还没办完的那一屏**：跳过去的那一屏正是他此刻卡住的地方。
+    func show(startAt requested: OnboardingPage = .hold) {
         if let window = window, window.isVisible {
             model.micOK = Permissions.microphoneGranted
             model.axOK = Permissions.isAccessibilityTrusted
-            model.refreshEngineReady()
+            model.refreshKeyReady()
             model.refreshAIReady()
             Log.info("Onboarding already open page=\(model.page.rawValue) "
                      + "requested=\(requested.rawValue) - keeping page and text")
@@ -450,7 +377,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
         }
         // 重开这扇窗：高度要按新的那一屏重新量（上一轮留下的数字对这一屏不算数）
         lastAppliedContentHeight = nil
-        // 上一轮在最后一屏点开过的登录项开关，这一轮要重新来一次（见 DonePage.onAppear）
+        // 上一轮在 ③ 替他开过的登录项，这一轮要重新来一次（见 TryItPage.armLaunchAtLogin）
         model.launchAtLoginArmed = false
         var page = requested
         if let first = FirstRunEssentials.current().firstIncompletePage,
@@ -465,15 +392,14 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
         // 上一轮点过「先跳过」的标记不能跨次留着：回头重走一遍引导的人，多半正是因为
         // 上次跳过导致热键不工作——第二遍不拦他，他很容易又一路点过去
         model.skippedEssentials = false
-        // 上一遍试出来的那几句同样不留：重走一遍引导的人看到的应该是一个空框，
-        // 而不是上次（很可能是没配好时）留下的半句话
+        // 上一遍试出来的那几句同样不留：重走一遍的人看到的应该是一个空框，
+        // 而且「开始使用」要他这一遍**再**落一次字
         model.tryItText = ""
         model.tryItReceivedAt = nil
-        // 「权限已经齐了就别再把他推走」原先挂在权限页的 onAppear 上，而 onAppear 只在
-        // 页码**变化**时才跑：上次就停在权限页关掉的窗口，再次 show(startAt: .permissions)
-        // 时页码没变，于是会被留在视图里的那个 1 秒 Timer 在 1.8 秒后推到第三屏去。所以挪到这里。
-        model.autoAdvanced = page == .permissions && model.micOK && model.axOK
-        model.refreshEngineReady()
+        // 「权限已经齐了就别再把他推走」挂在这里而不是 ① 的 onAppear 上：onAppear 只在页码
+        // **变化**时才跑，上次就停在 ① 关掉的窗口再次打开时页码没变
+        model.autoAdvanced = page == .hold && model.micOK && model.axOK
+        model.refreshKeyReady()
         model.refreshAIReady()
         Log.info("Onboarding show page=\(page.rawValue) aiStatus=\(model.aiStatus) "
                  + model.essentials().logSummary)
@@ -482,7 +408,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
             let hosting = NSHostingController(rootView: OnboardingView(model: model))
             // 尺寸由我们自己按内容算（见 applyFittedHeight）。放着不管的话，
             // NSHostingController 会用 preferredContentSize 自己去改窗口大小——
-            // 那条路是**从左下角**长的，每翻一页标题栏跳一次（设置窗口那边同一条）
+            // 那条路是**从左下角**长的，每翻一页标题栏跳一次
             hosting.sizingOptions = []
             self.hosting = hosting
             let w = NSWindow(contentViewController: hosting)
@@ -492,8 +418,6 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
             w.titleVisibility = .hidden
             w.isMovableByWindowBackground = true
             w.isReleasedWhenClosed = false
-            // 先按下限开着，量到真实高度立刻跟上（第一次测量会顺手居中一次）。
-            // 5.0.1 之前这里写死 470：短的那几屏底下空出小半扇窗
             w.setContentSize(NSSize(width: OnboardingWindowSizing.width,
                                     height: OnboardingWindowSizing.minContentHeight))
             w.center()
@@ -504,19 +428,14 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
                 // 换一种语言等于换一整屏的字：行数会变，窗口得跟着重量一次
                 self?.scheduleRemeasure()
             }
-            // 翻页就重量。**订阅模型而不是等视图报数**：翻页是这扇窗里高度变化最大的一件事，
-            // 而 5.0.1 正是在这条路上把上一屏的高度用在了新一屏上
+            // 翻页就重量（订阅模型而不是等视图报数，见 5.0.2）
             pageObserver = model.$page.sink { [weak self] _ in self?.scheduleRemeasure() }
         }
         window?.title = tr("欢迎使用 MicType", "Welcome to MicType")
-        // **先量再显示**（5.0.3）：窗口这会儿还是上一轮（或刚建出来的下限）那个高度，
-        // 而这一轮多半停在另一屏上。等那条 0.05 秒的防抖来改，用户会先看见一扇不对的窗。
-        // 排一次版再量一次——这条路和防抖那条走的是同一个函数，只是不排队、不做动画。
+        // **先量再显示**（5.0.3）
         resizeWork?.cancel()
         applyFittedHeight(immediately: true)
-        // 「试一下」那一页的直接落字通道：窗口一开就挂上，关掉时摘下来。
-        // 挂着期间 DictationController 交付前会先问一句 isOnTryItPage，
-        // 所以停在别的页、或窗口没显示时行为和从前完全一样。
+        // ③ 的直接落字通道：窗口一开就挂上，关掉时摘下来
         registerTranscriptSink()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
@@ -536,52 +455,48 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
     }
 
     /// 「试一下」那一页的落字入口（DictationController 在交付时调）。
-    /// 返回 false = 这一刻接不住，调用方必须退回粘贴那条路，绝不能让文字掉在地上。
+    /// 返回 false = 这一刻接不住，调用方必须退回别的路，绝不能让文字掉在地上。
     @discardableResult
     func acceptTranscript(_ text: String) -> Bool {
         guard Thread.isMainThread else {
-            // 交付一律在主线程。万一不是，宁可退回粘贴，也不在别的线程上动 @Published
             Log.warn("Try-it sink called off the main thread - falling back to paste")
             return false
         }
         guard isOnTryItPage else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        model.appendTryItText(trimmed)
+        withAnimation(Theme.springOrNone) {
+            model.appendTryItText(trimmed)
+        }
         // 只记字数，绝不记内容：日志里永远看不到用户说了什么
         Log.info("Onboarding try-it received chars=\(trimmed.count)")
         return true
     }
 
-    /// 最后一屏的「完成」。**只有这一下和「先跳过」会把 onboardingCompleted 写真**
-    /// （用户 2026-09-20 拍板）。
+    /// ③ 的「开始使用」。**只有这一下和「先跳过」会把 onboardingCompleted 写真**。
     func finish() {
-        // 权限在这里**现问一次**，不读页面轮询留下的那两位：那个 1 秒的 Timer 只活在权限页里，
-        // 翻到后面几屏就停了。点过「先跳过」、然后在「试一下」这一页才把权限补上的人
-        // （热键那一下会弹系统麦克风框），用旧的那两位判就是"还缺权限"——
-        // 于是 onboardingSkippedEssentials 永远清不掉，以后模型真没了也不会再把他接回引导
-        // （AppDelegate 启动那条路读的正是这一位），日志里还写着 mic=false ax=false。
+        // 权限在这里**现问一次**，不读页面轮询留下的那两位（理由同 5.0.x：
+        // 在 ③ 才补上权限的人，旧的那两位还写着 false）
         let essentials = FirstRunEssentials.current()
         model.micOK = essentials.microphone
         model.axOK = essentials.accessibility
-        // 按钮在三件事齐活之前是灰的，走到这里只可能是齐了、或者他点过「先跳过」。
-        // 仍然守一道：⌘⏎ 那个默认动作不该绕过这条规则
-        guard essentials.canFinish || model.skippedEssentials else {
-            Log.warn("Onboarding finish blocked \(essentials.logSummary)")
+        // 按钮只在"三件事齐了 + 真落过字"时才是「开始使用」；⌘⏎ 那个默认动作同样不许绕过它
+        guard (essentials.canFinish && model.tryItLanded) || model.skippedEssentials else {
+            Log.warn("Onboarding finish blocked \(essentials.logSummary) landed=\(model.tryItLanded)")
             return
         }
         Settings.shared.onboardingCompleted = true
-        // 齐活之后收尾：把"带着缺口走的"那一位清掉，概览上那几个徽章也就该跟着消失
+        // 齐活之后收尾：把"带着缺口走的"那一位清掉
         if essentials.canFinish { Settings.shared.onboardingSkippedEssentials = false }
-        Log.info("Onboarding finished \(essentials.logSummary) skipped=\(model.skippedEssentials)")
+        Log.info("Onboarding finished \(essentials.logSummary) skipped=\(model.skippedEssentials)"
+                 + " landed=\(model.tryItLanded)")
         window?.close()
     }
 
-    /// 「先跳过」：走出引导的**唯一**出口。
+    /// 「先跳过」：走出引导的**唯一**出口（①② 那条链接）。
     ///
     /// 写两处状态：引导从此不再每次启动拦他（onboardingCompleted），以及"他是带着没办完的事走的"
-    /// （onboardingSkippedEssentials）——后者不催他，只让设置概览上那几个徽章继续挂着。
-    /// 不替他补任何东西，也不再劝一次：他已经在那一行字下面做了决定。
+    /// （onboardingSkippedEssentials）。不替他补任何东西，也不再劝一次。
     func skipEssentials() {
         model.skippedEssentials = true
         Settings.shared.onboardingSkippedEssentials = true
@@ -590,212 +505,100 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, ObservableOb
                  + model.essentials().logSummary)
     }
 
-    /// 中途点红叉**不算走完**（用户 2026-09-20 拍板）：关掉窗口的人多半正卡在某一步上，
-    /// 下次启动会把他接回没走完的那一屏。4.0.1 这里顺手把 onboardingCompleted 写真，
-    /// 于是"关掉引导"成了一条悄悄绕过权限和模型的路，而他自己并不知道绕过了什么。
+    /// ③ 那颗安静的「先跳过」（没落过字的时候）：走同一条 skipEssentials，然后关窗。
+    /// 三件必办的事其实都齐了的话（他只是没试），那个"带着缺口走"的标记当场清掉——
+    /// 它会让以后 Key 真没了时不再把他接回引导，而他并没有缺什么
+    func skipFromTryIt() {
+        skipEssentials()
+        let essentials = FirstRunEssentials.current()
+        if essentials.canFinish { Settings.shared.onboardingSkippedEssentials = false }
+        Log.info("Onboarding closed from try-it without a landed transcript "
+                 + essentials.logSummary)
+        window?.close()
+    }
+
+    /// 右上角「稍后」= 关窗。**不算走完**：下次启动接在没办完的那一屏
+    func closeForLater() {
+        Log.info("Onboarding later tapped at page=\(model.page.rawValue)")
+        window?.close()
+    }
+
+    /// 中途关窗**不算走完**（用户 2026-09-20 拍板）
     func windowWillClose(_ notification: Notification) {
         guard (notification.object as? NSWindow) === window else { return }
         // 窗口没了就别再截留文字：摘干净，之后的听写照常粘到光标处
         TranscriptSink.unregister()
-        // 里面那几页不会跟着消失，得由这里告诉它们停手
         isOpen = false
         Log.info("Onboarding closed at page=\(model.page.rawValue) "
                  + "completed=\(Settings.shared.onboardingCompleted)")
-        // 引导一关，屏幕上就一扇窗都不剩了——这正是"它去哪了"的那一刻。
-        // 启动时那句提示因为引导开着而没闪（LaunchNotice.decide），补在这里
+        // 引导一关，屏幕上就一扇窗都不剩了——这正是"它去哪了"的那一刻
         LaunchNotice.flash(.running, after: LaunchNotice.afterOnboardingDelay)
     }
 }
 
 // MARK: - 主界面
 
+/// 外面一圈底色、里面一张卡片（设计稿 640 × 480：卡片四周 24 pt）。
+/// 跟系统外观走（Theme.palette）：浅色模式下是 #F5F5F7 底 + 白卡片，不是简单反色。
 struct OnboardingView: View {
     @ObservedObject var model: OnboardingModel
     @ObservedObject private var l10n = L10n.shared
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
+        let palette = Theme.palette(scheme)
         VStack(spacing: 0) {
+            topBar
             Group {
                 switch model.page {
-                case .welcome: WelcomePage()
-                case .permissions: PermissionsPage(model: model)
-                case .howYouUse: HowYouUsePage(model: model)
+                case .hold: HoldPage(model: model)
+                case .key: KeyPage(model: model)
                 case .tryIt: TryItPage(model: model)
-                case .done: DonePage(model: model)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .padding(.horizontal, 32)
-            .padding(.top, 30)
-            .padding(.bottom, 8)
-
-            // 模型下载条 5.0.0 删掉：没有本机模型可下了。
-            Divider()
+            .frame(maxWidth: .infinity, alignment: .top)
+            .transition(Theme.appear)
+            .id(model.page)
+            Spacer(minLength: 20)
             footer
         }
-        // 高度**不写死**（5.0.1 起）：窗口按这一屏的自然高度伸缩。
-        // 5.0.2 起这个数不再从这里报上去——控制器到点直接量 NSHostingView（见 scheduleRemeasure），
-        // 这里只在内容变了的时候推一声"该重量了"
+        .padding(.horizontal, 40)
+        .padding(.top, 16)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(palette.surface)
+                .shadow(color: .black.opacity(scheme == .dark ? 0.5 : 0.12), radius: 24, x: 0, y: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(scheme == .dark ? Theme.hairline : Color.black.opacity(0.06), lineWidth: 1))
+        .padding(24)
         .frame(width: OnboardingWindowSizing.width)
+        .background(palette.bg)
+        .foregroundColor(palette.text)
+        // 高度**不写死**：窗口按这一屏的自然高度伸缩（控制器直接量 NSHostingView）
         .onPreferenceChange(OnboardingPageHeightKey.self) { _ in
             OnboardingWindowController.shared.scheduleRemeasure()
         }
     }
 
-    // MARK: 底部导航
+    // MARK: 顶上那一行：语言（只在 ①）+「稍后」
 
-    private var footer: some View {
-        HStack(spacing: 10) {
-            if model.page != .welcome {
-                Button(tr("上一步", "Back")) { step(-1) }
-            }
+    private var topBar: some View {
+        HStack {
+            // 界面语言跟系统走，跟错了的话这个人从第一屏起就在读他看不懂的字——
+            // 而设置窗口里的那个入口他还没见过。只在 ① 摆（之后他已经选过了）
+            if model.page == .hold { languagePicker }
             Spacer()
-            dots
-            Spacer()
-            // 唯一的出口：一条小链接，不是一颗和「继续」平起平坐的按钮。
-            // 点下去当场露出「听写暂不可用」那一行，然后才放行（见 skipEssentials）
-            if showsSkipLink {
-                Button(OnboardingCopy.skipForNow) {
-                    OnboardingWindowController.shared.skipEssentials()
-                }
-                .buttonStyle(.link)
-                .font(.caption)
+            Button(OnboardingCopy.later) {
+                OnboardingWindowController.shared.closeForLater()
             }
-            // 「跳过（只用本地）」那颗按钮 5.0.0 删掉：识别也在云端，没有 Key 这个产品
-            // 一个功能都用不了——把它做成一条"正当的另一条路"就是骗人。
-            // 走不下去的人仍然有出口：底下那条「先跳过」（它明写着代价）。
-            Button(model.page == .done ? tr("完成", "Done")
-                                       : tr("继续", "Continue")) {
-                if model.page == .done {
-                    OnboardingWindowController.shared.finish()
-                } else {
-                    step(1)
-                }
-            }
-            .keyboardShortcut(.defaultAction)
-            .disabled(continueDisabled)
+            .buttonStyle(.plain)
+            .font(.system(size: 12))
+            .foregroundColor(Theme.palette(scheme).muted)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-    }
-
-    private var dots: some View {
-        HStack(spacing: 6) {
-            ForEach(OnboardingPage.allCases, id: \.rawValue) { page in
-                Circle()
-                    .fill(page.rawValue == model.page.rawValue
-                          ? Color.accentColor
-                          : Color.secondary.opacity(page.rawValue < model.page.rawValue ? 0.5 : 0.22))
-                    .frame(width: 6, height: 6)
-            }
-        }
-    }
-
-    /// 三件必办的事此刻办到哪一步。这一层在观察 model（权限每秒轮询）和 downloader
-    /// （下完时 isDownloading 翻面），所以该重算的时候界面自己会重算。
-    private var essentials: FirstRunEssentials { model.essentials() }
-
-    /// 两处拦人，拦的都是"点下去必然失败"的那一步（用户 2026-09-20 拍板：
-    /// 引导办不完这三件事就不能算走完）：
-    ///   • 权限没齐——热键和插入文字都不工作，后面的「试一下」必然是空的；
-    ///   • 模型没就绪——「完成」点下去只换来一句"模型未下载"。
-    /// 两处都由那条「先跳过」放行，别的出口一个都没有。
-    private var continueDisabled: Bool {
-        guard !model.skippedEssentials else { return false }
-        switch model.page {
-        case .permissions: return !essentials.permissionsGranted
-        // 三件事齐了才放行——和 finish() 那道守卫**同一条判据**。
-        case .tryIt: return !essentials.canFinish
-        // ③「选你的 AI」5.0.0 起**是一道真关卡**（识别也在云端，没有 Key 什么都做不了），
-        // 但拦人的判据仍然只有一条：那把 Key 在不在（model.engineReady）。
-        // 出口是底下那条写明代价的「先跳过」，别的一个都没有。
-        case .howYouUse: return !essentials.modelReady
-        case .welcome: return false
-        // 最后一屏的「完成」无条件放行：**关卡在上一屏**（能走到这儿说明三件事已经齐了，
-        // 或者他点过「先跳过」）。在这里再拦一次只会拦住一个已经被放行过的人
-        case .done: return false
-        }
-    }
-
-    /// 出口只在"确实卡住了"的那两屏露面。下载正在跑的时候不摆：进度条就在上面，
-    /// 等一等比跳过好；他真不想等，进度条右边就有「取消」，取消完这条链接自然出现。
-    private var showsSkipLink: Bool {
-        guard !model.skippedEssentials else { return false }
-        switch model.page {
-        case .permissions: return !essentials.permissionsGranted
-        // 与上面那颗按钮同一条判据：凡是「继续」点不动的时候，出口都必须在
-        case .howYouUse: return !essentials.modelReady
-        case .tryIt: return !essentials.canFinish
-        case .welcome, .done: return false
-        }
-    }
-
-    private func step(_ delta: Int) {
-        let next = max(0, min(OnboardingPage.allCases.count - 1, model.page.rawValue + delta))
-        guard let page = OnboardingPage(rawValue: next) else { return }
-        // 系统的「减弱动态效果」：设置窗口和悬浮窗都听它的，引导是用户见到的第一扇窗，
-        // 更没有理由例外
-        withAnimation(SettingsNavigator.reduceMotion ? nil : .easeInOut(duration: 0.15)) {
-            model.page = page
-        }
-    }
-}
-
-// MARK: - 1. 欢迎（5.0.1 重做）
-
-/// 这一屏只回答三件事：**按哪颗键、轻点做什么、按住做什么**。
-///
-/// 5.0.1 拿掉的都是"顺便说一句"：键盘示意图（画出来的键帽排布和用户手底下那块键盘
-/// 未必一样，而且它把两张卡挤到了第二屏）、「两种手势泾渭分明」（那是我们的设计原则，
-/// 不是他此刻要学的动作）、以及底下那句隐私（唯一出处是「关于 → 隐私」）。
-///
-/// 右上角那对语言按钮是这一屏**唯一**的控件：界面语言跟系统走，跟错了的话
-/// 这个人从第一屏起就在读他看不懂的字——而设置窗口里的那个入口他还没见过。
-private struct WelcomePage: View {
-    @ObservedObject private var l10n = L10n.shared
-
-    /// 这一屏念出来的那颗键。只有一颗，不用问设置
-    private var key: String { HotkeyChoice.rightOption.displayName }
-
-    var body: some View {
-        // ScrollView 是保险绳（与后面三屏同一个理由）：英文界面下两张手势卡更高，
-        // 挤爆时宁可能滚，也不要把卡片底下那行裁掉
-        ScrollView {
-            VStack(spacing: 14) {
-                HStack {
-                    Spacer()
-                    languagePicker
-                }
-                Text(tr("用一个键说话，文字直接落在光标处。",
-                        "Press one key, speak, and the text lands at your cursor."))
-                    .font(.system(size: 16, weight: .medium))
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(OnboardingCopy.hotkeyLine)
-                    .font(.system(size: 13))
-                    .foregroundColor(.secondary)
-
-                // 4.1.0 之前这里摆着一个三选一的热键选择器。拿掉它（用户 2026-09-20 拍板）：
-                // 这是他打开 MicType 的第一分钟，还一次都没听写过，凭什么在这时候挑键？
-                //
-                // **两张卡等高等宽**：按住那张有两条、轻点那张只有一条，不对齐的话
-                // 看着像其中一张更重要——而这两个手势是这个产品的全部
-                HStack(alignment: .top, spacing: 14) {
-                    GestureCard(gesture: tr("轻点", "Tap"),
-                                title: tr("听写", "Dictate"),
-                                lines: [OnboardingCopy.dictateCardDetail])
-                    GestureCard(gesture: tr("按住", "Hold"),
-                                title: tr("说指令，松手执行", "Speak a command, release to run"),
-                                lines: [OnboardingCopy.commandCardNoSelection,
-                                        OnboardingCopy.commandCardSelection])
-                }
-                // 两张卡的高度取这一行里最高的那张（fixedSize 先让每张按内容量高，
-                // maxHeight: .infinity 再把矮的那张撑到同一高度）
-                .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity)
-            .measuresOnboardingPage(.welcome)
-        }
+        .frame(height: 22)
     }
 
     /// 「中文 | English」。两个名字各写各的语言（译过来反而要用户先猜哪个是哪个）
@@ -812,109 +615,175 @@ private struct WelcomePage: View {
         }
         .labelsHidden()
         .pickerStyle(.segmented)
+        .controlSize(.small)
         .fixedSize()
     }
-}
 
-private struct GestureCard: View {
-    /// 「轻点」/「按住」——卡片的帽子，就是那个手势本身
-    let gesture: String
-    let title: String
-    /// 正文，一条或两条（按住那张要分"有没有选中文字"两种结果说）
-    let lines: [String]
+    // MARK: 底部：上一步 · 页码点 ·（先跳过）继续
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(gesture)
-                .font(.system(size: 13, weight: .semibold))
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            ForEach(lines, id: \.self) { line in
-                Text(line)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+    private var footer: some View {
+        ZStack {
+            dots
+            HStack(spacing: 12) {
+                if model.page != .hold {
+                    Button(OnboardingCopy.backLabel) { step(-1) }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 13))
+                        .foregroundColor(Theme.palette(scheme).muted)
+                }
+                Spacer()
+                // 唯一的出口：一条小链接，不是一颗和「继续」平起平坐的按钮
+                if showsSkipLink {
+                    Button(OnboardingCopy.skipForNow) {
+                        OnboardingWindowController.shared.skipEssentials()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.palette(scheme).muted)
+                }
+                // ③ 没有「继续」：那一屏的按钮在内容里（「开始使用」/「先跳过」）
+                if model.page != .tryIt {
+                    MTButton(title: OnboardingCopy.continueLabel,
+                             style: continueReady ? .primary : .quiet,
+                             adaptive: true) { step(1) }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(continueDisabled)
+                }
             }
-            Spacer(minLength: 0)
         }
-        .padding(12)
-        // maxHeight: .infinity = 和这一行里最高的那张卡同高（见调用处）
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(Color.secondary.opacity(0.08))
-        .cornerRadius(8)
+        .frame(height: 34)
+    }
+
+    /// 三个点：当前那一个是 18 × 6 的渐变胶囊（设计稿），其余是 6 pt 的淡点
+    private var dots: some View {
+        HStack(spacing: 8) {
+            ForEach(OnboardingPage.allCases, id: \.rawValue) { page in
+                if page == model.page {
+                    Capsule().fill(Theme.accentGradient).frame(width: 18, height: 6)
+                } else {
+                    Capsule()
+                        .fill(scheme == .dark ? Color.white.opacity(0.18) : Color.black.opacity(0.14))
+                        .frame(width: 6, height: 6)
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(tr("第 \(model.page.rawValue + 1) 步，共 \(OnboardingPage.allCases.count) 步",
+                               "Step \(model.page.rawValue + 1) of \(OnboardingPage.allCases.count)"))
+    }
+
+    private var essentials: FirstRunEssentials { model.essentials() }
+
+    /// 这一屏要办的事办好了：「继续」变成主按钮（渐变）
+    private var continueReady: Bool {
+        switch model.page {
+        case .hold: return essentials.permissionsGranted
+        case .key: return essentials.keyReady
+        case .tryIt: return false
+        }
+    }
+
+    /// 拦人的判据：这一屏要办的事没办好、又没点过「先跳过」
+    private var continueDisabled: Bool {
+        guard !model.skippedEssentials else { return false }
+        return !continueReady
+    }
+
+    /// 出口只在"确实卡住了"的那两屏露面（与「继续」同一条判据）
+    private var showsSkipLink: Bool {
+        guard !model.skippedEssentials, model.page != .tryIt else { return false }
+        return !continueReady
+    }
+
+    private func step(_ delta: Int) {
+        let next = max(0, min(OnboardingPage.allCases.count - 1, model.page.rawValue + delta))
+        guard let page = OnboardingPage(rawValue: next) else { return }
+        withAnimation(Theme.springOrNone) { model.page = page }
     }
 }
 
-// MARK: - 2. 权限（模型在这一屏后台开始下）
+// MARK: - 共用：大标题 + 副标题
 
-private struct PermissionsPage: View {
+private struct PageHeading: View {
+    let title: String
+    let subtitle: String
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Text(title)
+                .font(.system(size: 28, weight: .semibold, design: .rounded))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(subtitle)
+                .font(.system(size: 14))
+                .foregroundColor(Theme.palette(scheme).muted)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+/// 一行橙色小字（「听写暂不可用」「还差两项系统权限」…）
+private struct WarningLine: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 12))
+            .foregroundColor(.orange)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - ① 按住右 Option (⌥) 说话
+
+private struct HoldPage: View {
     @ObservedObject var model: OnboardingModel
     @ObservedObject private var l10n = L10n.shared
-    /// 1 秒一次的轮询：用户在系统设置里打开开关后，这里自己变绿，不需要重启、也不必再点一次。
-    /// **只在窗口开着时轮**：窗口是复用的，关掉之后这一页并不会消失——4.1.0 之前这里是个
-    /// autoconnect 的 Timer，于是关窗之后它照轮不误，还能在一扇关着的窗里把页码推到第三屏。
+    /// 1 秒一次的轮询：用户在系统设置里打开开关后，这里自己变勾，不需要重启、也不必再点一次。
+    /// **只在窗口开着时轮**（窗口复用，关掉之后这一页并不会消失）
     @State private var poll: AnyCancellable?
-    /// 这扇窗开着没有（关窗时要停轮询，再开时接着轮）
     @ObservedObject private var windowState = OnboardingWindowController.shared
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Text(tr("两项系统权限", "Two system permissions"))
-                    .font(.system(size: 16, weight: .semibold))
-                Text(OnboardingCopy.permissionsIntro)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                PermissionRow(title: tr("麦克风", "Microphone"),
-                              detail: OnboardingCopy.microphonePurpose,
-                              ok: model.micOK) {
+        VStack(spacing: 0) {
+            OptionKeyCap()
+                .padding(.top, 14)
+            PageHeading(title: OnboardingCopy.holdTitle, subtitle: OnboardingCopy.gestureLine)
+                .padding(.top, 28)
+            VStack(spacing: 8) {
+                PermissionRow(title: OnboardingCopy.allowMicrophone, ok: model.micOK) {
                     Permissions.ensureMicrophone { granted in
                         model.micOK = granted
                         // notDetermined 以外的状态系统不再弹窗，只能引导去设置里手动开
                         if !granted { Permissions.openMicrophoneSettings() }
                     }
                 }
-
-                PermissionRow(title: tr("辅助功能", "Accessibility"),
-                              detail: OnboardingCopy.accessibilityPurpose,
-                              ok: model.axOK) {
+                PermissionRow(title: OnboardingCopy.enableAccessibility, ok: model.axOK,
+                              info: OnboardingCopy.permissionsStuckHint) {
                     Permissions.promptAccessibility()
                     Permissions.openAccessibilitySettings()
                 }
-
-                // 「测一下麦克风」那一段与模型下载那几行 5.0.0 一起删掉：
-                // 麦克风永远跟随系统默认（没有可选的设备了），本机模型也没有了。
-                // 这一屏因此只剩它本来该有的两件事：两项权限。
-
-                if !(model.micOK && model.axOK) {
-                    Text(OnboardingCopy.permissionsStuckHint)
-                        .font(.caption)
-                        .foregroundColor(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                // 点过「先跳过」之后露出来的那一行：一句话，没有第二句，也不再劝他回头
-                if model.skippedEssentials && !(model.micOK && model.axOK) {
-                    Text(OnboardingCopy.dictationUnavailable)
-                        .font(.caption)
-                        .foregroundColor(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .measuresOnboardingPage(.permissions)
+            .padding(.top, 26)
+            // 点过「先跳过」之后露出来的那一行：一句话，没有第二句
+            if model.skippedEssentials && !(model.micOK && model.axOK) {
+                WarningLine(text: OnboardingCopy.dictationUnavailable)
+                    .padding(.top, 10)
+            }
         }
+        .frame(maxWidth: .infinity)
+        .measuresOnboardingPage(.hold)
         .onAppear {
-            // 进页时权限就已经齐了（老用户被模型缺失带过来、或者他点「上一步」回来看一眼）：
-            // 这一页没什么可等的，别再把他自动推走——自动前进只属于"他刚刚授权成功"那一刻
+            // 进页时权限就已经齐了（点「上一步」回来看一眼）：别再把他自动推走
             if model.micOK, model.axOK { model.autoAdvanced = true }
             startPolling()
         }
         .onDisappear { stopPolling() }
-        // 关窗时这一页并不会被销毁（窗口复用），所以停轮询这件事只能由窗口来说
         .onChange(of: windowState.isOpen) { _, open in
             if open { startPolling() } else { stopPolling() }
         }
@@ -925,9 +794,13 @@ private struct PermissionsPage: View {
         poll = Timer.publish(every: 1, on: .main, in: .common)
             .autoconnect()
             .sink { _ in
-                model.micOK = Permissions.microphoneGranted
-                model.axOK = Permissions.isAccessibilityTrusted
-                model.refreshEngineReady()
+                let mic = Permissions.microphoneGranted
+                let ax = Permissions.isAccessibilityTrusted
+                withAnimation(Theme.springOrNone) {
+                    if mic != model.micOK { model.micOK = mic }
+                    if ax != model.axOK { model.axOK = ax }
+                }
+                model.refreshKeyReady()
                 advanceIfPermissionsJustLanded()
             }
     }
@@ -937,121 +810,256 @@ private struct PermissionsPage: View {
         poll = nil
     }
 
-    /// 权限刚刚齐活：自己往下翻一页。**只翻一次**——从下一屏点「上一步」回来的人
-    /// 是专程回来看的，再把他推走就成了跟用户较劲。
+    /// 权限刚刚齐活：0.6 s 后自己往下翻一页（UX 方案 §3 B）。**只翻一次**——
+    /// 从下一屏点「上一步」回来的人是专程回来看的，再把他推走就成了跟用户较劲。
     private func advanceIfPermissionsJustLanded() {
-        guard model.micOK, model.axOK, !model.autoAdvanced, model.page == .permissions else { return }
+        guard model.micOK, model.axOK, !model.autoAdvanced, model.page == .hold else { return }
         model.autoAdvanced = true
         Log.info("Onboarding permissions granted, advancing")
-        // 慢半拍：让那两个徽章先变绿，用户才看得出"是它自己好了"
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-            guard model.page == .permissions else { return }
-            withAnimation(SettingsNavigator.reduceMotion ? nil : .easeInOut(duration: 0.15)) {
-                model.page = .howYouUse
-            }
+        // 慢半拍：让两枚勾先描完（0.25 s），用户才看得出"是它自己好了"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            guard model.page == .hold, windowState.isOpen else { return }
+            withAnimation(Theme.springOrNone) { model.page = .key }
         }
     }
 }
 
+/// 那颗发光的右 Option 键：120 × 88、品牌渐变、白色 ⌥、柔和光晕（设计稿 Onboarding-1）。
+/// 光晕慢慢呼吸——"按这里"不用一个字；「减少动态效果」开着就静止。
+private struct OptionKeyCap: View {
+    @State private var breathing = false
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .fill(Theme.accentGradient)
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.white.opacity(0.22), lineWidth: 1))
+            // 键帽的立体感：顶上一道亮边、底下一道暗边（设计稿的两层 inset 阴影）
+            .overlay(alignment: .top) {
+                Capsule().fill(Color.white.opacity(0.3)).frame(height: 1).padding(.horizontal, 14)
+                    .padding(.top, 1)
+            }
+            .overlay(alignment: .bottom) {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color.black.opacity(0.22))
+                    .frame(height: 3)
+                    .mask(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
+            .overlay(
+                Text("⌥")
+                    .font(.system(size: 40, weight: .medium))
+                    .foregroundColor(.white))
+            .frame(width: 120, height: 88)
+            .shadow(color: Theme.accentB.opacity(breathing ? 0.55 : 0.35), radius: 14)
+            .shadow(color: Theme.accentA.opacity(breathing ? 0.3 : 0.18), radius: 28)
+            .onAppear {
+                guard !Theme.reduceMotion else { return }
+                withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) {
+                    breathing = true
+                }
+            }
+            .accessibilityLabel(HotkeyChoice.rightOption.displayName)
+    }
+}
+
+/// 一项权限：状态圆（未办 = 灰圈；办好 = 渐变圆 + 描出来的白勾）+ 名字 + 「打开」
 private struct PermissionRow: View {
     let title: String
-    let detail: String
     let ok: Bool
+    var info: String? = nil
     let action: () -> Void
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                .font(.system(size: 17))
-                .foregroundColor(ok ? .green : .orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 13, weight: .medium))
-                Text(detail).font(.caption).foregroundColor(.secondary)
+        HStack(spacing: 12) {
+            ZStack {
+                if ok { MTCheckCircle(size: 22) } else { MTPendingCircle(size: 20) }
             }
+            .frame(width: 22, height: 22)
+            Text(title)
+                .font(.system(size: 14))
             Spacer()
-            if ok {
-                Text(tr("已授权", "Granted"))
-                    .font(.caption)
-                    .foregroundColor(.green)
-            } else {
-                Button(tr("打开设置", "Open Settings"), action: action)
+            if !ok {
+                if let info = info { InfoButton(info) }
+                MTButton(title: OnboardingCopy.openLabel, style: .quiet, adaptive: true, action: action)
             }
         }
-        .padding(12)
-        .background(Color.secondary.opacity(0.08))
-        .cornerRadius(8)
+        .padding(.horizontal, 14)
+        .frame(height: 48)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(scheme == .dark ? Color.white.opacity(0.03) : Color.black.opacity(0.03)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(scheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.06),
+                        lineWidth: 1))
     }
 }
 
-// MARK: - 3. 怎么用（可跳过）
+// MARK: - ② 贴上你的 OpenAI Key
 
-/// 一屏走完首配的那**一个**动作：照着三步拿到 OpenAI 的 Key → 粘进来 → 当场验证。
-///
-/// 5.1.0 之前这一屏上半是两张服务商对比卡片（阿里云 / OpenAI，价格 / 优势 / 怎么付钱），
-/// 用户要先做一个"选哪家"的决定；阿里云整档删掉之后（用户 2026-09-28 拍板，与 iOS L36 一致）
-/// 那个决定没有了，这一屏只剩标题「连接 OpenAI」+ 申请步骤 + Key 框。
-///
-/// **控件与设置正页共用**（CloudSetupCore / KeyEntryView）：Key 框、那颗 ⓘ、状态行只写一处。
-private struct HowYouUsePage: View {
+/// 一屏只做一个动作：把 Key 贴进来（或者照三步去拿一把）。
+/// **控件与设置正页共用**（CloudSetupCore / KeyEntryView）：验证、存钥匙串、状态文案只写一处。
+private struct KeyPage: View {
     @ObservedObject var model: OnboardingModel
     @ObservedObject private var l10n = L10n.shared
+    /// 这一屏出现时从剪贴板认出来的那把 Key。**每次进这一屏只读一次**（页面按页码重建，
+    /// @State 跟着重来），不轮询
+    @State private var prefill: String?
+    /// 剪贴板看过了没有。Key 框要等它看完才出现：KeyEntryView 在自己的 onAppear 里载入，
+    /// 早于这里的话，那一刻 prefill 还是空的
+    @State private var clipboardChecked = false
 
     var body: some View {
-        // ScrollView 是保险绳：验证失败那行可能三行——挤爆时宁可能滚，也不要把底部的控件裁掉。
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(OnboardingCopy.usageHeadline)
-                    .font(.system(size: 16, weight: .semibold))
-                // 申请步骤 → Key 框 → 状态行。与设置正页**同一个视图**（CloudSetupCore）
-                CloudSetupCore(style: .onboarding,
-                               onKeyStatus: { _ in
-                                   model.refreshEngineReady()
-                                   model.refreshAIReady()
-                               }) {
-                    EmptyView()
+        VStack(spacing: 0) {
+            PageHeading(title: OnboardingCopy.keyTitle, subtitle: OnboardingCopy.keySubtitle)
+                .padding(.top, 20)
+            VStack(alignment: .leading, spacing: 0) {
+                if clipboardChecked {
+                    CloudSetupCore(style: .onboarding,
+                                   onKeyStatus: { _ in
+                                       model.refreshKeyReady()
+                                       model.refreshAIReady()
+                                   },
+                                   prefill: prefill) {
+                        EmptyView()
+                    }
+                } else {
+                    Color.clear.frame(height: 44)
                 }
-                Spacer(minLength: 0)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .measuresOnboardingPage(.howYouUse)
+            .padding(.top, 28)
+            if model.skippedEssentials && !model.keyReady {
+                WarningLine(text: OnboardingCopy.dictationUnavailable)
+                    .padding(.top, 10)
+            }
         }
+        .frame(maxWidth: .infinity)
+        .measuresOnboardingPage(.key)
         .onAppear {
-            model.refreshEngineReady()
+            model.refreshKeyReady()
             model.refreshAIReady()
+            // 只有真开着引导窗口时才读剪贴板：这一页还会被**离屏渲染**（快照 / 高度测试），
+            // 那一刻绝不能把测试机剪贴板里的东西拿去发一次验证请求
+            if OnboardingWindowController.shared.isOpen {
+                prefill = ClipboardKey.candidate(from: NSPasteboard.general.string(forType: .string))
+                if prefill != nil { Log.info("Onboarding found a key-shaped string on the clipboard") }
+            }
+            clipboardChecked = true
         }
     }
-
-    // 服务商选择器那一套（providerNotices / providerBinding / refreshStoredKey / adoptIfUsable）
-    // 5.1.0 删掉：只剩 OpenAI 一家，没有"看着的那一档"与"生效的那一档"之分。
 }
 
-// MARK: - 4. 试一下 + 收尾
+// MARK: - ③ 试一下
 
 private struct TryItPage: View {
     @ObservedObject var model: OnboardingModel
     @ObservedObject private var l10n = L10n.shared
     @FocusState private var editorFocused: Bool
-    /// 「已收到 ✓」那一下的开关（2.5 秒后自己熄）
-    @State private var flashReceived = false
-    /// 权限与 Key 的状态靠这个 1 秒轮询刷新（两者都可能在这一页上被补齐：
-    /// 轻点会弹系统麦克风框，用户也可能翻回上一屏去粘 Key）。
-    /// 同权限页：只在窗口开着时轮，关掉之后这一页还在视图树里，autoconnect 会一路轮到退出
+    @Environment(\.colorScheme) private var scheme
+    /// 权限与 Key 的状态靠这个 1 秒轮询刷新（两者都可能在这一页上被补齐）
     @State private var readinessPoll: AnyCancellable?
-    /// 这扇窗开着没有（关窗时要停轮询，再开时接着轮）
     @ObservedObject private var windowState = OnboardingWindowController.shared
+    @State private var launchAtLogin = (SMAppService.mainApp.status == .enabled)
 
-    /// 这一屏让他"轻点试一次"，那就得先说清这一次能不能成。
-    /// 5.0.0 起唯一会挡住他的是**那把 Key**（识别也在云端）。
-    private var keyMissing: Bool { !model.engineReady }
+    var body: some View {
+        let palette = Theme.palette(scheme)
+        VStack(spacing: 0) {
+            PageHeading(title: OnboardingCopy.tryTitle, subtitle: OnboardingCopy.trySubtitle)
+                .padding(.top, 6)
+            TextEditor(text: $model.tryItText)
+                .font(.system(size: 17))
+                .scrollContentBackground(.hidden)
+                .focused($editorFocused)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(minHeight: 120)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(palette.bg))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(model.tryItLanded ? Theme.accentText.opacity(0.45)
+                                : (scheme == .dark ? Color.white.opacity(0.1) : Color.black.opacity(0.1)),
+                                lineWidth: 1))
+                .padding(.top, 22)
+                .accessibilityLabel(tr("试写区", "Try-it box"))
 
-    /// 这一页每一句话里念出来的那颗键（只有一颗，见 Settings.hotkey）
-    private var key: String { HotkeyChoice.rightOption.plainName }
+            // Key 还没配好：现在轻点是说不出字的
+            if !model.keyReady {
+                WarningLine(text: OnboardingCopy.keyMissingForTryIt)
+                    .padding(.top, 10)
+            }
+            if model.skippedEssentials && !model.essentials().canFinish {
+                WarningLine(text: OnboardingCopy.dictationUnavailable)
+                    .padding(.top, 10)
+            }
+            if !model.skippedEssentials,
+               let reason = OnboardingCopy.finishBlockedReason(model.essentials()) {
+                WarningLine(text: reason)
+                    .padding(.top, 10)
+            }
 
-    /// 权限那两位在这一页也要续着刷。它们原本只由权限页里那个 1 秒的 Timer 更新，
-    /// 而那个 Timer 随着页面一起被拆掉了：点过「先跳过」走到这一页、然后才补上权限的人
-    /// （轻点会弹系统麦克风框，或者他自己去系统设置里勾了），「完成」和它下面那一行
-    /// 读到的都还是一份过期的状态。
+            if canStart {
+                Text(OnboardingCopy.thatsIt)
+                    .font(.system(size: 13))
+                    .foregroundColor(palette.muted)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 16)
+                    .transition(Theme.appear)
+                MTButton(title: OnboardingCopy.startUsing, style: .primary, adaptive: true) {
+                    OnboardingWindowController.shared.finish()
+                }
+                .keyboardShortcut(.defaultAction)
+                .padding(.top, 14)
+                .transition(Theme.appear)
+            } else {
+                MTButton(title: OnboardingCopy.skipForNow, style: .quiet, adaptive: true) {
+                    OnboardingWindowController.shared.skipFromTryIt()
+                }
+                .padding(.top, 18)
+            }
+
+            // 登录自启：默认开、不做开关（UX 方案 §3 B）。点它去系统的登录项——
+            // 那是唯一能把它关掉的地方，而这一行不值一颗开关
+            Button(OnboardingCopy.launchAtLogin(on: launchAtLogin)) {
+                Log.info("Onboarding opened Login Items from the try-it page")
+                SMAppService.openSystemSettingsLoginItems()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11))
+            .foregroundColor(palette.muted)
+            .padding(.top, 14)
+        }
+        .frame(maxWidth: .infinity)
+        .animation(Theme.springOrNone, value: canStart)
+        .measuresOnboardingPage(.tryIt)
+        // 上一屏可能刚粘好 Key：进这一屏现算一次
+        .onAppear {
+            model.refreshAIReady()
+            refreshPermissions()
+            model.refreshKeyReady()
+            armLaunchAtLogin()
+            // 稍等一拍再抢焦点：窗口刚翻页时 TextEditor 还没进响应链，立刻 focus 会落空。
+            // 焦点只影响用户自己打字——识别结果不靠它，走的是直接落字（TranscriptSink）
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { editorFocused = true }
+            startReadinessPolling()
+        }
+        .onDisappear { stopReadinessPolling() }
+        .onChange(of: windowState.isOpen) { _, open in
+            if open { startReadinessPolling() } else { stopReadinessPolling() }
+        }
+    }
+
+    /// 「开始使用」出现的条件：三件必办的事齐了 **而且** 这一屏真落过一次字
+    private var canStart: Bool {
+        model.tryItLanded && model.essentials().canFinish
+    }
+
+    /// 权限那两位在这一页也要续着刷（在这一页才补上权限的人，旧的那两位还是 false）。
+    /// 只在窗口真开着时刷：离屏渲染（快照）里摆好的状态不该被测试机的真实权限冲掉
     private func refreshPermissions() {
+        guard windowState.isOpen else { return }
         let mic = Permissions.microphoneGranted
         let ax = Permissions.isAccessibilityTrusted
         if mic != model.micOK { model.micOK = mic }
@@ -1064,8 +1072,7 @@ private struct TryItPage: View {
             .autoconnect()
             .sink { _ in
                 refreshPermissions()
-                // Key 可能是在这一页才补齐的（翻回上一屏粘完再回来）：「完成」那颗按钮读的就是它
-                model.refreshEngineReady()
+                model.refreshKeyReady()
             }
     }
 
@@ -1074,231 +1081,26 @@ private struct TryItPage: View {
         readinessPoll = nil
     }
 
-    var body: some View {
-        // 这一页把「试一次」和原来的收尾页合在一起，内容不短：套上滚动才不会有一句是看不见的
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 8) {
-                    Text(tr("试一下", "Try it"))
-                        .font(.system(size: 16, weight: .semibold))
-                    // 字落进框里的那一下给一句看得见的确认：框里多了一段字，
-                    // 但用户的眼睛多半还在悬浮窗上，不点一下他不知道到底成没成
-                    if flashReceived {
-                        Text(tr("已收到 ✓", "Received ✓"))
-                            .font(.caption)
-                            .foregroundColor(.green)
-                    }
-                    Spacer()
-                }
-                TextEditor(text: $model.tryItText)
-                    .font(.system(size: 13))
-                    .focused($editorFocused)
-                    .frame(height: 96)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.35)))
-
-                // 两条编号步骤，一条都不多（5.0.1）。第二条是这个产品最不直觉、也最值钱的
-                // 一步：选中刚打出来的字、按住说指令、它就地被改掉。4.3.6 之前它只是底下
-                // 一条灰色 tip，几乎没人会照着做——而这一屏是他唯一会照着做的地方。
-                VStack(alignment: .leading, spacing: 8) {
-                    NumberedStep(index: 1, text: OnboardingCopy.tryItStepDictate(hotkey: key))
-                    NumberedStep(index: 2, text: OnboardingCopy.tryItStepCommand(hotkey: key))
-                }
-
-                // Key 还没配好：现在轻点是说不出字的。上一屏就是配它的地方
-                if keyMissing {
-                    Text(OnboardingCopy.keyMissingForTryIt)
-                        .font(.caption)
-                        .foregroundColor(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                // 点过「先跳过」：说清他带着什么走。这一行和权限页那一行是同一句——
-                // 缺的是权限还是 Key，对用户来说结果完全一样：轻点没反应
-                if model.skippedEssentials && !model.essentials().modelReady {
-                    Text(OnboardingCopy.dictationUnavailable)
-                        .font(.caption)
-                        .foregroundColor(.orange)
-                }
-
-                // 「完成」点不动的时候，这一行说为什么
-                if !model.skippedEssentials,
-                   let reason = OnboardingCopy.finishBlockedReason(model.essentials()) {
-                    Text(reason)
-                        .font(.caption)
-                        .foregroundColor(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if !model.tryItText.isEmpty {
-                    HStack {
-                        Spacer()
-                        Button(tr("清空", "Clear")) {
-                            model.tryItText = ""
-                            editorFocused = true
-                        }
-                        .controlSize(.small)
-                    }
-                }
-
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .measuresOnboardingPage(.tryIt)
-        }
-        // 上一屏可能刚粘好 Key，也可能用户中途去设置页配了——进这一屏现算一次
-        .onAppear {
-            model.refreshAIReady()
-            refreshPermissions()
-            model.refreshEngineReady()
-            // 稍等一拍再抢焦点：窗口刚翻页时 TextEditor 还没进响应链，立刻 focus 会落空。
-            // 焦点只影响用户自己打字——识别结果不靠它，走的是直接落字（TranscriptSink）
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { editorFocused = true }
-            startReadinessPolling()
-        }
-        .onDisappear { stopReadinessPolling() }
-        // 关窗时这一页并不会被销毁（窗口复用），所以停轮询这件事只能由窗口来说
-        .onChange(of: windowState.isOpen) { _, open in
-            if open { startReadinessPolling() } else { stopReadinessPolling() }
-        }
-        // 字落进来了：闪 2.5 秒的「已收到 ✓」
-        .onChange(of: model.tryItReceivedAt) { _, received in
-            guard received != nil else { return }
-            withAnimation(SettingsNavigator.reduceMotion ? nil : .easeIn(duration: 0.12)) {
-                flashReceived = true
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                // 这 2.5 秒里又落了一段：让新的那一次自己计时，别被这一下提前熄掉
-                guard model.tryItReceivedAt == received else { return }
-                withAnimation(SettingsNavigator.reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                    flashReceived = false
-                }
-            }
-        }
-    }
-}
-
-// MARK: - 5. 它在哪（4.3.4 起）
-
-/// 引导的最后一屏，回答的是走完引导之后那个必然的问题：**"它去哪了？"**
-///
-/// 4.3.4 之前这份引导关掉之后，屏幕上一扇窗都不剩、Dock 里没有图标、菜单栏那枚图标
-/// 和别的录音工具长得一样——用户（2026-09-22 的原话）"不知道它在哪，也不知道接下来干什么"。
-///
-/// 所以这一屏只做三件事：把那枚图标**画出来**给他看（4.3.5 起 Dock 和菜单栏各有一枚，
-/// 两处都要指到）、说清平时压根不用去找它、以及当面把「登录时自动启动」打开
-///（默认开，就在这一屏可以关掉）——不开的话第二天开机 MicType 根本没在跑，
-/// 同一个问题会原样再来一遍。
-private struct DonePage: View {
-    @ObservedObject var model: OnboardingModel
-    @ObservedObject private var l10n = L10n.shared
-    @State private var launchAtLogin = (SMAppService.mainApp.status == .enabled)
-    /// 上一次开关登录项被系统拒了（受管的 Mac 上可能被 MDM 挡住）。
-    /// 边界行的写法与设置页那一处完全一致：一行结论 + 一颗去处
-    @State private var launchAtLoginRefused = false
-
-    /// 这一页每一句话里念出来的那颗键（只有一颗，见 Settings.hotkey）
-    private var key: String { HotkeyChoice.rightOption.plainName }
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                // 菜单栏里的那枚图标，原样画一张大的（同一个画法，见 MenuBarIcon）
-                Image(nsImage: MenuBarIcon.large())
-                    .renderingMode(.template)
-                    .foregroundColor(.accentColor)
-                Text(OnboardingCopy.menuBarHome)
-                    .font(.system(size: 16, weight: .semibold))
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Toggle(tr("登录时自动启动", "Launch at login"), isOn: $launchAtLogin)
-                        .onChange(of: launchAtLogin) { _, newValue in
-                            applyLaunchAtLogin(newValue)
-                        }
-                    Text(OnboardingCopy.launchAtLoginWhy)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    if launchAtLoginRefused {
-                        BoundaryRow(text: SettingsCopy.launchAtLoginFailed) {
-                            Button(tr("打开登录项设置", "Open Login Items")) {
-                                SMAppService.openSystemSettingsLoginItems()
-                            }
-                        }
-                    }
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.secondary.opacity(0.08))
-                .cornerRadius(8)
-
-                // AI 收尾句与「重看引导」5.0.1 删掉：这一屏只回答"它在哪"。
-                // 没配 Key 的人在 ③ 已经被那条「先跳过」明确告知过代价；
-                // 「重看引导」在设置底部那排小字里，而他此刻还没见过设置窗口——
-                // 这一刻记住一个以后才用得上的入口，只会把这一屏的三样东西冲淡
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity)
-            .measuresOnboardingPage(.done)
-        }
-        .onAppear {
-            // 上一屏可能刚把 Key 配好，也可能他中途去设置页改了档位
-            model.refreshAIReady()
-            armLaunchAtLogin()
-        }
-    }
-
-    /// 「默认开」是怎么实现的：第一次走到这一屏时，**替他真的注册一次**登录项，
-    /// 并把开关画成开着。不只是把开关画成开着——那样他看到的是"已开"、系统里却没有，
-    /// 是这一屏最不该出的错。这一轮只做一次（model.launchAtLoginArmed）：
-    /// 在这一屏关掉再翻回来的人，不许被又打开一次。
+    /// 「默认开」是怎么实现的：第一次走到这一屏时，**替他真的注册一次**登录项。
+    /// 不只是把那一行写成"已开启"——那样他看到的是"已开"、系统里却没有。
+    /// 这一轮只做一次（model.launchAtLoginArmed）。
     private func armLaunchAtLogin() {
         let enabled = SMAppService.mainApp.status == .enabled
         launchAtLogin = enabled
-        // 只有真的开着引导窗口时才去动系统登录项。这一页还会被**离屏渲染**
-        //（引导页快照测试），那一刻绝不能顺手改掉这台机器上的登录项——
-        // 读一下状态可以，写下去不行
+        // 只有真的开着引导窗口时才去动系统登录项。这一页还会被**离屏渲染**（快照测试），
+        // 那一刻绝不能顺手改掉这台机器上的登录项——读一下状态可以，写下去不行
         guard OnboardingWindowController.shared.isOpen else { return }
         guard !model.launchAtLoginArmed else { return }
         model.launchAtLoginArmed = true
         guard !enabled else { return }
-        applyLaunchAtLogin(true)
-        launchAtLogin = (SMAppService.mainApp.status == .enabled)
-    }
-
-    /// 与设置页「输入」那一段同一套写法：失败只记日志 + 一行边界，
-    /// 系统给的原因不上屏（它可能是另一种语言，英文界面不能冒出中文）
-    private func applyLaunchAtLogin(_ on: Bool) {
         do {
-            if on {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
-            launchAtLoginRefused = false
-            Log.info("Onboarding launch at login on=\(on)")
+            try SMAppService.mainApp.register()
+            Log.info("Onboarding launch at login on=true")
         } catch {
-            Log.warn("Onboarding launch at login failed on=\(on) error=\(error)")
-            launchAtLoginRefused = true
-            launchAtLogin = (SMAppService.mainApp.status == .enabled)
+            // 受管的 Mac 上可能被 MDM 挡住：原因只进日志（系统那句话可能是另一种语言），
+            // 那一行照实写"未开启"
+            Log.warn("Onboarding launch at login failed error=\(error)")
         }
-    }
-}
-
-/// 「试一下」那一屏的一条编号步骤。编号用文字而不是列表符号：它要和右边那句话
-/// 在同一条基线上（同 ConsoleStepsView 的写法）
-private struct NumberedStep: View {
-    let index: Int
-    let text: String
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text("\(index).")
-                .font(.system(size: 12).monospacedDigit())
-                .foregroundColor(.secondary)
-                .frame(width: 16, alignment: .trailing)
-            Text(text)
-                .font(.system(size: 12))
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
+        launchAtLogin = (SMAppService.mainApp.status == .enabled)
     }
 }

@@ -85,9 +85,16 @@ final class SettingsSnapshotTests: XCTestCase {
             L10n.shared.language = language
             let tag = language == .zh ? "zh" : "en"
 
-            // 设置正页（5.1.0 起只有 OpenAI 一家；5.2.0 起没有「实时草稿」开关了）
+            // 设置正页（5.3.0 起是状态页）：深 / 浅 × 状态卡有数据 / 没数据
             useProvider(.openai)
-            shoot(.overview, name: "settings-openai-\(tag)")
+            for dark in [true, false] {
+                let look = dark ? "dark" : "light"
+                seedUsage(true)
+                shoot(.overview, name: "settings-status-data-\(look)-\(tag)", dark: dark)
+                seedUsage(false)
+                shoot(.overview, name: "settings-status-empty-\(look)-\(tag)", dark: dark)
+            }
+            UsageStore.shared.resetForTesting()
 
             // 专有词汇表（5.0.2 之前叫「写作偏好」）：两个文本框整个入画
             shoot(.writing, name: "custom-vocabulary-\(tag)", fullHeight: true)
@@ -95,6 +102,21 @@ final class SettingsSnapshotTests: XCTestCase {
             shoot(.about, name: "about-\(tag)", fullHeight: true)
         }
         print("[snapshot] PNGs written to \(outputDirectory.path)")
+    }
+
+    /// 状态卡右半边：本周 43 分钟 / 6,200 字那一类的数据，或者什么都没有（三格「—」）。
+    /// UsageStore.shared 跑在测试里时写的是临时目录（Log.isUnderTest），不碰用户的账本
+    private func seedUsage(_ withData: Bool) {
+        guard withData else {
+            UsageStore.shared.resetForTesting()
+            return
+        }
+        let now = Date()
+        let entries = (0..<120).map { i in
+            UsageEntry(date: now.addingTimeInterval(-Double(i) * 60), seconds: 21.6, chars: 52,
+                       command: i % 10 == 0)
+        }
+        UsageStore.shared.resetForTesting(entries)
     }
 
     /// 摆出"正在用这一档"的状态。5.0.0 起这就是全部：一条 llmProvider
@@ -107,7 +129,8 @@ final class SettingsSnapshotTests: XCTestCase {
     /// 走 SettingsPageHeightKey），第二趟按算出来的窗口高度重拍。
     /// - fullHeight: 不按窗口上限截断，整页入画（用来看"下面还有什么"）
     @MainActor
-    private func shoot(_ route: SettingsRoute, name: String, fullHeight: Bool = false) {
+    private func shoot(_ route: SettingsRoute, name: String, fullHeight: Bool = false,
+                       dark: Bool? = nil) {
         SettingsNavigator.shared.go(to: route)
 
         var natural: CGFloat = 0
@@ -120,7 +143,7 @@ final class SettingsSnapshotTests: XCTestCase {
                                   onChrome: { chrome = $0 })
 
         // 第一趟给一个够高的画布：矮了的话 ScrollView 里那一叠会被压着量
-        let (probeWindow, probeHost) = makeWindow(height: 4000)
+        let (probeWindow, probeHost) = makeWindow(height: 4000, dark: dark)
         probeHost.rootView = AnyView(probe)
         settle(probeHost)
         probeWindow.orderOut(nil)
@@ -129,7 +152,7 @@ final class SettingsSnapshotTests: XCTestCase {
             ? min(max(natural + chrome, SettingsWindowSizing.minContentHeight), 4000)
             : SettingsWindowSizing.contentHeight(natural: natural + chrome,
                                                  visibleScreenHeight: screenHeight)
-        let (window, host) = makeWindow(height: content)
+        let (window, host) = makeWindow(height: content, dark: dark)
         host.rootView = AnyView(SettingsView(resizesWindow: false))
         settle(host)
         write(host: host, to: name)
@@ -144,13 +167,18 @@ final class SettingsSnapshotTests: XCTestCase {
     /// 离屏窗口 + NSHostingView。**必须是真窗口**：AppKit 背书的控件（TextEditor、Picker、
     /// 分段选择器）不挂在窗口上就画不出来——SwiftUI 的 ImageRenderer 同理，所以这里不用它。
     @MainActor
-    private func makeWindow(height: CGFloat) -> (NSWindow, NSHostingView<AnyView>) {
+    private func makeWindow(height: CGFloat, dark: Bool? = nil) -> (NSWindow, NSHostingView<AnyView>) {
         let frame = NSRect(x: 0, y: 0, width: width, height: height)
         let host = NSHostingView(rootView: AnyView(EmptyView()))
         host.frame = frame
         let window = NSWindow(contentRect: frame, styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.contentView = host
+        // 深 / 浅：SwiftUI 的 colorScheme 跟窗口外观走（nil = 跟这台机器当前的外观）
+        if let dark = dark {
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            host.appearance = window.appearance
+        }
         // 屏幕外面：这组测试跑的时候人可能正在用这台 Mac，别往他脸上弹窗
         window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
         window.orderFrontRegardless()

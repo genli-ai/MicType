@@ -114,16 +114,19 @@ final class AudioRecorder {
         let inFormat = input.outputFormat(forBus: 0)
 
         guard inFormat.sampleRate > 0, inFormat.channelCount > 0 else {
-            throw MTError(tr("没有可用的麦克风输入设备", "No microphone input device available"))
+            Log.warn("Audio input has no usable format rate=\(inFormat.sampleRate) ch=\(inFormat.channelCount)")
+            throw MTError(UserMessage.noMicrophone)
         }
         guard let outFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                             sampleRate: 16000,
                                             channels: 1,
                                             interleaved: false) else {
-            throw MTError(tr("无法创建音频格式", "Could not create audio format"))
+            Log.warn("Audio setup failed: could not create the 16 kHz output format")
+            throw MTError(UserMessage.recordingSetupFailed)
         }
         guard let converter = AVAudioConverter(from: inFormat, to: outFormat) else {
-            throw MTError(tr("无法创建音频转换器", "Could not create audio converter"))
+            Log.warn("Audio setup failed: could not create the converter")
+            throw MTError(UserMessage.recordingSetupFailed)
         }
         let levelCallback = onLevel
         let peakCallback = onPeak
@@ -141,7 +144,10 @@ final class AudioRecorder {
             try engine.start()
         } catch {
             removeTap(from: engine)
-            throw MTError(tr("无法启动录音：", "Could not start recording: ") + error.localizedDescription)
+            // 系统那句 localizedDescription 只进日志（可能是另一种语言、也可能很长），
+            // 悬浮窗上一句话（UX 方案 §3 H）
+            Log.warn("Audio engine start failed: " + String(error.localizedDescription.prefix(160)))
+            throw MTError(UserMessage.recordingStartFailed)
         }
         Log.info("Audio tap installed rate=\(Int(inFormat.sampleRate)) ch=\(inFormat.channelCount)")
     }
@@ -208,8 +214,7 @@ final class AudioRecorder {
             // 引擎已经停了，再"录"下去只有静音。不动 isRecording：上层随后 stop() 依然拿得到
             // 已经录到的采样，用半句话出结果，好过让用户对着死掉的麦克风一直说。
             stopObservingConfiguration()
-            onError?(MTError(tr("录音设备已变更，本次录音提前结束",
-                                "Audio device changed — recording ended early")))
+            onError?(MTError(UserMessage.audioDeviceChanged))
         }
     }
 

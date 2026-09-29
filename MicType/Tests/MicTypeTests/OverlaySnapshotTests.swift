@@ -68,7 +68,7 @@ final class OverlaySnapshotTests: XCTestCase {
             }
             shoot("overlay-error-\(tag)", height: 200) { state in
                 let message = RecognitionEngineReadiness.cloudKeyMissing(.openai).message
-                state.buttonLabel = OverlayErrorAction.classify(message).label
+                state.buttonLabel = RecognitionEngineReadiness.cloudKeyMissing(.openai).overlayAction.label
                 state.phase = .error(message)
             }
             // 告知形态（黄调小字、无红边无按钮、2.5 s 自己走）：误触后的「没有听到内容」

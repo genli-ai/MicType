@@ -72,7 +72,8 @@ final class SettingsPageHeightTests: XCTestCase {
             UserDefaults.standard.set(LLMProvider.openai.rawValue, forKey: SettingsKeys.llmProvider)
             let height = measure(hostHeight: 700)
             XCTAssertGreaterThan(height, 100, "\(language.rawValue)：量到的高度不对（\(height)）")
-            XCTAssertLessThan(height, 400, "\(language.rawValue)：这一页没那么多东西（\(height)）")
+            // 5.3.0 起顶上多了一张状态卡（约 130），测试机上两条权限横幅也亮着：实测 478
+            XCTAssertLessThan(height, 560, "\(language.rawValue)：这一页没那么多东西（\(height)）")
         }
     }
 

@@ -7,22 +7,24 @@ import XCTest
 /// 放行早了，用户走完一遍引导回到文档里轻点，什么都不会发生（他不会认为是权限没给，
 /// 他会认为这个 App 坏了）；接续错了，下次启动把已经办完两件事的人又扔回第一屏。
 /// 所以判据是纯结构，三个布尔进、两个结论出，逐条钉在这里。
+///
+/// 5.3.0：三件事是**麦克风、辅助功能、Key**——「识别模型下好了」那一件已经不存在（识别只在云端）。
 final class FirstRunEssentialsTests: XCTestCase {
 
     private func essentials(mic: Bool = true,
                             ax: Bool = true,
-                            model: Bool = true) -> FirstRunEssentials {
-        FirstRunEssentials(microphone: mic, accessibility: ax, modelReady: model)
+                            key: Bool = true) -> FirstRunEssentials {
+        FirstRunEssentials(microphone: mic, accessibility: ax, keyReady: key)
     }
 
-    // MARK: - 能不能点「完成」
+    // MARK: - 能不能用
 
-    /// 三件事齐了才放行
+    /// 三件事齐了才算这台 Mac 能听写
     func testCanFinishOnlyWhenEverythingIsDone() {
         XCTAssertTrue(essentials().canFinish)
         XCTAssertFalse(essentials(mic: false).canFinish)
         XCTAssertFalse(essentials(ax: false).canFinish)
-        XCTAssertFalse(essentials(model: false).canFinish)
+        XCTAssertFalse(essentials(key: false).canFinish)
     }
 
     /// 缺一项权限就不算"权限齐了"——两项是一起的，缺哪一项热键都不工作
@@ -35,44 +37,40 @@ final class FirstRunEssentialsTests: XCTestCase {
 
     // MARK: - 下次启动接在哪一屏
 
-    /// 顺序写死：权限 →「试一下」（模型要在这里就绪）。欢迎屏没有要办的事，
-    /// 所以**永远**不是断点——4.1.0 之前它还管着"确认快捷键"那一位
+    /// 顺序写死：① 按住说话（两项权限）→ ② 贴 Key。「试一下」永远不是断点：
+    /// 它要的那两件事在它前面两屏
     func testFirstIncompletePageFollowsTheGuideOrder() {
-        XCTAssertEqual(essentials(mic: false, ax: false, model: false)
-                        .firstIncompletePage, .permissions)
-        XCTAssertEqual(essentials(mic: false, model: false).firstIncompletePage, .permissions)
-        XCTAssertEqual(essentials(ax: false, model: false).firstIncompletePage, .permissions)
-        XCTAssertEqual(essentials(model: false).firstIncompletePage, .tryIt)
+        XCTAssertEqual(essentials(mic: false, ax: false, key: false).firstIncompletePage, .hold)
+        XCTAssertEqual(essentials(mic: false, key: false).firstIncompletePage, .hold)
+        XCTAssertEqual(essentials(ax: false, key: false).firstIncompletePage, .hold)
+        XCTAssertEqual(essentials(key: false).firstIncompletePage, .key)
         XCTAssertNil(essentials().firstIncompletePage)
     }
 
-    /// 「怎么用」（AI）**永远**不在这条链上：轻点听写压根不需要 Key，
-    /// 把它做成任何人的断点都等于骗人。欢迎屏同理——它只介绍两种手势
-    func testAIAndWelcomePagesAreNeverBlockers() {
+    /// 「试一下」永远不是**断点**：没有一件必办的事住在那一屏上
+    func testTryItIsNeverTheBlocker() {
         for mic in [true, false] {
             for ax in [true, false] {
-                for model in [true, false] {
-                    let page = essentials(mic: mic, ax: ax, model: model).firstIncompletePage
-                    XCTAssertNotEqual(page, .howYouUse)
-                    XCTAssertNotEqual(page, .welcome)
+                for key in [true, false] {
+                    XCTAssertNotEqual(essentials(mic: mic, ax: ax, key: key).firstIncompletePage, .tryIt)
                 }
             }
         }
     }
 
-    /// 都办完了也要有个落点：最后一屏——那一下「完成」才是 onboardingCompleted 真正写进去的时刻
-    func testResumePageFallsBackToTheLastPage() {
+    /// 都办完了也要有个落点：「试一下」——真落一次字再点「开始使用」，那一下才写 onboardingCompleted
+    func testResumePageFallsBackToTryIt() {
         XCTAssertEqual(essentials().resumePage, .tryIt)
-        XCTAssertEqual(essentials(mic: false).resumePage, .permissions)
-        XCTAssertEqual(essentials(model: false).resumePage, .tryIt)
+        XCTAssertEqual(essentials(mic: false).resumePage, .hold)
+        XCTAssertEqual(essentials(key: false).resumePage, .key)
     }
 
     /// 接续的落点必须就是"第一件没办完的事"那一屏，不能悄悄往前挪一屏
     func testResumePageMatchesFirstIncompletePage() {
         for mic in [true, false] {
             for ax in [true, false] {
-                for model in [true, false] {
-                    let state = essentials(mic: mic, ax: ax, model: model)
+                for key in [true, false] {
+                    let state = essentials(mic: mic, ax: ax, key: key)
                     if let first = state.firstIncompletePage {
                         XCTAssertEqual(state.resumePage, first)
                         XCTAssertFalse(state.canFinish)
@@ -84,11 +82,20 @@ final class FirstRunEssentialsTests: XCTestCase {
         }
     }
 
+    // MARK: - Key 这一位问的是"有没有 Key"，不是"这会儿有没有网"
+
+    /// 没网是一时的：钥匙串里有 Key 的人不该被判成"还差一把 Key"而被拽回引导
+    func testKeyReadyIgnoresConnectivity() {
+        XCTAssertTrue(RecognitionEngineReadiness.ready.hasKey)
+        XCTAssertTrue(RecognitionEngineReadiness.offline.hasKey)
+        XCTAssertFalse(RecognitionEngineReadiness.cloudKeyMissing(.openai).hasKey)
+    }
+
     // MARK: - 日志
 
     /// 日志里只有三个布尔，永远不会带上用户说过的字（Log 的铁律）
     func testLogSummaryCarriesOnlyBooleans() {
         let summary = essentials(mic: false).logSummary
-        XCTAssertEqual(summary, "mic=false ax=true model=true")
+        XCTAssertEqual(summary, "mic=false ax=true key=true")
     }
 }

@@ -180,6 +180,10 @@ final class CloudStreamingSession: SpeechEngine {
     ///   • 还在录音（没人等）→ 本轮另找出路，并把本机预览重新打开。
     private func settle(_ result: Result<RealtimeTranscript, RealtimeFailure>) {
         isLive = false
+        // 5.3.0 起屏幕上只说一句话（UX 方案 §3 H），服务端的错误码 / 断线原因只在这一行里
+        if case .failure(let failure) = result {
+            Log.warn("CloudASR realtime failed reason=\(failure.logReason)")
+        }
         if case .failure(let failure) = result, failure.disablesStreaming {
             CloudStreamingAvailability.markUnsupported(provider: config.provider, host: Self.streamHost,
                                                        reason: failure.logReason)
@@ -286,7 +290,8 @@ final class CloudStreamingSession: SpeechEngine {
                 // 偶发失败（断线 / 报错 / 终稿超时）：交给上层那条「云端失败 → 同步接口重试一次」，
                 // 整段音频还在调用方手上，一个字都不会丢
                 deliver(TranscriptionOutcome(text: "", completedSegments: 0, totalSegments: 1,
-                                             failure: MTError(Self.message(for: failure)),
+                                             failure: MTError(Self.message(for: failure),
+                                                              action: Self.action(for: failure)),
                                              cancelled: false))
             }
         }
@@ -376,7 +381,8 @@ final class CloudStreamingSession: SpeechEngine {
             case .failure(let failure):
                 // 「这条链路不支持实时」在 settle 里已经记住了；这一句整段本来就在路上
                 race.realtime = .failed
-                race.realtimeFailure = MTError(Self.message(for: failure))
+                race.realtimeFailure = MTError(Self.message(for: failure),
+                                               action: Self.action(for: failure))
             }
             guard race.winner == nil, !outer.isCancelled else { return }
             self?.decideHybrid(race, outer: outer, deliver: deliver)
@@ -487,22 +493,25 @@ final class CloudStreamingSession: SpeechEngine {
     static func message(for failure: RealtimeFailure) -> String {
         switch failure {
         case .finalTimeout:
-            return tr("云端识别没有按时返回结果，请再说一次",
-                      "The cloud transcript did not come back in time - please say it again")
-        case .serverError(let code, _):
-            return tr("云端识别报错", "Cloud recognition reported an error")
-                + (code.map { " (" + $0 + ")" } ?? "")
+            return UserMessage.recognitionTimedOut
+        case .serverError:
+            // 服务端的错误码在客户端那一层的日志里（见 settle），屏幕上一句话
+            return UserMessage.recognitionError
         case .transport:
-            return tr("到 OpenAI 的实时连接中断了，请再说一次",
-                      "The realtime connection to OpenAI dropped - please say it again")
+            return UserMessage.connectionDropped
         case .unauthorized:
-            return tr("OpenAI 不接受这把 Key（实时识别）",
-                      "OpenAI did not accept this key for realtime recognition")
+            return UserMessage.keyRejectedRealtime
         case .modelUnavailable:
-            return tr("这条链路上没有实时识别模型",
-                      "This endpoint has no realtime speech model")
+            return UserMessage.noRealtimeModel
         }
     }
+
+    /// 实时失败 → 悬浮窗按钮（纯函数）：只有 Key 被拒能在设置里修
+    static func action(for failure: RealtimeFailure) -> OverlayErrorAction {
+        if case .unauthorized = failure { return .openSettings }
+        return .dismiss
+    }
+
 }
 
 // MARK: - 把开关拨开那一下的实时探针

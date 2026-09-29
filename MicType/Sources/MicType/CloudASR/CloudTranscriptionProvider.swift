@@ -96,8 +96,20 @@ struct CloudASRFailure: Error {
     /// 所以这个码必须稳定，别改字面量。
     static let emptyTranscriptCode = "EmptyTranscript"
 
-    init(_ message: String, retryable: Bool = false, code: String? = nil, status: Int = 0) {
-        self.error = MTError(message)
+    /// 状态码 → 悬浮窗按钮（纯函数）：401 只能去设置里换 Key；额度用完只能去充值；其余只能关掉
+    static func action(status: Int, code: String?) -> OverlayErrorAction {
+        if status == 401 { return .openSettings }
+        if status == 429, (code ?? "").localizedCaseInsensitiveContains("insufficient_quota") {
+            return .addCredit
+        }
+        return .dismiss
+    }
+
+    /// - action: 摆到悬浮窗上时带哪颗按钮。**不传就按状态码推**（401 → 打开设置，
+    ///   余额不足 → 去充值），缺 Key 那一处自己点名 .openSettings（它没有状态码可推）
+    init(_ message: String, retryable: Bool = false, code: String? = nil, status: Int = 0,
+         action: OverlayErrorAction? = nil) {
+        self.error = MTError(message, action: action ?? CloudASRFailure.action(status: status, code: code))
         self.retryable = retryable
         self.code = code
         self.status = status
@@ -237,14 +249,18 @@ enum CloudASRExecutor {
                 let nsError = error as NSError
                 if nsError.code == NSURLErrorCancelled { return }
                 let transient = retryableURLCodes.contains(nsError.code)
+                // 系统那句 localizedDescription 只进日志（可能是另一种语言、也可能很长）
+                if nsError.code != NSURLErrorTimedOut {
+                    Log.warn("CloudASR network error code=\(nsError.code) "
+                             + String(error.localizedDescription.prefix(160)))
+                }
                 let text = nsError.code == NSURLErrorTimedOut
-                    ? tr("云端识别请求超时（网络到云端太慢）", "Cloud transcription timed out (slow network to the provider)")
-                    : tr("云端识别网络错误：", "Cloud transcription network error: ") + error.localizedDescription
+                    ? UserMessage.recognitionTimedOut : UserMessage.networkError
                 retryOrFail(CloudASRFailure(text, retryable: transient))
                 return
             }
             guard let http = response as? HTTPURLResponse else {
-                completion(.failure(CloudASRFailure(tr("云端没有返回有效响应", "No valid response from the provider"))))
+                completion(.failure(CloudASRFailure(UserMessage.emptyResponse)))
                 return
             }
             let bytes = data?.count ?? 0
@@ -255,7 +271,7 @@ enum CloudASRExecutor {
                 return
             }
             guard let data = data else {
-                completion(.failure(CloudASRFailure(tr("云端返回了空响应体", "Provider returned an empty body"))))
+                completion(.failure(CloudASRFailure(UserMessage.emptyResponse)))
                 return
             }
             switch provider.parse(data) {
@@ -369,10 +385,9 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
 
     static func precheck(fileBytes: Int) -> CloudASRFailure? {
         guard fileBytes > maxFileBytes else { return nil }
-        return CloudASRFailure(tr("这一段音频 ", "This segment is ")
-            + String(fileBytes / (1024 * 1024))
-            + tr("MB，超过 OpenAI 单请求 25MB 上限（分段参数有问题，请反馈）",
-                 "MB — over OpenAI's 25MB per-request limit (segmentation bug, please report)"))
+        // 真走到这里是分段参数出了 bug：大小进日志，屏幕上一句话
+        Log.warn("CloudASR precheck: segment \(fileBytes / (1024 * 1024))MB is over the 25MB limit")
+        return CloudASRFailure(UserMessage.audioTooLarge)
     }
 
     // MARK: 请求
@@ -380,12 +395,11 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
     func makeRequest(audio: CloudUploadAudio, seconds: Double, context: String?) -> Result<URLRequest, CloudASRFailure> {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else {
-            return .failure(CloudASRFailure(tr("还没有填 OpenAI API Key（去「设置」）",
-                                               "No OpenAI API key yet (open Settings)")))
+            return .failure(CloudASRFailure(UserMessage.keyMissing, action: .openSettings))
         }
         if let failure = Self.precheck(fileBytes: audio.data.count) { return .failure(failure) }
         guard let url = URL(string: Self.endpointString) else {
-            return .failure(CloudASRFailure(tr("云端地址无效", "Invalid endpoint URL")))
+            return .failure(CloudASRFailure(UserMessage.invalidEndpoint))
         }
         let boundary = Self.makeBoundary()
         var request = URLRequest(url: url)
@@ -410,7 +424,7 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
 
     static func parse(_ data: Data) -> Result<CloudASRSegmentResult, CloudASRFailure> {
         guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            return .failure(CloudASRFailure(tr("云端返回格式无法解析", "Could not parse the provider response")))
+            return .failure(CloudASRFailure(UserMessage.unreadableResponse))
         }
         if let err = json["error"] as? [String: Any] {
             return .failure(failure(status: 200,
@@ -418,7 +432,7 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
                                     message: err["message"] as? String))
         }
         guard let text = json["text"] as? String else {
-            return .failure(CloudASRFailure(tr("云端没有返回识别文本", "Provider returned no transcript"),
+            return .failure(CloudASRFailure(UserMessage.noTranscript,
                                             code: CloudASRFailure.emptyTranscriptCode,
                                             status: 200))
         }
@@ -449,44 +463,36 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
 
     static func failure(status: Int, code: String?, message: String?) -> CloudASRFailure {
         let raw = (code ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        // 冒号用 ASCII：这串会直接接在 tail 的 ASCII 括号后面，英文界面下混一个全角「：」
-        // 就是一处中文泄漏（CJKUIStringGuardTests 拦的正是 U+FF01–FF60）。中文界面下也不突兀。
-        let detail = message.map { ": " + String($0.prefix(80)) } ?? ""
-        let tail = " (" + String(status) + (raw.isEmpty ? "" : " " + raw) + ")"
+        // 5.3.0 起屏幕上只有一句话（UX 方案 §3 H）：状态码留在句尾括号里（用户抄给别人问时最值钱），
+        // 服务商的错误码与原话进日志——不含用户说的内容，只是服务商那一侧的原因。
+        if raw.isEmpty == false || message?.isEmpty == false {
+            Log.warn("CloudASR error status=\(status) code=\(raw) message="
+                     + String((message ?? "").prefix(200)))
+        }
 
-        func made(_ zh: String, _ en: String, retryable: Bool = false) -> CloudASRFailure {
-            CloudASRFailure(tr(zh, en) + tail + detail, retryable: retryable,
-                            code: raw.isEmpty ? nil : raw, status: status)
+        func made(_ text: String, retryable: Bool = false) -> CloudASRFailure {
+            CloudASRFailure(text, retryable: retryable, code: raw.isEmpty ? nil : raw, status: status)
         }
 
         switch status {
         case 401:
-            return made("OpenAI Key 无效或已被吊销。请在「设置」里重填（听写、润色、指令用的是同一把）",
-                        "The OpenAI key is invalid or revoked. Re-enter it in Settings (dictation, polish and commands share one key)")
+            return made(UserMessage.keyRejected)
         case 403:
-            return made("这把 Key 没有调用该模型的权限。请在 OpenAI 控制台确认项目权限",
-                        "This key is not allowed to call the model. Check the project permissions in the OpenAI console")
+            return made(UserMessage.keyNotAllowed(status))
         case 404:
-            return made("OpenAI 找不到这个模型名。请换回默认模型 gpt-transcribe",
-                        "OpenAI does not know this model name. Switch back to the default gpt-transcribe")
+            return made(UserMessage.modelNotFound(status))
         case 429:
             if raw.localizedCaseInsensitiveContains("insufficient_quota") {
-                return made("OpenAI 账户额度不足，云端识别已停。请充值后再试",
-                            "The OpenAI account is out of credit, so cloud recognition is blocked. Add credit and try again")
+                return made(UserMessage.outOfCredit(status))
             }
-            return made("OpenAI 限流，已重试一次仍未通过。稍后再说一遍",
-                        "Rate limited by OpenAI (already retried once). Try again shortly",
-                        retryable: true)
+            return made(UserMessage.rateLimited(status), retryable: true)
         case 400:
-            return made("OpenAI 拒绝了这个请求（参数或文件不合规，最常见是超过 25MB）",
-                        "OpenAI rejected the request (invalid parameter or file — most often over the 25MB limit)")
+            return made(UserMessage.requestRejected(status))
         default:
             if status >= 500 {
-                return made("OpenAI 服务暂时出错，已重试一次。稍后再试",
-                            "OpenAI had a server error (already retried once). Try again later",
-                            retryable: true)
+                return made(UserMessage.serverError(status), retryable: true)
             }
-            return made("OpenAI 返回了意外状态码", "OpenAI returned an unexpected status code")
+            return made(UserMessage.serverError(status))
         }
     }
 }

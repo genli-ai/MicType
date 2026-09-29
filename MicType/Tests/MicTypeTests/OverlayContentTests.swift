@@ -47,23 +47,39 @@ final class OverlayContentTests: XCTestCase {
 
     // MARK: - 错误按钮
 
+    /// 5.3.0 起按钮由**产生错误的地方**点名（不再按文案关键词猜）：
+    /// 缺 Key / Key 被拒 →「打开设置」，余额不足 →「去充值」
     func testErrorButtonForKeyProblems() {
-        XCTAssertEqual(OverlayErrorAction.classify("API Key 无效或已失效 (401)，请检查是否粘贴完整"), .openSettings)
-        XCTAssertEqual(OverlayErrorAction.classify("Invalid or revoked API key (401) — check it"), .openSettings)
-        L10n.shared.language = .zh
-        XCTAssertEqual(OverlayErrorAction.classify(RecognitionEngineReadiness.cloudKeyMissing(.openai).message),
+        XCTAssertEqual(RecognitionEngineReadiness.cloudKeyMissing(.openai).overlayAction, .openSettings)
+        XCTAssertEqual(LLMCatalog.describeHTTPError(status: 401, provider: .openai,
+                                                    code: nil, message: nil).action, .openSettings)
+        XCTAssertEqual(CloudASRFailure.action(status: 401, code: "invalid_api_key"), .openSettings)
+        XCTAssertEqual(OpenAITranscribeClient.failure(status: 401, code: nil, message: nil).error.action,
                        .openSettings)
-        L10n.shared.language = .en
-        XCTAssertEqual(OverlayErrorAction.classify(RecognitionEngineReadiness.cloudKeyMissing(.openai).message),
-                       .openSettings)
+        XCTAssertEqual(CloudStreamingSession.action(for: .unauthorized(code: nil)), .openSettings)
+        XCTAssertEqual(CloudASRFailure.action(status: 429, code: "insufficient_quota"), .addCredit)
+    }
+
+    /// 文案改短之后按钮不许悄悄退成「关闭」——这正是 5.2.0 那套关键词判断会踩的坑：
+    /// 新文案里已经没有「API Key」这几个字了
+    func testShortCopyKeepsItsButton() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            let missing = MTError(UserMessage.keyMissing, action: .openSettings)
+            XCTAssertEqual(missing.action, .openSettings)
+            XCTAssertEqual(OpenAITranscribeClient.failure(status: 401, code: nil, message: nil).message,
+                           UserMessage.keyRejected)
+        }
     }
 
     /// 网络 / 超时 / 没听到：设置里修不了，给「关闭」（本版没有重试入口）
     func testErrorButtonForEverythingElseIsClose() {
         L10n.shared.language = .zh
-        XCTAssertEqual(OverlayErrorAction.classify(LLMCatalog.timeoutCopy().text), .dismiss)
-        XCTAssertEqual(OverlayErrorAction.classify(RecognitionEngineReadiness.offline.message), .dismiss)
-        XCTAssertEqual(OverlayErrorAction.classify("没有听到内容"), .dismiss)
+        XCTAssertEqual(LLMCatalog.timeoutCopy().action, .dismiss)
+        XCTAssertEqual(RecognitionEngineReadiness.offline.overlayAction, .dismiss)
+        XCTAssertEqual(MTError(UserMessage.nothingHeard).action, .dismiss)
+        XCTAssertEqual(CloudASRFailure.action(status: 503, code: nil), .dismiss)
+        XCTAssertEqual(CloudStreamingSession.action(for: .transport("reset")), .dismiss)
         XCTAssertEqual(OverlayErrorAction.dismiss.label, "关闭")
         XCTAssertEqual(OverlayErrorAction.openSettings.label, "打开设置")
         L10n.shared.language = .en

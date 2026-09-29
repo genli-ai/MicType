@@ -560,7 +560,8 @@ final class CloudStreamingTests: XCTestCase {
                     XCTAssertFalse(CJKSourceScanner.containsFlagged(text), text)
                 }
             }
-            XCTAssertTrue(CloudStreamingSession.message(for: .transport("x")).contains("OpenAI"))
+            // 5.3.0 起一句话（UX 方案 §3 H）：断线那句说的是"再说一次"，不再点名服务商
+            XCTAssertEqual(CloudStreamingSession.message(for: .transport("x")), UserMessage.connectionDropped)
         }
     }
 }

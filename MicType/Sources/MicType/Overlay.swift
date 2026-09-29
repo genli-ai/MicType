@@ -138,26 +138,27 @@ enum OverlayDoneLine {
     }
 }
 
-// MARK: - 纯函数：错误按钮是哪一颗
+// MARK: - 错误按钮是哪一颗（调用处点名）
 
+/// 错误形态那颗按钮。**5.3.0 起由调用处点名**，不再按文案里的关键词去猜：
+/// 5.2.0 的 classify 看文案里有没有「API Key」「401」——文案一改短（UX 方案 §3 H），
+/// 那几个字就不在了，按钮会悄悄从「打开设置」退成「关闭」，而且没有任何测试会红。
+/// 现在每条错误在**产生它的地方**就带着自己的按钮（MTError.action / LLMUsage.failureAction /
+/// RecognitionEngineReadiness.overlayAction），悬浮窗只照着画。
 enum OverlayErrorAction: Equatable {
     /// Key 没填 / 被拒（401）：唯一能修的地方就是设置里的 Key 那一栏
     case openSettings
+    /// 余额不足（429 insufficient_quota）：去 OpenAI 的充值页。
+    /// 5.2.0 之前这条链接是拼在错误句尾的一整串 URL（ErrorCopy.fullText）——
+    /// 16 字一句话装不下它，而它恰恰是这类错误唯一的下一步，所以给它一颗按钮
+    case addCredit
     /// 其余（网络、超时、限流、没听到…）：设置里没有任何一个开关能修，给一颗「关闭」
     case dismiss
-
-    /// 由错误文案判。文案是 App 自己的话（LLMCatalog / CloudASR 的错误话术），
-    /// 缺 Key 与 401 两类都带「API Key」或「(401)」——两种语言都是。
-    /// 「重试」本版没有：App 里没有一个"拿上一段录音再跑一遍"的入口（自动重试在识别层已经做过一次）。
-    static func classify(_ message: String) -> OverlayErrorAction {
-        let lower = message.lowercased()
-        if lower.contains("api key") || lower.contains("401") { return .openSettings }
-        return .dismiss
-    }
 
     var label: String {
         switch self {
         case .openSettings: return OverlayCopy.openSettings
+        case .addCredit: return tr("去充值", "Add credit")
         case .dismiss: return tr("关闭", "Close")
         }
     }
@@ -901,16 +902,27 @@ final class OverlayController {
     // MARK: 错
 
     /// 错误：红边 + 一句话 + 一颗按钮。**不自动消失**（UX 方案 §3 C），Esc 或点按钮才关。
-    /// 按钮由文案判（OverlayErrorAction）：Key 没填 / 被拒 →「打开设置」，其余 →「关闭」。
-    func flashError(_ label: String) {
-        let action = OverlayErrorAction.classify(label)
+    /// 按钮由调用处点名（5.3.0 起，见 OverlayErrorAction）：Key 没填 / 被拒 →「打开设置」，
+    /// 余额不足 →「去充值」，其余 →「关闭」。
+    func flashError(_ label: String, action: OverlayErrorAction) {
         logError(label, button: action.label)
         switch action {
         case .openSettings:
             showError(label, buttonLabel: action.label) { [weak self] in self?.onOpenSettings?() }
+        case .addCredit:
+            showError(label, buttonLabel: action.label) {
+                guard let url = URL(string: LLMCatalog.billingURL) else { return }
+                Log.info("Overlay error action: open billing page")
+                NSWorkspace.shared.open(url)
+            }
         case .dismiss:
             showError(label, buttonLabel: action.label, action: nil)
         }
+    }
+
+    /// 一条已经带着按钮的错误（MTError 自己知道该去哪）
+    func flashError(_ error: MTError) {
+        flashError(error.message, action: error.action)
     }
 
     /// 带指定动作的错误（调用方自己知道该去哪，如「打开设置」→ 设置窗口的 Key 那一栏）。
