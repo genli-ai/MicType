@@ -57,7 +57,7 @@ final class DictationController {
     var onPhaseChange: ((Phase) -> Void)?
     /// 需要打开设置窗口时的回调
     var onNeedSettings: (() -> Void)?
-    /// 需要打开「设置 → 云端 AI」的回调（没配 Key 却按住说了指令时，悬浮窗上那个「去配置」胶囊）
+    /// 需要打开「设置 → 云端 AI」的回调（没配 Key 却按住说了指令时，悬浮窗上那颗「打开设置」）
     var onNeedAISettings: (() -> Void)?
     /// 需要打开「设置 → 云端 AI」的回调（开了云端识别却没填 Key 时的「去设置」胶囊）
     var onNeedRecognitionSettings: (() -> Void)?
@@ -113,7 +113,6 @@ final class DictationController {
     /// 录音起点与电平闸门状态（全部只在主线程读写：闸门跑在录音电平回调里，
     /// 不给音频线程添任何负担）
     private var recordingStartedAt: Date?
-    private var recordingLabel = ""
     private var softHintShown = false
     /// 自动收尾前 30 s 的预警是否已经给过（每轮一次）
     private var finishWarningShown = false
@@ -208,7 +207,7 @@ final class DictationController {
     /// 静音判据的电平阈值（AudioRecorder 送来的是 min(1, rms*14)）。比"没听到内容"的
     /// 闸门宽松些：这里只是判断"还在说吗"，判错的代价只是提前收尾。
     private static let silenceLevelThreshold: Float = 0.08
-    /// 开始音回声闸门的时长：自带提示音硬上限 200ms（scripts/generate_sounds.py），
+    /// 开始音回声闸门的时长：自带提示音硬上限 200ms（5.2.0 起由 scripts/generate_sounds.py 生成，最长的错误音正好 200 ms），
     /// 留点余量按 0.35s 算——这段时间里用户几乎不可能已经说出第一个字。
     private static let startCueGateSeconds: Double = 0.35
 
@@ -227,8 +226,9 @@ final class DictationController {
     // MARK: - 入口
 
     init() {
-        // 点悬浮窗上的「⎋ 取消」＝按 Esc：出口只有一个实现，两条路进同一个 cancel()
-        overlay.onCancelTapped = { [weak self] in self?.cancel() }
+        // 5.2.0：胶囊上不再有「⎋ 取消」那颗字（Esc 仍是唯一的出口）；
+        // 「落」那一行可点 = 换回识别原文（P9 的入口从此在这里，见 OverlayController.onRevertTapped）
+        overlay.onRevertTapped = { [weak self] in self?.revertToRaw() }
     }
 
     func toggle() {
@@ -302,7 +302,7 @@ final class DictationController {
         // 从静音闸门的统计里刨掉（否则外放时判的是自己的提示音）。
         Sounds.playStart()
         armStartCueGate()
-        overlay.showRecording(label: currentRecordingLabel())
+        overlay.showRecording(command: skillSession)
     }
 
     /// 开一道开始音回声闸门。提示音关着就不用开：没有声音就没有回声，
@@ -359,7 +359,7 @@ final class DictationController {
             return
         }
         // 云端那两档不自动抢窗口：用户可能只是临时没网/没充值，硬把设置页弹到脸上很烦。
-        // 给一个可点的胶囊（与「去配置」同一套机制），要去的人一下就到。
+        // 给一颗可点的按钮（与「打开设置」同一套机制），要去的人一下就到。
         overlay.flashError(readiness.message, actionLabel: chip) { [weak self] in
             self?.onNeedRecognitionSettings?()
         }
@@ -387,9 +387,9 @@ final class DictationController {
         }
         guard phase == .recording, pressSession, !skillSession else { return }
         skillSession = true
-        recordingLabel = tr("正在听指令…", "Listening for command…")
+        // 5.2.0：不再换一句「正在听指令…」，胶囊就地多出一行「说出你要改的」
         if pressRevealed {
-            overlay.updateRecordingLabel(currentRecordingLabel())
+            overlay.setCommandMode()
         } else {
             revealPressSession()
         }
@@ -478,7 +478,7 @@ final class DictationController {
                 // 落下的这一条是纯文本日志里的一行，随后那一轮正常交付会再记完整的一行
                 //（内容一字不差时不重复记，见 cancelSafetyRaw）。
                 saveCancelSafetyHistory()
-                overlay.updateProcessing(label: tr("收尾中…", "Wrapping up…"))
+                overlay.updateThinking(caption: tr("收尾中…", "Wrapping up…"))
                 Sounds.playCancel()
                 return
             }
@@ -557,8 +557,8 @@ final class DictationController {
         guard let stream = CloudStreamingSession.make(config: config, fallback: engine) else { return }
         stream.onDraft = { [weak self] draft in
             guard let self = self, self.isCurrent(generation), self.phase == .recording else { return }
-            // 关了草稿的人一个字都不该看到
-            guard Settings.shared.livePreview else { return }
+            // 5.2.0：草稿不再显示成灰字，只拿来数字数（胶囊右端「N 字」）。
+            // 「实时草稿」开关随之删掉：字数不会像草稿那样让人把"字停了"当"录完了"
             self.overlay.showDraft(draft)
         }
         stream.onStreamingLost = { [weak self] in
@@ -632,18 +632,14 @@ final class DictationController {
         return sessionNotes.isEmpty ? nil : sessionNotes.joined(separator: tr("；", "; "))
     }
 
-    /// 录音中悬浮窗该显示的文案：基础标签（听写/指令）+ 过了 2 分钟之后的「已录 / 上限」计时。
+    /// 录音中悬浮窗右端的「已录 / 上限」计时：2 分钟起才出现（nil = 不显示）。
     /// 计时而不是一句静态提示：只说"已录 2 分钟"等于什么都没说——用户看不出还能说多久、
-    /// 到点会发生什么，直到被自动收尾才第一次知道有上限。
-    private func currentRecordingLabel() -> String {
-        guard softHintShown, let started = recordingStartedAt else { return recordingLabel }
-        let clock = Self.recordingTimeLabel(elapsed: Date().timeIntervalSince(started),
-                                            limit: Self.maxRecordingSeconds)
-        // 预警只加一句"就要收尾了"，不说"丢失"——到点是照常识别并插入，什么都不会丢
-        if finishWarningShown {
-            return recordingLabel + tr("（\(clock) · 即将自动收尾）", " (\(clock) · wrapping up soon)")
-        }
-        return recordingLabel + tr("（\(clock)）", " (\(clock))")
+    /// 到点会发生什么，直到被自动收尾才第一次知道有上限。最后 30 s 的预警由悬浮窗自己加
+    /// （计时变红 +「即将自动收尾」，见 OverlayController.updateClock）
+    private func currentRecordingClock() -> String? {
+        guard softHintShown, let started = recordingStartedAt else { return nil }
+        return Self.recordingTimeLabel(elapsed: Date().timeIntervalSince(started),
+                                       limit: Self.maxRecordingSeconds)
     }
 
     /// 「8:30 / 10:00」。纯函数、可单测：这行字是用户判断"还能说多久"的唯一依据，
@@ -730,7 +726,7 @@ final class DictationController {
         let second = Int(elapsed)
         guard second != lastClockSecond else { return }
         lastClockSecond = second
-        overlay.updateRecordingLabel(currentRecordingLabel())
+        overlay.updateClock(currentRecordingClock(), warning: finishWarningShown)
     }
 
     /// 录音时长上限与静音自动停：复用录音电平回调（约每 85ms 一次）在主线程判断，
@@ -858,13 +854,13 @@ final class DictationController {
         phase = .processing
         // 被 Esc 取消（endSession 会推进代数）或被新一轮顶掉之后，下面的回调一律作废
         let entryGeneration = generation
-        overlay.showProcessing(tr("换回识别原文…", "Restoring raw transcript…"))
+        overlay.showThinking()
         TextInserter.bringToFront(candidate.bundleID) { [weak self] arrived in
             guard let self = self, self.isCurrent(entryGeneration) else { return }
             guard arrived else {
                 Log.warn("Revert aborted: target app did not come to front")
                 self.phase = .idle
-                self.overlay.flashError(tr("没能切回原应用，撤销已取消",
+                self.overlay.flashWarning(tr("没能切回原应用，撤销已取消",
                                            "Could not switch back to the target app — revert cancelled"))
                 Sounds.playError()
                 return
@@ -892,7 +888,7 @@ final class DictationController {
                             self.overlay.flashSuccess(tr("已换回识别原文", "Raw transcript restored"))
                             Sounds.playSuccess()
                         case .clipboardOnly:
-                            self.overlay.flashError(tr("识别原文已复制到剪贴板——按 ⌘V 粘贴",
+                            self.overlay.flashWarning(tr("识别原文已复制到剪贴板——按 ⌘V 粘贴",
                                                        "Raw transcript copied — press ⌘V to paste"))
                             Sounds.playError()
                         }
@@ -1010,13 +1006,12 @@ final class DictationController {
             self.cueEchoRange = nil
             if !fromPress { self.armStartCueGate() }
             self.autoStopSilence = Settings.shared.autoStopSilenceSeconds
-            self.recordingLabel = tr("正在听…", "Listening…")
             Log.info("Recording start press=\(fromPress) target=\(self.targetBundleID)"
                      + " autoStopSilence=\(String(format: "%.0f", self.autoStopSilence))s")
             // 「按下即录」的这一段先不现身：悬浮窗、灰字预览、读选区全部等手势确认
             // （pressTapConfirm / holdPromote）。菜单等其它入口是用户的明确动作，立刻显示。
             guard !fromPress else { return }
-            self.overlay.showRecording(label: self.recordingLabel)
+            self.overlay.showRecording()
         }
     }
 
@@ -1049,7 +1044,7 @@ final class DictationController {
             phase = .idle
             // 是设备变更把录音打断的就说清楚，别让用户以为是自己按错了
             if let fault = takeSessionNote() {
-                overlay.flashError(fault)
+                overlay.flashWarning(fault)
                 Sounds.playError()
             } else {
                 overlay.hide()
@@ -1065,10 +1060,10 @@ final class DictationController {
             // 裸的"没有听到内容"（误触 / 没开口）继续保持安静：按下时已经响过开始音，
             // 为一次误触再吵一声不值当，这也是 3.2.2 起的既定约定（见 <0.4s 那条分支）。
             if let fault = takeSessionNote() {
-                overlay.flashError(fault)
+                overlay.flashWarning(fault)
                 Sounds.playError()
             } else {
-                overlay.flashError(tr("没有听到内容", "Nothing heard"))
+                overlay.flashWarning(tr("没有听到内容", "Nothing heard"))
             }
             return
         case .faint, .normal:
@@ -1080,7 +1075,7 @@ final class DictationController {
 
         Log.info("Recording stop \(levelLog) gate=\(decision.rawValue)")
         phase = .processing
-        overlay.showProcessing(Self.transcribingLabel())
+        overlay.showThinking()
         // 「冷启动」这一位 5.0.0 起恒为 false：它原本是"本机模型还没加载完，粘贴时序放宽些"，
         // 而云端这条路上没有模型加载这回事。留着参数是因为 deliver 那层按它决定粘贴时序。
         let isColdStart = false
@@ -1107,12 +1102,10 @@ final class DictationController {
                            tASR: tASR, generation: generation)
     }
 
-    /// 悬浮窗上"处理中"那句话。**必须当面写明音频正在上传**：
-    /// 写一句笼统的"识别中…"，用户永远不知道自己刚才把录音发出去了。
-    private static func transcribingLabel() -> String {
-        tr("云端识别中…", "Transcribing in the cloud…")
-    }
+    // 「云端识别中…」那句（transcribingLabel）5.2.0 删掉：「想」形态只是一条光带，不写字
+    // （UX 方案 §3 C）。"音频会上云"这件事在引导 ③ 与 关于 → 隐私 里当面说过。
 
+    /// 分段识别的进度（只有整段上传那条退路会分段）——「想」形态上唯一一种常规附注
     private static func segmentLabel(done: Int, total: Int) -> String {
         tr("云端识别中…（第 \(done)/\(total) 段）",
            "Transcribing in the cloud… (part \(done) of \(total))")
@@ -1142,8 +1135,7 @@ final class DictationController {
                     Self.escFinishesEarly(completedSegments: done,
                                           isSkillSession: self.skillSession))
                 guard total > 1 else { return }
-                self.overlay.updateProcessing(label: Self.segmentLabel(done: done, total: total),
-                                              draft: draft)
+                self.overlay.updateThinking(caption: Self.segmentLabel(done: done, total: total))
             }) { [weak self] outcome in
             guard let self = self, self.isCurrent(generation) else { return }
             // 「用户已经按过 Esc」这件事必须在清指针**之前**取出来（清完再读永远是 nil）：
@@ -1171,8 +1163,8 @@ final class DictationController {
                 self.cloudRetried = true
                 Log.warn("Cloud transcription failed — retrying once over the sync endpoint")
                 // 这一句进悬浮窗而不是本轮附注：用户正盯着它等，得知道为什么还在转
-                self.overlay.showProcessing(
-                    CloudFallbackDecision.retryNote(reason: failure.message))
+                self.overlay.showThinking(
+                    caption: CloudFallbackDecision.retryNote(reason: failure.message))
                 self.startTranscription(engine: retryEngine, samples: samples,
                                         faintAudio: faintAudio, isColdStart: isColdStart,
                                         tASR: DispatchTime.now(), generation: generation)
@@ -1188,9 +1180,14 @@ final class DictationController {
                 // 重试也没成：**不报技术细节**（他已经等了两趟，现在唯一有用的信息是"再说一次"）。
                 // 真正的原因照常在上面那两行日志里。被用户 Esc 掉的那一次不走这条——
                 // 那句「已取消」是他自己按出来的，换成"没识别到"只会让他以为出了故障。
-                self.overlay.flashError(
-                    self.cloudRetried && !outcome.cancelled
+                // 5.2.0 两类提示：用户自己 Esc 掉的（「已取消」）只是告知，2.5 s 自己走；
+                // 其余是真失败、一个字都没插进去，要他动手（重说 / 去设置），留到 Esc 或点按钮
+                if outcome.cancelled {
+                    self.overlay.flashWarning(error.message)
+                } else {
+                    self.overlay.flashError(self.cloudRetried
                         ? CloudFallbackDecision.retryExhausted : error.message)
+                }
                 Sounds.playError()
             case .success(let transcribed):
                 let asrMs = Log.ms(since: tASR)
@@ -1207,7 +1204,7 @@ final class DictationController {
                     Log.info("Faint audio vocab echo discarded chars=\(transcribed.count)")
                     self.phase = .idle
                     self.cancelSafetyRaw = nil
-                    self.overlay.flashError(tr("声音太小，请靠近麦克风再试",
+                    self.overlay.flashWarning(tr("声音太小，请靠近麦克风再试",
                                                "Too quiet — move closer to the microphone and try again"))
                     Sounds.playError()
                     return
@@ -1219,7 +1216,7 @@ final class DictationController {
                     self.cancelSafetyRaw = nil
                     // 这里和静音闸门不同：音频过了电平闸门、识别也真跑过一遍，却什么都没出来
                     // ——这不是误触，是实打实的一次失败，和其它失败出口一样要出声。
-                    self.overlay.flashError(
+                    self.overlay.flashWarning(
                         faintAudio
                             ? tr("声音太小，请靠近麦克风再试",
                                  "Too quiet — move closer to the microphone and try again")
@@ -1239,13 +1236,13 @@ final class DictationController {
                         // 菜单栏和引导都这么写，这一条用 displayName 的话，英文那句里会冒出两对括号
                         let keyName = Settings.shared.hotkey.plainName
                         self.phase = .idle
-                        // 提示里多一个可点的「去配置」：话还是那句"纯输入请轻点"，
+                        // 提示里多一个可点的「打开设置」：话还是那句"纯输入请轻点"，
                         // 但别让用户读完之后还得自己去菜单栏找设置页。
                         // 铁律不动：不做剪贴板兜底救字、不替他把这次长按当成轻点。
                         self.overlay.flashError(
                             tr("指令模式需配置 API Key；纯语音输入请「轻点」\(keyName)（而非长按）",
                                "Command mode needs an API key. For dictation, tap \(keyName) (don't hold)"),
-                            actionLabel: tr("去配置", "Set up")) { [weak self] in
+                            actionLabel: OverlayCopy.openSettings) { [weak self] in
                                 self?.onNeedAISettings?()
                             }
                         Sounds.playError()
@@ -1262,7 +1259,7 @@ final class DictationController {
                 //（saveCancelSafetyHistory），那是随时可能被强杀的时刻。
                 // 润色永远开着（5.0.0 起没有档位了）。Key 不在的话这一轮压根走不到这里
                 // ——识别本身就要那把 Key（RecognitionEngineReadiness 在按键那一刻就拦了）。
-                self.overlay.showProcessing(tr("润色中…", "Polishing…"))
+                self.overlay.showThinking()
                 self.startPolish(rawText: rawText, light: false,
                                  spentMs: 0, isColdStart: isColdStart, generation: generation)
             }
@@ -1445,7 +1442,7 @@ final class DictationController {
 
     /// 技能：自由指令——指令模式下的"万能入口"
     private func runFreeform(instruction: String, raw: String, isColdStart: Bool, generation: Int) {
-        overlay.showProcessing(tr("执行指令中…", "Running command…"))
+        overlay.showThinking()
         let tModel = DispatchTime.now()
         inflightRequest = AgentService.freeform(instruction: instruction) { [weak self] result, failure in
             guard let self = self, self.isCurrent(generation) else { return }
@@ -1455,7 +1452,7 @@ final class DictationController {
                 // 词汇表硬替换在每个产出点各做一次；deliver 里不再做，否则同一串文本会被替换两趟
                 let finalText = TextPostProcessor.applyVocabReplacements(result)
                 self.deliver(raw: raw, final: finalText,
-                             note: Self.noteWithSources(tr("已输入指令结果", "Command result inserted"), usage),
+                             note: Self.noteWithSources(Self.freeformInsertedNote, usage),
                              coldStart: isColdStart)
             } else {
                 self.phase = .idle
@@ -1474,7 +1471,7 @@ final class DictationController {
     /// 而我们看得见。判错的代价不对称：往只读的地方粘，用户眼里是结果凭空消失。
     private func runSelectionCommand(selection: String, instruction: String, raw: String,
                                      isColdStart: Bool, generation: Int) {
-        overlay.showProcessing(tr("执行指令中…", "Running command…"))
+        overlay.showThinking()
         // 微信/QQ 的选区是消息记录（对方的话）：这一位现在**只**作为背景事实进提示词，
         // 不再影响投递（投递由 targetSelectionEditable 决定，而聊天记录本来就不可编辑）
         let chatContext = Self.poorAXApps.contains(targetBundleID)
@@ -1517,8 +1514,15 @@ final class DictationController {
         selectionEditable ? .replace : .clipboard
     }
 
+    /// 选区被原地改写之后「落」那一行（UX 方案 §3 C）：改了什么看得见，撤销的键写在旁边
     static var selectionReplacedNote: String {
-        tr("已替换选中文本", "Selection replaced")
+        tr("已改写 · ⌘Z 撤销", "Rewritten · ⌘Z to undo")
+    }
+
+    /// 自由指令的结果粘在光标处之后「落」那一行。它没有"改写"任何东西，所以不说「已改写」；
+    /// 撤销同样是目标应用里的一次 ⌘Z（那是一次普通粘贴）
+    static var freeformInsertedNote: String {
+        tr("已输入 · ⌘Z 撤销", "Inserted · ⌘Z to undo")
     }
 
     /// 不可编辑那一档的提示。**必须说清下一步按什么**：结果没出现在屏幕上，
@@ -1561,12 +1565,12 @@ final class DictationController {
             return
         }
         // AX 没读到：此刻焦点仍在目标应用、选区还在，用 ⌘C 兜底再试一次
-        overlay.showProcessing(tr("读取选中内容…", "Reading selection…"))
+        overlay.showThinking()
         SelectionReader.readSelectedTextWithClipboardFallback { [weak self] selection in
             guard let self = self, self.isCurrent(generation) else { return }
             guard let selection = selection else {
                 self.phase = .idle
-                self.overlay.flashError(tr("读不到选中内容：请重新选中要回复的消息再试", "Could not read selection — reselect the message and try again"))
+                self.overlay.flashWarning(tr("读不到选中内容：请重新选中要回复的消息再试", "Could not read selection — reselect the message and try again"))
                 Sounds.playError()
                 return
             }
@@ -1577,7 +1581,7 @@ final class DictationController {
 
     private func executeReplyDraft(context: String, editable: Bool, instruction: String,
                                    raw: String, generation: Int) {
-        overlay.showProcessing(tr("草拟回复中…", "Drafting reply…"))
+        overlay.showThinking()
         let tModel = DispatchTime.now()
         inflightRequest = AgentService.replyDraft(context: context, instruction: instruction) { [weak self] result, failure in
             guard let self = self, self.isCurrent(generation) else { return }
@@ -1699,7 +1703,12 @@ final class DictationController {
         revertCandidate = nil
         phase = .idle
         // 录音被设备变更提前掐断时，把原因并进结果提示：用户得知道这只是"半句"
-        let note = takeSessionNote().map { $0 + tr("；", "; ") + note } ?? note
+        let sessionNote = takeSessionNote()
+        let note = sessionNote.map { $0 + tr("；", "; ") + note } ?? note
+        // 「落」那一行写什么（见 flashDelivered）：纯听写（revertible 那条路）给「原文 → 润色」，
+        // 其余照旧是那句回执。在这里定格：回调回来时这些量可能已经属于下一轮了
+        let summary = DeliveredSummary(note: note, hasSessionNote: sessionNote != nil,
+                                       raw: raw, final: finalText, dictation: revertible)
         // 目标应用在这里定格：回调回来时 targetBundleID 可能已经属于下一轮录音了
         let target = targetBundleID
         // 这一轮的代数也要定格：上面刚把 phase 置回 .idle，而插入回调最长要等到
@@ -1743,9 +1752,9 @@ final class DictationController {
             // 而这段字根本不是粘进去的，⌘Z 只会撤掉用户在别处的编辑。
             // 提示与声音和粘贴那条路逐字一致（warning 时绝不打绿勾）。
             if warning {
-                overlay.flashError(note)
+                overlay.flashWarning(note)
             } else {
-                overlay.flashSuccess(note)
+                flashDelivered(summary, revertible: false)
             }
             Sounds.playSuccess()
             return
@@ -1758,9 +1767,9 @@ final class DictationController {
             // 而 ⌘Z 和 ⌘V 一样在我们自己的窗口里没有接收者。用户就在那个框里，
             // 要改自己改就是了（insertText 走的是标准编辑通道，框自己的 ⌘Z 照样能撤）。
             if warning {
-                overlay.flashError(note)
+                overlay.flashWarning(note)
             } else {
-                overlay.flashSuccess(note)
+                flashDelivered(summary, revertible: false)
             }
             Sounds.playSuccess()
             return
@@ -1781,13 +1790,13 @@ final class DictationController {
             // 让用户在这儿按一辈子也没用（这正是 4.1.5 那个 bug 的根因）
             switch (route, ownWindow) {
             case (.ownWindow, .secureField):
-                overlay.flashError(tr("密码框里不能听写——文字已复制到剪贴板",
+                overlay.flashWarning(tr("密码框里不能听写——文字已复制到剪贴板",
                                       "Can't dictate into a password field — text copied to clipboard"))
             case (.ownWindow, _):
-                overlay.flashError(tr("这里没有可以输入文字的框——文字已复制到剪贴板",
+                overlay.flashWarning(tr("这里没有可以输入文字的框——文字已复制到剪贴板",
                                       "No text field to type into here — text copied to clipboard"))
             default:
-                overlay.flashError(tr("MicType 自己的窗口在前台——文字已复制到剪贴板，按 ⌘V 粘贴",
+                overlay.flashWarning(tr("MicType 自己的窗口在前台——文字已复制到剪贴板，按 ⌘V 粘贴",
                                       "MicType's own window is frontmost - text copied to clipboard, press ⌘V to paste"))
             }
             Sounds.playError()
@@ -1824,16 +1833,51 @@ final class DictationController {
                 // warning = 这次投递有保留（润色失败 / 保真校验没过，输出的是识别原文）。
                 // 这种时候绝不能打绿勾：用户会以为润色成功了，连检查都不检查一眼。
                 if warning {
-                    self.overlay.flashError(note)
+                    self.overlay.flashWarning(note)
                 } else {
-                    self.overlay.flashSuccess(note)
+                    self.flashDelivered(summary, revertible: self.revertCandidate != nil)
                 }
                 Sounds.playSuccess()
             case .clipboardOnly:
-                self.overlay.flashError(tr("窗口已切换，文本已复制到剪贴板——按 ⌘V 粘贴", "Window changed — text copied to clipboard, press ⌘V to paste"))
+                self.overlay.flashWarning(tr("窗口已切换，文本已复制到剪贴板——按 ⌘V 粘贴", "Window changed — text copied to clipboard, press ⌘V to paste"))
                 Sounds.playError()
             }
         }
     }
 
+
+    // MARK: - 「落」
+
+    /// 一次交付在「落」形态上要说的话（在 deliver 开头定格）
+    private struct DeliveredSummary {
+        let note: String
+        let hasSessionNote: Bool
+        let raw: String
+        let final: String
+        /// 纯听写（润色那条路）：只有它有「原文 → 润色」可看
+        let dictation: Bool
+    }
+
+    /// 交付成功之后的那一下确认（UX 方案 §3 C）。三种情形：
+    ///   • 这一轮有附注（设备被拔、到上限、分段丢了尾巴）→ 告知形态（黄色小字，2.5 s）：
+    ///     那句话比「原文 → 润色」重要，用户得知道这只是"半句"；
+    ///   • 纯听写 → 勾 +「原文前 8 字… → 润色前 8 字…」（没改字就是成稿前 16 字），
+    ///     可换回原文时这一行可点；
+    ///   • 指令 / 其它 → 勾 + 那句回执（「已改写 · ⌘Z 撤销」「已联网 · 3 来源」…）。
+    private func flashDelivered(_ summary: DeliveredSummary, revertible: Bool) {
+        if summary.hasSessionNote {
+            // 附注（设备被拔、到时长上限、分段丢了尾巴）是"已经发生了、没什么可点"的告知：
+            // 走告知形态（2.5 s 自己走），不打勾——这一轮只交付了一部分
+            overlay.flashWarning(summary.note)
+        } else if summary.dictation {
+            let body = OverlayDoneLine.make(raw: summary.raw, final: summary.final)
+            // 「原文 → 润色」那一行要读、还可能要点：停 2 s；其余 1.2 s（用户 2026-09-29 定）
+            let showsDiff: Bool = { if case .diff = body { return true } else { return false } }()
+            overlay.flashDone(OverlayDone(body: body, revertible: revertible),
+                              duration: showsDiff ? OverlayController.diffDoneDuration
+                                                  : OverlayController.doneDuration)
+        } else {
+            overlay.flashSuccess(summary.note)
+        }
+    }
 }

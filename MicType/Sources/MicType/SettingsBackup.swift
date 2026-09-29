@@ -64,7 +64,7 @@ import UniformTypeIdentifiers
 //   commandTemperature      ← commandTemperature     / CommandTemperature   数字 0–1.5
 //   appLanguage             ← appLanguage            / AppLanguage          "zh" | "en"
 //   autoStopSilenceSeconds  ← autoStopSilenceSeconds / （Windows 暂无）      数字，0 = 关，否则 1–5
-//   livePreview             ← livePreview            / （Windows 暂无）      布尔
+//   livePreview             ← livePreview            / （Windows 暂无）      布尔（5.2.0 起只认不写）
 //   playSounds              ← playSounds             / PlaySounds           布尔
 //   restoreClipboard        ← restoreClipboard       / RestoreClipboard     布尔
 //   keepHistory             ← keepHistory            / （Windows 暂无）      布尔
@@ -154,6 +154,8 @@ enum SettingsBackup {
             localRuntime, localPolishModel, localCommandModel,
             recognitionEngine, recognitionLanguage, speechModelRepo,
             cloudAlibabaModel, qwenApiHost, qwenRegion, qwenWorkspaceId,
+            // 5.2.0：录音中的灰字草稿整段删了（改成悬浮窗上的字数），开关随之删掉
+            livePreview,
         ]
     }
 
@@ -180,7 +182,6 @@ enum SettingsBackup {
             Key.commandTemperature: s.commandTemperature,
             Key.appLanguage: L10n.shared.language.rawValue,
             Key.autoStopSilenceSeconds: s.autoStopSilenceSeconds,
-            Key.livePreview: s.livePreview,
             Key.playSounds: s.playSounds,
             Key.restoreClipboard: s.restoreClipboard,
             Key.keepHistory: s.keepHistory,
@@ -418,7 +419,6 @@ enum SettingsBackup {
         // 阿里云那四个键（cloudAlibabaModel / qwenApiHost / qwenRegion / qwenWorkspaceId）
         // 5.1.0 起同样只认不写（见 Key.legacyIgnored）：那一档删掉了，收下它们无处可写。
 
-        bool(Key.livePreview) { Settings.shared.livePreview = $0 }
         bool(Key.playSounds) { Settings.shared.playSounds = $0 }
         bool(Key.restoreClipboard) { Settings.shared.restoreClipboard = $0 }
         // 这条走的是"要不要记录"这个偏好，历史内容本身照旧不进备份文件

@@ -33,7 +33,6 @@ final class SettingsSnapshotTests: XCTestCase {
         SettingsKeys.customVocabulary,
         SettingsKeys.customPolishRules,
         SettingsKeys.llmProvider,
-        SettingsKeys.livePreview,
     ]
 
     private var savedDefaults: [String: Any?] = [:]
@@ -86,13 +85,9 @@ final class SettingsSnapshotTests: XCTestCase {
             L10n.shared.language = language
             let tag = language == .zh ? "zh" : "en"
 
-            // 设置正页（5.1.0 起只有 OpenAI 一家）：实时草稿关（默认）与开各一张
+            // 设置正页（5.1.0 起只有 OpenAI 一家；5.2.0 起没有「实时草稿」开关了）
             useProvider(.openai)
-            UserDefaults.standard.set(false, forKey: SettingsKeys.livePreview)
             shoot(.overview, name: "settings-openai-\(tag)")
-            UserDefaults.standard.set(true, forKey: SettingsKeys.livePreview)
-            shoot(.overview, name: "settings-openai-livedraft-on-\(tag)")
-            UserDefaults.standard.set(false, forKey: SettingsKeys.livePreview)
 
             // 专有词汇表（5.0.2 之前叫「写作偏好」）：两个文本框整个入画
             shoot(.writing, name: "custom-vocabulary-\(tag)", fullHeight: true)

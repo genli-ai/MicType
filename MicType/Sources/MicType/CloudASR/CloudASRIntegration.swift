@@ -196,12 +196,12 @@ enum RecognitionEngineReadiness: Equatable {
         }
     }
 
-    /// 缺 Key 那一档给一个可点的胶囊（和「去配置」同一套机制）。
+    /// 缺 Key 那一档给一颗可点的按钮（5.2.0 起所有"去设置"类按钮统一叫「打开设置」）。
     /// 没网那一档不给：设置页上没有任何一个开关能把网接回来。
     var settingsChipLabel: String? {
         switch self {
         case .ready, .offline: return nil
-        case .cloudKeyMissing: return tr("去设置", "Open settings")
+        case .cloudKeyMissing: return OverlayCopy.openSettings
         }
     }
 }

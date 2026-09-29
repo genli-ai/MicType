@@ -153,19 +153,8 @@ enum SettingsCopy {
             + "\n" + search + "\n" + fast
     }
 
-    // MARK: 实时草稿（5.1.0 加回的唯一一个开关）
-
-    /// 开关的栏名。这一页上其余的"要不要"全都定死了默认值；它是唯一一个留给用户的，
-    /// 因为两种选择都有人要：看着字跑出来安心，和不被一个慢半拍的草稿骗着干等。
-    static var livePreviewLabel: String {
-        tr("实时草稿", "Live draft")
-    }
-
-    /// 那颗 ⓘ。**只说为什么默认关**（用户 2026-09-28 拍板，≤ 30 字）：
-    /// OpenAI 实时的草稿比说话慢 1–2 秒，用户把"字停了"当"录完了"而干等。
-    static var livePreviewInfo: String {
-        tr("草稿比说话慢 1–2 秒，默认关闭。", "Drafts lag your speech by 1–2 seconds, so this is off by default.")
-    }
+    // 「实时草稿」开关的栏名与 ⓘ（livePreviewLabel / livePreviewInfo）5.2.0 删掉：
+    // 录音中的灰字草稿改成悬浮窗右端的字数计数（UX 方案 §3 C），这一页没有开关了。
 
     // 云端识别那颗 ⓘ（cloudRecognitionInfo，按家两份）5.0.0 删掉：没有那个开关了。
     // 两家的计费与留存口径现在只在 关于 → 隐私（PrivacyCopy）里说一次。
@@ -196,9 +185,9 @@ enum SettingsCopy {
     /// 这张表留着是因为"设置页说明合计"那条预算线还在（将来再加，它自动受约束）。
     static var cloudCaptions: [String] { [] }
 
-    /// 设置正页的 ⓘ：API Key 那一颗，外加 5.1.0 的「实时草稿」那一颗。
+    /// 设置正页的 ⓘ：只剩 API Key 那一颗（「实时草稿」那一颗 5.2.0 随开关删掉）。
     static var cloudInfos: [String] {
-        [keyInfo, livePreviewInfo]
+        [keyInfo]
     }
 
     // MARK: - 概览（权限横幅：缺了才出现，一行 + 一颗按钮）

@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""生成 MicType 自带的 4 个提示音（MicType/Resources/Sounds/*.wav）。
+"""5.2.0 提示音家族：重做 MicType/Resources/Sounds/ 下的 4 个 wav。
 
-为什么要自带而不是用系统的 Pop / Glass / Basso / Bottle：
-1) 系统警告音是"出事了"的语义，语音输入每天要响几十次，太吵、也容易和别的 App 撞车；
-2) 用户可以在系统设置里换掉警告音，我们就完全失去了对提示音的控制；
-3) 开始音会被自己的麦克风录进去，必须做得又短又轻（这里全部 <= 200ms、峰值约 -14 dBFS）。
+为什么重做（设计方案 G「声音」）：旧的 4 个音是各自调出来的（滑音、谐波、响度都不一样），
+听起来像四个不同的 App。这一版是**一个乐器、一个调（D 大调）**：
+  开始 = D5 → A5 上行两音（各 90 ms）   —— "我在听了"
+  完成 = A5 → D5 下行两音（各 90 ms）   —— 开始音倒过来，一问一答
+  取消 = D5 单音 70 ms                 —— 最短、不带方向
+  错误 = D3 两下（各 60 ms，中间空 80 ms）—— 低八度、双击，一听就知道不对
+乐器：正弦 + 一点三角波（给一点木质的亮度，纯正弦太"电子"），5 ms 起音、指数衰减，
+每个音尾巴再做 3 ms 余弦收口（衰减到这里已经很小，收口只为消掉最后那一下咔哒）。
+响度：每个文件峰值统一归一到 -20 dBFS。
+时长：全部 ≤ 200 ms——开始音会被自己的麦克风录进去（DictationController.startCueGateSeconds
+按 0.35 s 挡回声），不能再长。
 
-只用 Python 3 标准库（wave + math），无 numpy。改了参数就重跑：
-    python3 "scripts/generate_sounds.py"
-生成的 wav 是仓库里的产物（几十 KB），直接提交。
+只用 Python 3 标准库（wave + math）。可复跑：
+    python3 scripts/generate_sounds.py
+生成的 wav 是仓库里的产物（几 KB 到二十来 KB），直接提交。
 """
 
 import math
@@ -17,110 +24,80 @@ import os
 import struct
 import wave
 
-SAMPLE_RATE = 44100
-MAX_MS = 200  # 硬上限：每个音都必须比这短，否则开始音会压住用户开口的第一个字
+SAMPLE_RATE = 48000
+PEAK_DBFS = -20.0
+TRIANGLE_MIX = 0.18      # 三角波占比：再多就开始像 8-bit 游戏机
+ATTACK_MS = 5.0
+RELEASE_MS = 3.0
+DECAY_TAU_MS = 38.0      # 指数衰减时间常数：90 ms 的音到尾巴约剩 1/10
+
+# D 大调里要用到的几个音（十二平均律，A4 = 440 Hz）
+D3 = 146.83
+D5 = 587.33
+A5 = 880.00
 
 
-def _blank(ms):
+def triangle(phase):
+    """相位 0–1 的三角波，幅度 ±1"""
+    return 4.0 * abs(phase - math.floor(phase + 0.5)) - 1.0
+
+
+def note(freq, dur_ms):
+    """一个音：正弦 + 少量三角波，5 ms 线性起音 + 指数衰减 + 3 ms 余弦收口"""
+    n = int(SAMPLE_RATE * dur_ms / 1000.0)
+    attack = max(1, int(SAMPLE_RATE * ATTACK_MS / 1000.0))
+    release = max(1, int(SAMPLE_RATE * RELEASE_MS / 1000.0))
+    tau = SAMPLE_RATE * DECAY_TAU_MS / 1000.0
+    out = []
+    for i in range(n):
+        t = i / SAMPLE_RATE
+        s = (1.0 - TRIANGLE_MIX) * math.sin(2 * math.pi * freq * t) \
+            + TRIANGLE_MIX * triangle(freq * t)
+        env = math.exp(-i / tau)
+        if i < attack:
+            env *= i / attack
+        if i >= n - release:
+            j = n - i
+            env *= 0.5 - 0.5 * math.cos(math.pi * j / release)
+        out.append(s * env)
+    return out
+
+
+def silence(ms):
     return [0.0] * int(SAMPLE_RATE * ms / 1000.0)
 
 
-def _env(i, n, attack_ms, release_ms):
-    """两端用升余弦淡入淡出，避免咔哒声（方波边沿）。"""
-    a = max(1, int(SAMPLE_RATE * attack_ms / 1000.0))
-    r = max(1, int(SAMPLE_RATE * release_ms / 1000.0))
-    if i < a:
-        return 0.5 - 0.5 * math.cos(math.pi * i / a)
-    if i > n - r:
-        j = n - i
-        return 0.5 - 0.5 * math.cos(math.pi * j / r)
-    return 1.0
+def normalize(samples):
+    peak = max(abs(s) for s in samples) or 1.0
+    target = 10 ** (PEAK_DBFS / 20.0)
+    return [s * target / peak for s in samples]
 
 
-def tone(buf, start_ms, dur_ms, f0, f1=None, amp=0.2,
-         attack_ms=6.0, release_ms=25.0, harmonic=0.0, decay=0.0):
-    """把一个（可滑音的）正弦叠加进 buf。
-
-    f1 非 None 时从 f0 线性滑到 f1；harmonic 是二次谐波比例（给一点点亮度，
-    纯正弦听起来太"电子"）；decay > 0 时整体再乘一条指数衰减包络。
-    """
-    n = int(SAMPLE_RATE * dur_ms / 1000.0)
-    off = int(SAMPLE_RATE * start_ms / 1000.0)
-    if len(buf) < off + n:
-        buf.extend([0.0] * (off + n - len(buf)))
-    phase = 0.0
-    for i in range(n):
-        t = i / float(n)
-        f = f0 if f1 is None else (f0 + (f1 - f0) * t)
-        phase += 2.0 * math.pi * f / SAMPLE_RATE
-        s = math.sin(phase) + harmonic * math.sin(2.0 * phase)
-        e = _env(i, n, attack_ms, release_ms)
-        if decay > 0.0:
-            e *= math.exp(-decay * (i / float(SAMPLE_RATE)))
-        buf[off + i] += amp * e * s
-
-
-def write_wav(path, buf, peak=0.22):
-    """归一化到目标峰值后写 44.1kHz / 16bit / 单声道。"""
-    hi = max((abs(x) for x in buf), default=0.0)
-    gain = (peak / hi) if hi > 0 else 0.0
-    frames = bytearray()
-    for x in buf:
-        v = int(max(-1.0, min(1.0, x * gain)) * 32767.0)
-        frames += struct.pack('<h', v)
-    with wave.open(path, 'wb') as w:
+def write(path, samples):
+    samples = normalize(samples)
+    with wave.open(path, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(SAMPLE_RATE)
-        w.writeframes(bytes(frames))
-    ms = len(buf) * 1000.0 / SAMPLE_RATE
-    assert ms <= MAX_MS + 0.5, '%s too long: %.1fms' % (path, ms)
-    print('  %-12s %6.1f ms  %6d bytes' % (os.path.basename(path), ms, len(frames)))
-
-
-def build_start():
-    """开始音：两声上行（E5 -> A5），最短最轻的一个——它一定会被麦克风听见一点。"""
-    buf = _blank(150)
-    tone(buf, 0, 62, 659.25, amp=0.55, release_ms=22, harmonic=0.10)
-    tone(buf, 58, 88, 880.00, amp=0.75, release_ms=40, harmonic=0.08, decay=6.0)
-    return buf, 0.20
-
-
-def build_success():
-    """完成音：三声上行小和弦（A5-C#6-E6），轻、带衰减，像轻敲玻璃而不是系统警报。"""
-    buf = _blank(200)
-    tone(buf, 0, 70, 880.00, amp=0.55, release_ms=30, harmonic=0.12, decay=9.0)
-    tone(buf, 52, 78, 1108.73, amp=0.62, release_ms=34, harmonic=0.10, decay=9.0)
-    tone(buf, 110, 88, 1318.51, amp=0.70, release_ms=52, harmonic=0.08, decay=8.0)
-    return buf, 0.22
-
-
-def build_error():
-    """错误音：两下低而闷的短音（A3），只用基频 + 很少谐波，够醒目但不刺耳。"""
-    buf = _blank(200)
-    tone(buf, 0, 72, 220.00, amp=0.80, attack_ms=8, release_ms=32, harmonic=0.04, decay=10.0)
-    tone(buf, 104, 92, 207.65, amp=0.80, attack_ms=8, release_ms=42, harmonic=0.04, decay=9.0)
-    return buf, 0.24
-
-
-def build_cancel():
-    """取消音：一声下滑（F5 -> A#4），语义上"收回去了"，不带任何警告色彩。"""
-    buf = _blank(130)
-    tone(buf, 0, 126, 698.46, f1=466.16, amp=0.80, attack_ms=6, release_ms=60,
-         harmonic=0.06, decay=7.0)
-    return buf, 0.20
+        w.writeframes(b"".join(
+            struct.pack("<h", int(round(max(-1.0, min(1.0, s)) * 32767))) for s in samples))
+    print("%-12s %4d ms" % (os.path.basename(path), len(samples) * 1000 // SAMPLE_RATE))
 
 
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
-    out = os.path.join(os.path.dirname(here), 'MicType', 'Resources', 'Sounds')
-    os.makedirs(out, exist_ok=True)
-    print('Writing to %s' % out)
-    for name, builder in (('start', build_start), ('success', build_success),
-                          ('error', build_error), ('cancel', build_cancel)):
-        buf, peak = builder()
-        write_wav(os.path.join(out, name + '.wav'), buf, peak=peak)
+    out_dir = os.path.normpath(os.path.join(here, "..", "MicType", "Resources", "Sounds"))
+    os.makedirs(out_dir, exist_ok=True)
+    cues = {
+        "start.wav": note(D5, 90) + note(A5, 90),
+        "success.wav": note(A5, 90) + note(D5, 90),
+        "cancel.wav": note(D5, 70),
+        "error.wav": note(D3, 60) + silence(80) + note(D3, 60),
+    }
+    for name, samples in cues.items():
+        assert len(samples) * 1000 // SAMPLE_RATE <= 200, name
+        write(os.path.join(out_dir, name), samples)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

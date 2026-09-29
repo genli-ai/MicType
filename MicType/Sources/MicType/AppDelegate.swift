@@ -71,6 +71,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dictation.onNeedRecognitionSettings = {
             SettingsWindowController.shared.show()
         }
+        // 5.2.0 悬浮窗错误形态的「打开设置」（错误文案里带 API Key / 401 的那一类，见 OverlayErrorAction）
+        dictation.overlay.onOpenSettings = {
+            SettingsWindowController.shared.show()
+        }
 
         // 5.1.0：阿里云整档删除（用户 2026-09-28 拍板）。生效服务商是 qwen 的改回 OpenAI，
         // 阿里云的 Key 与设置一次清掉——**一个字节都不搬到 OpenAI 那一档**。必须在
@@ -94,6 +98,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotkeys.isRecording = { [weak self] in self?.dictation.isRecording ?? false }
         hotkeys.isBusy = { [weak self] in self?.dictation.isProcessing ?? false }
         hotkeys.onBusyGesture = { [weak self] in self?.dictation.gestureWhileBusy() }
+        // 5.2.0 错误不自动消失：没在录、没在处理时按 Esc = 关掉那条错误（不吞这下 Esc）
+        hotkeys.onIdleEscape = { [weak self] in self?.dictation.overlay.dismissError() }
         hotkeys.start()
 
         // 5.0.0 的一次性清理：本机模型目录整棵删掉。

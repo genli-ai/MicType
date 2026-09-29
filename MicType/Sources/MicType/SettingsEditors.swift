@@ -12,7 +12,6 @@ import Combine
 /// OpenAI Key [••••••••]  [去申请 Key ↗]                          ⓘ
 /// 已连通 ✓ 云端·OpenAI · gpt-transcribe · …        ← 状态行，只在有话说时出现
 ///
-/// 实时草稿                                          [关]    ⓘ
 /// ─────────────────────────────────────────────────────
 ///            关于 · 专有词汇表 · 历史记录 · 语言 · 重看引导
 /// ```
@@ -20,13 +19,12 @@ import Combine
 /// 4.x 拿掉了什么、为什么，见 SettingsRoute 的注释。这一页自己的纪律：
 ///   • **5.1.0 起只有 OpenAI 一家**（用户 2026-09-28 拍板）：没有服务商那一行，栏名就叫「OpenAI Key」，
 ///     用户在这一页只做一件事——贴 Key。选择器、「正在使用 ✓」、阿里云的接入地址都删了。
-///   • ⓘ 只挂在两行上：API Key（Key 存钥匙串、费用直付、每小时大概多少钱）与实时草稿。
+///   • ⓘ 只挂在一行上：API Key（Key 存钥匙串、费用直付、每小时大概多少钱）。
+///     5.1.0 加的「实时草稿」开关 5.2.0 删掉：悬浮窗改成右端一个字数计数，没有什么可开关的了。
 ///   • 权限横幅只在**缺项时**出现：两项都齐的时候，它每天占着首屏最贵的位置说一句"没事"。
 struct MainSettingsPage: View {
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKeys.openaiBaseURL) private var baseURL = "https://api.openai.com/v1"
-    /// 5.1.0 起默认关（见 Settings.livePreview）。这里的默认值必须和注册的默认值一致
-    @AppStorage(SettingsKeys.livePreview) private var livePreview = false
 
     /// 上半那张表量出来有多高、底栏有多高。两个数加起来才是这一页要报给窗口的高度
     /// （底栏 5.0.3 起在表**外面**，见 body）
@@ -65,15 +63,6 @@ struct MainSettingsPage: View {
                     // （CloudSetupCore），顺序、说明、那颗 ⓘ 全都只写一处。
                     CloudSetupCore(style: .settings) {
                         providerNotices
-                    }
-                    // 5.1.0 加的唯一一个开关（用户 2026-09-28 拍板）：默认关。
-                    // 自己一张卡片——它说的是"录音时看见什么"，不是"发给谁"
-                    Section {
-                        SettingsToggleRow(label: SettingsCopy.livePreviewLabel,
-                                          isOn: $livePreview, info: SettingsCopy.livePreviewInfo)
-                            .onChange(of: livePreview) { _, on in
-                                Log.info("Live draft toggled on=\(on)")
-                            }
                     }
                 }
                 .formStyle(.grouped)

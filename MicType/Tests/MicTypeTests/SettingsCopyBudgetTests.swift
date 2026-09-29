@@ -171,18 +171,7 @@ final class SettingsCopyBudgetTests: XCTestCase {
 
     // 「预览中，仍用 X」那条测试 5.1.0 随服务商选择器一起删掉：只剩一家，没有预览这回事。
 
-    /// 「实时草稿」那颗 ⓘ：只说为什么默认关（用户 2026-09-28 拍板，中文 ≤ 30 字），
-    /// 栏名短到能摆进一行开关
-    func testLiveDraftCopyIsShort() {
-        L10n.shared.language = .zh
-        XCTAssertLessThanOrEqual(SettingsCopy.livePreviewInfo.count, 30, SettingsCopy.livePreviewInfo)
-        XCTAssertTrue(SettingsCopy.livePreviewInfo.contains("默认关闭"), SettingsCopy.livePreviewInfo)
-        XCTAssertEqual(SettingsCopy.livePreviewLabel, "实时草稿")
-        L10n.shared.language = .en
-        XCTAssertEqual(SettingsCopy.livePreviewLabel, "Live draft")
-        XCTAssertFalse(CJKSourceScanner.containsFlagged(SettingsCopy.livePreviewInfo),
-                       SettingsCopy.livePreviewInfo)
-    }
+    // 「实时草稿」那颗 ⓘ 的预算测试 5.2.0 随开关一起删掉（草稿改成悬浮窗上的字数）。
 
     // 联网搜索那颗 ⓘ 的预算测试随那个开关一起删掉（5.0.0）。
 
@@ -248,11 +237,10 @@ final class SettingsCopyBudgetTests: XCTestCase {
         }
     }
 
-    /// 这一页只有两颗 ⓘ：API Key、实时草稿（5.1.0）。
+    /// 这一页只有一颗 ⓘ：API Key（「实时草稿」那一颗 5.2.0 随开关删掉）。
     /// 这里钉的是"没人再把 ⓘ 悄悄加回来"。
-    func testCloudPageKeepsOnlyTwoInfoPopovers() {
-        XCTAssertEqual(SettingsCopy.cloudInfos.count, 2, "\(SettingsCopy.cloudInfos)")
-        XCTAssertTrue(SettingsCopy.cloudInfos.contains(SettingsCopy.livePreviewInfo))
+    func testCloudPageKeepsOnlyOneInfoPopover() {
+        XCTAssertEqual(SettingsCopy.cloudInfos, [SettingsCopy.keyInfo], "\(SettingsCopy.cloudInfos)")
     }
 
     // MARK: - 隐私文案只在关于页出现
@@ -375,7 +363,8 @@ final class SettingsCopyBudgetTests: XCTestCase {
         // 5.0.0 之后整个设置窗口只剩两个段标题（词汇表 / 自定义规则，都在「专有词汇表」那一页）
         // ——门槛跟着降；再低就说明抓取方式坏了，而不是界面又简化了
         XCTAssertGreaterThanOrEqual(allTitles.count, 2, "没扫到段标题，抓取方式该修了")
-        XCTAssertGreaterThan(allLabels.count, 2, "没扫到栏名，抓取方式该修了")
+        // 栏名门槛 5.2.0 从 >2 降到 ≥2：「实时草稿」那一行随开关删掉了（界面确实又简化了一格）
+        XCTAssertGreaterThanOrEqual(allLabels.count, 2, "没扫到栏名，抓取方式该修了")
         XCTAssertTrue(offenders.isEmpty, """
             段标题和它下面那一行的栏名逐字相同：\(offenders.joined(separator: "、"))
             —— 删掉段标题，把它那颗 ⓘ 搬到那一行的右端（4.3.2 的版式）。

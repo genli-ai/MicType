@@ -25,6 +25,9 @@ final class HotkeyManager {
     /// 处理中收到的手势（轻点由 onTapToggle 走控制器，按住走这里）：不能开新一轮，
     /// 但绝不静默吞掉——由控制器给用户看得见的反馈
     var onBusyGesture: (() -> Void)?
+    /// 没在录音、也没在处理时按下的 Esc（5.2.0：悬浮窗上的错误不再自动消失，Esc 关掉它）。
+    /// 只是"看一眼"：这下 Esc 照常送给前台应用，不吞
+    var onIdleEscape: (() -> Void)?
     /// 由控制器提供：当前是否正在录音
     var isRecording: (() -> Bool) = { false }
     /// 由控制器提供：当前是否在处理中（识别/润色/指令在飞）
@@ -279,6 +282,9 @@ final class HotkeyManager {
             pressStartedRecording = false
             DispatchQueue.main.async { [weak self] in self?.onCancel?() }
             return
+        }
+        if event.keyCode == 53 {
+            DispatchQueue.main.async { [weak self] in self?.onIdleEscape?() }
         }
         // 修饰键按住期间敲了别的键（快捷键等）→ 不算轻点，也不进指令模式
         abortCandidate()

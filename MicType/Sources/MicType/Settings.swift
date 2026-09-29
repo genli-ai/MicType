@@ -215,7 +215,7 @@ enum SettingsKeys {
     static let restoreClipboard = "restoreClipboard"
     static let autoStopSilenceSeconds = "autoStopSilenceSeconds"  // 静音自动停秒数（0 = 关）
     static let inputDeviceUID = "inputDeviceUID"            // 指定麦克风的 CoreAudio UID（"" = 系统默认）
-    static let livePreview = "livePreview"                 // 录音中悬浮窗灰字草稿（5.1.0 起默认关）
+    static let livePreview = "livePreview"                 // 录音中悬浮窗灰字草稿：5.2.0 起不再读（灰字整段删了），键留着只为认得旧值
     static let overlayPosition = "overlayPosition"         // 悬浮窗在屏幕上的落点
     static let keepHistory = "keepHistory"                 // 是否把听写结果记进历史（默认开）
     static let llmProvider = "llmProvider"
@@ -300,9 +300,7 @@ final class Settings {
             SettingsKeys.playSounds: true,
             SettingsKeys.restoreClipboard: true,
             SettingsKeys.autoStopSilenceSeconds: 0.0,
-            // 5.1.0 起默认**关**（用户 2026-09-28 拍板）：OpenAI 实时的草稿比说话慢 1–2 秒，
-            // 用户把"字停了"当成"录完了"而干等（看着草稿不动就不敢松手）。只改默认值——
-            // 自己打开过（存着 true）的人照旧，界面上「实时草稿」开关随时能开。
+            // 5.2.0 起没人读它了（草稿改成悬浮窗上的字数，开关删掉）；默认值留着只为旧值读起来一致
             SettingsKeys.livePreview: false,
             SettingsKeys.overlayPosition: OverlayPosition.bottomCenter.rawValue,
             SettingsKeys.keepHistory: true,
@@ -513,14 +511,9 @@ final class Settings {
     ///「指定了就用指定的」工作，而它对空串就是"跟随系统默认"。
     var inputDeviceUID: String { "" }
 
-    /// 录音中在悬浮窗显示灰色的实时草稿。**5.1.0 起默认关**，设置页有「实时草稿」开关。
-    /// 为什么关（用户 2026-09-28 拍板）：OpenAI 实时的草稿比说话慢 1–2 秒，用户看着草稿停了
-    /// 就以为录完了、干等着不松手。关着时悬浮窗照常显示「正在听…」与波形。
-    /// 这条只影响"看得见"，永远不影响插入的文字——草稿绝不会进目标应用。
-    var livePreview: Bool {
-        get { d.bool(forKey: SettingsKeys.livePreview) }
-        set { d.set(newValue, forKey: SettingsKeys.livePreview) }
-    }
+    // livePreview（录音中的灰字草稿）5.2.0 删掉：悬浮窗改成右端一个「N 字」计数
+    // （UX 方案 §3 C，用户 2026-09-29 拍板），开关随之删掉。存储键留着（SettingsKeys.livePreview），
+    // 导入旧的设置文件时只认不写（SettingsBackup.Key.legacyIgnored）。
 
     /// 悬浮窗落点。只影响"出现在哪"，不影响任何行为；多屏仍然永远跟随鼠标所在那块屏。
     /// 读不出/读到脏值一律回退底部居中——位置这种东西绝不能因为一条坏设置就丢到屏幕外。
