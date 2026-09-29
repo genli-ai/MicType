@@ -42,16 +42,23 @@ enum CloudASRSettings {
 
     // MARK: 语言提示
 
-    /// 词汇表 → 云端的 language_hints。
+    /// 没有锁定语言时默认送的语言提示：中文、英文、阿拉伯语（5.4.1，主会话 2026-09-29 定）。
     ///
-    /// 5.0.0 起**没有「识别语言」这条设置了**（用户 2026-09-22 拍板：设置页只做一个决定），
-    /// 所以这里只剩原来那条 Auto 的规矩：默认什么都不送；**只有**词汇表里同时有
-    /// 中日韩文字和西文词条时才送 ["zh","en"]——那是用户自己的词表在说"这是一场中英夹杂
-    /// 的口述"，不是我们替他猜的。
-    static func languageHints(vocabulary: [String]) -> [String] {
-        let hasCJK = vocabulary.contains { containsCJK($0) }
-        let hasLatin = vocabulary.contains { containsLatinLetter($0) }
-        return (hasCJK && hasLatin) ? ["zh", "en"] : []
+    /// 为什么默认要送：不送的话 OpenAI 每一句都从头自动判语种，实时那条路的第一批 partial
+    /// 来得慢。为什么送它是安全的：**这边传错语言不会翻译**（OpenAIRealtimeClient.Options 那条
+    /// 实测：中文音频配 ["en"] 仍出中文）。为什么是这三种：用户说中英文、人在阿联酋，
+    /// 阿拉伯语是必须支持的输入语言（CLAUDE.md 质量标准）。
+    /// 5.0.0–5.4.0 的规矩是"默认不送，只有词汇表中西夹杂才送 [zh, en]"，它被这条默认整个盖住了。
+    static let defaultLanguageHints = ["zh", "en", "ar"]
+
+    /// 这一次识别送什么语言提示。显式锁定的语言（长录音分段时锁下来的那一种，英文全名）优先；
+    /// 锁定的名字认不出来（sanitize 滤空了）就退回默认——宁可送默认，也不送一个云端不认的码。
+    static func languageHints(lockedLanguage: String? = nil) -> [String] {
+        if let name = lockedLanguage {
+            let locked = CloudASRLanguage.sanitize(hints: [CloudASRLanguage.code(forName: name)])
+            if !locked.isEmpty { return locked }
+        }
+        return defaultLanguageHints
     }
 
     static func containsCJK(_ text: String) -> Bool {
@@ -73,7 +80,7 @@ enum CloudASRSettings {
     /// 纯函数版：所有输入都从外面传进来，单测不碰 UserDefaults / 钥匙串
     static func config(vocabulary: [String], apiKey: String) -> CloudASRConfig {
         CloudASRConfig(provider: .openai,
-                       languageHints: languageHints(vocabulary: vocabulary),
+                       languageHints: languageHints(),
                        // 词表走 keywords[]（过滤规则在 OpenAITranscribeClient.filteredTerms）
                        vocabulary: vocabulary,
                        apiKey: apiKey)

@@ -1727,10 +1727,10 @@ final class DictationController {
         // 录音被设备变更提前掐断时，把原因并进结果提示：用户得知道这只是"半句"
         let sessionNote = takeSessionNote()
         let note = sessionNote.map { $0 + tr("；", "; ") + note } ?? note
-        // 「落」那一行写什么（见 flashDelivered）：纯听写（revertible 那条路）给「原文 → 润色」，
+        // 「落」画什么（见 flashDelivered）：纯听写（revertible 那条路）只有一枚勾，
         // 其余照旧是那句回执。在这里定格：回调回来时这些量可能已经属于下一轮了
         let summary = DeliveredSummary(note: note, hasSessionNote: sessionNote != nil,
-                                       raw: raw, final: finalText, dictation: revertible)
+                                       dictation: revertible)
         // 目标应用在这里定格：回调回来时 targetBundleID 可能已经属于下一轮录音了
         let target = targetBundleID
         // 这一轮的代数也要定格：上面刚把 phase 置回 .idle，而插入回调最长要等到
@@ -1875,17 +1875,15 @@ final class DictationController {
     private struct DeliveredSummary {
         let note: String
         let hasSessionNote: Bool
-        let raw: String
-        let final: String
-        /// 纯听写（润色那条路）：只有它有「原文 → 润色」可看
+        /// 纯听写（润色那条路）：「落」只画一枚勾，不写字
         let dictation: Bool
     }
 
     /// 交付成功之后的那一下确认（UX 方案 §3 C）。三种情形：
     ///   • 这一轮有附注（设备被拔、到上限、分段丢了尾巴）→ 告知形态（黄色小字，2.5 s）：
-    ///     那句话比「原文 → 润色」重要，用户得知道这只是"半句"；
-    ///   • 纯听写 → 勾 +「原文前 8 字… → 润色前 8 字…」（没改字就是成稿前 16 字），
-    ///     可换回原文时这一行可点；
+    ///     用户得知道这只是"半句"；
+    ///   • 纯听写 → 只有一枚勾，停 0.8 s（5.4.1，用户 2026-09-29 定：字就在光标那儿，不再念一遍）；
+    ///     可换回原文时点这颗胶囊 = 换回；
     ///   • 指令 / 其它 → 勾 + 那句回执（「已改写 · ⌘Z 撤销」「已联网 · 3 来源」…）。
     private func flashDelivered(_ summary: DeliveredSummary, revertible: Bool) {
         if summary.hasSessionNote {
@@ -1893,12 +1891,8 @@ final class DictationController {
             // 走告知形态（2.5 s 自己走），不打勾——这一轮只交付了一部分
             overlay.flashWarning(summary.note)
         } else if summary.dictation {
-            let body = OverlayDoneLine.make(raw: summary.raw, final: summary.final)
-            // 「原文 → 润色」那一行要读、还可能要点：停 2 s；其余 1.2 s（用户 2026-09-29 定）
-            let showsDiff: Bool = { if case .diff = body { return true } else { return false } }()
-            overlay.flashDone(OverlayDone(body: body, revertible: revertible),
-                              duration: showsDiff ? OverlayController.diffDoneDuration
-                                                  : OverlayController.doneDuration)
+            overlay.flashDone(OverlayDone(body: .check, revertible: revertible),
+                              duration: OverlayController.checkDoneDuration)
         } else {
             overlay.flashSuccess(summary.note)
         }

@@ -244,11 +244,10 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
                             completion: @escaping (Result<CloudASRTranscription, CloudASRFailure>) -> Void)
         -> CloudASRHandle {
         var cfg = currentConfig
-        // 调用方给了显式语言（本机那边是"锁定的英文全名"）就按云端的口径换成 hints。
-        // 认不出来的名字 sanitize 会滤掉，那时宁可沿用设置里的 hints，也不送一个云端不认的码。
-        if let name = language {
-            let hints = CloudASRLanguage.sanitize(hints: [CloudASRLanguage.code(forName: name)])
-            if !hints.isEmpty { cfg.languageHints = hints }
+        // 调用方给了显式语言（"锁定的英文全名"）就按云端的口径换成 hints，它压过默认的 [zh, en, ar]；
+        // 认不出来的名字退回默认（规则只写在 CloudASRSettings.languageHints 一处）
+        if language != nil {
+            cfg.languageHints = CloudASRSettings.languageHints(lockedLanguage: language)
         }
         let client = cfg.makeClient()
         let handle = CloudASRHandle()

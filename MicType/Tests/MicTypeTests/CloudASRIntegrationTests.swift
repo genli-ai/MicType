@@ -31,16 +31,44 @@ final class CloudASRIntegrationTests: XCTestCase {
 
     // MARK: - 语言提示
 
-    /// 5.0.0 起没有「识别语言」这条设置了（云端不发语言提示），
-    /// 只剩这一条：词表里中西夹杂才送 ["zh","en"]——那是用户自己的词表在说话。
-    func testAutoOnlyHintsWhenVocabularyIsMixed() {
-        XCTAssertEqual(CloudASRSettings.languageHints(vocabulary: []), [])
-        XCTAssertEqual(CloudASRSettings.languageHints(vocabulary: ["捷文", "云术法"]), [],
-                       "只有中文词条不等于只说中文，不替用户锁语言")
-        XCTAssertEqual(CloudASRSettings.languageHints(vocabulary: ["Power BI"]), [])
-        XCTAssertEqual(CloudASRSettings.languageHints(vocabulary: ["捷文", "Power BI"]), ["zh", "en"])
-        XCTAssertEqual(CloudASRSettings.languageHints(vocabulary: ["MicType 捷文"]), ["zh", "en"],
-                       "同一条词条里中西夹杂也算混合")
+    /// 5.4.1：没有锁定语言时默认送 [zh, en, ar]，与词汇表无关
+    func testDefaultHintsWhenNothingIsLocked() {
+        XCTAssertEqual(CloudASRSettings.languageHints(), ["zh", "en", "ar"])
+        XCTAssertEqual(CloudASRSettings.config(vocabulary: [], apiKey: "k").languageHints, ["zh", "en", "ar"])
+        XCTAssertEqual(CloudASRSettings.config(vocabulary: ["捷文"], apiKey: "k").languageHints,
+                       ["zh", "en", "ar"], "词表内容不再影响语言提示")
+        // 三个码都过得了 sanitize（只认 2 字母码的那道滤网），真会被送出去
+        XCTAssertEqual(CloudASRLanguage.sanitize(hints: CloudASRSettings.defaultLanguageHints),
+                       ["zh", "en", "ar"])
+    }
+
+    /// 显式锁定的语言压过默认；认不出来的名字退回默认，不送云端不认的码
+    func testLockedLanguageWinsOverDefault() {
+        XCTAssertEqual(CloudASRSettings.languageHints(lockedLanguage: "Arabic"), ["ar"])
+        XCTAssertEqual(CloudASRSettings.languageHints(lockedLanguage: "English"), ["en"])
+        XCTAssertEqual(CloudASRSettings.languageHints(lockedLanguage: "zh"), ["zh"])
+        XCTAssertEqual(CloudASRSettings.languageHints(lockedLanguage: "Klingon"), ["zh", "en", "ar"])
+        XCTAssertEqual(CloudASRSettings.languageHints(lockedLanguage: nil), ["zh", "en", "ar"])
+    }
+
+    /// 默认提示两条路都要真的送出去：整段上传是 languages[] 重复字段，实时是 session.update 里的 languages
+    func testDefaultHintsReachBothRequests() {
+        let config = CloudASRSettings.config(vocabulary: [], apiKey: "k")
+        let body = OpenAITranscribeClient.multipartBody(boundary: "B", wav: Data(),
+                                                        model: OpenAITranscribeClient.defaultModel,
+                                                        languages: config.languageHints,
+                                                        keywords: [], prompt: nil)
+        let text = String(decoding: body, as: UTF8.self)
+        for code in ["zh", "en", "ar"] {
+            XCTAssertTrue(text.contains("name=\"languages[]\"\r\n\r\n\(code)\r\n"), code)
+        }
+        var options = OpenAIRealtimeClient.Options()
+        options.languages = config.languageHints
+        let update = OpenAIRealtimeClient.sessionUpdateMessage(model: OpenAIRealtimeClient.model,
+                                                               rate: 24000, options: options)
+        XCTAssertTrue(update.contains(#""languages":["zh","en","ar"]"#), update)
+        // 服务端不认时照旧能被摘掉重发
+        XCTAssertTrue(options.dropping(.languages).languages.isEmpty)
     }
 
     func testScriptDetectionHelpers() {
@@ -58,7 +86,7 @@ final class CloudASRIntegrationTests: XCTestCase {
     func testConfigCarriesVocabularyAndHints() {
         let config = CloudASRSettings.config(vocabulary: ["捷文", "Power BI"], apiKey: "sk-test")
         XCTAssertEqual(config.provider, .openai)
-        XCTAssertEqual(config.languageHints, ["zh", "en"], "词表中西夹杂 → 两个提示")
+        XCTAssertEqual(config.languageHints, ["zh", "en", "ar"], "默认三种语言提示")
         XCTAssertEqual(config.vocabulary, ["捷文", "Power BI"], "词表原样交给客户端，过滤在那一层")
         XCTAssertEqual(config.apiKey, "sk-test")
     }

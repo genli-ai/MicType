@@ -55,11 +55,25 @@ final class OverlaySnapshotTests: XCTestCase {
             shoot("overlay-thinking-\(tag)", height: 200) { state in
                 state.phase = .thinking
             }
+            // 最后 30 s：计时后面跟着「即将自动收尾」，右端挤不下时先省字数、esc 键帽永远在
+            shoot("overlay-listening-clock-\(tag)", height: 200) { state in
+                state.phase = .listening
+                state.level = 0.5
+                state.charCount = 1234
+                state.clock = "9:31 / 10:00"
+                state.clockWarning = true
+                Self.warmWaveform(state)
+            }
+            shoot("overlay-thinking-caption-\(tag)", height: 200) { state in
+                state.phase = .thinking
+                state.caption = tr("第 2/3 段", "Part 2/3")
+            }
             shoot("overlay-done-\(tag)", height: 200) { state in
-                let body = language == .zh
-                    ? OverlayDoneLine.make(raw: "那个我明天下午嗯三点开会", final: "明天下午三点开会。")
-                    : OverlayDoneLine.make(raw: "um so I think we should uh meet", final: "I think we should meet.")
-                state.phase = .done(OverlayDone(body: body, revertible: true))
+                state.phase = .done(OverlayDone(body: .check, revertible: true))
+            }
+            // 指令模式的回执（纯听写的「落」5.4.1 起只有一枚勾，带字的只剩这一种）
+            shoot("overlay-done-receipt-\(tag)", height: 200) { state in
+                state.phase = .done(OverlayDone(body: .text(tr("已改写 · ⌘Z 撤销", "Rewritten · ⌘Z to undo"))))
             }
             shoot("overlay-command-\(tag)", height: 240) { state in
                 state.phase = .command

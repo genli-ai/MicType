@@ -57,7 +57,7 @@ enum Diagnostics {
                      + " fastTierRefused=\(FastTierMemory.shared.models.count)"
                      + " webSearch=\(s.webSearchEnabled)"
                      + " searchStyle=\(s.webSearchStyle)")
-        // bottomCenter 这一档 5.2.0 起是"跟随前台窗口，量不到才退到屏幕底部居中"
+        // bottomCenter = 鼠标所在屏的底部居中（5.2.0–5.4.0 曾是"跟随前台窗口"，5.4.1 撤销）
         lines.append("Overlay: position=\(s.overlayPosition.rawValue)")
 
         let metrics = Array(Metrics.shared.items.prefix(10))

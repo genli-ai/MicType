@@ -1,5 +1,4 @@
 import AppKit
-import ApplicationServices
 import SwiftUI
 
 // MARK: - 悬浮窗状态
@@ -7,7 +6,7 @@ import SwiftUI
 /// 5.2.0 起悬浮窗**不再用文字说状态**（UX 方案 §3 C，用户 2026-09-29 定）：
 /// 「正在听… / 润色中… / 已输入」这些字全删了，状态由形态说——
 ///   听 = 呼吸红点 + 渐变波形（+ 实时字数）；想 = 一条流动的渐变光带；
-///   落 = 渐变勾 + 一行「原文 → 润色」；错 = 红边 + 一句话 + 一颗按钮；
+///   落 = 一枚渐变勾（5.4.1 起不带字；指令模式带一行回执）；错 = 红边 + 一句话 + 一颗按钮；
 ///   指令 = 听的形态下面多一行「说出你要改的」。
 final class OverlayState: ObservableObject {
     enum Phase: Equatable {
@@ -53,11 +52,11 @@ final class OverlayState: ObservableObject {
     /// 胶囊贴面板顶边（顶部居中）还是底边
     @Published var topAligned = false
 
-    /// 分段识别到一半按 Esc 是"收尾并输入"还是"丢弃"。5.2.0 起胶囊上不再有「⎋ 取消」那颗字，
-    /// 这一位只留着给将来的菜单 / 提示用，界面不读它（判据本身仍在 DictationController.escFinishesEarly）
-    var cancelFinishes = false
+    /// 分段识别到一半按 Esc 是"收尾并输入"还是"丢弃"（判据在 DictationController.escFinishesEarly）。
+    /// 5.4.1 起 esc 键帽的读屏旁白按它换句话，所以是 published
+    @Published var cancelFinishes = false
 
-    /// 按钮 / 「落」那一行在面板坐标系（SwiftUI，原点左上）里的位置，由视图量出来回填。
+    /// 按钮 / 「落」那颗胶囊在面板坐标系（SwiftUI，原点左上）里的位置，由视图量出来回填。
     /// 故意**不是** @Published：只给 AppKit 的命中判定读，设成 published 会让布局回填再触发重绘，绕成死循环。
     var buttonHitRect: CGRect = .zero
     var doneHitRect: CGRect = .zero
@@ -71,7 +70,7 @@ final class OverlayState: ObservableObject {
         return buttonLabel != nil
     }
 
-    /// 这一刻「落」那一行能不能点（= 换回识别原文）
+    /// 这一刻「落」那颗胶囊能不能点（= 换回识别原文）
     var isDoneTappable: Bool {
         guard case .done(let done) = phase else { return false }
         return done.revertible
@@ -90,52 +89,17 @@ final class OverlayState: ObservableObject {
 /// 「落」形态的内容
 struct OverlayDone: Equatable {
     enum Body: Equatable {
-        /// 润色确实改了字：原文前 8 字 → 润色前 8 字
-        case diff(from: String, to: String)
-        /// 其余：一行字（纯识别时是成稿前 16 字；指令模式是「已改写 · ⌘Z 撤销」这类回执）
+        /// 纯听写交付：只有一枚渐变勾，**一个字都不写**（5.4.1，用户 2026-09-29 试用 5.4.0 后定：
+        /// 5.2–5.4 的「原文 → 润色」那一行和「成稿前 16 字」都删了）
+        case check
+        /// 一行回执：指令模式（「已改写 · ⌘Z 撤销」「已输入 · ⌘Z 撤销」）和几句一次性的确认
+        /// （「已换回识别原文」「麦克风已授权」）
         case text(String)
     }
 
     let body: Body
-    /// 点这一行 = 换回识别原文（只有"纯听写 + 润色改了字 + 确实粘进去了"那一次）
+    /// 点胶囊 = 换回识别原文（只有"纯听写 + 润色改了字 + 确实粘进去了"那一次）
     var revertible: Bool = false
-}
-
-// MARK: - 纯函数：「落」那一行写什么
-
-enum OverlayDoneLine {
-    /// 原文 / 润色各取前几个字（设计稿：`那个我明天下午… → 明天下午三点开会。`）
-    static let diffPrefix = 8
-    /// 没改字时成稿取前几个字
-    static let plainPrefix = 16
-
-    /// 纯听写交付后的那一行。**只在润色确实改了字时**给「原文 → 润色」：
-    /// 只差标点 / 空格的话，箭头两边看起来一模一样，像是 App 在自说自话。
-    static func make(raw: String, final: String) -> OverlayDone.Body {
-        if significant(raw) != significant(final) {
-            return .diff(from: prefix(raw, diffPrefix), to: prefix(final, diffPrefix))
-        }
-        return .text(prefix(final, plainPrefix))
-    }
-
-    /// 前 n 个字，截了就补「…」。换行压成空格：一行里出现换行符会把胶囊撑成两层
-    static func prefix(_ text: String, _ n: Int) -> String {
-        let flat = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            .components(separatedBy: .newlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        guard flat.count > n else { return flat }
-        return String(flat.prefix(n)) + "…"
-    }
-
-    /// 判"改没改字"用的骨架：去掉标点、符号和空白，其余（含大小写）照原样比
-    static func significant(_ text: String) -> String {
-        String(String.UnicodeScalarView(text.unicodeScalars.filter {
-            !CharacterSet.punctuationCharacters.contains($0)
-                && !CharacterSet.symbols.contains($0)
-                && !CharacterSet.whitespacesAndNewlines.contains($0)
-        }))
-    }
 }
 
 // MARK: - 错误按钮是哪一颗（调用处点名）
@@ -173,6 +137,16 @@ enum OverlayCopy {
 
     /// 实时字数
     static func charCount(_ n: Int) -> String { tr("\(n) 字", "\(n) chars") }
+
+    /// Esc 键帽的旁白（键帽上印的是键名 `esc`，与界面语言无关，读屏读这一句）。
+    /// 分段识别到一半时 Esc 是「收尾并输入」不是丢弃，旁白照实说
+    static func escHint(finishes: Bool) -> String {
+        finishes ? tr("按 Esc 收尾并输入", "Press Esc to finish and insert")
+                 : tr("按 Esc 取消", "Press Esc to cancel")
+    }
+
+    /// 「落」那枚勾可点时的旁白（换回识别原文）。面板不接鼠标，悬停提示出不来，只剩读屏这一处
+    static var revertHint: String { tr("点一下换回原文", "Click to restore the raw text") }
 
     /// 最后 30 s 跟在计时后面的那句（与 5.1 的「即将自动收尾」同一句话）
     static var wrappingUpSoon: String { tr("即将自动收尾", "wrapping up soon") }
@@ -255,10 +229,6 @@ enum OverlayMetrics {
     static let capsuleMaxWidth: CGFloat = 520
     /// 面板尺寸：装得下最宽的胶囊 + 两侧外边距，高度装得下指令形态（84）和两行错误
     static let panelSize = CGSize(width: capsuleMaxWidth + 2 * contentInset + 8, height: 160)
-    /// 跟随前台窗口：胶囊底边在窗口底边上方多少
-    static let windowBottomGap: CGFloat = 24
-    /// 窗口窄过这个数就不跟了（胶囊压满一整扇小窗，比待在屏幕底部更碍事）
-    static let followMinWindowWidth: CGFloat = 480
     /// 设计稿尺寸
     static let capsuleHeight: CGFloat = 56
     static let commandHeight: CGFloat = 84
@@ -288,6 +258,8 @@ struct OverlayView: View {
                 ListeningRow(state: state)
                     .padding(.horizontal, 22)
             }
+            // 给右端「计时 · 字数 · esc」一个宽度上限：装不下时 ListeningRow 先省字数
+            .frame(maxWidth: OverlayMetrics.capsuleMaxWidth)
         case .command:
             MTCapsule(height: OverlayMetrics.commandHeight, radius: 22) {
                 VStack(spacing: 0) {
@@ -318,25 +290,45 @@ struct OverlayView: View {
                             .lineLimit(1)
                             .fixedSize()
                     }
+                    EscKeycap(finishes: state.cancelFinishes)
                 }
-                .padding(.horizontal, state.caption == nil ? OverlayMetrics.thinkingWidth * 0.15 : 26)
-            }
-        case .done(let done):
-            MTCapsule {
-                HStack(spacing: 14) {
-                    CheckBadge()
-                    DoneLine(body: done.body)
-                        .background(
-                            GeometryReader { geo -> Color in
-                                state.doneHitRect = geo.frame(in: .named(OverlayContainer.space))
-                                return Color.clear
-                            }
-                        )
-                }
-                .padding(.leading, 16)
+                // 右端有了 esc 键帽，右边距收成与听形态一样的 22；左边照旧
+                .padding(.leading, state.caption == nil ? OverlayMetrics.thinkingWidth * 0.15 : 26)
                 .padding(.trailing, 22)
             }
-            .frame(maxWidth: OverlayMetrics.capsuleMaxWidth)
+        case .done(let done):
+            switch done.body {
+            case .check:
+                // 只有一枚勾：左右 16 的内边距让 56 高的胶囊正好收成一个圆。
+                // 整颗胶囊就是可点区（换回原文），量出来给 AppKit 的命中判定
+                MTCapsule {
+                    CheckBadge()
+                        .padding(.horizontal, 16)
+                }
+                .background(
+                    GeometryReader { geo -> Color in
+                        state.doneHitRect = geo.frame(in: .named(OverlayContainer.space))
+                        return Color.clear
+                    }
+                )
+                .accessibilityElement(children: .ignore)
+                // 读屏：能换回时说怎么换，不能换时只说"已输入"（与 deliver 的回执同一句）
+                .accessibilityLabel(done.revertible ? OverlayCopy.revertHint : tr("已输入", "Inserted"))
+            case .text(let text):
+                MTCapsule {
+                    HStack(spacing: 14) {
+                        CheckBadge()
+                        Text(text)
+                            .font(.system(size: 13))
+                            .foregroundColor(Theme.text)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .padding(.leading, 16)
+                    .padding(.trailing, 22)
+                }
+                .frame(maxWidth: OverlayMetrics.capsuleMaxWidth)
+            }
         case .error(let message):
             // 半径 28 = 单行时恰好是胶囊；错误话长到两行时自然变成圆角矩形，不被弧边啃字
             MTCapsule(radius: 28, danger: true) {
@@ -428,22 +420,58 @@ private struct ListeningRow: View {
                     }
                 }
             }
-            if let count = state.charCount {
-                Text(OverlayCopy.charCount(count))
-                    .font(.system(size: 12, design: .monospaced))
-                    .monospacedDigit()
-                    .foregroundColor(Theme.muted)
-                    .frame(minWidth: 34, alignment: .trailing)
-                    .fixedSize()
-            }
-            if let clock = state.clock {
-                Text(state.clockWarning ? clock + " · " + OverlayCopy.wrappingUpSoon : clock)
-                    .font(.system(size: 12))
-                    .monospacedDigit()
-                    .foregroundColor(state.clockWarning ? Theme.danger : Theme.muted)
-                    .fixedSize()
+            // 右端顺序：计时 · 字数 · esc。宽度不够（最后 30 s 计时后面还跟着一句）时
+            // 先省字数，esc 永远在——它是这一刻唯一的退路
+            ViewThatFits(in: .horizontal) {
+                trailing(showCount: true)
+                trailing(showCount: false)
             }
         }
+    }
+
+    private func trailing(showCount: Bool) -> some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 18) {
+                if let clock = state.clock {
+                    Text(state.clockWarning ? clock + " · " + OverlayCopy.wrappingUpSoon : clock)
+                        .font(.system(size: 12))
+                        .monospacedDigit()
+                        .foregroundColor(state.clockWarning ? Theme.danger : Theme.muted)
+                        .fixedSize()
+                }
+                if showCount, let count = state.charCount {
+                    Text(OverlayCopy.charCount(count))
+                        .font(.system(size: 12, design: .monospaced))
+                        .monospacedDigit()
+                        .foregroundColor(Theme.muted)
+                        .frame(minWidth: 34, alignment: .trailing)
+                        .fixedSize()
+                }
+            }
+            EscKeycap(finishes: state.cancelFinishes)
+        }
+    }
+}
+
+/// 听 / 指令 / 想三种形态右端的小键帽：告诉用户这一刻按 Esc 能退出（用户 2026-09-29 试用 5.4.0 后要求）。
+/// 纯提示、不可点（面板 ignoresMouseEvents，照旧）。落 / 错 / 告知不显示：错误本来就是 Esc 关
+private struct EscKeycap: View {
+    /// 这一刻 Esc 是「收尾并输入」（分段识别到一半）还是取消：只影响读屏旁白
+    var finishes = false
+
+    var body: some View {
+        // 印的是键帽上的字，不是一句话：中英界面都是 esc，所以不走 tr()；读屏走 escHint
+        Text(verbatim: "esc")
+            .font(.system(size: 11, weight: .medium))
+            .foregroundColor(Color.white.opacity(0.6))
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .overlay(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .stroke(Color.white.opacity(0.22), lineWidth: 1))
+            .fixedSize()
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(OverlayCopy.escHint(finishes: finishes))
     }
 }
 
@@ -547,29 +575,6 @@ private struct CheckShape: Shape {
     }
 }
 
-/// 「落」那一行：原文（次色）→（强调字色）润色（正文色）；或者只是一行字
-private struct DoneLine: View {
-    let body_: OverlayDone.Body
-
-    init(body: OverlayDone.Body) { body_ = body }
-
-    var body: some View {
-        Group {
-            switch body_ {
-            case .diff(let from, let to):
-                Text(from).foregroundColor(Theme.muted)
-                    + Text("  →  ").foregroundColor(Theme.accentText)
-                    + Text(to).foregroundColor(Theme.text).fontWeight(.medium)
-            case .text(let text):
-                Text(text).foregroundColor(Theme.text)
-            }
-        }
-        .font(.system(size: 13))
-        .lineLimit(1)
-        .truncationMode(.tail)
-    }
-}
-
 /// 悬浮窗永远不当 key / main 窗口：点按钮也不该把目标应用里的光标和焦点抢走
 private final class OverlayPanel: NSPanel {
     override var canBecomeKey: Bool { false }
@@ -581,7 +586,7 @@ private final class OverlayPanel: NSPanel {
 final class OverlayController {
 
     let state = OverlayState()
-    /// 点「落」那一行（= 换回识别原文）。DictationController 接到 revertToRaw()
+    /// 点「落」那颗胶囊（= 换回识别原文）。DictationController 接到 revertToRaw()
     var onRevertTapped: (() -> Void)?
     /// 错误形态「打开设置」那颗按钮（AppDelegate 接到设置窗口）
     var onOpenSettings: (() -> Void)?
@@ -613,10 +618,11 @@ final class OverlayController {
     private static let cursorGap: CGFloat = 18
     /// 跟随指针时给胶囊预留的最大高度：指针贴着屏幕顶边时按这个高度往下让
     private static let cursorCapsuleReserve: CGFloat = 108
-    /// 「落」停留多久（设计稿 1.2 s）。指针正停在那一行上时顺延（见 scheduleDoneHide）
+    /// 带一行回执的「落」停留多久（设计稿 1.2 s：要读一行字）
     static let doneDuration: Double = 1.2
-    /// 显示「原文 → 润色」那一行时停 2 s：要读两段字，还可能要点它换回原文（用户 2026-09-29 定）
-    static let diffDoneDuration: Double = 2.0
+    /// 只有一枚勾的「落」停 0.8 s（用户 2026-09-29 定，5.4.1）：没有字要读。
+    /// 指针正停在胶囊上时顺延（见 scheduleDoneHide），想点它换回原文不会扑空
+    static let checkDoneDuration: Double = 0.8
     /// 告知形态停多久
     static let warningDuration: Double = 2.5
 
@@ -635,8 +641,8 @@ final class OverlayController {
         // 永远不接鼠标。**别为了"能点按钮"把它放开**：ignoresMouseEvents 一旦为 false，
         // 窗口服务器就按这块面板画出来的像素把点击投给 MicType，下面的应用永远收不到——
         // 用户在聊天输入框里点一下定位光标、或者在胶囊上滚一下滚轮，全被这层悄悄吃掉
-        // （5.2.0 起胶囊跟着前台窗口走，正压在它的输入框上方）。
-        // 按钮与「落」那一行改由全局鼠标监听按屏幕坐标判（installMouseMonitors）。
+        // （5.2.0–5.4.0 胶囊跟着前台窗口走时正压在它的输入框上方，屏幕底部也一样可能盖着东西）。
+        // 按钮与「落」那颗胶囊改由全局鼠标监听按屏幕坐标判（installMouseMonitors）。
         p.ignoresMouseEvents = true
         p.hidesOnDeactivate = false
         p.isReleasedWhenClosed = false
@@ -661,7 +667,7 @@ final class OverlayController {
     }
 
     /// 本轮锚定下来的面板左下角。一轮里 present() 会被调好几次（听 → 想 → 落），
-    /// 要是每次都重新量前台窗口 / 指针，这几次之间用户早就挪走了，胶囊会在屏幕上跳。
+    /// 要是每次都重新量鼠标所在屏 / 指针，这几次之间用户早就挪走了，胶囊会在屏幕上跳。
     /// 所以只在"这一轮第一次现身"时量一次，本轮后面一律复用。
     private var latchedOrigin: CGPoint?
 
@@ -674,94 +680,32 @@ final class OverlayController {
             return
         }
         let mouse = NSEvent.mouseLocation
-        // 5.2.0：默认跟随前台窗口。只在默认那一档（底部居中）量窗口——用户设过别的位置
-        // （顶部居中 / 跟随指针，旧版设置或导入的设置文件）就永远用他的
-        let window = choice == .bottomCenter ? Self.frontWindowFrame() : nil
-        // 多屏：窗口在哪块屏就用哪块；量不到窗口就跟鼠标所在那块（用户正在操作的屏）
-        let anchor = window.map { CGPoint(x: $0.midX, y: $0.midY) } ?? mouse
-        let screen = NSScreen.screens.first(where: { NSMouseInRect(anchor, $0.frame, false) })
-            ?? NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
-            ?? NSScreen.main ?? NSScreen.screens.first
-        guard let frame = screen?.visibleFrame else { return }
-        let origin = OverlayController.anchoredOrigin(choice: choice,
-                                                      panelSize: p.frame.size,
-                                                      window: window,
-                                                      visibleFrame: frame,
-                                                      mouse: mouse)
+        let screens = NSScreen.screens.map { (frame: $0.frame, visibleFrame: $0.visibleFrame) }
+        let fallback = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
+        guard let origin = OverlayController.anchoredOrigin(choice: choice,
+                                                            panelSize: p.frame.size,
+                                                            screens: screens,
+                                                            fallbackVisibleFrame: fallback,
+                                                            mouse: mouse) else { return }
         latchedOrigin = origin
         p.setFrameOrigin(origin)
     }
 
-    /// 胶囊落在哪（面板左下角）。纯函数，位置策略与边界钳制靠单测守（OverlayPositionTests）。
+    /// 胶囊落在哪（面板左下角）。纯函数，选屏与落点靠单测守（OverlayPositionTests）。
     ///
-    /// 5.2.0 的默认（choice == .bottomCenter）：**跟随前台窗口**——胶囊底边在窗口底边上方 24 pt、
-    /// 水平居中（UX 方案 §3 C：眼睛在窗口里，不在屏幕最底下）。三种情况退回屏幕底部居中：
-    /// 量不到窗口、窗口窄于 480、窗口底边不在这块屏的可见区里（被 Dock 压着 / 拖出了屏）。
-    /// 用户设过别的位置（顶部居中 / 跟随指针）就永远用他的，窗口在哪都不管。
+    /// 5.4.1 撤销了 5.2.0 的「跟随前台窗口」（用户 2026-09-29 试用 5.4.0 后要求）：默认那一档
+    /// 回到**固定在屏幕底部居中**，与 5.1 及更早逐像素一致，不再读 AX 焦点窗口。
+    /// 多屏：鼠标在哪块屏就用哪块（用户正在操作的那块），鼠标落在屏幕之间的缝里就用主屏。
+    /// 顶部居中 / 跟随指针（旧版设置或导入的设置文件）照旧。
     static func anchoredOrigin(choice: OverlayPosition,
                                panelSize: CGSize,
-                               window: CGRect?,
-                               visibleFrame: CGRect,
-                               mouse: CGPoint) -> CGPoint {
-        guard choice == .bottomCenter,
-              let window = window,
-              window.width >= OverlayMetrics.followMinWindowWidth,
-              window.minY >= visibleFrame.minY,
-              window.minY + OverlayMetrics.windowBottomGap + OverlayMetrics.commandHeight <= visibleFrame.maxY,
-              window.midX >= visibleFrame.minX, window.midX <= visibleFrame.maxX
-        else {
-            return panelOrigin(position: choice, panelSize: panelSize,
-                               visibleFrame: visibleFrame, mouse: mouse)
-        }
-        let x = clamp(window.midX - panelSize.width / 2,
-                      low: visibleFrame.minX,
-                      high: visibleFrame.maxX - panelSize.width)
-        // 胶囊贴面板底边：胶囊底边 = 面板底边 + contentInset
-        let y = window.minY + OverlayMetrics.windowBottomGap - OverlayMetrics.contentInset
-        return CGPoint(x: x, y: y)
-    }
-
-    /// AX 给的窗口位置是"左上角原点、y 朝下"（以主屏左上为原点），AppKit 是"左下角原点、y 朝上"。
-    /// 纯函数：翻一下 y 就是同一块地方
-    static func cocoaRect(axPosition: CGPoint, axSize: CGSize, primaryScreenHeight: CGFloat) -> CGRect {
-        CGRect(x: axPosition.x,
-               y: primaryScreenHeight - axPosition.y - axSize.height,
-               width: axSize.width,
-               height: axSize.height)
-    }
-
-    /// 前台应用的焦点窗口（AppKit 坐标）。读不到一律 nil（没授权、应用挂起、没有窗口）：
-    /// 调用方退回屏幕底部居中，绝不为了"跟窗口"卡住主线程——AX 调用给了 0.15 s 的超时。
-    private static func frontWindowFrame() -> CGRect? {
-        guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
-        // 前台就是 MicType 自己（设置 / 引导窗口）：直接问 AppKit
-        if app.processIdentifier == ProcessInfo.processInfo.processIdentifier {
-            return NSApp.keyWindow?.frame
-        }
-        guard AXIsProcessTrusted() else { return nil }
-        let element = AXUIElementCreateApplication(app.processIdentifier)
-        AXUIElementSetMessagingTimeout(element, 0.15)
-        var windowRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXFocusedWindowAttribute as CFString,
-                                            &windowRef) == .success,
-              let windowValue = windowRef,
-              CFGetTypeID(windowValue) == AXUIElementGetTypeID() else { return nil }
-        let window = windowValue as! AXUIElement
-        var positionRef: CFTypeRef?
-        var sizeRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &positionRef) == .success,
-              AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeRef) == .success,
-              let positionValue = positionRef, let sizeValue = sizeRef,
-              CFGetTypeID(positionValue) == AXValueGetTypeID(),
-              CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return nil }
-        var position = CGPoint.zero
-        var size = CGSize.zero
-        guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &position),
-              AXValueGetValue(sizeValue as! AXValue, .cgSize, &size),
-              size.width > 0, size.height > 0 else { return nil }
-        // 主屏 = 菜单栏那块（NSScreen.screens 的第一块），AX 坐标以它的左上角为原点
-        guard let primary = NSScreen.screens.first else { return nil }
-        return cocoaRect(axPosition: position, axSize: size, primaryScreenHeight: primary.frame.height)
+                               screens: [(frame: CGRect, visibleFrame: CGRect)],
+                               fallbackVisibleFrame: CGRect?,
+                               mouse: CGPoint) -> CGPoint? {
+        guard let visibleFrame = screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })?.visibleFrame
+                ?? fallbackVisibleFrame ?? screens.first?.visibleFrame else { return nil }
+        return panelOrigin(position: choice, panelSize: panelSize,
+                           visibleFrame: visibleFrame, mouse: mouse)
     }
 
     /// 面板左下角坐标（屏幕固定位置那三档）。纯函数（只吃几何量、不碰 AppKit 状态）。
@@ -877,7 +821,7 @@ final class OverlayController {
 
     // MARK: 落
 
-    /// 交付完成。1.2 s 后淡出；可点（换回原文）的那一行被指针压着时顺延
+    /// 交付完成。停 duration 后淡出；可点（换回原文）的胶囊被指针压着时顺延
     func flashDone(_ done: OverlayDone, duration: Double = OverlayController.doneDuration) {
         hideGeneration += 1
         thinking = false
@@ -893,7 +837,7 @@ final class OverlayController {
         flashDone(OverlayDone(body: .text(label)), duration: duration)
     }
 
-    /// 可点的那一行只有 1.2 s，而把指针挪过去就要差不多这么久：指针已经停在那一行上的话
+    /// 可点的那枚勾只停 0.8 s，而把指针挪过去就要差不多这么久：指针已经停在胶囊上的话
     /// 再给一轮（最多顺延到 6 s），挪开就照常淡出
     private func scheduleDoneHide(after delay: Double, generation: Int, extensions: Int = 0) {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -1014,7 +958,7 @@ final class OverlayController {
         pressedDoneRect = nil
     }
 
-    // MARK: 点按钮 / 点「落」那一行
+    // MARK: 点按钮 / 点「落」那颗胶囊
 
     /// 按下那一刻量到的可点矩形（屏幕坐标）。按下与松手之间胶囊完全可能重排，
     /// 拿松手时的新几何去判"有没有拖出去"，这一下就被静默丢掉了
@@ -1183,7 +1127,9 @@ final class OverlayController {
     }
 }
 
-/// 让胶囊在固定大小面板里水平居中（顶部居中时贴顶边，其余贴底边）
+/// 让胶囊在固定大小面板里水平居中（顶部居中时贴顶边，其余贴底边）。
+/// 面板本身一轮里不挪（latchedOrigin），胶囊在听 → 指令 → 想 → 落之间变高 / 变宽时
+/// 靠这里的布局：**底边钉在面板底边上、向上长，左右对称展开**，屏幕上看不到跳
 struct OverlayContainer: View {
     /// 命中测试要的是"按钮在面板里的位置"，所以量尺子的坐标系锚在这一层
     static let space = "MicTypeOverlayPanel"

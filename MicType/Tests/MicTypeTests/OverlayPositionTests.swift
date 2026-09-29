@@ -108,85 +108,75 @@ final class OverlayPositionTests: XCTestCase {
         XCTAssertEqual(origin.y, tiny.maxY - OverlayMetrics.contentInset - 108, accuracy: 0.0001)
     }
 
-    // MARK: - 跟随前台窗口（5.2.0 默认）
+    // MARK: - 选屏 + 落点（5.4.1：撤销「跟随前台窗口」，默认固定在屏幕底部居中）
 
-    /// 一扇正常大小的窗口，底边离屏幕底 200 pt
-    private var window: CGRect { CGRect(x: 2100, y: 300, width: 900, height: 500) }
-
-    /// 正常：胶囊底边在窗口底边上方 24 pt、水平居中于窗口
-    func testFollowsFrontWindowBottomCenter() {
-        let origin = OverlayController.anchoredOrigin(choice: .bottomCenter, panelSize: panel,
-                                                      window: window, visibleFrame: screen,
-                                                      mouse: CGPoint(x: 1930, y: 110))
-        XCTAssertEqual(origin.x + panel.width / 2, window.midX, accuracy: 0.0001)
-        XCTAssertEqual(origin.y + OverlayMetrics.contentInset, window.minY + 24, accuracy: 0.0001)
+    /// 主屏（原点 0,0，底下有 Dock）+ 右边那块外接屏（就是上面的 screen）
+    private let primary = (frame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+                           visibleFrame: CGRect(x: 0, y: 70, width: 1920, height: 985))
+    private var external: (frame: CGRect, visibleFrame: CGRect) {
+        (frame: CGRect(x: 1920, y: 100, width: 1440, height: 830), visibleFrame: screen)
     }
 
-    /// 窗口窄于 480：不跟，退回屏幕底部居中（与 3.2.19 的老坐标逐像素一致）
-    func testNarrowWindowFallsBackToScreenBottom() {
-        let narrow = CGRect(x: 2100, y: 300, width: 479, height: 500)
-        let origin = OverlayController.anchoredOrigin(choice: .bottomCenter, panelSize: panel,
-                                                      window: narrow, visibleFrame: screen,
-                                                      mouse: .zero)
-        XCTAssertEqual(origin, OverlayController.panelOrigin(position: .bottomCenter, panelSize: panel,
-                                                             visibleFrame: screen, mouse: .zero))
+    /// 默认档：鼠标在屏里任何地方（屏幕四角、正中）都落在同一处——屏幕底部居中，
+    /// 与 5.1 / 3.2.19 的老坐标逐像素一致。前台窗口在哪已经不是输入了
+    func testDefaultIsAlwaysScreenBottomCenter() {
+        let mice = [CGPoint(x: 1925, y: 105), CGPoint(x: 3355, y: 925),
+                    CGPoint(x: 2640, y: 500), CGPoint(x: 1925, y: 925)]
+        for mouse in mice {
+            let origin = OverlayController.anchoredOrigin(choice: .bottomCenter, panelSize: panel,
+                                                          screens: [primary, external],
+                                                          fallbackVisibleFrame: primary.visibleFrame,
+                                                          mouse: mouse)
+            XCTAssertEqual(origin?.x ?? .nan, screen.midX - panel.width / 2, accuracy: 0.0001)
+            XCTAssertEqual(origin?.y ?? .nan, screen.minY + 35, accuracy: 0.0001)
+        }
     }
 
-    /// 窗口底边在可见区外（拖到了 Dock 下面 / 屏幕下面）：退回屏幕底部居中
-    func testWindowBottomOffscreenFallsBackToScreenBottom() {
-        let fallback = OverlayController.panelOrigin(position: .bottomCenter, panelSize: panel,
-                                                     visibleFrame: screen, mouse: .zero)
-        let sunk = CGRect(x: 2100, y: screen.minY - 40, width: 900, height: 500)
-        XCTAssertEqual(OverlayController.anchoredOrigin(choice: .bottomCenter, panelSize: panel,
-                                                        window: sunk, visibleFrame: screen, mouse: .zero),
-                       fallback)
-        // 窗口整个在屏幕上方外面（底边高过可见区顶）同理
-        let above = CGRect(x: 2100, y: screen.maxY + 10, width: 900, height: 500)
-        XCTAssertEqual(OverlayController.anchoredOrigin(choice: .bottomCenter, panelSize: panel,
-                                                        window: above, visibleFrame: screen, mouse: .zero),
-                       fallback)
+    /// 多屏：鼠标在哪块屏就落在哪块屏的底部居中（用的是那块屏的 visibleFrame，Dock 让出来）
+    func testPicksTheScreenUnderTheMouse() {
+        let onPrimary = OverlayController.anchoredOrigin(choice: .bottomCenter, panelSize: panel,
+                                                         screens: [primary, external],
+                                                         fallbackVisibleFrame: nil,
+                                                         mouse: CGPoint(x: 400, y: 600))
+        XCTAssertEqual(onPrimary, CGPoint(x: primary.visibleFrame.midX - panel.width / 2,
+                                          y: primary.visibleFrame.minY + 35))
+        let onExternal = OverlayController.anchoredOrigin(choice: .bottomCenter, panelSize: panel,
+                                                          screens: [primary, external],
+                                                          fallbackVisibleFrame: nil,
+                                                          mouse: CGPoint(x: 3000, y: 600))
+        XCTAssertEqual(onExternal, CGPoint(x: screen.midX - panel.width / 2, y: screen.minY + 35))
     }
 
-    /// 用户设过别的位置（顶部居中 / 跟随指针）：永远用他的，窗口在哪都不管
-    func testUserChosenPositionWins() {
+    /// 鼠标落在两块屏之间的缝里（或热插拔的瞬间）：用调用方给的主屏兜底；连兜底都没有就用第一块屏
+    func testMouseBetweenScreensFallsBack() {
+        let gap = CGPoint(x: 3000, y: 50)   // 外接屏底边以下、主屏右边以外
+        let withFallback = OverlayController.anchoredOrigin(choice: .bottomCenter, panelSize: panel,
+                                                            screens: [primary, external],
+                                                            fallbackVisibleFrame: primary.visibleFrame,
+                                                            mouse: gap)
+        XCTAssertEqual(withFallback, CGPoint(x: primary.visibleFrame.midX - panel.width / 2,
+                                             y: primary.visibleFrame.minY + 35))
+        let noFallback = OverlayController.anchoredOrigin(choice: .bottomCenter, panelSize: panel,
+                                                          screens: [external, primary],
+                                                          fallbackVisibleFrame: nil,
+                                                          mouse: gap)
+        XCTAssertEqual(noFallback, CGPoint(x: screen.midX - panel.width / 2, y: screen.minY + 35))
+        // 一块屏都没有（极端：屏幕全拔了）：不给坐标，调用方什么都不挪
+        XCTAssertNil(OverlayController.anchoredOrigin(choice: .bottomCenter, panelSize: panel,
+                                                      screens: [], fallbackVisibleFrame: nil,
+                                                      mouse: gap))
+    }
+
+    /// 旧档位（顶部居中 / 跟随指针，旧版设置或导入的设置文件）照旧：在鼠标所在屏上按原规则落
+    func testLegacyChoicesStillHonoured() {
         let mouse = CGPoint(x: 2500, y: 600)
         for choice in [OverlayPosition.topCenter, .nearCursor] {
             let origin = OverlayController.anchoredOrigin(choice: choice, panelSize: panel,
-                                                          window: window, visibleFrame: screen,
+                                                          screens: [primary, external],
+                                                          fallbackVisibleFrame: primary.visibleFrame,
                                                           mouse: mouse)
             XCTAssertEqual(origin, OverlayController.panelOrigin(position: choice, panelSize: panel,
                                                                  visibleFrame: screen, mouse: mouse))
         }
-    }
-
-    /// 量不到窗口（没授权 / 应用没有窗口 / AX 超时）：退回屏幕底部居中
-    func testNoWindowFallsBackToScreenBottom() {
-        let origin = OverlayController.anchoredOrigin(choice: .bottomCenter, panelSize: panel,
-                                                      window: nil, visibleFrame: screen,
-                                                      mouse: CGPoint(x: 3000, y: 800))
-        XCTAssertEqual(origin.x, screen.midX - panel.width / 2, accuracy: 0.0001)
-        XCTAssertEqual(origin.y, screen.minY + 35, accuracy: 0.0001)
-    }
-
-    /// 窗口中心在屏外 → 不跟；中心在屏内但靠边 → 胶囊横向钳进屏幕里
-    func testFollowClampsHorizontallyIntoScreen() {
-        let fallback = OverlayController.panelOrigin(position: .bottomCenter, panelSize: panel,
-                                                     visibleFrame: screen, mouse: .zero)
-        let halfOut = CGRect(x: screen.maxX - 400, y: 300, width: 900, height: 500)
-        XCTAssertEqual(OverlayController.anchoredOrigin(choice: .bottomCenter, panelSize: panel,
-                                                        window: halfOut, visibleFrame: screen, mouse: .zero),
-                       fallback)
-        let nearEdge = CGRect(x: screen.maxX - 600, y: 300, width: 900, height: 500)
-        let origin = OverlayController.anchoredOrigin(choice: .bottomCenter, panelSize: panel,
-                                                      window: nearEdge, visibleFrame: screen, mouse: .zero)
-        XCTAssertLessThanOrEqual(origin.x + panel.width, screen.maxX + 0.0001)
-    }
-
-    /// AX 坐标（主屏左上为原点、y 朝下）→ AppKit 坐标（左下为原点、y 朝上）
-    func testAXToCocoaConversion() {
-        let rect = OverlayController.cocoaRect(axPosition: CGPoint(x: 100, y: 50),
-                                               axSize: CGSize(width: 800, height: 600),
-                                               primaryScreenHeight: 1000)
-        XCTAssertEqual(rect, CGRect(x: 100, y: 350, width: 800, height: 600))
     }
 }

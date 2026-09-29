@@ -33,11 +33,11 @@ final class OpenAIRealtimeLiveTests: XCTestCase {
 
     // MARK: - 语料（say 合成，16 kHz 单声道——与录音链路同一格式，重采样由客户端自己做）
 
-    private func synthesize(_ text: String) throws -> [Float] {
+    private func synthesize(_ text: String, voice: String = "Tingting") throws -> [Float] {
         let path = NSTemporaryDirectory() + "mictype-openai-live-\(UUID().uuidString).wav"
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        process.arguments = ["-v", "Tingting", "--file-format=WAVE",
+        process.arguments = ["-v", voice, "--file-format=WAVE",
                              "--data-format=LEI16@16000", "-o", path, text]
         try process.run()
         process.waitUntilExit()
@@ -80,6 +80,8 @@ final class OpenAIRealtimeLiveTests: XCTestCase {
         var text = ""
         var billedSeconds: Double?
         var pushSeconds: Double = 0
+        /// 第一帧音频送进客户端 → 第一条 partial 回来（墙钟毫秒；含建连，因为 App 也是按下就开始送）
+        var audioToFirstPartialMs: Int?
         /// 「松手」到终稿的墙钟毫秒数——用户真正感觉到的那一段等待
         var releaseToFinalMs = 0
         var failure: String?
@@ -119,16 +121,24 @@ final class OpenAIRealtimeLiveTests: XCTestCase {
     }
 
     private func stream(samples: [Float], key: String, keywords: [String] = [],
-                        label: String) -> Report {
+                        languages: [String] = [], label: String) -> Report {
         let ledger = Ledger()
         var options = OpenAIRealtimeClient.Options()
         options.keywords = OpenAIRealtimeClient.keywords(from: keywords)
+        options.languages = languages
         let client = OpenAIRealtimeClient(
             config: OpenAIRealtimeClient.Config(apiKey: key, options: options),
             log: { ledger.note($0) })
 
         let finished = expectation(description: "final \(label)")
-        client.onPartial = { _ in ledger.edit { $0.deltas += 1 } }
+        let firstAudioAt = Date()
+        client.onPartial = { _ in
+            let ms = Int(Date().timeIntervalSince(firstAudioAt) * 1000)
+            ledger.edit { report in
+                report.deltas += 1
+                if report.audioToFirstPartialMs == nil { report.audioToFirstPartialMs = ms }
+            }
+        }
         client.onFinish = { result in
             let elapsed = ledger.sinceRelease
             ledger.edit { report in
@@ -240,5 +250,122 @@ final class OpenAIRealtimeLiveTests: XCTestCase {
         print("live-oai: keywords transcript = \(report.text)")
         XCTAssertNil(report.failure, "带 keywords 之后这条链路必须照样通：\(report.failure ?? "")")
         XCTAssertFalse(report.text.isEmpty)
+    }
+
+    // MARK: - 语言提示（5.4.1：默认送 [zh, en, ar]）
+
+    /// 默认语言提示的真测。**额外要一个开关才跑**（TEST_RUNNER_MICTYPE_LIVE_LANG_HINTS=1），
+    /// 不随日常闸门花钱：三段 say 语料 × 实时 + 整段上传，外加中文那段有 / 无提示各三趟对比首个 partial。
+    /// 要证明三件事：① 带提示两条路都通（服务端认 languages / languages[]）；② 阿语、英文不会
+    /// 因为提示里排第一的是 zh 被翻译成中文；③ 中文那段首个 partial 有没有变快（只打印，不断言——网络抖动比差值大）。
+    ///
+    ///   TEST_RUNNER_MICTYPE_LIVE_LANG_HINTS=1 xcodebuild test -scheme MicType \
+    ///     -destination 'platform=macOS,arch=arm64' -derivedDataPath .xcbuild \
+    ///     -only-testing:MicTypeTests/OpenAIRealtimeLiveTests/testDefaultLanguageHintsLive
+    ///
+    /// 代价：约 40 秒音频，不到 $0.02。
+    func testDefaultLanguageHintsLive() throws {
+        guard ProcessInfo.processInfo.environment["MICTYPE_LIVE_LANG_HINTS"] == "1" else {
+            throw XCTSkip("设 TEST_RUNNER_MICTYPE_LIVE_LANG_HINTS=1 才跑（会真的花钱）")
+        }
+        guard let key = liveKey else {
+            throw XCTSkip("需要 MICTYPE_OPENAI_TEST_KEY 或 ~/.config/mictype/openai_test_key")
+        }
+        let hints = CloudASRSettings.languageHints()
+        XCTAssertEqual(hints, ["zh", "en", "ar"])
+        let clips: [(label: String, voice: String, text: String, script: (String) -> Bool)] = [
+            ("zh", "Tingting", "明天下午三点开会", { CloudASRSettings.containsCJK($0) }),
+            ("ar", "Majed", "سأصل غدا في الساعة الثالثة", { Self.containsArabic($0) }),
+            ("en", "Samantha", "See you at three tomorrow", {
+                CloudASRSettings.containsLatinLetter($0) && !CloudASRSettings.containsCJK($0)
+                    && !Self.containsArabic($0)
+            }),
+        ]
+        var chinese: [Float] = []
+        for clip in clips {
+            let samples = try synthesize(clip.text, voice: clip.voice)
+            guard samples.count > 8_000 else { throw XCTSkip("say -v \(clip.voice) 合成不出语料") }
+            if clip.label == "zh" { chinese = samples }
+            let seconds = Double(samples.count) / 16000.0
+
+            let live = stream(samples: samples, key: key, languages: hints, label: "hints-\(clip.label)")
+            describe("hints-\(clip.label)", live, audioSeconds: seconds)
+            print("live-oai: hints-\(clip.label) realtime text=\(live.text) "
+                  + "audio→firstPartial=\(live.audioToFirstPartialMs.map(String.init) ?? "-")ms")
+            XCTAssertNil(live.failure, "实时带提示失败（\(clip.label)）：\(live.failure ?? "")")
+            XCTAssertTrue(clip.script(live.text), "实时 \(clip.label) 的文字不是原语言（被翻译了？）：\(live.text)")
+
+            let batch = try transcribeBatch(samples: samples, key: key, languages: hints)
+            print("live-oai: hints-\(clip.label) batch text=\(batch.text) detected=\(batch.language ?? "-") "
+                  + "ms=\(batch.ms) failure=\(batch.failure ?? "-")")
+            XCTAssertNil(batch.failure, "整段上传带 languages[] 失败（\(clip.label)）：\(batch.failure ?? "")")
+            XCTAssertTrue(clip.script(batch.text), "整段 \(clip.label) 的文字不是原语言（被翻译了？）：\(batch.text)")
+        }
+
+        // 中文那段：有 / 无提示交替各三趟，比「第一帧音频 → 第一条 partial」
+        var with: [Int] = [], without: [Int] = []
+        for round in 0..<3 {
+            let a = stream(samples: chinese, key: key, languages: hints, label: "zh-with-\(round)")
+            let b = stream(samples: chinese, key: key, languages: [], label: "zh-without-\(round)")
+            if let ms = a.audioToFirstPartialMs { with.append(ms) }
+            if let ms = b.audioToFirstPartialMs { without.append(ms) }
+            print("live-oai: zh round \(round) with=\(a.audioToFirstPartialMs.map(String.init) ?? "-")ms"
+                  + "(connect \(a.connectMs.map(String.init) ?? "-")) "
+                  + "without=\(b.audioToFirstPartialMs.map(String.init) ?? "-")ms"
+                  + "(connect \(b.connectMs.map(String.init) ?? "-")) "
+                  + "textWith=\(a.text) textWithout=\(b.text)")
+        }
+        print("live-oai: zh audio→firstPartial with hints \(with) / without \(without)")
+    }
+
+    /// 失败只报状态码与服务商错误码（不含 Key、不含音频内容）
+    private static func describe(_ f: CloudASRFailure) -> String {
+        "status=\(f.status) code=\(f.code ?? "-")"
+    }
+
+    private static func containsArabic(_ text: String) -> Bool {
+        text.unicodeScalars.contains { (0x0600...0x06FF).contains($0.value) }
+    }
+
+    private struct BatchResult {
+        var text = ""
+        var language: String?
+        var ms = 0
+        var failure: String?
+    }
+
+    /// 整段上传（gpt-transcribe）同一段语料，走 App 同一个请求构造
+    private func transcribeBatch(samples: [Float], key: String, languages: [String]) throws -> BatchResult {
+        let client = OpenAITranscribeClient(apiKey: key, languages: languages)
+        let seconds = Double(samples.count) / 16000.0
+        let request: URLRequest
+        switch client.makeRequest(audio: .wav(WAVEncoder.encode(samples: samples)),
+                                  seconds: seconds, context: nil) {
+        case .success(let r): request = r
+        case .failure(let f): return BatchResult(failure: Self.describe(f))
+        }
+        var result = BatchResult()
+        let done = expectation(description: "batch")
+        let started = Date()
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            result.ms = Int(Date().timeIntervalSince(started) * 1000)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if let error = error {
+                result.failure = "transport \((error as NSError).code)"
+            } else if status != 200 {
+                result.failure = Self.describe(client.failure(status: status, data: data))
+            } else {
+                switch OpenAITranscribeClient.parse(data ?? Data()) {
+                case .success(let segment):
+                    result.text = segment.text
+                    result.language = segment.detectedLanguage
+                case .failure(let f):
+                    result.failure = Self.describe(f)
+                }
+            }
+            done.fulfill()
+        }.resume()
+        wait(for: [done], timeout: 60)
+        return result
     }
 }

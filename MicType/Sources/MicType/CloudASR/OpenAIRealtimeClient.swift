@@ -102,7 +102,7 @@ final class OpenAIRealtimeClient: RealtimeTranscriptionClient, RealtimeSocketDel
     }
 
     struct Options: Equatable {
-        /// 用户设置里有明确的识别语言就送。**这边传错也不会翻译**（实测中文音频配 ["en"]
+        /// 语言提示（5.4.1 起默认 [zh, en, ar]，由 CloudASRSettings 决定）。**这边传错也不会翻译**（实测中文音频配 ["en"]
         /// 仍出中文），所以送它是安全的——阿里云那边正相反，那边一个字都不许传。
         var languages: [String] = []
         /// 词汇表 → 热词。**这是 OpenAI 这一档最值钱的地方**：实测 MicType / Qwen 3.0 / Gen

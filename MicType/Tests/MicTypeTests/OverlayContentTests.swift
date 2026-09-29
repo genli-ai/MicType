@@ -17,32 +17,34 @@ final class OverlayContentTests: XCTestCase {
         super.tearDown()
     }
 
-    // MARK: - 「落」那一行
+    // MARK: - 「落」
 
-    /// 润色改了字：原文前 8 字… → 润色前 8 字…（设计稿那一句）
-    func testDiffWhenPolishChangedWords() {
-        let body = OverlayDoneLine.make(raw: "那个我明天下午三点开会嗯", final: "明天下午三点开会。")
-        XCTAssertEqual(body, .diff(from: "那个我明天下午三…", to: "明天下午三点开会…"))
+    /// 5.4.1：纯听写的「落」只是一枚勾——没有字可读，停得比带回执的短
+    func testCheckOnlyDoneLingersShorterThanReceipt() {
+        XCTAssertEqual(OverlayController.checkDoneDuration, 0.8, accuracy: 0.0001)
+        XCTAssertLessThan(OverlayController.checkDoneDuration, OverlayController.doneDuration)
     }
 
-    /// 只差标点 / 空格：不算改了字，只给成稿前 16 字（箭头两边一模一样只会让人困惑）
-    func testPunctuationOnlyChangeIsPlain() {
-        let body = OverlayDoneLine.make(raw: "明天下午三点开会", final: "明天下午三点开会。")
-        XCTAssertEqual(body, .text("明天下午三点开会。"))
+    /// 只有带着 revertible 的「落」才能点（换回原文）；回执那一行永远不能点
+    func testOnlyRevertibleCheckIsTappable() {
+        let state = OverlayState()
+        state.phase = .done(OverlayDone(body: .check, revertible: true))
+        XCTAssertTrue(state.isDoneTappable)
+        state.phase = .done(OverlayDone(body: .check))
+        XCTAssertFalse(state.isDoneTappable)
+        state.phase = .done(OverlayDone(body: .text("已改写 · ⌘Z 撤销")))
+        XCTAssertFalse(state.isDoneTappable)
     }
 
-    /// 没改字、成稿很长：截到 16 字补「…」；换行压成空格
-    func testPlainTruncatesAtSixteen() {
-        let text = "一二三四五六七八九十一二三四五六七八"
-        XCTAssertEqual(OverlayDoneLine.make(raw: text, final: text), .text("一二三四五六七八九十一二三四五六…"))
-        XCTAssertEqual(OverlayDoneLine.prefix("第一行\n\n第二行", 16), "第一行 第二行")
-    }
-
-    /// 大小写改动算改了字（"hello" → "Hello" 是润色做的事）
-    func testCaseChangeCountsAsChange() {
-        if case .text = OverlayDoneLine.make(raw: "hello world", final: "Hello world.") {
-            XCTFail("大小写变化应当给「原文 → 润色」")
-        }
+    /// 旁白双语、且 Esc 收尾时照实说（分段识别到一半 Esc 是「收尾并输入」不是丢弃）
+    func testAccessibilityHints() {
+        L10n.shared.language = .en
+        XCTAssertEqual(OverlayCopy.revertHint, "Click to restore the raw text")
+        XCTAssertEqual(OverlayCopy.escHint(finishes: false), "Press Esc to cancel")
+        XCTAssertEqual(OverlayCopy.escHint(finishes: true), "Press Esc to finish and insert")
+        L10n.shared.language = .zh
+        XCTAssertEqual(OverlayCopy.revertHint, "点一下换回原文")
+        XCTAssertEqual(OverlayCopy.escHint(finishes: true), "按 Esc 收尾并输入")
     }
 
     // MARK: - 错误按钮

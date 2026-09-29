@@ -127,7 +127,8 @@ final class CloudStreamingSession: SpeechEngine {
     static func makeClient(config: CloudASRConfig) -> RealtimeTranscriptionClient {
         let prefix = "CloudASR stream provider=\(config.provider.rawValue) "
         var options = OpenAIRealtimeClient.Options()
-        // 有明确的识别语言提示就送（这边传错不会翻译，所以是安全的）
+        // 语言提示（默认 [zh, en, ar]，见 CloudASRSettings.defaultLanguageHints）。
+        // 这边传错不会翻译，所以是安全的；服务端不认这个字段时客户端会摘掉它重发（OptionalField.languages）
         options.languages = config.languageHints
         // **词汇表在这一档真的管用**：实测专名五次里五次纠正
         options.keywords = OpenAIRealtimeClient.keywords(from: config.vocabulary)
