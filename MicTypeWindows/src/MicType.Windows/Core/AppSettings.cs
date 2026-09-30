@@ -14,6 +14,7 @@ public sealed class AppSettings
     public bool LaunchAtLogin { get; set; }
 
     public string SpeechModelRepo { get; set; } = "sherpa-onnx/SenseVoiceSmall";
+    public string SpeechModelDirectory { get; set; } = "";
     public string CustomVocabulary { get; set; } = "";
     /// 本地口水词过滤表（逗号/换行分隔），默认空 = 不过滤，绝不替用户决定哪些词该删
     public string FillerWords { get; set; } = "";

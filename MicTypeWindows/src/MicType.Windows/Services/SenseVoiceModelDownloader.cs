@@ -38,13 +38,13 @@ public sealed class SenseVoiceModelDownloader
 
     public event Action<SenseVoiceDownloadState>? StateChanged;
 
-    public string ModelDirectory { get; }
+    public string ModelDirectory { get; private set; }
 
     public SenseVoiceDownloadState CurrentState { get; private set; }
 
     public SenseVoiceModelDownloader(string? modelDirectory = null)
     {
-        ModelDirectory = modelDirectory ?? AppPaths.SenseVoiceModelDir;
+        ModelDirectory = ResolveModelDirectory(modelDirectory);
         CurrentState = new SenseVoiceDownloadState(
             false,
             null,
@@ -55,6 +55,53 @@ public sealed class SenseVoiceModelDownloader
     }
 
     public static Uri[] BuildArchiveUris() => [PrimaryArchiveUri, .. MirrorArchiveUris];
+
+    public static string ResolveModelDirectory(string? customDir)
+    {
+        if (!string.IsNullOrWhiteSpace(customDir)) return customDir;
+        var settingsDir = SettingsStore.Instance.Current.SpeechModelDirectory;
+        if (!string.IsNullOrWhiteSpace(settingsDir)) return settingsDir;
+        return AppPaths.SenseVoiceModelDir;
+    }
+
+    public void SetModelDirectory(string directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory)) return;
+        ModelDirectory = directory;
+        Refresh();
+    }
+
+    public void DeleteModelFiles()
+    {
+        if (!Directory.Exists(ModelDirectory)) return;
+        try
+        {
+            foreach (var entry in Directory.EnumerateFileSystemEntries(ModelDirectory))
+            {
+                try
+                {
+                    if (File.Exists(entry))
+                    {
+                        File.Delete(entry);
+                    }
+                    else if (Directory.Exists(entry))
+                    {
+                        Directory.Delete(entry, recursive: true);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "Failed to delete model file: " + entry);
+                }
+            }
+            Log.Info("Model files deleted from " + ModelDirectory);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to enumerate model directory for deletion: " + ModelDirectory);
+        }
+        Refresh();
+    }
 
     public bool IsModelAvailable => SenseVoiceModelPaths.IsAvailable(ModelDirectory);
 
