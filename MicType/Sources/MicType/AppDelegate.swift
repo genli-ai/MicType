@@ -284,8 +284,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    private var refreshingKeyPresence = false
+
     /// 钥匙串里有没有 OpenAI 那把 Key（点名账户，不依赖"当前服务商"）。有变化才换图标
     private func refreshKeyPresence() {
+        // 第二道保险：读 Key 的路上要是又有人发了 keysChanged，别在这里重入
+        // （5.4.1 的崩溃就是 读 → 迁移 → 存 → 通知 → 读 的无限递归）
+        guard !refreshingKeyPresence else { return }
+        refreshingKeyPresence = true
+        defer { refreshingKeyPresence = false }
         let present = KeychainHelper.loadAPIKey(account: LLMProvider.openai.keychainAccount) != nil
         guard present != hasKey || statusItem.button?.image == nil else { return }
         hasKey = present

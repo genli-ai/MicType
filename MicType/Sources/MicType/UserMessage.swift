@@ -23,6 +23,9 @@ enum UserMessage {
     /// 没有 Key。5.1.0 起只有 OpenAI 一家，所以直接点名
     static var keyMissing: String { tr("还没填 OpenAI Key", "No OpenAI key yet.") }
 
+    /// Key 验证通过但钥匙串写不进去（写失败或读回不一致）。原来那把 Key 不受影响
+    static var keySaveFailed: String { tr("Key 有效，但没存上，请重试", "Key works but wasn't saved. Try again.") }
+
     /// Key 被拒（401 / 实时那条路的 unauthorized）
     static var keyRejected: String { tr("Key 无效或已撤销 (401)", "Key invalid or revoked (401).") }
 

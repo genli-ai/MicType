@@ -150,9 +150,15 @@ final class KeyVerifier: ObservableObject {
                 Log.info("API key verification discarded provider=\(provider.rawValue) reason=superseded")
                 return
             }
+            // 写钥匙串之前先记「验证过了」：5.4.1 的递归崩溃就死在 saveAPIKey 里，
+            // 那一行排在后面于是一次都没落盘，日志看起来像验证根本没回来
+            var saved = false
             if ok {
-                KeychainHelper.saveAPIKey(trimmed, account: account)
                 Log.info("API key verified provider=\(provider.rawValue) model=\(model)")
+                saved = KeychainHelper.saveAPIKey(trimmed, account: account)
+                if !saved {
+                    Log.warn("API key save failed provider=\(provider.rawValue)")
+                }
             } else {
                 // 失败不动钥匙串：原来那把要是好的，不该被一次手滑的粘贴连累。
                 // 原因也要记：4.0.0 只记了"失败了"，用户看到的那句话（含服务商错误码）
@@ -162,9 +168,11 @@ final class KeyVerifier: ObservableObject {
             }
             // 屏幕上那一行只有这一页还在、而且还停在这一档时才有人看
             guard let self = self, self.viewGeneration == viewGen else { return }
-            if ok {
+            if ok && saved {
                 self.verifiedKey = trimmed
                 self.status = .connected(provider: label, model: model)
+            } else if ok {
+                self.status = .failed(reason: UserMessage.keySaveFailed, keptPrevious: hadPrevious)
             } else {
                 self.status = .failed(reason: message, keptPrevious: hadPrevious)
             }
