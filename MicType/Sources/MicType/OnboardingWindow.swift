@@ -187,8 +187,9 @@ enum OnboardingCopy {
 
     // MARK: ② 贴上你的 OpenAI Key
 
-    /// 5.0.0 起它**不再写「可选」**：识别、润色、指令三件事全在云端，没有 Key 一件都做不了
-    static var keyTitle: String { tr("贴上你的 OpenAI Key", "Paste your OpenAI key") }
+    /// 5.0.0 起它**不再写「可选」**：识别、润色、指令三件事全在云端，没有 Key 一件都做不了。
+    /// 5.5.0 起这一屏上面多了两张服务商卡片（OpenAI / DeepSeek），标题不再点名某一家
+    static var keyTitle: String { tr("选一家，贴上它的 Key", "Pick one, paste its key") }
 
     static var keySubtitle: String {
         tr("剪贴板里有 Key 会自动填入", "A key on your clipboard fills in by itself")
@@ -897,7 +898,7 @@ private struct PermissionRow: View {
     }
 }
 
-// MARK: - ② 贴上你的 OpenAI Key
+// MARK: - ② 选一家，贴上它的 Key
 
 /// 一屏只做一个动作：把 Key 贴进来（或者照三步去拿一把）。
 /// **控件与设置正页共用**（CloudSetupCore / KeyEntryView）：验证、存钥匙串、状态文案只写一处。
@@ -919,6 +920,11 @@ private struct KeyPage: View {
                 if clipboardChecked {
                     CloudSetupCore(style: .onboarding,
                                    onKeyStatus: { _ in
+                                       model.refreshKeyReady()
+                                       model.refreshAIReady()
+                                   },
+                                   onProviderChange: { _ in
+                                       // 换了一家（那一家早就有 Key）：Key 齐没齐要按新的那家重算
                                        model.refreshKeyReady()
                                        model.refreshAIReady()
                                    },

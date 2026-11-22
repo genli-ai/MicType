@@ -17,6 +17,9 @@ extension KeychainHelper {
     /// OpenAI 云端识别复用润色那把 Key（同一个账号条目，不重复让用户填）
     static let openAIAccount = LLMProvider.openai.keychainAccount
 
+    /// DeepSeek 云端识别同样复用润色那把 Key（5.5.0；账户名沿用 4.x 的 deepseek_api_key）
+    static let deepSeekAccount = LLMProvider.deepseek.keychainAccount
+
     /// 按云端供应商取 Key（没有就是 nil，引擎据此判"不可用"）
     static func loadCloudASRKey(for provider: CloudASRProvider) -> String? {
         loadAPIKey(account: provider.keychainAccount)

@@ -99,6 +99,15 @@ final class SettingsSnapshotTests: XCTestCase {
                 shoot(.overview, name: "settings-status-suggestion-\(look)-\(tag)", dark: dark)
                 seedSuggestion(false)
             }
+            // 5.5.0：DeepSeek 在用的那一张（DeepSeek 卡片选中 +「正在使用 ✓」、栏名 DeepSeek Key、
+            // 状态卡第一行 DeepSeek、本周费用两种币并列）
+            useProvider(.deepseek)
+            for dark in [true, false] {
+                let look = dark ? "dark" : "light"
+                seedUsage(true, mixed: true)
+                shoot(.overview, name: "settings-status-deepseek-\(look)-\(tag)", dark: dark)
+            }
+            useProvider(.openai)
             UsageStore.shared.resetForTesting()
 
             // 专有词汇表（5.0.2 之前叫「写作偏好」）：两个文本框整个入画
@@ -111,15 +120,18 @@ final class SettingsSnapshotTests: XCTestCase {
 
     /// 状态卡右半边：本周 43 分钟 / 6,200 字那一类的数据，或者什么都没有（三格「—」）。
     /// UsageStore.shared 跑在测试里时写的是临时目录（Log.isUnderTest），不碰用户的账本
-    private func seedUsage(_ withData: Bool) {
+    /// - mixed: 一半的句子记在 DeepSeek 名下（5.5.0：本周费用 $ 与 ¥ 并列的那种样子）
+    private func seedUsage(_ withData: Bool, mixed: Bool = false) {
         guard withData else {
             UsageStore.shared.resetForTesting()
             return
         }
         let now = Date()
-        let entries = (0..<120).map { i in
-            UsageEntry(date: now.addingTimeInterval(-Double(i) * 60), seconds: 21.6, chars: 52,
-                       command: i % 10 == 0)
+        let entries: [UsageEntry] = (0..<120).map { (i: Int) -> UsageEntry in
+            let provider: LLMProvider = (mixed && i % 2 == 0) ? .deepseek : .openai
+            let date = now.addingTimeInterval(-Double(i) * 60)
+            return UsageEntry(date: date, seconds: 21.6, chars: 52, command: i % 10 == 0,
+                              provider: provider)
         }
         UsageStore.shared.resetForTesting(entries)
     }

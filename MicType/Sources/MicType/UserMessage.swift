@@ -20,8 +20,14 @@ enum UserMessage {
 
     // MARK: 缺东西（按钮：打开设置）
 
-    /// 没有 Key。5.1.0 起只有 OpenAI 一家，所以直接点名
-    static var keyMissing: String { tr("还没填 OpenAI Key", "No OpenAI key yet.") }
+    /// 没有 Key。点名是哪一家（5.1.0 起直接点名；5.5.0 起按生效服务商点名）
+    static var keyMissing: String { keyMissing(for: Settings.shared.llmProvider) }
+
+    /// 点名某一家（知道是哪一家的调用点一律传它，不读"当前服务商"）
+    static func keyMissing(for provider: LLMProvider) -> String {
+        let name = provider.segmentName
+        return tr("还没填 \(name) Key", "No \(name) key yet.")
+    }
 
     /// Key 验证通过但钥匙串写不进去（写失败或读回不一致）。原来那把 Key 不受影响
     static var keySaveFailed: String { tr("Key 有效，但没存上，请重试", "Key works but wasn't saved. Try again.") }

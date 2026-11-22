@@ -28,9 +28,19 @@ enum PrivacyCopy {
     ///
     /// 5.1.0 起只有 OpenAI 一家（用户 2026-09-28 拍板）：点名说它，不再说"你选的服务商"。
     /// 同一版起每句话松手后**整段再发送一次**（混合转写，整段更准）——音频出门两次，必须照实写。
-    static var audioGoesToProvider: String {
-        tr("录音与识别都在 OpenAI 那边完成：你说话的同时音频就在往上传，松手后整段再发送一次以获得更准的结果。按 Esc 会立刻停止，但已经传出去的部分收不回来。",
-           "Recording and recognition both happen at OpenAI: audio goes up while you are still speaking, and the whole take is sent once more when you let go for a more accurate result. Esc stops it at once, but whatever already left cannot be taken back.")
+    static var audioGoesToProvider: String { audioGoesToProvider(provider: Settings.shared.llmProvider) }
+
+    /// 5.5.0 按生效服务商分：DeepSeek 没有实时识别，音频**松手后才整段上传一次**——
+    /// 照搬 OpenAI 那句"说话的同时就在往上传"就是说假话。
+    static func audioGoesToProvider(provider: LLMProvider) -> String {
+        switch provider {
+        case .openai:
+            return tr("录音与识别都在 OpenAI 那边完成：你说话的同时音频就在往上传，松手后整段再发送一次以获得更准的结果。按 Esc 会立刻停止，但已经传出去的部分收不回来。",
+               "Recording and recognition both happen at OpenAI: audio goes up while you are still speaking, and the whole take is sent once more when you let go for a more accurate result. Esc stops it at once, but whatever already left cannot be taken back.")
+        case .deepseek:
+            return tr("录音与识别都在 DeepSeek 那边完成：松手后整段音频上传一次。录音中按 Esc 不会上传；已经开始上传的那一段收不回来。",
+               "Recording and recognition both happen at DeepSeek: the whole take is uploaded once when you let go. Esc while recording uploads nothing; an upload that has already started cannot be taken back.")
+        }
     }
 
     /// 出门的是哪些文字。

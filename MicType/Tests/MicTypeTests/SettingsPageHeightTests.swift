@@ -44,7 +44,8 @@ final class SettingsPageHeightTests: XCTestCase {
                 // 5.0.5 起这一页没有地板：报的就是内容本身（两三行控件 + 底栏）。
                 // 只钉住"不是 0、也不是宿主的高度"这两头
                 XCTAssertGreaterThan(reported, 120, "\(provider.rawValue)：什么都没量到")
-                XCTAssertLessThan(reported, 500,
+                // 5.5.0 多了两张服务商卡片（约 +60 点），线从 500 挪到 620：仍然远低于 700 的宿主
+                XCTAssertLessThan(reported, 620,
                                   "\(language.rawValue)/\(provider.rawValue)：页面把宿主的高度当成了自己的（报了 \(reported)）")
             }
         }

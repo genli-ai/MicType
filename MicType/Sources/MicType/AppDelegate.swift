@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var overlayErrorShowing = false
     private var currentPhase: DictationController.Phase = .idle
     private var keysObserver: NSObjectProtocol?
+    private var providerObserver: NSObjectProtocol?
 
     /// 给其它窗口借用的悬浮提示层。历史窗口把文字留在剪贴板时要提示「按 ⌘V」，
     /// 但那一刻它已经让出前台、窗口也收起来了：窗口内的状态条既看不见，
@@ -58,6 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshKeyPresence()
         keysObserver = NotificationCenter.default.addObserver(
             forName: KeychainHelper.keysChangedNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.refreshKeyPresence()
+        }
+        // 5.5.0：换了一家，红点要按那一家有没有 Key 重算
+        providerObserver = NotificationCenter.default.addObserver(
+            forName: Settings.providerChangedNotification, object: nil, queue: .main) { [weak self] _ in
             self?.refreshKeyPresence()
         }
         dictation.overlay.onErrorVisibilityChange = { [weak self] showing in
@@ -102,6 +108,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 升级提示里不提这件事，只记日志（见 RetiredProviderCleanup）。
         RetiredProviderCleanup.run(defaults: .standard,
                                    deleteKey: { KeychainHelper.deleteAPIKey(account: $0) })
+
+        // 5.5.0：DeepSeek 回来了。存着 deepseek 的老设置（4.x 直升上来、从没跑过 5.0 那次迁移的人）
+        // 钥匙串里有 DeepSeek 的 Key 就留在 DeepSeek，没有就落回 OpenAI——同样必须在
+        // routeFirstLaunch 之前（落回 OpenAI 又没 OpenAI Key 的人要被接回引导）。只读钥匙串，不写
+        DeepSeekProviderMigration.run(defaults: .standard, hasKey: { account in
+            !(KeychainHelper.loadAPIKey(account: account) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        })
 
         // 识别引擎 5.0.0 起由生效服务商推出来，「识别停在旧档」那条边界状态不再可能出现。
 
@@ -286,14 +300,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var refreshingKeyPresence = false
 
-    /// 钥匙串里有没有 OpenAI 那把 Key（点名账户，不依赖"当前服务商"）。有变化才换图标
+    /// 钥匙串里有没有**生效那一家**的 Key（5.5.0 起 OpenAI / DeepSeek；点名那一家的账户，
+    /// 不靠 KeychainHelper 的默认账户）。有变化才换图标
     private func refreshKeyPresence() {
         // 第二道保险：读 Key 的路上要是又有人发了 keysChanged，别在这里重入
         // （5.4.1 的崩溃就是 读 → 迁移 → 存 → 通知 → 读 的无限递归）
         guard !refreshingKeyPresence else { return }
         refreshingKeyPresence = true
         defer { refreshingKeyPresence = false }
-        let present = KeychainHelper.loadAPIKey(account: LLMProvider.openai.keychainAccount) != nil
+        let present = KeychainHelper.loadAPIKey(account: Settings.shared.llmProvider.keychainAccount) != nil
         guard present != hasKey || statusItem.button?.image == nil else { return }
         hasKey = present
         Log.info("Menu bar key presence=\(present)")

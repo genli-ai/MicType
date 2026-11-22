@@ -17,17 +17,22 @@ struct UsageEntry: Codable, Equatable {
     /// 原文真的贴回去了）。这种行 seconds / chars 都是 0，**不算进分钟 / 字数 / 句数 / 费用**，
     /// 只给「写作偏好」那一行数"本周换回原文 N 次"。旧账本没有这个字段，读作 false。
     var revert: Bool = false
+    /// 5.5.0：这一句是哪一家识别 / 润色的。费用按各家的币种分开算（OpenAI 美元、DeepSeek 人民币）。
+    /// 旧账本没有这个字段，读作 OpenAI（5.5.0 之前只有这一家）
+    var provider: LLMProvider = .openai
 
-    init(date: Date, seconds: Double, chars: Int, command: Bool, revert: Bool = false) {
+    init(date: Date, seconds: Double, chars: Int, command: Bool, revert: Bool = false,
+         provider: LLMProvider = .openai) {
         self.date = date
         self.seconds = seconds
         self.chars = chars
         self.command = command
         self.revert = revert
+        self.provider = provider
     }
 
     private enum CodingKeys: String, CodingKey {
-        case date, seconds, chars, command, revert
+        case date, seconds, chars, command, revert, provider
     }
 
     init(from decoder: Decoder) throws {
@@ -38,6 +43,9 @@ struct UsageEntry: Codable, Equatable {
         command = try c.decode(Bool.self, forKey: .command)
         // 5.3.0 写的行没有这个字段
         revert = try c.decodeIfPresent(Bool.self, forKey: .revert) ?? false
+        // 5.4.x 及更早写的行没有 provider；认不出的值（以后再加的某一家被降级读回来）也按 OpenAI 算
+        provider = (try? c.decodeIfPresent(String.self, forKey: .provider))
+            .flatMap { $0 }.flatMap(LLMProvider.init(rawValue:)) ?? .openai
     }
 
     /// revert 只在为真时写：普通的一句话仍然只有四样（UsageStoreTests 钉着"只有这四个键"），
@@ -49,6 +57,8 @@ struct UsageEntry: Codable, Equatable {
         try c.encode(chars, forKey: .chars)
         try c.encode(command, forKey: .command)
         if revert { try c.encode(true, forKey: .revert) }
+        // 与 revert 同一条：默认那一家（OpenAI）不写，老用户的账本一个字节都不变
+        if provider != .openai { try c.encode(provider.rawValue, forKey: .provider) }
     }
 }
 
@@ -58,14 +68,18 @@ enum UsageWeekSpan {
     case previous
 }
 
-/// 设置状态卡上那三格：分钟 / 字数 / 约多少美元
+/// 设置状态卡上那三格：分钟 / 字数 / 约多少钱
 struct UsageWeek: Equatable {
     let seconds: Double
     let chars: Int
     let sentences: Int
+    /// OpenAI 那几句的估算费用（美元）
     let costUSD: Double
     /// 这周点了几次「换回原文」（不是句子，不进上面四个数）
     var reverts: Int = 0
+    /// DeepSeek 那几句的估算费用（人民币，5.5.0）。**不换算成美元**：两种币分开记、分开显示，
+    /// 换算等于多编一层汇率
+    var costCNY: Double = 0
 
     static let empty = UsageWeek(seconds: 0, chars: 0, sentences: 0, costUSD: 0)
 
@@ -111,8 +125,10 @@ final class UsageStore: ObservableObject {
 
     /// 记一句（**只在主线程调**：DictationController 交付成功那一处）。
     /// 文件追加放后台队列——交付路径上主线程一毫秒都不该浪费。
-    func record(seconds: Double, chars: Int, command: Bool, date: Date = Date()) {
-        append(UsageEntry(date: date, seconds: max(0, seconds), chars: max(0, chars), command: command))
+    func record(seconds: Double, chars: Int, command: Bool, provider: LLMProvider = .openai,
+                date: Date = Date()) {
+        append(UsageEntry(date: date, seconds: max(0, seconds), chars: max(0, chars), command: command,
+                          provider: provider))
     }
 
     /// 记一次「换回原文」（5.4.0，只在主线程调：revertToRaw 贴回原文成功那一处）
@@ -196,9 +212,19 @@ final class UsageStore: ObservableObject {
         let spoken = inWeek.filter { !$0.revert }
         let seconds = spoken.reduce(0) { $0 + $1.seconds }
         let chars = spoken.reduce(0) { $0 + $1.chars }
+        // 费用按币种分开累计（5.5.0）：各家的句子按各家的单价算，绝不混进同一个数
+        var cost: [LLMCatalog.Currency: Double] = [:]
+        for provider in LLMProvider.allCases {
+            let rows = spoken.filter { $0.provider == provider }
+            guard !rows.isEmpty else { continue }
+            let amount = estimatedCost(seconds: rows.reduce(0) { $0 + $1.seconds },
+                                       sentences: rows.count, provider: provider)
+            cost[LLMCatalog.currency(for: provider), default: 0] += amount
+        }
         return UsageWeek(seconds: seconds, chars: chars, sentences: spoken.count,
-                         costUSD: estimatedCostUSD(seconds: seconds, sentences: spoken.count),
-                         reverts: inWeek.count - spoken.count)
+                         costUSD: cost[.usd] ?? 0,
+                         reverts: inWeek.count - spoken.count,
+                         costCNY: cost[.cny] ?? 0)
     }
 
     /// 上周这一刻看来的合计（每周第一次启动那一句用）
@@ -214,8 +240,14 @@ final class UsageStore: ObservableObject {
     /// 指令那一句按润色的单价算——它比润色贵（联网搜索、输出更长），所以这个数偏低，
     /// 界面上一律写「约」。绝不许把它说成账单。
     static func estimatedCostUSD(seconds: Double, sentences: Int) -> Double {
-        let asrPerSecond = LLMCatalog.asrHourlyUSD(provider: .openai) / 3600
-        let polishPerSentence = LLMCatalog.polishHourlyUSD(provider: .openai) / LLMCatalog.sentencesPerHour
+        estimatedCost(seconds: seconds, sentences: sentences, provider: .openai)
+    }
+
+    /// 同一套算法、按某一家的单价算；**返回值的币种是那一家的**（LLMCatalog.currency(for:)）。
+    /// DeepSeek：识别 ¥0.78/小时（只有整段那一趟）+ 润色估算（LLMCatalog.deepseekPolishHourlyCNY，待核）
+    static func estimatedCost(seconds: Double, sentences: Int, provider: LLMProvider) -> Double {
+        let asrPerSecond = LLMCatalog.asrHourly(provider: provider) / 3600
+        let polishPerSentence = LLMCatalog.polishHourly(provider: provider) / LLMCatalog.sentencesPerHour
         return max(0, seconds) * asrPerSecond + Double(max(0, sentences)) * polishPerSentence
     }
 
@@ -274,11 +306,26 @@ enum UsageFormat {
         return tr("\(text) 字", "\(text) chars")
     }
 
-    /// 「约 $0.12」/「~$0.12」。不到一美分写「< $0.01」：「约 $0.00」读起来像是免费
+    /// 「约 $0.12」/「~$0.12」。不到一美分写「< $0.01」：「约 $0.00」读起来像是免费。
+    ///
+    /// 5.5.0 起按币种分开显示：只用过 DeepSeek 的写「约 ¥0.30」；这周两家都用过就并列
+    /// 「约 $0.12 · ¥0.30」（美元在前：OpenAI 是默认那一家）。
     static func cost(_ week: UsageWeek) -> String {
         guard !week.isEmpty else { return placeholder }
-        guard week.costUSD >= 0.005 else { return "< $0.01" }
-        let text = String(format: "$%.2f", week.costUSD)
+        var parts: [String] = []
+        if week.costUSD > 0 { parts.append(amount(week.costUSD, symbol: "$")) }
+        if week.costCNY > 0 { parts.append(amount(week.costCNY, symbol: "¥")) }
+        // 一句都说过、却两个数都是 0（单价被改成 0 之类）：仍按美元那一档写「< $0.01」
+        guard !parts.isEmpty else { return "< $0.01" }
+        // 每一格都是「不到 1 分」时不带「约」（「约 < $0.01」读不通）
+        if parts.allSatisfy({ $0.hasPrefix("<") }) { return parts.joined(separator: " · ") }
+        let text = parts.joined(separator: " · ")
         return tr("约 \(text)", "~\(text)")
+    }
+
+    /// 一种币的金额：两位小数；不到 0.005 写「< $0.01」/「< ¥0.01」
+    static func amount(_ value: Double, symbol: String) -> String {
+        guard value >= 0.005 else { return "< " + symbol + "0.01" }
+        return symbol + String(format: "%.2f", value)
     }
 }

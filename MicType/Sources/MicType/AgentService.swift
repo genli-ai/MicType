@@ -497,10 +497,16 @@ enum LLMClient {
                          searchStyle: LLMCatalog.WebSearchStyle = .unsupported) -> [String: Any] {
         var body: [String: Any] = [
             "model": model,
-            "messages": messages,
+            "messages": provider == .deepseek ? nonEmptyMessages(messages) : messages,
         ]
         if let maxOutputTokens = maxOutputTokens {
             body["max_tokens"] = maxOutputTokens
+        }
+        // DeepSeek（5.5.0）：对话型号**默认开思考**，润色与指令都必须关——iOS 中文版实测关掉之后
+        // 一句润色约 1.1 秒；开着的话每句话都要多等一段思考（4.1.x 阿里云那一档踩过同一个坑）。
+        // 不看 purpose：连通性探针也走这条路，它同样不该等思考。被 400 点名时由 dispatch 摘掉重发
+        if provider == .deepseek {
+            body["thinking"] = ["type": "disabled"]
         }
         if let temperature = temperature, !LLMCatalog.rejectsCustomTemperature(model) {
             body["temperature"] = temperature
@@ -515,10 +521,29 @@ enum LLMClient {
         switch purpose == .command ? searchStyle : .unsupported {
         case .openrouterPlugin:
             body["plugins"] = [["id": "web"]]
+        case .deepseekTool:
+            // 服务端工具，**不发 tool_choice**（发了就 400，iOS 中文版实测）：搜不搜由模型定，
+            // 回包 usage.server_tool_use.tool_search 说它搜没搜（见 DeepSeekWebSearch）
+            body["tools"] = [["type": "deepseek_web_search"]]
         case .openaiResponsesTool, .unsupported:
             break
         }
         return body
+    }
+
+    /// DeepSeek 拒收空消息（HTTP 400 "all messages must have non-empty content"，iOS 中文版 2026-11-14 实测）：
+    /// 内容为空白的那几条换成占位文字（与 iOS 中文版 AIFeature.emptyInputPlaceholder 同一句）。纯函数
+    static let emptyInputPlaceholder = "（无待处理文字）"
+
+    static func nonEmptyMessages(_ messages: [[String: String]]) -> [[String: String]] {
+        messages.map { message in
+            guard (message["content"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return message
+            }
+            var copy = message
+            copy["content"] = emptyInputPlaceholder
+            return copy
+        }
     }
 
     // MARK: - 响应解析与去参重试（纯函数）
@@ -576,6 +601,8 @@ enum LLMClient {
         let unparsable: Bool
         let serviceTier: String?
         let citations: [Citation]
+        /// DeepSeek 的 `usage.server_tool_use.tool_search`（5.5.0）；别家没有这个字段 → nil
+        var searchCount: Int? = nil
     }
 
     static func parseChatPayload(_ json: [String: Any]) -> ChatPayload {
@@ -584,14 +611,16 @@ enum LLMClient {
         // 兼容端点大多不报缓存；service_tier 与 annotations 有的会报（OpenRouter 回来源）
         let citations = parseURLCitations((message?["annotations"] as? [[String: Any]]) ?? [])
         let tier = json["service_tier"] as? String
+        let searches = DeepSeekWebSearch.searchCount(in: json)
         guard let content = message?["content"] as? String else {
             return ChatPayload(text: nil, truncated: false, unparsable: true,
-                               serviceTier: tier, citations: citations)
+                               serviceTier: tier, citations: citations, searchCount: searches)
         }
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         return ChatPayload(text: trimmed.isEmpty ? nil : trimmed,
                            truncated: (choice?["finish_reason"] as? String) == "length",
-                           unparsable: false, serviceTier: tier, citations: citations)
+                           unparsable: false, serviceTier: tier, citations: citations,
+                           searchCount: searches)
     }
 
     /// 撞上输出上限时对用户说的那一句。两条路说的是同一件事（Responses 的 `status == "incomplete"`
@@ -875,7 +904,8 @@ enum LLMClient {
                     let payload = parseChatPayload(json)
                     usage = LLMUsage(cachedTokens: nil,
                                      serviceTier: payload.serviceTier,
-                                     citations: payload.citations)
+                                     citations: payload.citations,
+                                     searchCount: payload.searchCount)
                     if let text = payload.text, !payload.truncated {
                         result = text
                     } else if payload.truncated {
@@ -891,6 +921,94 @@ enum LLMClient {
                 failure = UserMessage.unreadableResponse
             }
             finish(result, failure, usage: usage)
+        }
+        guard handle.adopt(task) else { return }
+        task.resume()
+    }
+}
+
+// MARK: - DeepSeek 直接搜索（5.5.0）
+
+extension LLMClient {
+
+    /// `POST {base}/v1/tools/search` 的请求（纯函数，单测钉住路径、头与请求体）
+    static func directSearchRequest(provider: LLMProvider, apiKey: String,
+                                    query: String, question: String) -> URLRequest? {
+        var base = Settings.shared.baseURL(for: provider).trimmingCharacters(in: .whitespacesAndNewlines)
+        if base.hasSuffix("/") { base = String(base.dropLast()) }
+        guard !apiKey.isEmpty, let url = URL(string: base + DeepSeekWebSearch.directSearchPath) else {
+            return nil
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = DeepSeekWebSearch.directSearchTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try? JSONSerialization.data(
+            withJSONObject: DeepSeekWebSearch.directSearchBody(query: query, question: question))
+        return request
+    }
+
+    /// 直接搜一次（DeepSeek 指令"没搜"的兜底）。completion 在主线程：
+    ///   • (结果, nil)：成功（[] = 没结果）；
+    ///   • (nil, 错误话术)：失败。Key / 余额这类"账户的问题"（401 / 402 / 403）原样说出来
+    ///     （再试也不会好）；其余一律交给调用方按「指令失败」说。
+    /// 共用调用方那一枚句柄：Esc 照样能把这一趟掐掉，掐掉之后不回调。
+    static func directSearch(provider: LLMProvider, query: String, question: String,
+                             handle: LLMRequestHandle,
+                             completion: @escaping ([DeepSeekWebSearch.SearchResult]?, LLMCatalog.ErrorCopy?) -> Void) {
+        func finish(_ results: [DeepSeekWebSearch.SearchResult]?, _ failure: LLMCatalog.ErrorCopy?) {
+            DispatchQueue.main.async {
+                guard !handle.isCancelled else { return }
+                completion(results, failure)
+            }
+        }
+        guard !handle.isCancelled else { return }
+        guard let apiKey = credential(for: provider), !apiKey.isEmpty,
+              let request = directSearchRequest(provider: provider, apiKey: apiKey,
+                                                query: query, question: question) else {
+            finish(nil, LLMCatalog.ErrorCopy(text: UserMessage.keyMissing(for: provider),
+                                             action: .openSettings, provider: provider))
+            return
+        }
+        let started = DispatchTime.now()
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            guard !handle.isCancelled else { return }
+            if let error = error {
+                let nsError = error as NSError
+                if nsError.code == NSURLErrorCancelled { return }
+                Log.warn("DeepSeek direct search network error code=\(nsError.code)")
+                finish(nil, nil)
+                return
+            }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            // 只记状态码、条数与耗时：搜索词就是用户说的话，一个字都不进日志
+            guard status == 200, let data = data else {
+                var code: String?
+                var message: String?
+                if let data = data,
+                   let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                   let err = json["error"] as? [String: Any] {
+                    code = (err["code"] as? String) ?? (err["type"] as? String)
+                    message = err["message"] as? String
+                }
+                Log.warn("DeepSeek direct search HTTP \(status) code=\(code ?? "-") message="
+                         + String((message ?? "").prefix(200)))
+                if [401, 402, 403].contains(status) {
+                    finish(nil, LLMCatalog.describeHTTPError(status: status, provider: provider,
+                                                             code: code, message: message))
+                } else {
+                    finish(nil, nil)
+                }
+                return
+            }
+            guard let results = DeepSeekWebSearch.parseSearchResults(data) else {
+                Log.warn("DeepSeek direct search returned an unreadable body")
+                finish(nil, nil)
+                return
+            }
+            Log.info("DeepSeek direct search results=\(results.count) ms=\(Log.ms(since: started))")
+            finish(results, nil)
         }
         guard handle.adopt(task) else { return }
         task.resume()
@@ -979,13 +1097,9 @@ enum AgentService {
         }
         if let email = emailFormatRequirement(for: instruction) { user += email }
         // 一次 25 s，不重试（见 commandTimeout）；配合 Esc 取消一起收敛
-        return LLMClient.complete(system: system, user: user, purpose: .command,
-                                  temperature: Settings.shared.commandTemperature,
-                                  timeout: commandTimeout, model: Settings.shared.currentCommandModel,
-                                  maxOutputTokens: LLMCatalog.maxOutputTokens(
-                                      inputCharacters: selection.count + instruction.count,
-                                      minimum: LLMCatalog.commandMinOutputTokens),
-                                  networkRetries: commandNetworkRetries) { result, failure in
+        return runCommand(system: system, user: user, instruction: instruction,
+                          input: selection, hasTarget: true,
+                          inputCharacters: selection.count + instruction.count) { result, failure in
             guard let result = result else {
                 completion(nil, failure)
                 return
@@ -1023,14 +1137,9 @@ enum AgentService {
         system += userContextHint()
         var userContent = instruction
         if let email = emailFormatRequirement(for: instruction) { userContent += email }
-        return LLMClient.complete(system: system, user: userContent, purpose: .command,
-                                  temperature: Settings.shared.commandTemperature,
-                                  timeout: commandTimeout, model: Settings.shared.currentCommandModel,
-                                  maxOutputTokens: LLMCatalog.maxOutputTokens(
-                                      inputCharacters: userContent.count,
-                                      minimum: LLMCatalog.commandMinOutputTokens),
-                                  networkRetries: commandNetworkRetries,
-                                  completion: completion)
+        return runCommand(system: system, user: userContent, instruction: instruction,
+                          input: "", hasTarget: false,
+                          inputCharacters: userContent.count, completion: completion)
     }
 
     /// 技能：根据选中的对方消息草拟回复（显式触发词「帮我回复」等直通此处）
@@ -1054,13 +1163,100 @@ enum AgentService {
         // 对方消息同样是外来文本（聊天记录 / 邮件正文），一样用定界块钉成数据
         var user = "<<<对方消息>>>\n\(context)\n<<<结束>>>\n\n用户要求：\(req.isEmpty ? "得体地回复" : req)"
         if let email = emailFormatRequirement(for: instruction) { user += email }
-        return LLMClient.complete(system: system, user: user, purpose: .command,
-                                  temperature: Settings.shared.commandTemperature,
-                                  timeout: commandTimeout, model: Settings.shared.currentCommandModel,
-                                  maxOutputTokens: LLMCatalog.maxOutputTokens(
-                                      inputCharacters: context.count + instruction.count,
-                                      minimum: LLMCatalog.commandMinOutputTokens),
-                                  networkRetries: commandNetworkRetries,
-                                  completion: completion)
+        return runCommand(system: system, user: user, instruction: instruction,
+                          input: context, hasTarget: true,
+                          inputCharacters: context.count + instruction.count, completion: completion)
+    }
+
+    // MARK: - 指令的唯一出口（5.5.0：DeepSeek 的联网搜索兜底在这里）
+
+    /// 三条指令路（选区 / 自由 / 回复）都从这里发。OpenAI 一档与 5.4.x 逐字相同（LLMClient.complete）。
+    ///
+    /// DeepSeek 一档多两件事（见 DeepSeekWebSearch 顶部那段）：
+    ///   1. 系统提示末尾加一行当天日期——**只加给这条路**，润色 prompt 一个字不动；
+    ///   2. 回包 `tool_search > 0` 才算搜了；没搜、而用户明说了要查 → 直接搜一次再问模型作答，
+    ///      直接搜索也失败 / 没结果 → 按「指令失败」报错，什么都不插入。
+    /// 整条链路共用一枚句柄：Esc 掐得掉其中任何一趟。
+    /// - instruction: 用户口述的那条指令（判"明说了要查"、当搜索词）
+    /// - input: 要处理的那段字（选区 / 对方消息），没有就是空串
+    /// - hasTarget: 有没有一段字要处理（有的话「查一下这段有没有错别字」不算要搜）
+    private static func runCommand(system: String, user: String, instruction: String,
+                                   input: String, hasTarget: Bool, inputCharacters: Int,
+                                   completion: @escaping (String?, String?) -> Void) -> LLMRequestHandle {
+        let provider = Settings.shared.llmProvider
+        let model = Settings.shared.currentCommandModel
+        let maxTokens = LLMCatalog.maxOutputTokens(inputCharacters: inputCharacters,
+                                                   minimum: LLMCatalog.commandMinOutputTokens)
+        guard provider == .deepseek else {
+            return LLMClient.complete(system: system, user: user, purpose: .command,
+                                      temperature: Settings.shared.commandTemperature,
+                                      timeout: commandTimeout, model: model,
+                                      maxOutputTokens: maxTokens,
+                                      networkRetries: commandNetworkRetries,
+                                      completion: completion)
+        }
+        let handle = LLMRequestHandle()
+        let dated = system + DeepSeekWebSearch.commandDateSuffix()
+        LLMClient.chat(messages: [["role": "system", "content": dated],
+                                  ["role": "user", "content": user]],
+                       temperature: Settings.shared.commandTemperature,
+                       timeout: commandTimeout, model: model, maxOutputTokens: maxTokens,
+                       purpose: .command, provider: .deepseek, handle: handle,
+                       networkRetries: commandNetworkRetries) { result, failure in
+            guard let result = result else {
+                completion(nil, failure)
+                return
+            }
+            let searches = LLMUsageSink.shared.peek()?.searchCount
+            switch DeepSeekWebSearch.decide(searchCount: searches, instruction: instruction,
+                                            hasTarget: hasTarget) {
+            case .accept:
+                // 只记次数与决定，指令内容一个字都不进日志
+                Log.info("DeepSeek command toolSearch=\(searches.map(String.init) ?? "-") fallback=no")
+                completion(result, nil)
+            case .directSearch:
+                Log.info("DeepSeek command toolSearch=\(searches.map(String.init) ?? "-") fallback=direct")
+                directSearchFallback(instruction: instruction, input: input, model: model,
+                                     maxTokens: maxTokens, handle: handle, completion: completion)
+            }
+        }
+        return handle
+    }
+
+    /// 模型没搜、用户又明说了要查：App 自己搜一次，再拿结果问一次模型（**不挂工具**）。
+    /// 不是 private：DeepSeekLiveTests 要单独把这一段在真端点上跑一遍（模型搜不搜由不得测试）
+    static func directSearchFallback(instruction: String, input: String, model: String,
+                                             maxTokens: Int, handle: LLMRequestHandle,
+                                             completion: @escaping (String?, String?) -> Void) {
+        let query = DeepSeekWebSearch.searchQuery(from: instruction)
+        LLMClient.directSearch(provider: .deepseek, query: query, question: instruction,
+                               handle: handle) { results, failure in
+            if let failure = failure {
+                // Key / 余额的问题原样说（再试也不会好），按钮跟着走（打开设置 / 去充值）
+                LLMUsageSink.shared.record(LLMUsage(failureAction: failure.action))
+                completion(nil, failure.text)
+                return
+            }
+            guard let results = results, !results.isEmpty else {
+                Log.warn("DeepSeek direct search gave nothing to answer from — command failed")
+                completion(nil, UserMessage.commandFailed)
+                return
+            }
+            let messages = DeepSeekWebSearch.fallbackMessages(instruction: instruction, input: input,
+                                                              results: results)
+            LLMClient.chat(messages: messages, temperature: nil, timeout: commandTimeout, model: model,
+                           maxOutputTokens: maxTokens, purpose: nil, provider: .deepseek,
+                           handle: handle, networkRetries: commandNetworkRetries) { answer, failure in
+                guard let answer = answer else {
+                    completion(nil, failure)
+                    return
+                }
+                // 悬浮窗那句「已联网 · N 来源」：来源是直接搜索那几条（这一趟作答的回包里没有来源）
+                var usage = LLMUsageSink.shared.peek() ?? LLMUsage()
+                usage.citations = DeepSeekWebSearch.citations(from: results)
+                LLMUsageSink.shared.record(usage)
+                completion(answer, nil)
+            }
+        }
     }
 }

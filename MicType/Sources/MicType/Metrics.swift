@@ -66,6 +66,9 @@ struct LLMUsage: Equatable {
     /// (String?, String?) 回调，而按钮要跟着它一起到 DictationController，走的就是这个沉淀点。
     /// nil = 成功，或者这一趟的失败没有可点的下一步。
     var failureAction: OverlayErrorAction?
+    /// DeepSeek 回包里的 `usage.server_tool_use.tool_search`：服务端这一趟真跑了几次搜索（5.5.0）。
+    /// nil = 回包里没有这个字段（OpenAI 与润色那几趟都是 nil）。「搜了没搜」只认它
+    var searchCount: Int?
 }
 
 /// 最近一次大模型往返的用量沉淀点。
@@ -80,6 +83,10 @@ final class LLMUsageSink {
     func record(_ usage: LLMUsage) {
         self.usage = usage
     }
+
+    /// 只看不取（5.5.0：DeepSeek 指令要先看一眼"这一趟搜了没有"，再决定要不要兜底直接搜——
+    /// 取走的话 DictationController 记指标时就拿不到这一趟了）
+    func peek() -> LLMUsage? { usage }
 
     /// 取走并清空
     func take() -> LLMUsage? {

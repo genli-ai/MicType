@@ -227,9 +227,9 @@ final class LLMCatalogTests: XCTestCase {
         }
     }
 
-    /// 5.1.0 起只剩 OpenAI 一家（用户 2026-09-28 拍板，与 iOS L36 一致）
-    func testOnlyOneProvider() {
-        XCTAssertEqual(LLMProvider.allCases, [.openai])
+    /// 5.1.0 起只剩 OpenAI 一家（用户 2026-09-28 拍板，与 iOS L36 一致）；5.5.0 加回 DeepSeek
+    func testTwoProviders() {
+        XCTAssertEqual(LLMProvider.allCases, [.openai, .deepseek])
     }
 
     // MARK: - 自定义 Base URL 校验

@@ -112,6 +112,15 @@ final class KeyVerifier: ObservableObject {
         case llm
         /// 走云端识别端点，1 秒合成音（识别页）
         case cloudASR(CloudASRProvider)
+
+        /// 设置页与引导验某一家的 Key 走哪条链路（唯一出处）。两家都打**识别端点**：
+        /// 识别是三件事里最严的那一条，验通了就是三件事全通
+        static func keyCheck(for provider: LLMProvider) -> Probe {
+            switch provider {
+            case .openai: return .cloudASR(.openai)
+            case .deepseek: return .cloudASR(.deepseek)
+            }
+        }
     }
 
     /// 发一次真请求验证这把 Key。通过才写钥匙串；不通过**一个字节都不写**。
@@ -184,26 +193,25 @@ final class KeyVerifier: ObservableObject {
                 settle(ok, provider.segmentName, model, message)
             }
         case .cloudASR(let cloudProvider):
-            // 直接打识别端点，1 秒合成音
-            var config = CloudASRSettings.currentConfig()
-            guard config.provider == cloudProvider else {
-                // 走到这里只可能是生效服务商在这半秒里被换掉了。
-                // 这一支不经过 settle，所以日志要自己记：用户看得见的每一句失败都要落盘，
-                // 否则他抄着这句话来问，日志里一个字都找不到（4.0.1 立的规矩）。
+            // 直接打识别端点，1 秒合成音。配置**点名这一家**（5.5.0）：卡片上看着的那一家
+            // 可能还没生效，读"当前服务商"去拼的话，DeepSeek 的 Key 会被发到 OpenAI 去验
+            guard cloudProvider.llmProvider == provider else {
+                // 调用方把两家配错了（不该发生）：一个字节都不发、不写，日志里留一行
                 Log.warn("API key verification skipped provider=\(provider.rawValue) "
-                         + "reason=effective provider changed mid-flight")
+                         + "reason=probe provider mismatch probe=\(cloudProvider.rawValue)")
                 status = .failed(reason: UserMessage.providerChangedPasteAgain,
                                  keptPrevious: hadPrevious)
                 return
             }
+            var config = CloudASRSettings.config(provider: cloudProvider, vocabulary: [], apiKey: "")
             config.apiKey = trimmed
+            let modelName = cloudProvider.batchModelName
             CloudASRProbe.run(config: config) { result in
                 switch result {
                 case .success:
-                    settle(true, cloudProvider.displayName, OpenAITranscribeClient.defaultModel, "")
+                    settle(true, cloudProvider.displayName, modelName, "")
                 case .failure(let failure):
-                    settle(false, cloudProvider.displayName,
-                           OpenAITranscribeClient.defaultModel, failure.message)
+                    settle(false, cloudProvider.displayName, modelName, failure.message)
                 }
             }
         }
@@ -326,7 +334,7 @@ struct KeyEntryView: View {
         let connected: Bool = { if case .connected = verifier.status { return true } else { return false } }()
         return VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .trailing) {
-                SecureField(text: $key, prompt: Text(tr("粘贴到这里", "Paste it here"))) { Text("OpenAI Key") }
+                SecureField(text: $key, prompt: Text(tr("粘贴到这里", "Paste it here"))) { Text(keyLabel) }
                     .labelsHidden()
                     .textFieldStyle(.plain)
                     .font(.system(size: 13, design: .monospaced))
@@ -379,7 +387,8 @@ struct KeyEntryView: View {
                 // 栏名就写 "API Key"（4.3.2）：是哪一家，上面那一行（设置页）/ 标题（引导 ③）已经写着了
                 // 栏名直接写「OpenAI Key」（5.1.0，用户 2026-09-28 拍板）：只剩一家之后，
                 // 那一行只读的「服务商 OpenAI」删掉了，是哪一家的 Key 就由栏名自己说
-                SettingsFieldRow(label: "OpenAI Key", info: SettingsCopy.keyInfo) {
+                // 5.5.0：两家各一把，栏名跟着卡片上看着的那一家（「OpenAI Key」/「DeepSeek Key」）
+                SettingsFieldRow(label: keyLabel, info: SettingsCopy.keyInfo(provider: provider)) {
                     secureField
                     if showsConsoleLink { consoleLink }
                 }
@@ -404,14 +413,17 @@ struct KeyEntryView: View {
     private var secureField: some View {
         // 占位写**该做的动作**而不是 Key 长什么样（5.0.1）：「sk-…」是给认得 Key 的人看的，
         // 而第一次走到这一步的人刚从控制台复制完，他要确认的是"贴这儿对不对"
-        SecureField(text: $key, prompt: Text(tr("粘贴到这里", "Paste it here"))) { Text("OpenAI Key") }
+        SecureField(text: $key, prompt: Text(tr("粘贴到这里", "Paste it here"))) { Text(keyLabel) }
             .labelsHidden()
             .textFieldStyle(.roundedBorder)
             .focused($focused)
             .onSubmit { verifyNow() }
     }
 
-    /// 「去申请 Key ↗」：点了直接开 OpenAI 的 API Key 页。
+    /// 栏名：「OpenAI Key」/「DeepSeek Key」（品牌名 + Key，两种界面语言都一样）
+    private var keyLabel: String { provider.segmentName + " Key" }
+
+    /// 「去申请 Key ↗」：点了直接开那一家的 API Key 页。
     /// （5.0.4 为阿里云那两个站加的 International / China 小菜单，5.1.0 随阿里云删掉。）
     private var consoleLink: some View {
         Button(LLMCatalog.getAKeyLabel) { open(LLMCatalog.apiKeyConsoleURL(for: provider)) }

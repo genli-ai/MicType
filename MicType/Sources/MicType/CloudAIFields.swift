@@ -15,8 +15,8 @@ import SwiftUI
 //   • **ⓘ 只挂在真有细则的那一行**（API Key：存储、费用、联网搜索、Fast 档）。
 //   • **常驻说明行只留"带着钱或隐私"的那种**；状态行不算说明：它只在真有话说时才出现。
 //
-// 5.1.0 删掉的：服务商分段选择器（ProviderPickerField）与「正在使用 ✓」、阿里云的
-// 「API Host / 接入地址」输入框（QwenHostField）、引导 ③ 那两张服务商对比卡片（ProviderChoiceCards）。
+// 5.1.0 删掉的：服务商分段选择器（ProviderPickerField）、阿里云的「API Host / 接入地址」输入框
+// （QwenHostField）。5.5.0 随 DeepSeek 加回了两张服务商卡片（ProviderChoiceCards）与「正在使用 ✓」。
 
 /// 一行：栏名 + 控件 +（可选）那一行自己的 ⓘ。**设置窗口三页共用**（4.3.2 起）。
 ///
@@ -74,17 +74,17 @@ struct SettingsToggleRow: View {
 
 // MARK: - 首配那一串控件（设置正页与引导 ③ 同一份）
 
-/// OpenAI Key + 那一行状态。两处共用，只是外面包着的东西不同：
-///   • **设置正页**（`.settings`）：Key 框右边带「去申请 Key ↗」；
-///   • **引导 ③**（`.onboarding`）：上面是**申请 Key 的三步**（首配最容易卡死人的一分钟
+/// 服务商卡片 + 那一家的 Key + 那一行状态。两处共用，只是外面包着的东西不同：
+///   • **设置正页**（`.settings`）：卡片下面是 Key 框，右边带「去申请 Key ↗」；
+///   • **引导 ②**（`.onboarding`）：卡片 → 大框 → **申请 Key 的三步**（首配最容易卡死人的一分钟
 ///     就是"去哪儿点、怎么拿到 Key"），第 3 步已经直达 API Key 页，所以 Key 框右边不再摆那颗按钮。
-/// 「服务商 OpenAI」那一行只读的 5.1.0 首版加过、同日删掉（用户 2026-09-28）：栏名「OpenAI Key」已经说了。
 ///
-/// 5.1.0 之前这里还收着服务商选择器、阿里云的接入地址框和"看着的那一档验证通过才采纳"那一套；
-/// 只剩一家之后，这些都没有第二个答案了。
+/// 5.5.0 加回 DeepSeek（用户 2026-11-22 拍板）：两张服务商卡片回来了，4.1.1–5.0.5 那条规矩一起回来——
+/// **点卡片只是预览**：钥匙串里有那一家的 Key（刚验证通过、或早就配过）才真正换过去
+/// （AISetup.adoptsProvider）。生效那一张带「正在使用 ✓」，所以永远一眼看得出哪家在生效。
+/// 选了哪家，识别、润色、指令、联网搜索全走哪家；Key 各存各的（provider.keychainAccount）。
 ///
-/// 5.3.0 引导 ②（设计稿 Onboarding-2）：顺序倒过来——**大框在上、三步在下**。
-/// 那一屏的标题已经是「贴上你的 OpenAI Key」，要做的事就是那个框；三步是给还没有 Key 的人的。
+/// 5.3.0 引导 ②（设计稿 Onboarding-2）：**大框在上、三步在下**。
 struct CloudSetupCore<Notices: View>: View {
 
     /// 摆成 Form 的分段（设置页），还是摆成一串行（引导 ② 那一屏是 VStack）
@@ -92,19 +92,28 @@ struct CloudSetupCore<Notices: View>: View {
 
     let style: Style
     var onKeyStatus: ((KeyVerifier.Status) -> Void)? = nil
+    /// 生效服务商真的换过去之后通知外面（设置页的状态卡据此刷新"在用哪家 / Key 尾号"）
+    var onProviderChange: ((LLMProvider) -> Void)? = nil
     /// 引导 ②：这一屏出现时从剪贴板认出来的 Key（见 ClipboardKey）。设置页永远 nil
     var prefill: String? = nil
     /// Key 上面的边界状态（例如 OpenAI 的地址被改过）。正常情况下一个字都不显示
     @ViewBuilder var notices: () -> Notices
 
-    /// 唯一的一档
-    private let provider: LLMProvider = .openai
+    /// 这一刻**真正生效**的那一档（Settings.llmProvider）：卡片上的「正在使用 ✓」靠它
+    @AppStorage(SettingsKeys.llmProvider) private var inUseRaw = LLMProvider.openai.rawValue
+    /// 卡片上**正在看**的那一档（可能还没生效）。每次出现都先停回生效那一档
+    @State private var selected: LLMProvider = Settings.shared.llmProvider
+
+    private var inUse: LLMProvider { LLMProvider(rawValue: inUseRaw) ?? .openai }
 
     var body: some View {
-        switch style {
-        case .settings: settingsSection
-        case .onboarding: onboardingRows
+        Group {
+            switch style {
+            case .settings: settingsSection
+            case .onboarding: onboardingRows
+            }
         }
+        .onAppear { selected = inUse }
     }
 
     // MARK: 设置正页：一张卡片装完
@@ -112,19 +121,48 @@ struct CloudSetupCore<Notices: View>: View {
     @ViewBuilder
     private var settingsSection: some View {
         Section {
+            ProviderChoiceCards(selection: selectionBinding, inUse: inUse)
+                .padding(.bottom, 8)
             notices()
             keyField
         }
     }
 
-    // MARK: 引导 ②：大框 + 申请步骤
+    // MARK: 引导 ②：卡片 + 大框 + 申请步骤
 
     @ViewBuilder
     private var onboardingRows: some View {
+        ProviderChoiceCards(selection: selectionBinding, inUse: inUse)
+            .padding(.bottom, 14)
         notices()
         keyField
-        ConsoleStepsView(provider: provider)
+        ConsoleStepsView(provider: selected)
             .padding(.top, 14)
+    }
+
+    // MARK: 预览 → 采纳
+
+    /// 点卡片：先只是预览；那一家钥匙串里已经有 Key（换回上一家、或早就配过）就当场生效，
+    /// 不必再逼他重粘一次
+    private var selectionBinding: Binding<LLMProvider> {
+        Binding(get: { selected }, set: { next in
+            guard next != selected else { return }
+            selected = next
+            Log.info("AI provider previewed=\(next.rawValue)")
+            adoptIfUsable(next)
+        })
+    }
+
+    /// 只有"这一档真的能用"才把它写成生效的服务商（判据是纯函数 AISetup.adoptsProvider）。
+    /// 换过去之后识别也跟着换家——那是推导（Settings.recognitionEngine），不是一条设置
+    private func adoptIfUsable(_ next: LLMProvider) {
+        let hasKey = KeychainHelper.loadAPIKey(account: next.keychainAccount) != nil
+        guard AISetup.adoptsProvider(current: inUse, next: next, hasKey: hasKey) else { return }
+        inUseRaw = next.rawValue
+        Log.info("AI provider adopted=\(next.rawValue) (recognition follows)")
+        // @AppStorage 不经过 Settings.llmProvider 的 setter，通知要自己发（菜单栏红点据此重查 Key）
+        NotificationCenter.default.post(name: Settings.providerChangedNotification, object: nil)
+        onProviderChange?(next)
     }
 
     // MARK: 控件本体
@@ -135,20 +173,86 @@ struct CloudSetupCore<Notices: View>: View {
     /// 两个数都从 LLMCatalog 同一套单价算出来（那是全 App 唯一的价格出处）。
     private var connectedNote: String {
         switch style {
-        case .settings: return SettingsCopy.connectedCost(provider: provider)
-        case .onboarding: return LLMCatalog.perSentenceCostNote(provider: provider)
+        case .settings: return SettingsCopy.connectedCost(provider: selected)
+        case .onboarding: return LLMCatalog.perSentenceCostNote(provider: selected)
         }
     }
 
     /// Key 验证**一律打识别端点**（5.0.0 起识别也在云端，那条链路更严）：验通了就是三件事全通。
+    /// 打的是**卡片上看着的那一家**的端点、用那一家的 Key 槽（Key 永不串槽）；验通了才采纳
     private var keyField: some View {
-        KeyEntryView(provider: provider, model: LLMCatalog.polishDefault(for: provider),
-                     probe: .cloudASR(.openai),
+        KeyEntryView(provider: selected, model: LLMCatalog.polishDefault(for: selected),
+                     probe: KeyVerifier.Probe.keyCheck(for: selected),
                      connectedNote: connectedNote,
                      showsConsoleLink: style == .settings,
-                     onStatusChange: { status in onKeyStatus?(status) },
+                     onStatusChange: { status in
+                         if case .connected = status { adoptIfUsable(selected) }
+                         onKeyStatus?(status)
+                     },
                      layout: style == .onboarding ? .hero : .row,
                      prefill: style == .onboarding ? prefill : nil)
+    }
+}
+
+// MARK: - 两张服务商卡片（设置正页与引导 ② 同一份）
+
+/// 每张两行：**名字（+ 正在使用 ✓）/ 价格量级 · 适合谁**。都从 LLMCatalog 取（价格是算出来的，不写死）。
+///
+/// 为什么是卡片而不是分段选择器（5.0.x 的教训）：这是一个会花他自己的钱的选择，
+/// 一个只有两个词的选择器给不了他任何做这个选择的依据。
+/// OpenAI 在左：它是默认那一家（5.5.0 任务书：OpenAI 仍是默认）。
+struct ProviderChoiceCards: View {
+    @Binding var selection: LLMProvider
+    /// 这一刻**真正生效**的那一档：卡片上的「正在使用 ✓」
+    let inUse: LLMProvider
+    @Environment(\.colorScheme) private var scheme
+
+    static let order: [LLMProvider] = [.openai, .deepseek]
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            ForEach(Self.order, id: \.rawValue) { provider in
+                card(provider)
+            }
+        }
+        // 两张卡等高：一张比另一张矮时，看着像其中一张更重要
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func card(_ provider: LLMProvider) -> some View {
+        let palette = Theme.palette(scheme)
+        let picked = provider == selection
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(provider.segmentName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(palette.text)
+                if provider == inUse {
+                    Text(SettingsCopy.providerInUse)
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.success)
+                        .fixedSize()
+                }
+                Spacer(minLength: 0)
+            }
+            Text(LLMCatalog.providerCardLine(provider: provider))
+                .font(.system(size: 11))
+                .foregroundColor(palette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(picked ? Theme.accentText.opacity(0.12) : Color.clear))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(picked ? Theme.accentText.opacity(0.6)
+                           : (scheme == .dark ? Theme.hairline : Color.black.opacity(0.1)),
+                    lineWidth: picked ? 1.5 : 1))
+        .contentShape(Rectangle())
+        .onTapGesture { selection = provider }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(picked ? [.isButton, .isSelected] : .isButton)
+        .accessibilityLabel(provider.segmentName)
     }
 }
 

@@ -30,6 +30,10 @@ enum LLMCatalog {
     static let openaiPolishModel = "gpt-5.6-terra"
     // qwenDefaultModel（qwen3.8-flash）5.1.0 删掉：阿里云那一档整档移除（用户 2026-09-28 拍板）。
 
+    /// DeepSeek 润色与指令都用 `deepseek-flash`（5.5.0，与 iOS 中文版 AIProvider.deepSeek 同一个选择）：
+    /// 关掉思考之后一句润色实测约 1.1 秒（2026-11-14）。旗舰 deepseek-v4-pro 慢，不做默认。
+    static let deepseekModel = "deepseek-flash"
+
     /// 润色用哪个型号。**5.0.0 起这就是全部**：没有设置、没有下拉、没有输入框
     /// （用户 2026-09-22 拍板）。"挑型号"是一个用户没有依据、也不该被问的问题；
     /// 这几个值本来就是按实测挑出来的速度/质量平衡点（见上面那段注释）。
@@ -37,10 +41,21 @@ enum LLMCatalog {
     /// 验证 Key 也拿这个型号去探（KeyEntryView）：润色是每句话都要跑的那一趟，
     /// Key 能用却开不了这个型号的话，用户说的第一句话就会失败。
     /// 5.1.0 起只剩 OpenAI 一档，参数留着是为了让调用方继续按"这一档"说话。
-    static func polishDefault(for provider: LLMProvider) -> String { openaiPolishModel }
+    /// 5.5.0 起按服务商分：OpenAI 润色 terra / 指令 luna；DeepSeek 两者都是 deepseek-flash。
+    static func polishDefault(for provider: LLMProvider) -> String {
+        switch provider {
+        case .openai: return openaiPolishModel
+        case .deepseek: return deepseekModel
+        }
+    }
 
     /// 语音指令用哪个型号。
-    static func commandDefault(for provider: LLMProvider) -> String { openaiCommandModel }
+    static func commandDefault(for provider: LLMProvider) -> String {
+        switch provider {
+        case .openai: return openaiCommandModel
+        case .deepseek: return deepseekModel
+        }
+    }
 
     // 「模型选单」5.0.0 整段删掉（ModelChoice / modelMenu / modelLabel / modelWrites /
     // selectedMenuModel / unifyModelWrites / modelKeys，以及 4.x 那三条型号迁移）：
@@ -94,7 +109,72 @@ enum LLMCatalog {
     /// 5.1.0 起每句话松手后还要整段再传一次 gpt-transcribe $0.0045/分钟（混合转写，
     /// OpenAI 模型页 2026-09-28 查）——两段都按录音时长计费，合计 × 60 ≈ $1.29/小时。
     /// 整段先赢、实时还没 commit 时实时会被掐掉、这一句不计实时的钱，所以这是偏高的那一边的估计。
+    ///
+    /// 5.5.0 起这几个数**按服务商分、币种跟着服务商走**：OpenAI 是美元，DeepSeek 是人民币
+    /// （DeepSeek 按人民币结算，换成美元再给用户看等于多编一层汇率）。名字里的 USD 只对 OpenAI 成立，
+    /// 所以新代码一律走 `asrHourly / polishHourly / hourly`（返回的数按 `currency(for:)` 读）。
     static func asrHourlyUSD(provider: LLMProvider) -> Double { (0.017 + 0.0045) * 60 }
+
+    /// 价钱用什么货币（UsageStore 按它分开累计，界面按它挑符号）
+    enum Currency: String, Codable, CaseIterable {
+        case usd
+        case cny
+
+        /// 「$」/「¥」
+        var symbol: String {
+            switch self {
+            case .usd: return "$"
+            case .cny: return "¥"
+            }
+        }
+    }
+
+    static func currency(for provider: LLMProvider) -> Currency {
+        switch provider {
+        case .openai: return .usd
+        case .deepseek: return .cny
+        }
+    }
+
+    /// DeepSeek 识别：刊例 ¥0.78/小时，按秒计费（api-docs.deepseek.com/zh-cn/guides/asr，2026-11-22 读取；
+    /// 另有限时 5 折 ¥0.39、页面没写截止日期——这里按刊例算，宁可估高）。只有整段上传一趟，没有实时那一份
+    static let deepseekASRHourlyCNY = 0.78
+
+    /// DeepSeek 润色：¥1.5/小时，**估算**（官方价目 api-docs.deepseek.com/quick_start/pricing，2026-11-22 读取，USD）。
+    /// deepseek-flash：输入 cache miss 高峰 $0.30/M（低谷 $0.15/M）、cache hit 高峰 $0.006/M；
+    /// 输出高峰 $1.2/M（低谷 $0.6/M）；高峰 = 周一到周五 UTC 01–04 与 06–10。
+    /// 推导：每句约 2k 输入 token（提示词 + 词汇表 + 原文，大半按 cache miss 最坏算）+ 约 60 输出 token，
+    /// 高峰价 ≈ 2000×0.30/M + 60×1.2/M ≈ $0.0007/句 × 360 句/小时 ≈ $0.24 ≈ ¥1.7；
+    /// 提示词前缀命中缓存会更低，取 ¥1.5。卡片与 ⓘ 里的「约 ¥X/小时」「每句话约 ¥Y」都由它算出来。
+    /// 它是 DeepSeek 润色费用的唯一出处。
+    static let deepseekPolishHourlyCNY = 1.5
+
+    /// DeepSeek **直接搜索**（`/v1/tools/search`）：每 1,000 次成功请求 ¥5
+    /// （api-docs.deepseek.com/zh-cn/guides/search，2026-11-22 读取）。
+    /// 注意：自 2026-11-18 12:00 起，**模型调用里触发的服务端搜索不再按次计费**，搜索结果并入上下文按 token 计费——
+    /// 所以只有 App 自己兜底直接搜的那一次（DeepSeekWebSearch）才按次花这笔钱
+    static let deepseekSearchPerThousandCNY = 5.0
+
+    /// 每小时识别费用，币种见 currency(for:)
+    static func asrHourly(provider: LLMProvider) -> Double {
+        switch provider {
+        case .openai: return asrHourlyUSD(provider: .openai)
+        case .deepseek: return deepseekASRHourlyCNY
+        }
+    }
+
+    /// 每小时润色费用（估算），币种见 currency(for:)
+    static func polishHourly(provider: LLMProvider) -> Double {
+        switch provider {
+        case .openai: return polishHourlyUSD(provider: .openai)
+        case .deepseek: return deepseekPolishHourlyCNY
+        }
+    }
+
+    /// 两段加起来，币种见 currency(for:)
+    static func hourly(provider: LLMProvider) -> Double {
+        asrHourly(provider: provider) + polishHourly(provider: provider)
+    }
 
     /// 每小时录音的**润色**费用（美元，估算，见上面那段注释）
     ///
@@ -108,9 +188,9 @@ enum LLMCatalog {
         asrHourlyUSD(provider: provider) + polishHourlyUSD(provider: provider)
     }
 
-    /// 「约 $1.1/小时」。**只留一位小数**，而且永远带"约"。纯函数，单测钉住格式。
+    /// 「约 $1.7/小时」/「约 ¥1.3/小时」。**只留一位小数**，而且永远带"约"。纯函数，单测钉住格式。
     static func hourlyCostNote(provider: LLMProvider) -> String {
-        let text = String(format: "$%.1f", hourlyUSD(provider: provider))
+        let text = currency(for: provider).symbol + String(format: "%.1f", hourly(provider: provider))
         return tr("约 \(text)/小时", "about \(text)/hour")
     }
 
@@ -123,11 +203,16 @@ enum LLMCatalog {
         hourlyUSD(provider: provider) / sentencesPerHour
     }
 
+    /// 一句话大约多少钱，币种见 currency(for:)
+    static func perSentence(provider: LLMProvider) -> Double {
+        hourly(provider: provider) / sentencesPerHour
+    }
+
     /// 「每句话约 $0.003」。**不写成"分钱"**：中文里"分"既可能被读成人民币、也可能被读成
     /// 美分，而这笔钱是用户拿自己的卡直接付给服务商的——写清货币符号比读着顺重要。
     /// 纯函数，单测钉住格式。
     static func perSentenceCostNote(provider: LLMProvider) -> String {
-        let text = String(format: "$%.3f", perSentenceUSD(provider: provider))
+        let text = currency(for: provider).symbol + String(format: "%.3f", perSentence(provider: provider))
         return tr("每句话约 \(text)", "about \(text) per sentence")
     }
 
@@ -138,7 +223,25 @@ enum LLMCatalog {
 
     /// 「去申请 Key ↗」指向的页面（设置页 Key 那一行右边那颗按钮）。
     static func apiKeyConsoleURL(for provider: LLMProvider) -> String {
-        "https://platform.openai.com/api-keys"
+        switch provider {
+        case .openai: return "https://platform.openai.com/api-keys"
+        case .deepseek: return "https://platform.deepseek.com/api_keys"
+        }
+    }
+
+    /// 服务商卡片上那一行：**价格量级 + 用什么币结算**（5.5.0，两张卡并排，所以每张一行说清）。
+    /// 只写币种这个事实：官方价目页没写支付方式（只说「从充值余额扣除」），不替它编。
+    /// **不写「国内 / 国际站」**（5.0.1 的规矩）。
+    static func audienceNote(provider: LLMProvider) -> String {
+        switch provider {
+        case .openai: return tr("美元计费", "billed in USD")
+        case .deepseek: return tr("人民币计费", "billed in CNY")
+        }
+    }
+
+    /// 卡片那一行的全文：「约 $1.7/小时 · 美元计费」
+    static func providerCardLine(provider: LLMProvider) -> String {
+        hourlyCostNote(provider: provider) + " · " + audienceNote(provider: provider)
     }
 
     // KeyConsole（.single / .choices）5.0.4 为阿里云那两个站（International / China）加的，
@@ -170,7 +273,21 @@ enum LLMCatalog {
     /// **三步封顶**（5.0.1）：原先最后一步是「回到这里粘贴」——粘贴框就在这几行字底下，
     /// 光标都在那儿，用一整行告诉他"回来"是在凑步骤。
     static func consoleSteps(for provider: LLMProvider) -> [ConsoleStep] {
-        [
+        if provider == .deepseek {
+            // DeepSeek 开放平台：注册（手机号）→ 充值（支付宝 / 微信）→ 创建 API Key
+            return [
+                ConsoleStep(text: tr("注册", "Sign up"),
+                            links: [.init(label: tr("打开", "Open"),
+                                          url: "https://platform.deepseek.com/sign_up")]),
+                ConsoleStep(text: tr("充值", "Add credit"),
+                            links: [.init(label: tr("打开", "Open"),
+                                          url: deepseekTopUpURL)]),
+                ConsoleStep(text: tr("创建 API Key", "Create an API key"),
+                            links: [.init(label: tr("打开", "Open"),
+                                          url: apiKeyConsoleURL(for: provider))]),
+            ]
+        }
+        return [
             ConsoleStep(text: tr("注册", "Sign up"),
                         links: [.init(label: tr("打开", "Open"),
                                       url: "https://platform.openai.com/")]),
@@ -316,11 +433,16 @@ enum LLMCatalog {
         // DashScope 兼容模式那一档（qwenEnableSearch，只发 enable_search）5.1.0 随阿里云删掉
         /// OpenRouter：`plugins:[{id:"web"}]`
         case openrouterPlugin
+        /// DeepSeek chat/completions 的服务端工具 `tools:[{type:"deepseek_web_search"}]`（5.5.0）。
+        /// **不能用 tool_choice 强制**（400），模型自己决定搜不搜；回包 `usage.server_tool_use.tool_search > 0`
+        /// 才算真搜了，没搜而用户明说了要搜 → App 自己调 `/v1/tools/search` 兜底（DeepSeekWebSearch）
+        case deepseekTool
         /// 这个端点没有内建搜索 → **整段只留一行说明，连开关都不摆**（4.1.1），绝不假装能用
         case unsupported
     }
 
     static func searchStyle(provider: LLMProvider, baseURL: String) -> WebSearchStyle {
+        if provider == .deepseek { return .deepseekTool }
         let host = URL(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines))?
             .host?.lowercased() ?? ""
         if host == "openrouter.ai" || host.hasSuffix(".openrouter.ai") { return .openrouterPlugin }
@@ -340,6 +462,14 @@ enum LLMCatalog {
     static var webSearchPriceNote: String { tr("每次约 $0.01 外加 token 费用。",
                                        "about $0.01 per search plus tokens.") }
 
+    /// DeepSeek 那一档（2026-11-18 起的计费口径）：模型自己搜 → 结果按 token 计费；
+    /// 模型没搜、App 兜底直接搜一次 → 每次 ¥5/千次 = ¥0.005（数字来自 deepseekSearchPerThousandCNY）
+    static var deepseekWebSearchPriceNote: String {
+        let each = String(format: "¥%.3f", deepseekSearchPerThousandCNY / 1000)
+        return tr("搜索结果按 token 计费；模型没搜时 App 直接搜一次，每次约 \(each)。",
+                  "Search results bill as tokens; when the model skips searching, the app searches once at about \(each).")
+    }
+
     /// 第三方网关（OpenRouter）那一档的联网搜索价钱。**我们报不出一个准数**：它按网关自己的
     /// 价目结算——编一个数字比不给数字糟得多，所以只说"按服务商计费"。
     /// （4.1–5.0 阿里云那一档也念这一句，5.1.0 那一档删掉了。）
@@ -351,6 +481,7 @@ enum LLMCatalog {
     static func webSearchPriceNote(style: WebSearchStyle) -> String? {
         switch style {
         case .openaiResponsesTool: return webSearchPriceNote
+        case .deepseekTool: return deepseekWebSearchPriceNote
         case .openrouterPlugin: return providerBilledSearchNote
         case .unsupported: return nil
         }
@@ -365,7 +496,12 @@ enum LLMCatalog {
     /// 云端识别的单价（**全 App 唯一出处**）。查证日期 2026-09-21，来自 OpenAI 官方价目页。
     /// （4.3–5.0 这里还有阿里云那一档的 $0.13/小时，5.1.0 删掉。）
     static func cloudASRPriceNote(provider: CloudASRProvider) -> String {
-        tr("约 $0.017/分钟", "about $0.017/min")
+        switch provider {
+        case .openai: return tr("约 $0.017/分钟", "about $0.017/min")
+        case .deepseek:
+            let text = String(format: "¥%.2f", deepseekASRHourlyCNY)
+            return tr("约 \(text)/小时", "about \(text)/hour")
+        }
     }
 
     static var fastTierPriceNote: String { tr("延迟更低更稳，token 单价约 2 倍。",
@@ -472,23 +608,37 @@ enum LLMCatalog {
         let text: String
         /// 悬浮窗上那颗按钮：401 → 打开设置；余额不足 → 去充值；其余 → 关闭
         let action: OverlayErrorAction
+        /// 这句话说的是哪一家（5.5.0）：「去充值」要开**那一家**的充值页。
+        /// 默认 OpenAI，老调用点与单测的 ErrorCopy(text:action:) 不用改
+        var provider: LLMProvider = .openai
 
         /// 有下一步链接的那一档（目前只有余额不足）指向哪儿；没有则 nil
-        var actionURL: String? { action == .addCredit ? LLMCatalog.billingURL : nil }
+        var actionURL: String? { action == .addCredit ? LLMCatalog.billingURL(for: provider) : nil }
     }
 
     /// HTTP 失败 → 双语话术（纯函数，单测钉死每个分支）。
     /// - status：HTTP 状态码（照样写进那句话：用户抄给别人问的时候，这个数最值钱）
-    /// - provider：5.1.0 起只有 OpenAI；留着参数是为了"Key 永不串槽"那条纪律（调用处点名）
+    /// - provider：发给哪一家（5.5.0 起 OpenAI / DeepSeek）。DeepSeek 多两档：402 余额不足、422 参数错误
     /// - code：响应里的 `error.code` / `error.type`（429 靠它区分限流与余额不足）
     /// - message：响应里的 `error.message`——**只用来判类别，不上屏**（原话由调用方进日志）
     static func describeHTTPError(status: Int, provider: LLMProvider,
                                   code: String?, message: String?) -> ErrorCopy {
+        var copy = httpErrorCopy(status: status, provider: provider, code: code, message: message)
+        copy.provider = provider
+        return copy
+    }
+
+    private static func httpErrorCopy(status: Int, provider: LLMProvider,
+                                      code: String?, message: String?) -> ErrorCopy {
         let hay = ((code ?? "") + " " + (message ?? "")).lowercased()
 
         switch status {
         case 401:
             return ErrorCopy(text: UserMessage.keyRejected, action: .openSettings)
+        case 402:
+            // DeepSeek 的余额不足是 402（iOS 中文版实测映射）；OpenAI 不发这个码，照样按余额不足说——
+            // 402 在 HTTP 里本来就是 Payment Required
+            return ErrorCopy(text: UserMessage.outOfCredit(status), action: .addCredit)
         case 403:
             // OpenAI 的 403 几乎总是国家/地区封锁（用户在 UAE，这条命中率不低）。
             // 5.1.0 阿里云那一档删掉之后没有另一家可以指给他——**不编一个不存在的下一步**
@@ -502,6 +652,9 @@ enum LLMCatalog {
                 return ErrorCopy(text: UserMessage.outOfCredit(status), action: .addCredit)
             }
             return ErrorCopy(text: UserMessage.rateLimited(status), action: .dismiss)
+        case 422 where provider == .deepseek:
+            // DeepSeek 的"参数错误"（与 400 同类）：不是用户能修的事，按请求被拒说
+            return ErrorCopy(text: UserMessage.requestRejected(status), action: .dismiss)
         case 503:
             return ErrorCopy(text: UserMessage.serviceBusy(status), action: .dismiss)
         default:
@@ -524,4 +677,15 @@ enum LLMCatalog {
     /// （阿里云那一档没有可以打包票的充值地址，当年宁可不给按钮；那一档已删。）
     // qwenUnverifiedHost401（阿里云接入地址还没试对时的 401 话术）5.1.0 删掉。
     static let billingURL = "https://platform.openai.com/settings/organization/billing"
+
+    /// DeepSeek 的充值页（5.5.0）
+    static let deepseekTopUpURL = "https://platform.deepseek.com/top_up"
+
+    /// 「去充值」按钮该开哪一家的页面
+    static func billingURL(for provider: LLMProvider) -> String {
+        switch provider {
+        case .openai: return billingURL
+        case .deepseek: return deepseekTopUpURL
+        }
+    }
 }

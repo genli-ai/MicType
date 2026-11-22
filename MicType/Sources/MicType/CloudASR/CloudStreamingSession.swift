@@ -116,6 +116,9 @@ final class CloudStreamingSession: SpeechEngine {
     static func make(config: CloudASRConfig, fallback: CloudASREngine,
                      officialOpenAI: Bool = CloudASRSettings.openAIUsesOfficialEndpoint)
         -> CloudStreamingSession? {
+        // 0. 这一家得**有**实时识别。DeepSeek 没有（接口只有整段上传，5.5.0）：
+        //    这一轮不建连，松手之后整段走 CloudASREngine（超过 110 秒按 .deepseek 限制切段）
+        guard config.provider.supportsRealtime else { return nil }
         guard !config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         guard officialOpenAI else { return nil }
         guard !CloudStreamingAvailability.isUnsupported(provider: config.provider,

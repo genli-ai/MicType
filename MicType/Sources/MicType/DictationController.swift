@@ -546,9 +546,11 @@ final class DictationController {
     /// 字数与悬浮窗那个计数同一把尺子（不数空白）。**绝不记内容**。
     private func recordUsage(metric: SessionMetricDraft?, finalText: String) {
         guard let metric = metric else { return }
+        // 记下是哪一家：费用按各家的币种分开累计（OpenAI 美元、DeepSeek 人民币，5.5.0）
         UsageStore.shared.record(seconds: metric.audioSeconds,
                                  chars: OverlayCopy.countCharacters(finalText),
-                                 command: metric.mode == .command)
+                                 command: metric.mode == .command,
+                                 provider: Settings.shared.llmProvider)
     }
 
     /// 这一轮用哪个识别引擎。5.0.0 起**永远是云端**：把 Settings + 钥匙串组装成一份配置
@@ -678,6 +680,8 @@ final class DictationController {
     /// 而地址按存着的那几项就拼得出来，够用来问"这条链路这次运行里被判过实时不可用吗"。
     static func currentRecordingFlow() -> RecordingFlow {
         let provider = Settings.shared.recognitionEngine.cloudProvider
+        // DeepSeek 没有实时识别（5.5.0）：永远是松手后整段上传
+        guard provider.supportsRealtime else { return .cloudUpload }
         // 指着第三方网关时没有实时这条路（实时地址是写死的官方域名）
         guard CloudASRSettings.openAIUsesOfficialEndpoint else { return .cloudUpload }
         return CloudStreamingAvailability.isUnsupported(provider: provider,
@@ -689,15 +693,19 @@ final class DictationController {
     /// 这句话自己跟着变。这一条是被"界面上说 5 分钟、代码里其实是 10 分钟"坑出来的规矩
     /// （用户唯一能查到上限的地方就是这行字，它和代码对不上等于骗人）。
     static var recordingLimitCopy: String {
-        recordingLimitCopy(flow: currentRecordingFlow())
+        recordingLimitCopy(flow: currentRecordingFlow(),
+                           segmentSeconds: Settings.shared.recognitionEngine.cloudProvider
+                               .segmentLimits.targetSeconds)
     }
 
     /// 纯函数版（单测直接喂 flow，不碰 UserDefaults）
-    static func recordingLimitCopy(flow: RecordingFlow) -> String {
+    /// - segmentSeconds: 整段上传那条路的名义段长（按生效那一家：OpenAI 150 秒、DeepSeek 100 秒）
+    static func recordingLimitCopy(flow: RecordingFlow,
+                                   segmentSeconds: Double = CloudSegmentLimits.openai.targetSeconds) -> String {
         let limit = minutesLabel(maxRecordingSeconds)
         let warn = secondsLabel(preFinishWarningSeconds)
         // 段长来自整段上传那条路的分段上限（这句话只在实时用不了时才提到分段）
-        let segment = secondsLabel(CloudSegmentLimits.openai.targetSeconds)
+        let segment = secondsLabel(segmentSeconds)
         // Plan C 的 ⓘ 预算（中文 ≤ 120 字）把这三句都压短了一轮：数字一个没少，
         // 少掉的是"悬浮窗会显示已录时长与上限"这类屏幕上自己看得见的话
         let head = tr("单次录音上限 \(limit)，到点前 \(warn) 提醒一次。",

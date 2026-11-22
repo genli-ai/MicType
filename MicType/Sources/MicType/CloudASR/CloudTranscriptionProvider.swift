@@ -49,18 +49,70 @@ final class CloudASRHandle {
 /// 5.1.0 起**只有 OpenAI 一家**（用户 2026-09-28 拍板，与 iOS L36 同一个决定：阿里云整档删除）。
 /// 仍然留成枚举：整条云端链路（日志、可用性记忆、分段上限、钥匙串账号）都按它取值，
 /// 改成散落的常量只会让"识别用的是哪一家"这件事再也没有一个出处。
+///
+/// 5.5.0 加回 DeepSeek（`/v1/tools/asr`，整段上传、无实时流、无词汇表通道）。
 enum CloudASRProvider: String, CaseIterable {
     case openai
+    case deepseek
 
     /// SpeechEngine.engineName
-    var engineName: String { "Cloud · OpenAI" }
+    var engineName: String {
+        switch self {
+        case .openai: return "Cloud · OpenAI"
+        case .deepseek: return "Cloud · DeepSeek"
+        }
+    }
 
-    var displayName: String { tr("云端·OpenAI", "Cloud · OpenAI") }
+    var displayName: String {
+        switch self {
+        case .openai: return tr("云端·OpenAI", "Cloud · OpenAI")
+        case .deepseek: return tr("云端·DeepSeek", "Cloud · DeepSeek")
+        }
+    }
 
-    var segmentLimits: CloudSegmentLimits { .openai }
+    var segmentLimits: CloudSegmentLimits {
+        switch self {
+        case .openai: return .openai
+        case .deepseek: return .deepseek
+        }
+    }
 
-    /// 钥匙串账号：复用润色那把 Key（听写、润色、指令同一把）
-    var keychainAccount: String { KeychainHelper.openAIAccount }
+    /// 钥匙串账号：复用润色那把 Key（听写、润色、指令同一把）。**点名这一家的账户**，
+    /// 不读"当前服务商"（Key 永不串槽）
+    var keychainAccount: String {
+        switch self {
+        case .openai: return KeychainHelper.openAIAccount
+        case .deepseek: return KeychainHelper.deepSeekAccount
+        }
+    }
+
+    /// 和它同一把 Key 的那一档大模型服务商
+    var llmProvider: LLMProvider {
+        switch self {
+        case .openai: return .openai
+        case .deepseek: return .deepseek
+        }
+    }
+
+    /// 整段上传那条路用的型号名（日志与「已连通 ✓ … · 型号」那一行）。
+    /// DeepSeek 的识别端点**没有 model 字段**，这里写的是端点名，只为让那一行说清楚是哪一条链路
+    var batchModelName: String {
+        switch self {
+        case .openai: return OpenAITranscribeClient.defaultModel
+        case .deepseek: return DeepSeekTranscribeClient.modelLabel
+        }
+    }
+
+    /// 整段上传那条路打到哪台主机（日志用；都是固定的官方域名，不用打码）
+    var batchHost: String {
+        switch self {
+        case .openai: return "api.openai.com"
+        case .deepseek: return "api.deepseek.com"
+        }
+    }
+
+    /// 这一家有没有边说边传的实时识别。DeepSeek 没有（接口只有整段上传，iOS 中文版 2026-11-14 实测）
+    var supportsRealtime: Bool { self == .openai }
 }
 
 /// 一段音频的识别结果
@@ -99,6 +151,8 @@ struct CloudASRFailure: Error {
     /// 状态码 → 悬浮窗按钮（纯函数）：401 只能去设置里换 Key；额度用完只能去充值；其余只能关掉
     static func action(status: Int, code: String?) -> OverlayErrorAction {
         if status == 401 { return .openSettings }
+        // DeepSeek 余额不足是 402（iOS 中文版 AIServiceError 实测映射）
+        if status == 402 { return .addCredit }
         if status == 429, (code ?? "").localizedCaseInsensitiveContains("insufficient_quota") {
             return .addCredit
         }
@@ -395,7 +449,7 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
     func makeRequest(audio: CloudUploadAudio, seconds: Double, context: String?) -> Result<URLRequest, CloudASRFailure> {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else {
-            return .failure(CloudASRFailure(UserMessage.keyMissing, action: .openSettings))
+            return .failure(CloudASRFailure(UserMessage.keyMissing(for: .openai), action: .openSettings))
         }
         if let failure = Self.precheck(fileBytes: audio.data.count) { return .failure(failure) }
         guard let url = URL(string: Self.endpointString) else {
@@ -487,6 +541,168 @@ struct OpenAITranscribeClient: CloudTranscriptionProviding {
             }
             return made(UserMessage.rateLimited(status), retryable: true)
         case 400:
+            return made(UserMessage.requestRejected(status))
+        default:
+            if status >= 500 {
+                return made(UserMessage.serverError(status), retryable: true)
+            }
+            return made(UserMessage.serverError(status))
+        }
+    }
+}
+
+// MARK: - DeepSeek /v1/tools/asr（5.5.0）
+
+/// DeepSeek 的识别端点（iOS 中文版 ChatCompletionsClient.buildTranscriptionRequest 移植，2026-11-14 实测）：
+/// `POST https://api.deepseek.com/v1/tools/asr`，multipart **只有一个 `file` 字段**——
+/// 没有 model、没有语言提示、没有词汇表 / 热词、没有上下文，也**没有实时流**。
+/// 只收 16 位 PCM WAV 或 Ogg Opus；单段 ≤ 120 秒（132 秒实测 400）、≤ 8 MiB。
+/// 所以这条路永远发 WAV（macOS 自带的编码器写不出 Ogg Opus），**不用 AAC**。
+///
+/// 词汇表为什么一个字都不发：接口没有那个通道。专名靠润色（prompt 照旧带词汇表）+「错写=正写」硬替换，
+/// 界面上照实写（SettingsCopy.keyInfo(provider: .deepseek)）。
+struct DeepSeekTranscribeClient: CloudTranscriptionProviding {
+
+    var apiKey: String
+    /// 每段请求的超时（秒）。nil = 按这一段的时长算（timeout(forSeconds:)）
+    var timeout: TimeInterval?
+
+    var provider: CloudASRProvider { .deepseek }
+    var hasCredentials: Bool { !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    static let endpointString = "https://api.deepseek.com/v1/tools/asr"
+    /// 日志与状态行里的"型号"：这个端点没有型号，写端点名
+    static let modelLabel = "deepseek-asr"
+    /// 单文件上限 8 MiB（api-docs.deepseek.com/zh-cn/guides/asr，2026-11-14）。
+    /// 110 秒一段的 16 kHz PCM16 WAV 约 3.5 MB，远不到它——这道闸是给分段参数出 bug 时用的
+    static let maxFileBytes = 8 * 1024 * 1024
+
+    /// 每段的超时：`max(12, 8 + 0.25 × 秒)`，封顶 40 秒（iOS 中文版 CloudTranscription 同一个公式：
+    /// 16 s → 12 s，60 s → 23 s，128 s 及以上 → 40 s）。纯函数，单测钉住。
+    /// 为什么不沿用 OpenAI 那条路的 300 秒：DeepSeek 实测 97 秒音频 3.1 秒返回，
+    /// 一段 110 秒的上传等满 300 秒才报错，用户早就以为它死了。
+    static func timeout(forSeconds seconds: Double) -> TimeInterval {
+        min(40, max(12, 8 + 0.25 * max(0, seconds)))
+    }
+
+    // MARK: 纯函数 · multipart
+
+    static func makeBoundary() -> String { "MicTypeBoundary" + UUID().uuidString }
+
+    /// 只有一个 `file` 字段。文件名 / 类型照 iOS 那一版写（audio.wav / audio/wav）：
+    /// 服务端按内容认格式，不看这两个头
+    static func multipartBody(boundary: String, wav: Data) -> Data {
+        var body = Data()
+        body.append(Data(("--" + boundary + "\r\n").utf8))
+        body.append(Data("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n".utf8))
+        body.append(Data("Content-Type: audio/wav\r\n\r\n".utf8))
+        body.append(wav)
+        body.append(Data(("\r\n--" + boundary + "--\r\n").utf8))
+        return body
+    }
+
+    static func precheck(fileBytes: Int) -> CloudASRFailure? {
+        guard fileBytes > maxFileBytes else { return nil }
+        Log.warn("CloudASR precheck: deepseek segment \(fileBytes / (1024 * 1024))MB is over the 8MB limit")
+        return CloudASRFailure(UserMessage.audioTooLarge)
+    }
+
+    // MARK: 请求
+
+    /// - audio: 必须是 WAV（m4a 会被拒）。调用方传错了也不在这里偷偷转码：那是分段层的 bug，
+    ///   进日志、照常发出去让服务端报，比在这里静默吞掉好查
+    func makeRequest(audio: CloudUploadAudio, seconds: Double, context: String?) -> Result<URLRequest, CloudASRFailure> {
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            return .failure(CloudASRFailure(UserMessage.keyMissing(for: .deepseek), action: .openSettings))
+        }
+        if audio.contentType != "audio/wav" {
+            Log.warn("CloudASR deepseek got a non-WAV upload type=\(audio.contentType)")
+        }
+        if let failure = Self.precheck(fileBytes: audio.data.count) { return .failure(failure) }
+        guard let url = URL(string: Self.endpointString) else {
+            return .failure(CloudASRFailure(UserMessage.invalidEndpoint))
+        }
+        let boundary = Self.makeBoundary()
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = timeout ?? Self.timeout(forSeconds: seconds)
+        request.setValue("multipart/form-data; boundary=" + boundary, forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
+        // context（上一段的尾巴）这个端点不收：丢掉，不硬塞
+        request.httpBody = Self.multipartBody(boundary: boundary, wav: audio.data)
+        return .success(request)
+    }
+
+    // MARK: 纯函数 · 解析
+
+    func parse(_ data: Data) -> Result<CloudASRSegmentResult, CloudASRFailure> { Self.parse(data) }
+
+    /// 200 回包 `{"request_id", "text", "duration_ms"}`。duration_ms 折成计费秒数（诊断用）。
+    /// 回包里带 error 对象的按错误处理；`text` 缺失算"没识别出字"（与 OpenAI 那条路同一个码，
+    /// 粘贴即验证据此判"Key 是好的"）
+    static func parse(_ data: Data) -> Result<CloudASRSegmentResult, CloudASRFailure> {
+        guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return .failure(CloudASRFailure(UserMessage.unreadableResponse))
+        }
+        if let err = json["error"] as? [String: Any] {
+            return .failure(failure(status: 200,
+                                    code: (err["code"] as? String) ?? (err["type"] as? String),
+                                    message: err["message"] as? String))
+        }
+        guard let text = json["text"] as? String else {
+            return .failure(CloudASRFailure(UserMessage.noTranscript,
+                                            code: CloudASRFailure.emptyTranscriptCode,
+                                            status: 200))
+        }
+        var billed: Double?
+        if let ms = json["duration_ms"] as? Double {
+            billed = ms / 1000
+        } else if let ms = json["duration_ms"] as? Int {
+            billed = Double(ms) / 1000
+        }
+        return .success(CloudASRSegmentResult(text: text.trimmingCharacters(in: .whitespacesAndNewlines),
+                                              detectedLanguage: nil, billedSeconds: billed))
+    }
+
+    // MARK: 纯函数 · 错误映射
+
+    func failure(status: Int, data: Data?) -> CloudASRFailure {
+        var code: String?
+        var message: String?
+        if let data = data,
+           let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let err = json["error"] as? [String: Any] {
+            code = (err["code"] as? String) ?? (err["type"] as? String)
+            message = err["message"] as? String
+        }
+        return Self.failure(status: status, code: code, message: message)
+    }
+
+    /// 与 LLMCatalog.describeHTTPError(provider: .deepseek) 同一套话：401 Key 无效、402 余额不足、
+    /// 429 限流（DeepSeek 的 429 只是"太频繁"，余额不足走的是 402）。服务商原话只进日志
+    static func failure(status: Int, code: String?, message: String?) -> CloudASRFailure {
+        let raw = (code ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.isEmpty == false || message?.isEmpty == false {
+            Log.warn("CloudASR deepseek error status=\(status) code=\(raw) message="
+                     + String((message ?? "").prefix(200)))
+        }
+        func made(_ text: String, retryable: Bool = false) -> CloudASRFailure {
+            CloudASRFailure(text, retryable: retryable, code: raw.isEmpty ? nil : raw, status: status)
+        }
+        switch status {
+        case 401:
+            return made(UserMessage.keyRejected)
+        case 402:
+            return made(UserMessage.outOfCredit(status))
+        case 403:
+            return made(UserMessage.keyNotAllowed(status))
+        case 404:
+            return made(UserMessage.modelNotFound(status))
+        case 429:
+            return made(UserMessage.rateLimited(status), retryable: true)
+        case 400, 422:
+            // 422 是 DeepSeek 的"参数错误"（iOS 中文版注释）；超过 120 秒的那一段也是 400
             return made(UserMessage.requestRejected(status))
         default:
             if status >= 500 {

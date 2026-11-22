@@ -67,9 +67,12 @@ final class PricingCopyTests: XCTestCase {
         for language in AppLanguage.allCases {
             L10n.shared.language = language
             for provider in LLMProvider.allCases {
+                // 5.5.0：符号跟着那一家的币种走（OpenAI $、DeepSeek ¥），两种币绝不混写在一句里
+                let symbol = LLMCatalog.currency(for: provider).symbol
                 for note in [LLMCatalog.hourlyCostNote(provider: provider),
                              LLMCatalog.perSentenceCostNote(provider: provider)] {
-                    XCTAssertTrue(note.contains("$"), note)
+                    XCTAssertTrue(note.contains(symbol), note)
+                    XCTAssertFalse(note.contains(symbol == "$" ? "¥" : "$"), note)
                     XCTAssertFalse(note.contains("分钱"), note)
                 }
             }

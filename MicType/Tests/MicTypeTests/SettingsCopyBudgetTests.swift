@@ -217,7 +217,8 @@ final class SettingsCopyBudgetTests: XCTestCase {
             for provider in CloudASRProvider.allCases {
                 let note = LLMCatalog.cloudASRPriceNote(provider: provider)
                 XCTAssertFalse(note.isEmpty)
-                XCTAssertTrue(note.contains("$"), note)
+                // 符号跟着那一家的币种（5.5.0：DeepSeek 是 ¥）
+                XCTAssertTrue(note.contains(LLMCatalog.currency(for: provider.llmProvider).symbol), note)
                 XCTAssertFalse(CJKSourceScanner.containsFlagged(
                     LLMCatalog.cloudASRPriceNote(provider: provider)) && language == .en, note)
             }
@@ -230,17 +231,42 @@ final class SettingsCopyBudgetTests: XCTestCase {
     func testKeyInfoQuotesTheSingleSource() {
         for language in AppLanguage.allCases {
             L10n.shared.language = language
-            let info = SettingsCopy.keyInfo
-            XCTAssertTrue(info.contains(LLMCatalog.keyStorageNote), info)
-            XCTAssertTrue(info.contains(LLMCatalog.billingNote), info)
-            XCTAssertFalse(info.lowercased().contains("api host"), info)
+            for provider in LLMProvider.allCases {
+                let info = SettingsCopy.keyInfo(provider: provider)
+                XCTAssertTrue(info.contains(LLMCatalog.keyStorageNote), info)
+                XCTAssertTrue(info.contains(LLMCatalog.billingNote), info)
+                XCTAssertTrue(info.contains(LLMCatalog.hourlyCostNote(provider: provider)), info)
+                XCTAssertFalse(info.lowercased().contains("api host"), info)
+            }
         }
+    }
+
+    /// DeepSeek 那颗 ⓘ 照实说词汇表只在润色里生效，**不提 Fast 档**（那是 OpenAI 的字段）；
+    /// OpenAI 那颗反过来（5.5.0）
+    func testDeepSeekKeyInfoTellsTheVocabularyTruth() {
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            let deepseek = SettingsCopy.keyInfo(provider: .deepseek)
+            XCTAssertTrue(deepseek.contains(SettingsCopy.deepSeekVocabularyNote), deepseek)
+            XCTAssertFalse(deepseek.contains("Fast"), deepseek)
+            XCTAssertTrue(deepseek.contains(LLMCatalog.deepseekWebSearchPriceNote), deepseek)
+            let openai = SettingsCopy.keyInfo(provider: .openai)
+            XCTAssertFalse(openai.contains(SettingsCopy.deepSeekVocabularyNote), openai)
+            XCTAssertTrue(openai.contains("Fast"), openai)
+        }
+        L10n.shared.language = .zh
+        XCTAssertEqual(SettingsCopy.deepSeekVocabularyNote, "词汇表只在润色阶段生效。")
+        // 词汇表那颗 ⓘ 在 DeepSeek 档下不许写"送进识别"
+        XCTAssertFalse(SettingsCopy.vocabularyInfo(provider: .deepseek).contains("送进"))
     }
 
     /// 这一页只有一颗 ⓘ：API Key（「实时草稿」那一颗 5.2.0 随开关删掉）。
     /// 这里钉的是"没人再把 ⓘ 悄悄加回来"。
     func testCloudPageKeepsOnlyOneInfoPopover() {
-        XCTAssertEqual(SettingsCopy.cloudInfos, [SettingsCopy.keyInfo], "\(SettingsCopy.cloudInfos)")
+        // 5.5.0：仍然只有 Key 那一颗，只是按服务商各一份（同一时刻屏幕上只出现一颗）
+        XCTAssertEqual(SettingsCopy.cloudInfos,
+                       LLMProvider.allCases.map { SettingsCopy.keyInfo(provider: $0) },
+                       "\(SettingsCopy.cloudInfos)")
     }
 
     // MARK: - 隐私文案只在关于页出现

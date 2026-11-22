@@ -25,11 +25,12 @@ final class AISetupTests: XCTestCase {
         XCTAssertEqual(s.currentBaseURL, s.baseURL(for: s.llmProvider))
     }
 
-    /// 5.1.0：只剩 OpenAI 一档（阿里云整档删除）。有人把它加回来之前，先要过这一条
-    func testOpenAIIsTheOnlyProvider() {
-        XCTAssertEqual(LLMProvider.allCases, [.openai])
-        XCTAssertEqual(CloudASRProvider.allCases, [.openai])
-        XCTAssertEqual(RecognitionEngineChoice.allCases, [.cloudOpenAI])
+    /// 5.1.0：只剩 OpenAI 一档（阿里云整档删除）；5.5.0 加回 DeepSeek（用户 2026-11-22 拍板）。
+    /// 再有人加第三家之前，先要过这一条
+    func testProvidersAreOpenAIAndDeepSeek() {
+        XCTAssertEqual(LLMProvider.allCases, [.openai, .deepseek])
+        XCTAssertEqual(CloudASRProvider.allCases, [.openai, .deepseek])
+        XCTAssertEqual(RecognitionEngineChoice.allCases, [.cloudOpenAI, .cloudDeepSeek])
         // 存量里的 qwen 读不出一档来——它归 RetiredProviderCleanup 改写
         XCTAssertNil(LLMProvider(rawValue: "qwen"))
         XCTAssertEqual(RecognitionEngineChoice.parse("cloudAlibaba"), .cloudOpenAI)

@@ -27,6 +27,8 @@ enum Theme {
     /// 告知形态（"已经发生了、没什么可点"：没听到、润色失败已给原文、设备被拔…）的字色。
     /// 不是强调色、也不是红：黄调的次色，一眼看出"留意一下"而不是"出事了"
     static let warning = Color(hex: 0xE6B450)
+    /// "通了 / 在用"的绿（设置状态卡那颗连接圆点、服务商卡片上的「正在使用 ✓」，5.5.0 收成 token）
+    static let success = Color(hex: 0x30D158)
 
     /// 品牌渐变，135°（左上 → 右下，与 App 图标同向）
     static let accentGradient = LinearGradient(colors: [accentA, accentB],

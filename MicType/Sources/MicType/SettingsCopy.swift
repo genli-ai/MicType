@@ -63,7 +63,7 @@ enum SettingsCopy {
 
     /// 「专有词汇表」那一页的两颗 ⓘ（词汇表 / 自定义规则）
     static var writingInfos: [String] {
-        [vocabularyInfo, customRulesInfo]
+        LLMProvider.allCases.map { vocabularyInfo(provider: $0) } + [customRulesInfo]
     }
 
     /// 「关于」页上那两颗 ⓘ（4.3.3 从「输入」页搬来：保存听写历史 / 设置备份）。
@@ -94,9 +94,18 @@ enum SettingsCopy {
     }
 
     /// 5.1.0 删掉了「阿里云那一档识别时不认它」那一句：那一档没有了。
-    static var vocabularyInfo: String {
-        tr("这些词作为热词直接送进 OpenAI 的云端识别，也参与 AI 润色纠错——专有名词准确率的第一杠杆。硬替换「杰文=捷文」零耗时，一个正写可挂多个错写「杰文|捷纹=捷文」。口水词内置。",
-           "These terms go as hotwords to OpenAI cloud recognition, and are used by AI polish — the number one lever for proper-noun accuracy. Hard replacement such as \"Jevin=Jaywen\" rewrites every occurrence at zero latency, and one correct form can take several wrong spellings: \"Jevin|Javin=Jaywen\". Filler words are built in.")
+    static var vocabularyInfo: String { vocabularyInfo(provider: Settings.shared.llmProvider) }
+
+    /// 5.5.0 按生效服务商分：DeepSeek 的识别接口**没有**热词通道，那一档只能照实说"只在润色里用"
+    static func vocabularyInfo(provider: LLMProvider) -> String {
+        switch provider {
+        case .openai:
+            return tr("这些词作为热词直接送进 OpenAI 的云端识别，也参与 AI 润色纠错——专有名词准确率的第一杠杆。硬替换「杰文=捷文」零耗时，一个正写可挂多个错写「杰文|捷纹=捷文」。口水词内置。",
+               "These terms go as hotwords to OpenAI cloud recognition, and are used by AI polish — the number one lever for proper-noun accuracy. Hard replacement such as \"Jevin=Jaywen\" rewrites every occurrence at zero latency, and one correct form can take several wrong spellings: \"Jevin|Javin=Jaywen\". Filler words are built in.")
+        case .deepseek:
+            return tr("DeepSeek 的识别不收热词，这些词只在 AI 润色纠错时生效。硬替换「杰文=捷文」零耗时，一个正写可挂多个错写「杰文|捷纹=捷文」。口水词内置。",
+               "DeepSeek recognition takes no hotwords, so these terms only apply when AI polish corrects the text. Hard replacement such as \"Jevin=Jaywen\" rewrites every occurrence at zero latency, and one correct form can take several wrong spellings: \"Jevin|Javin=Jaywen\". Filler words are built in.")
+        }
     }
 
     // MARK: - 云端 AI
@@ -107,8 +116,9 @@ enum SettingsCopy {
         tr("例如：署名用 Gen；邮件偏正式", "For example: sign as Gen; formal in email")
     }
 
-    // 服务商选择器那一套（「正在使用 ✓」providerInUse、「预览中，仍用 X」providerNotSetUp）
-    // 5.1.0 删掉：只剩 OpenAI 一家，没有选择器，也就没有"看着的那一档还没生效"这回事。
+    /// 生效那张服务商卡片上的小标签（5.5.0 随 DeepSeek 加回；5.1.0 只剩一家时删过）。
+    /// 「预览中，仍用 X」那一行不加回：生效那张卡片自己带着这个标签，一眼就看得出预览的不是它
+    static var providerInUse: String { tr("正在使用 ✓", "In use ✓") }
 
     /// Key 验通之后，状态行末尾那半句（设置页）：**这一档一小时大概多少钱**。
     ///
@@ -139,21 +149,37 @@ enum SettingsCopy {
     /// 「已连通 ✓ 云端·OpenAI · gpt-transcribe」，它自己就把这件事演示了一遍。
     ///
     /// 5.1.0 起只有 OpenAI 一档（阿里云那一档多出来的"API Host 留空即自动找"随之删掉）。
-    static var keyInfo: String {
+    static var keyInfo: String { keyInfo(provider: .openai) }
+
+    /// 按服务商分（5.5.0）。DeepSeek 那一颗**不说 Fast 档**（那是 OpenAI 的字段），换成一句实话：
+    /// 词汇表只在润色阶段生效——DeepSeek 的识别接口没有热词通道，界面上不许写"识别同样生效"
+    static func keyInfo(provider: LLMProvider) -> String {
         // 「一小时大概多少钱」：5.0.0 起识别也要花钱，而这颗 ⓘ 是设置页上唯一
         // 能说这件事的地方。单价的唯一出处是 LLMCatalog
-        let cost = tr("识别加润色\(LLMCatalog.hourlyCostNote(provider: .openai))，按说话时长算。",
-                      "Recognition plus polish: \(LLMCatalog.hourlyCostNote(provider: .openai)) of speech.")
+        let cost = tr("识别加润色\(LLMCatalog.hourlyCostNote(provider: provider))，按说话时长算。",
+                      "Recognition plus polish: \(LLMCatalog.hourlyCostNote(provider: provider)) of speech.")
         // 5.0.2 从 关于 → 隐私 搬来的两个半句（那一段压到三句，而这两句讲的是**花钱**，
         // 这里本来就在说一小时多少钱——单价的唯一出处仍是 LLMCatalog）：
         //   • 按住说指令时的联网搜索没有开关、永远开；
         //   • OpenAI 官方接口一律 Fast 档。
+        let price = LLMCatalog.webSearchPriceNote(style: LLMCatalog.searchStyle(
+            provider: provider, baseURL: provider.defaultBaseURL)) ?? LLMCatalog.webSearchPriceNote
         let search = tr("按住说指令会联网搜索（永远开）：", "Hold-to-command searches the web (always on): ")
-            + LLMCatalog.webSearchPriceNote
-        let fast = tr("OpenAI 官方接口走 Fast 档：", "The official OpenAI API runs in the Fast tier: ")
-            + LLMCatalog.fastTierPriceNote
-        return LLMCatalog.keyStorageNote + "\n" + LLMCatalog.billingNote + "\n" + cost
-            + "\n" + search + "\n" + fast
+            + price
+        let head = LLMCatalog.keyStorageNote + "\n" + LLMCatalog.billingNote + "\n" + cost + "\n" + search
+        switch provider {
+        case .openai:
+            let fast = tr("OpenAI 官方接口走 Fast 档：", "The official OpenAI API runs in the Fast tier: ")
+                + LLMCatalog.fastTierPriceNote
+            return head + "\n" + fast
+        case .deepseek:
+            return head + "\n" + deepSeekVocabularyNote
+        }
+    }
+
+    /// DeepSeek 档的那一句实话（5.5.0）：识别接口没有热词 / 词汇表通道，只有润色看得到词汇表
+    static var deepSeekVocabularyNote: String {
+        tr("词汇表只在润色阶段生效。", "Your vocabulary only applies during polish.")
     }
 
     // 「实时草稿」开关的栏名与 ⓘ（livePreviewLabel / livePreviewInfo）5.2.0 删掉：
@@ -190,7 +216,7 @@ enum SettingsCopy {
 
     /// 设置正页的 ⓘ：只剩 API Key 那一颗（「实时草稿」那一颗 5.2.0 随开关删掉）。
     static var cloudInfos: [String] {
-        [keyInfo]
+        LLMProvider.allCases.map { keyInfo(provider: $0) }
     }
 
     // MARK: - 概览（权限横幅：缺了才出现，一行 + 一颗按钮）

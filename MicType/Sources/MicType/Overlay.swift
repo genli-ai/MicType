@@ -865,7 +865,8 @@ final class OverlayController {
             showError(label, buttonLabel: action.label) { [weak self] in self?.onOpenSettings?() }
         case .addCredit:
             showError(label, buttonLabel: action.label) {
-                guard let url = URL(string: LLMCatalog.billingURL) else { return }
+                // 充值页跟着生效那一家走（DeepSeek 是 platform.deepseek.com/top_up）
+                guard let url = URL(string: LLMCatalog.billingURL(for: Settings.shared.llmProvider)) else { return }
                 Log.info("Overlay error action: open billing page")
                 NSWorkspace.shared.open(url)
             }

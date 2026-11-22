@@ -34,6 +34,8 @@ struct MainSettingsPage: View {
     @ObservedObject private var usage = UsageStore.shared
     @ObservedObject private var suggestions = VocabularySuggestionStore.shared
     @AppStorage(SettingsKeys.openaiBaseURL) private var baseURL = "https://api.openai.com/v1"
+    /// 生效那一家（5.5.0）：状态卡写明在用哪家、Key 尾号读哪一家的钥匙串条目
+    @AppStorage(SettingsKeys.llmProvider) private var providerRaw = LLMProvider.openai.rawValue
     @AppStorage(SettingsKeys.customVocabulary) private var vocabulary = ""
     @AppStorage(SettingsKeys.customPolishRules) private var customRules = ""
     @Environment(\.colorScheme) private var scheme
@@ -69,7 +71,7 @@ struct MainSettingsPage: View {
                     if !micOK || !axOK {
                         MTCard { permissionsBanner }
                     }
-                    SettingsStatusCard(keyTail: keyTail, week: usage.thisWeek())
+                    SettingsStatusCard(keyTail: keyTail, week: usage.thisWeek(), provider: inUseProvider)
                     // 词汇提议（5.4.0）：一次只一条、计数最高的那条；没有就一个像素都不占
                     if let pair = suggestions.pending(vocabulary: vocabulary) {
                         VocabularySuggestionRow(pair: pair,
@@ -107,6 +109,8 @@ struct MainSettingsPage: View {
             startPermissionPolling()
         }
         .onDisappear { stopPermissionPolling() }
+        // 生效服务商换了（卡片上验通 / 导入设置）：Key 尾号要换成那一家的
+        .onChange(of: providerRaw) { _, _ in refreshKeyTail() }
         // 关窗时这一页并不会被销毁（窗口复用），所以停轮询这件事只能由窗口来说
         .onChange(of: windowState.isOpen) { _, open in
             if open {
@@ -129,7 +133,8 @@ struct MainSettingsPage: View {
                 providerNotices
                 // Key：与引导 ② **同一个控件**（CloudSetupCore → KeyEntryView），验证与存储只写一处
                 CloudSetupCore(style: .settings,
-                               onKeyStatus: { _ in refreshKeyTail() }) {
+                               onKeyStatus: { _ in refreshKeyTail() },
+                               onProviderChange: { _ in refreshKeyTail() }) {
                     EmptyView()
                 }
                 .padding(.vertical, 6)
@@ -216,7 +221,8 @@ struct MainSettingsPage: View {
         // （实时地址是写死的官方域名，见 CloudASRSettings.openAIUsesOfficialEndpoint）。
         // 地址**从 @AppStorage 的值读**而不是读 Settings.currentBaseURL：后者不是 @Published，
         // 点了「恢复官方地址」界面不会重算
-        if baseURL != LLMProvider.openai.defaultBaseURL {
+        // 只在生效那一家是 OpenAI 时说（DeepSeek 的地址是写死的，这一行和它无关）
+        if inUseProvider == .openai, baseURL != LLMProvider.openai.defaultBaseURL {
             BoundaryRow(text: SettingsCopy.endpointOverridden + baseURL) {
                 Button(tr("恢复官方地址", "Restore the official URL")) {
                     baseURL = LLMProvider.openai.defaultBaseURL
@@ -226,8 +232,13 @@ struct MainSettingsPage: View {
         }
     }
 
+    /// 生效那一家
+    private var inUseProvider: LLMProvider { LLMProvider(rawValue: providerRaw) ?? .openai }
+
+    /// 读的是**生效那一家**的钥匙串条目（点名 keychainAccount，不靠钥匙串的默认账户）
     private func refreshKeyTail() {
-        keyTail = SettingsStatusCard.keyTail(KeychainHelper.loadAPIKey(account: LLMProvider.openai.keychainAccount))
+        let provider = LLMProvider(rawValue: providerRaw) ?? .openai
+        keyTail = SettingsStatusCard.keyTail(KeychainHelper.loadAPIKey(account: provider.keychainAccount))
     }
 
     // MARK: 权限横幅（缺了才出现）
@@ -329,6 +340,8 @@ struct SettingsStatusCard: View {
     /// Key 的尾号（nil = 没有 Key → 「未连接」）
     let keyTail: String?
     let week: UsageWeek
+    /// 在用哪一家（5.5.0：状态卡第一行要写明）
+    var provider: LLMProvider = .openai
     @Environment(\.colorScheme) private var scheme
 
     /// Key 尾号：末 4 位（纯函数，单测钉住"不够长就不显示"——
@@ -340,9 +353,10 @@ struct SettingsStatusCard: View {
         return String(key.suffix(4))
     }
 
-    static func connectionLine(connected: Bool) -> String {
-        connected ? tr("OpenAI · 已连接", "OpenAI · Connected")
-                  : tr("OpenAI · 未连接", "OpenAI · Not connected")
+    static func connectionLine(connected: Bool, provider: LLMProvider = .openai) -> String {
+        let name = provider.segmentName
+        return connected ? tr("\(name) · 已连接", "\(name) · Connected")
+                         : tr("\(name) · 未连接", "\(name) · Not connected")
     }
 
     var body: some View {
@@ -360,7 +374,7 @@ struct SettingsStatusCard: View {
                             Circle()
                                 .fill(keyTail != nil ? Color(hex: 0x30D158) : palette.muted)
                                 .frame(width: 7, height: 7)
-                            Text(Self.connectionLine(connected: keyTail != nil))
+                            Text(Self.connectionLine(connected: keyTail != nil, provider: provider))
                                 .font(.system(size: 14, weight: .semibold))
                         }
                         if let tail = keyTail {

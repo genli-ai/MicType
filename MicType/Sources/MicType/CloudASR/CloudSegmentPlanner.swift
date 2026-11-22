@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - 云端分段规划
 //
-// 云端有单请求上限（OpenAI ≤25MB 原始文件），而且段长还决定了分段进度、
+// 云端有单请求上限（OpenAI ≤25MB 原始文件；DeepSeek ≤120 秒 / 8 MiB），而且段长还决定了分段进度、
 // 失败部分交付与 Esc 保字（见 CloudSegmentLimits.openai），长录音必须切开分别发。切哪儿很讲究：切在人说话中间会把一个词劈成两半，两段各错一次。
 // 所以按 20ms 一帧算 RMS，在"名义边界 ±3s"里挑能量最低的那一帧下刀——那通常是句间停顿。
 //
@@ -46,6 +46,13 @@ struct CloudSegmentLimits: Equatable {
     /// 三件事在这一档上同时失效，十分钟口述可能一个字都不剩。切小还更抗断网。
     /// 不变式：任何供应商的 hardMaxSeconds 都必须显著小于录音硬上限（单测钉住）。
     static let openai = CloudSegmentLimits(targetSeconds: 150, hardMaxSeconds: 240)
+
+    /// DeepSeek（5.5.0）：服务端单段上限 120 秒（132 秒实测 400 `audio duration … exceeds 120 s`）、
+    /// 8 MiB。硬上限取 110 秒（与 iOS 中文版 TranscriptionAudio.maxSegmentSeconds 同一个数，
+    /// 给 120 秒留 10 秒余量）；名义段长 100 秒、前后各找 5 秒静音——切点窗口 [95, 105]，
+    /// 永远落在 110 之内。110 秒的 16 kHz PCM16 WAV 约 3.5 MB，体积不是瓶颈。
+    static let deepseek = CloudSegmentLimits(targetSeconds: 100, hardMaxSeconds: 110,
+                                             silenceSearchSeconds: 5)
 }
 
 enum CloudSegmentPlanner {

@@ -386,16 +386,19 @@ enum SettingsBackup {
         // 它在 Key.all 里，所以老文件里的这一项不会被报成"不认识的键"，只是不起作用。
         // Key.legacyIgnored 里那十几条同理（见那张表的注释）。
         //
-        // 服务商：5.1.0 起只有 OpenAI 一家。文件里写着 openai 就照写（一个字都不变，所以不念）；
-        // 写着退役的那几档（5.0.x 的 qwen、4.x 的 deepseek / custom / local）**静默跳过**——
+        // 服务商：5.5.0 起 openai / deepseek 都认（照写；换了家要在摘要里念一句——
+        // 生效服务商一换，识别、润色、指令全跟着换，而那一家的 Key 可能还没填）。
+        // 写着退役的那几档（5.0.x 的 qwen、4.x 的 custom / local）**静默跳过**——
         // 它们不是坏数据，只是没有归宿了，报成"忽略 1 项（不认识或格式不对）"会让人以为文件坏了。
-        // 只有类型都不对（不是字符串）才算格式错误。
+        // 只有类型都不对（不是字符串）才算格式错误。Key 永远不随设置文件走（各家钥匙串条目一个字节不动）。
         if let raw = settings[Key.llmProvider] {
             if let text = raw as? String {
                 if let match = LLMProvider.allCases.first(where: {
                     $0.rawValue.compare(text, options: .caseInsensitive) == .orderedSame }) {
+                    let changed = Settings.shared.llmProvider != match
                     Settings.shared.llmProvider = match
                     summary.updatedKeys.append(Key.llmProvider)
+                    if changed { summary.notableChanges.append("\(Key.llmProvider) = \(match.rawValue)") }
                 }
             } else {
                 summary.ignoredKeys.append(Key.llmProvider)

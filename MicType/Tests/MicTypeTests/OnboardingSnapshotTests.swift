@@ -76,6 +76,10 @@ final class OnboardingSnapshotTests: XCTestCase {
                 for (page, name) in names {
                     shoot(page, name: "\(name)-\(tag)", dark: dark)
                 }
+                // 5.5.0：② 那一屏在 DeepSeek 卡片选中时的样子（大框栏名、三步换成 DeepSeek 开放平台）
+                UserDefaults.standard.set(LLMProvider.deepseek.rawValue, forKey: SettingsKeys.llmProvider)
+                shoot(.key, name: "onboarding-2-key-deepseek-\(tag)", dark: dark)
+                UserDefaults.standard.set(LLMProvider.openai.rawValue, forKey: SettingsKeys.llmProvider)
             }
         }
         print("[snapshot] PNGs written to \(outputDirectory.path)")

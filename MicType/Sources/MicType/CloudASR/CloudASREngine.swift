@@ -15,7 +15,7 @@ import Foundation
 // MARK: 配置
 
 struct CloudASRConfig {
-    /// 5.1.0 起只有 OpenAI（阿里云整档删除）。留着这个字段是因为日志与可用性记忆按它取名
+    /// OpenAI 或 DeepSeek（5.5.0）。客户端、分段上限、上传格式、日志都按它取
     var provider: CloudASRProvider = .openai
     /// 语言提示（OpenAI 的 languages[]，最多 4 个）
     var languageHints: [String] = []
@@ -33,9 +33,25 @@ struct CloudASRConfig {
         self.apiKey = apiKey
     }
 
-    /// 配置 → 客户端（整段上传那条路：gpt-transcribe）
+    /// 配置 → 客户端（整段上传那条路：OpenAI gpt-transcribe / DeepSeek /v1/tools/asr）。
+    /// DeepSeek 那一家**不收**语言提示与词汇表（接口没有这两个字段），所以这里一个都不传
     func makeClient() -> CloudTranscriptionProviding {
-        OpenAITranscribeClient(apiKey: apiKey, languages: languageHints, keywords: vocabulary)
+        switch provider {
+        case .openai:
+            return OpenAITranscribeClient(apiKey: apiKey, languages: languageHints, keywords: vocabulary)
+        case .deepseek:
+            return DeepSeekTranscribeClient(apiKey: apiKey)
+        }
+    }
+
+    /// 一段音频该怎么编码上传。纯函数，单测钉住"DeepSeek 永远 WAV"：
+    ///   • OpenAI：AAC-LC 48 kbps m4a（5.1.0，约 WAV 的 1/5 字节），编码失败退回 WAV；
+    ///   • DeepSeek：只收 16 位 PCM WAV 或 Ogg Opus（macOS 写不出后者）→ 永远 16 kHz PCM16 WAV
+    static func uploadAudio(samples: [Float], provider: CloudASRProvider) -> CloudUploadAudio {
+        switch provider {
+        case .openai: return AACEncoder.uploadAudio(samples: samples)
+        case .deepseek: return .wav(WAVEncoder.encode(samples: samples))
+        }
     }
 }
 
@@ -127,7 +143,9 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
     func prewarm() {
         let cfg = currentConfig
         guard cfg.makeClient().hasCredentials else { return }
-        guard let url = URL(string: OpenAITranscribeClient.endpointString) else { return }
+        let endpoint = cfg.provider == .deepseek ? DeepSeekTranscribeClient.endpointString
+                                                 : OpenAITranscribeClient.endpointString
+        guard let url = URL(string: endpoint) else { return }
         var request = URLRequest(url: url)
         request.timeoutInterval = 5
         URLSession.shared.dataTask(with: request).resume()
@@ -263,7 +281,8 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
         }
 
         guard client.hasCredentials else {
-            finish(.failure(CloudASRFailure(UserMessage.keyMissing, action: .openSettings)))
+            finish(.failure(CloudASRFailure(UserMessage.keyMissing(for: cfg.provider.llmProvider),
+                                            action: .openSettings)))
             return handle
         }
         guard !samples.isEmpty else {
@@ -280,7 +299,7 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
             }
             let seconds = Double(samples.count) / Double(WAVEncoder.defaultSampleRate)
             Log.info("CloudASR start provider=\(cfg.provider.rawValue) "
-                     + "model=\(OpenAITranscribeClient.defaultModel) host=api.openai.com "
+                     + "model=\(cfg.provider.batchModelName) host=\(cfg.provider.batchHost) "
                      + "seconds=\(String(format: "%.1f", seconds)) segments=\(segments.count)")
             self.run(segmentIndex: 0, segments: segments, samples: samples,
                      config: cfg, client: client, texts: [], contextSeed: previousText,
@@ -314,6 +333,13 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
             Log.info("CloudASR done segments=\(segments.count) chars=\(joined.count) "
                      + "billedSeconds=\(billed.map { String(format: "%.1f", $0) } ?? "?") "
                      + "ms=\(Log.ms(since: started))")
+            if config.provider == .deepseek {
+                // 与 OpenAI 的 `CloudASR hybrid …` 那一行区分开：DeepSeek 没有实时那条通道，
+                // 每句只走这一趟整段上传（5.5.0 定的日志形状）
+                let total = segments.reduce(0) { $0 + $1.seconds }
+                Log.info("CloudASR batch-only provider=deepseek "
+                         + "seconds=\(String(format: "%.1f", total)) ms=\(Log.ms(since: started))")
+            }
             finish(.success(CloudASRTranscription(text: joined,
                                                   segmentCount: segments.count,
                                                   billedSeconds: billed,
@@ -323,8 +349,9 @@ final class CloudASREngine: SpeechEngine, @unchecked Sendable {
 
         let segment = segments[index]
         let slice = Array(samples[segment.range])
-        // 5.1.0 起发 AAC-LC 48 kbps 的 m4a（约 WAV 的 1/5 字节），编码失败退回 WAV（见 AACEncoder）
-        let audio = AACEncoder.uploadAudio(samples: slice)
+        // OpenAI 5.1.0 起发 AAC-LC 48 kbps 的 m4a（约 WAV 的 1/5 字节），编码失败退回 WAV（见 AACEncoder）；
+        // DeepSeek 永远 WAV（见 CloudASRConfig.uploadAudio(samples:provider:)）
+        let audio = CloudASRConfig.uploadAudio(samples: slice, provider: config.provider)
         // 词表走 keywords[]，不塞进上下文：400 字的上下文额度留给"上一段的尾巴"。
         // 第一段的上文是调用方给的种子（预转写好的前半段），之后每段接上一段的尾巴
         let previousText = texts.last ?? contextSeed

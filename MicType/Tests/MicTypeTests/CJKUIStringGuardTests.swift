@@ -97,6 +97,27 @@ final class CJKUIStringGuardTests: XCTestCase {
         "PolishFidelity.swift:nameTitles",
         "PolishFidelity.swift:nameIntroducers",
         "PolishFidelity.swift:nonNameChars",
+        // 5.5.0 DeepSeek 联网搜索：「明说了要查」的中文触发词与名词例外、搜索词剥离表、
+        // 发给模型的日期行与兜底作答提示 / 结果块——全是拿去和指令比对、或发给模型的文字，不上界面
+        "DeepSeekWebSearch.swift:chineseTriggers",
+        "DeepSeekWebSearch.swift:lianwangNounPrefixes",
+        "DeepSeekWebSearch.swift:sousuoNounSuffixes",
+        "DeepSeekWebSearch.swift:chaTriggers",
+        "DeepSeekWebSearch.swift:leadingExclusions",
+        "DeepSeekWebSearch.swift:englishTrigger",       // 中英混说「search一下」的正则
+        "DeepSeekWebSearch.swift:wantsSearch",
+        "DeepSeekWebSearch.swift:dateLine",
+        "DeepSeekWebSearch.swift:commandDateSuffix",
+        "DeepSeekWebSearch.swift:dayText",
+        "DeepSeekWebSearch.swift:relativeDaysLine",
+        "DeepSeekWebSearch.swift:queryLeadIns",
+        "DeepSeekWebSearch.swift:queryKeepPrefixes",
+        "DeepSeekWebSearch.swift:leadingSeparators",
+        "DeepSeekWebSearch.swift:resultsBlock",
+        "DeepSeekWebSearch.swift:fallbackSystemPrompt",
+        "DeepSeekWebSearch.swift:inputMarker",
+        // DeepSeek 拒收空消息时换进去的占位文字：发给模型，不上界面（与 iOS 中文版同一句）
+        "AgentService.swift:emptyInputPlaceholder",
         // 语言名本身（「中文」这一项在英文界面下也必须写成「中文」，否则选不回来）
         "Localization.swift:displayName",
         // 窗口标题：这三处已经各自按 lang 参数分支（切语言的回调里拿到的就是新语言），

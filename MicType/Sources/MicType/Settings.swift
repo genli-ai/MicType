@@ -137,23 +137,87 @@ enum OverlayPosition: String, CaseIterable {
 /// 仍然留成枚举：Key 的钥匙串账号、Base URL、默认型号全按"这一档"取值，
 /// 而"Key 永不串槽"那条铁律要求每把 Key 的存 / 读 / 删都点名 `provider.keychainAccount`。
 /// DeepSeek / 自定义端点 / 本机大模型那三档（5.0.0 删掉）的钥匙串条目照旧**留着不删**。
+///
+/// **5.5.0 加回 DeepSeek**（用户 2026-11-22 拍板）：OpenAI / DeepSeek 二选一，选了哪家，
+/// 识别、润色、指令、联网搜索**全走哪家**，各自一把 Key。OpenAI 仍是默认。
+/// DeepSeek 的钥匙串账户沿用 4.x 的 `deepseek_api_key`（`git show v4.3.6:…/Settings.swift`
+/// 查过）：5.0.0 删档时那条条目照规矩"留着不删"，老用户升上来一般不必重粘。
 enum LLMProvider: String, CaseIterable {
     case openai
+    case deepseek
 
     /// 用户认得的名字
-    var displayName: String { "OpenAI (GPT)" }
+    var displayName: String {
+        switch self {
+        case .openai: return "OpenAI (GPT)"
+        case .deepseek: return "DeepSeek"
+        }
+    }
 
-    /// 短名（状态行、日志）
-    var segmentName: String { "OpenAI" }
+    /// 短名（状态行、日志、卡片标题）
+    var segmentName: String {
+        switch self {
+        case .openai: return "OpenAI"
+        case .deepseek: return "DeepSeek"
+        }
+    }
 
     /// 这一档的钥匙串条目。**名字一个字都不改**——老用户钥匙串里存的就是这一条。
-    var keychainAccount: String { "openai_api_key" }
+    var keychainAccount: String {
+        switch self {
+        case .openai: return "openai_api_key"
+        case .deepseek: return "deepseek_api_key"
+        }
+    }
 
     /// 要 Key。留着这个属性是因为 KeyEntryView 与 LLMClient.credential 按它判"有没有 Key 可验"，
     /// 而 5.0.0 之前「本机模型」那一档是可以不填 Key 的。
     var requiresAPIKey: Bool { true }
 
-    var defaultBaseURL: String { "https://api.openai.com/v1" }
+    /// DeepSeek 的根地址**不带 /v1**：对话是 `{base}/chat/completions`，识别与直接搜索是
+    /// `{base}/v1/tools/asr`、`{base}/v1/tools/search`（iOS 中文版 AIProvider.deepSeek，2026-11-14 实测）。
+    var defaultBaseURL: String {
+        switch self {
+        case .openai: return "https://api.openai.com/v1"
+        case .deepseek: return "https://api.deepseek.com"
+        }
+    }
+}
+
+// MARK: - 5.5.0：DeepSeek 回来之后，存量的 llmProvider 怎么读
+
+/// 存着 `deepseek` 的老设置要不要留在 DeepSeek（用户 2026-11-22 拍板）：
+///   • 钥匙串里**有** DeepSeek 的 Key → 留着（他 4.x 时就是 DeepSeek 用户，Key 也还在）；
+///   • 没有 → 落回 OpenAI：一个没 Key 的 DeepSeek 档等于"静默不能用"。
+/// 只碰 `deepseek` 这一个值；openai 与其他任何值都不动（qwen 归 RetiredProviderCleanup）。
+///
+/// 为什么不放在 Settings.init：要读钥匙串，而 Settings.shared 在单测里也会被初始化
+/// （与 RetiredProviderCleanup 同一个理由）。钥匙串由调用方注入，单测用假的。
+enum DeepSeekProviderMigration {
+    static let flagKey = "migratedDeepSeekProviderReturn"
+
+    /// 纯函数：nil = 不用改
+    static func resolve(stored: String, hasDeepSeekKey: Bool) -> LLMProvider? {
+        guard stored == LLMProvider.deepseek.rawValue else { return nil }
+        return hasDeepSeekKey ? nil : .openai
+    }
+
+    /// - Returns: nil = 以前已经做过；否则是这一次落到的服务商
+    @discardableResult
+    static func run(defaults: UserDefaults, hasKey: (String) -> Bool) -> LLMProvider? {
+        guard !defaults.bool(forKey: flagKey) else { return nil }
+        defaults.set(true, forKey: flagKey)
+        let stored = defaults.string(forKey: SettingsKeys.llmProvider) ?? ""
+        guard stored == LLMProvider.deepseek.rawValue else { return nil }
+        if let next = resolve(stored: stored,
+                              hasDeepSeekKey: hasKey(LLMProvider.deepseek.keychainAccount)) {
+            defaults.set(next.rawValue, forKey: SettingsKeys.llmProvider)
+            Log.info("Migration: stored provider deepseek has no key — falling back to openai")
+            return next
+        }
+        Log.info("Migration: stored provider deepseek kept (key present)")
+        return .deepseek
+    }
 }
 
 // MARK: - AI 配置（5.0.0 起只剩「哪家在用 + 有没有 Key」）
@@ -163,6 +227,18 @@ enum LLMProvider: String, CaseIterable {
 /// 5.1.0 又删掉了最后那一条判断（adoptsProvider：看着的那一档能不能被采纳为生效服务商）——
 /// 只剩 OpenAI 一家，没有第二档可采纳。
 enum AISetup {
+
+    // MARK: - 5.5.0：看着的那一档什么时候真的换过去
+
+    /// 看着的这一档能不能被采纳为**正在使用**的服务商（4.1.1–5.0.5 的规矩，5.5.0 随 DeepSeek 回来）。
+    ///
+    /// 服务商卡片上点一下只是**预览**：点着看看的人不该把自己从一把好 Key 上换到一档空配置上——
+    /// 下一次按热键直接失败，而他完全不知道是刚才那一下点的。所以钥匙串里有这一档的 Key
+    /// （刚验证通过、或早就配过）才换过去。纯函数，单测钉死；调用方拿结论去写 Settings.llmProvider。
+    static func adoptsProvider(current: LLMProvider, next: LLMProvider, hasKey: Bool) -> Bool {
+        guard current != next else { return false }
+        return !next.requiresAPIKey || hasKey
+    }
 
     // MARK: - 4.1.1：合并「关于我」到「自定义规则」
 
@@ -363,7 +439,9 @@ final class Settings {
         if !d.bool(forKey: "migratedProvidersToTwo") {
             let stored = d.string(forKey: SettingsKeys.llmProvider) ?? ""
             // qwen 不在这里改：它归 RetiredProviderCleanup（5.1.0），那边要据此判断
-            // "这位是阿里云用户"、记那行迁移日志——在这里先改成 openai 就把线索抹了
+            // "这位是阿里云用户"、记那行迁移日志——在这里先改成 openai 就把线索抹了。
+            // deepseek 5.5.0 起又是一个合法值，这里不再改它：留不留由 DeepSeekProviderMigration
+            // 看钥匙串里有没有 DeepSeek 的 Key 决定（AppDelegate 启动时一次）
             if LLMProvider(rawValue: stored) == nil,
                stored != RetiredProviderCleanup.retiredProviderRawValue {
                 Log.info("LLM provider dropped in 5.0 from=\(stored.isEmpty ? "unset" : stored) "
@@ -531,13 +609,21 @@ final class Settings {
         set { d.set(newValue, forKey: SettingsKeys.keepHistory) }
     }
 
-    /// 识别 + 润色 + 指令三件事共用的这一家。**5.1.0 起永远是 OpenAI**：
-    /// 存着任何别的值（5.0 之前那三档、5.0.x 的 qwen）的老设置读出来都是 OpenAI——
-    /// qwen 那一档由启动时的 RetiredProviderCleanup 改写并记一行日志。
+    /// 识别 + 润色 + 指令三件事共用的这一家。5.1.0–5.4.x 永远是 OpenAI；**5.5.0 起
+    /// OpenAI / DeepSeek 二选一**。存着任何别的值（custom / local、5.0.x 的 qwen）的老设置
+    /// 读出来都是 OpenAI——qwen 那一档由启动时的 RetiredProviderCleanup 改写并记一行日志。
     var llmProvider: LLMProvider {
         get { LLMProvider(rawValue: d.string(forKey: SettingsKeys.llmProvider) ?? "") ?? .openai }
-        set { d.set(newValue.rawValue, forKey: SettingsKeys.llmProvider) }
+        set {
+            let changed = newValue != llmProvider
+            d.set(newValue.rawValue, forKey: SettingsKeys.llmProvider)
+            if changed { NotificationCenter.default.post(name: Settings.providerChangedNotification, object: nil) }
+        }
     }
+
+    /// 生效服务商换了（5.5.0）。菜单栏红点据此重查"那一家有没有 Key"。
+    /// 注意：卡片上采纳那一下走的是 @AppStorage（不经过这个 setter），那一处自己再发一次
+    static let providerChangedNotification = Notification.Name("MicTypeProviderChanged")
 
     // MARK: 联网搜索（5.0.0 起永远开，没有开关）
 
@@ -583,7 +669,14 @@ final class Settings {
 
     /// **某一档**服务商的 Base URL。5.1.0 起只有 OpenAI 一档；参数留着，
     /// 调用方继续点名"发给哪一档"（Key 永不串槽那条铁律按档说话）。
-    func baseURL(for provider: LLMProvider) -> String { openaiBaseURL }
+    /// DeepSeek 的地址**写死**（5.5.0）：4.x 的 `deepseekBaseURL` 键读到就忽略——
+    /// 设置里不提供自定义端点（CLAUDE.md），而官方根地址只有一个。
+    func baseURL(for provider: LLMProvider) -> String {
+        switch provider {
+        case .openai: return openaiBaseURL
+        case .deepseek: return LLMProvider.deepseek.defaultBaseURL
+        }
+    }
 
     /// 当前服务商生效的 Base URL。
     var currentBaseURL: String { baseURL(for: llmProvider) }
@@ -615,7 +708,9 @@ final class Settings {
 
     /// 这一刻用哪一档云端识别。**它不是一条设置**：识别只有云端一条路，5.1.0 起也只有
     /// OpenAI 一家。4.x 的 recognitionEngine / cloudRecognitionWanted 两个键读到就忽略（见 LegacyKeys）。
-    var recognitionEngine: RecognitionEngineChoice { .cloudOpenAI }
+    /// 5.5.0 起跟着生效服务商推（OpenAI → OpenAI 云端识别，DeepSeek → DeepSeek 云端识别），
+    /// 不出现「识别用 A、润色用 B」的组合。
+    var recognitionEngine: RecognitionEngineChoice { RecognitionEngineChoice.forProvider(llmProvider) }
 
     /// 送给识别模型的语言参数。**永远是 nil**：OpenAI 那边自动检测本来就准。
     var recognitionModelLanguage: String? { nil }

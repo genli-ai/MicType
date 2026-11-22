@@ -75,14 +75,20 @@ final class OnboardingCopyTests: XCTestCase {
 
     // MARK: - ② 贴上你的 OpenAI Key
 
-    /// 标题**不写「可选」**（5.0.0 起没有 Key 这个产品一件事都干不了），并且点名 OpenAI
-    func testKeyTitleIsNotOptionalAndNamesOpenAI() {
+    /// 标题**不写「可选」**（5.0.0 起没有 Key 这个产品一件事都干不了）。
+    /// 5.5.0 起这一屏上面是两张服务商卡片，标题**不点名某一家**（点名 OpenAI 的话，
+    /// 选了 DeepSeek 的人读到的标题就是错的）
+    func testKeyTitleIsNotOptionalAndNamesNoSingleProvider() {
         L10n.shared.language = .zh
         XCTAssertFalse(OnboardingCopy.keyTitle.contains("可选"), OnboardingCopy.keyTitle)
-        XCTAssertTrue(OnboardingCopy.keyTitle.contains("OpenAI"), OnboardingCopy.keyTitle)
         L10n.shared.language = .en
         XCTAssertFalse(OnboardingCopy.keyTitle.lowercased().contains("optional"), OnboardingCopy.keyTitle)
-        XCTAssertTrue(OnboardingCopy.keyTitle.contains("OpenAI"), OnboardingCopy.keyTitle)
+        for language in AppLanguage.allCases {
+            L10n.shared.language = language
+            for provider in LLMProvider.allCases {
+                XCTAssertFalse(OnboardingCopy.keyTitle.contains(provider.segmentName), OnboardingCopy.keyTitle)
+            }
+        }
     }
 
     // MARK: - ③ 试一下

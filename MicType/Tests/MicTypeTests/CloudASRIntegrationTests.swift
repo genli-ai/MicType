@@ -13,8 +13,9 @@ final class CloudASRIntegrationTests: XCTestCase {
     func testEngineChoiceRawValuesAreStable() {
         // rawValue 仍然出现在日志与诊断信息里，改一个字就对不上
         XCTAssertEqual(RecognitionEngineChoice.cloudOpenAI.rawValue, "cloudOpenAI")
-        XCTAssertEqual(RecognitionEngineChoice.allCases, [.cloudOpenAI],
-                       "5.0.0 起没有本机那一档，5.1.0 起没有阿里云那一档")
+        XCTAssertEqual(RecognitionEngineChoice.cloudDeepSeek.rawValue, "cloudDeepSeek")
+        XCTAssertEqual(RecognitionEngineChoice.allCases, [.cloudOpenAI, .cloudDeepSeek],
+                       "5.0.0 起没有本机那一档，5.1.0 起没有阿里云那一档，5.5.0 加回 DeepSeek")
         // 老设置 / 老文件里的 cloudAlibaba 读出来也是这一档
         XCTAssertEqual(RecognitionEngineChoice.parse("cloudAlibaba"), .cloudOpenAI)
     }

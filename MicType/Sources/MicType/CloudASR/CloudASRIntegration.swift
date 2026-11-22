@@ -20,18 +20,41 @@ import Network
 /// 设置导入摘要）都按它工作。
 enum RecognitionEngineChoice: String, CaseIterable {
     case cloudOpenAI
+    /// 5.5.0：DeepSeek 云端识别（整段上传，无实时）
+    case cloudDeepSeek
 
-    /// 5.1.0 起只有一档，任何存量值（含老设置里的 cloudAlibaba）都读成它。
-    static func parse(_ raw: String) -> RecognitionEngineChoice { .cloudOpenAI }
+    /// 设置文件里的 recognitionEngine 只认不写（5.0.0 起识别跟着服务商走）：
+    /// 认得 cloudDeepSeek 就读成它，其余（含老设置里的 cloudAlibaba / local）一律 OpenAI。
+    static func parse(_ raw: String) -> RecognitionEngineChoice {
+        RecognitionEngineChoice(rawValue: raw) ?? .cloudOpenAI
+    }
+
+    /// 由生效服务商推出来（纯函数）：一个决定、一把 Key，不出现「识别用 A、润色用 B」
+    static func forProvider(_ provider: LLMProvider) -> RecognitionEngineChoice {
+        switch provider {
+        case .openai: return .cloudOpenAI
+        case .deepseek: return .cloudDeepSeek
+        }
+    }
 
     /// 恒真（5.0.0 起识别只有云端）。留着是因为它读起来比 `true` 说明意图。
     var isCloud: Bool { true }
 
     /// 对应的云端供应商
-    var cloudProvider: CloudASRProvider { .openai }
+    var cloudProvider: CloudASRProvider {
+        switch self {
+        case .cloudOpenAI: return .openai
+        case .cloudDeepSeek: return .deepseek
+        }
+    }
 
     /// 这一档的名字。界面上没有「识别引擎」选择器，所以这串只出现在日志与诊断信息里。
-    var displayName: String { tr("云端 · OpenAI", "Cloud · OpenAI") }
+    var displayName: String {
+        switch self {
+        case .cloudOpenAI: return tr("云端 · OpenAI", "Cloud · OpenAI")
+        case .cloudDeepSeek: return tr("云端 · DeepSeek", "Cloud · DeepSeek")
+        }
+    }
 }
 
 // MARK: - Settings → CloudASRConfig
@@ -77,20 +100,34 @@ enum CloudASRSettings {
 
     // MARK: 组装
 
-    /// 纯函数版：所有输入都从外面传进来，单测不碰 UserDefaults / 钥匙串
-    static func config(vocabulary: [String], apiKey: String) -> CloudASRConfig {
-        CloudASRConfig(provider: .openai,
-                       languageHints: languageHints(),
-                       // 词表走 keywords[]（过滤规则在 OpenAITranscribeClient.filteredTerms）
-                       vocabulary: vocabulary,
-                       apiKey: apiKey)
+    /// 纯函数版：所有输入都从外面传进来，单测不碰 UserDefaults / 钥匙串。
+    /// DeepSeek 那一家**语言提示与词汇表都不放进配置**：接口没有这两个通道（5.5.0），
+    /// 留在配置里只会让日志里的 hints= 说假话。词汇表照旧在润色那一侧生效
+    static func config(provider: CloudASRProvider = .openai,
+                       vocabulary: [String], apiKey: String) -> CloudASRConfig {
+        switch provider {
+        case .openai:
+            return CloudASRConfig(provider: .openai,
+                                  languageHints: languageHints(),
+                                  // 词表走 keywords[]（过滤规则在 OpenAITranscribeClient.filteredTerms）
+                                  vocabulary: vocabulary,
+                                  apiKey: apiKey)
+        case .deepseek:
+            return CloudASRConfig(provider: .deepseek, languageHints: [], vocabulary: [], apiKey: apiKey)
+        }
+    }
+
+    /// 某一家的配置（读钥匙串）。**点名是哪一家**：粘贴即验证预览的那一档还没生效，
+    /// 不能读"当前服务商"去拼（Key 永不串槽）
+    static func config(for provider: CloudASRProvider) -> CloudASRConfig {
+        let apiKey = KeychainHelper.loadCloudASRKey(for: provider) ?? ""
+        return config(provider: provider, vocabulary: Settings.shared.vocabularyTerms, apiKey: apiKey)
     }
 
     /// 当前设置下的配置。5.0.0 起**永远拿得到**（识别只有云端，用哪一家跟着服务商走）；
     /// Key 可能是空串，那由 RecognitionEngineReadiness 在按下热键那一刻当面拦。
     static func currentConfig() -> CloudASRConfig {
-        let apiKey = KeychainHelper.loadCloudASRKey(for: .openai) ?? ""
-        return config(vocabulary: Settings.shared.vocabularyTerms, apiKey: apiKey)
+        config(for: Settings.shared.recognitionEngine.cloudProvider)
     }
 
     /// OpenAI 这一档现在指着的是**官方接口**吗。
@@ -201,9 +238,9 @@ enum RecognitionEngineReadiness: Equatable {
         switch self {
         case .ready:
             return ""
-        case .cloudKeyMissing:
-            // 5.1.0 起只有 OpenAI 一家：直接点名，不再拼 displayName（「云端 · OpenAI的 API Key」）
-            return UserMessage.keyMissing
+        case .cloudKeyMissing(let provider):
+            // 点名是哪一家（5.5.0 起 OpenAI / DeepSeek），不拼 displayName（「云端 · OpenAI的 API Key」）
+            return UserMessage.keyMissing(for: provider.llmProvider)
         case .offline:
             return UserMessage.offline
         }
@@ -257,7 +294,7 @@ enum CloudFallbackDecision: Equatable {
 /// 往云端发 1 秒合成音，看这条链路通不通。
 ///
 /// 为什么用合成音而不是只查型号清单：这把 Key 能不能调识别端点，只有真的调一次才验得到。
-/// 代价是 1 秒音频的计费（OpenAI 约 $0.0003）。
+/// 代价是 1 秒音频的计费（OpenAI 约 $0.0003；DeepSeek 按 ¥0.78/小时约 ¥0.0002）。
 enum CloudASRProbe {
 
     /// 探针音频：1 秒、440Hz 正弦、半幅。纯函数（可单测），不读任何设置。
@@ -308,7 +345,7 @@ enum CloudASRProbe {
         let engine = CloudASREngine(config: config)
         if let sendSegment = sendSegment { engine.sendSegment = sendSegment }
         let started = DispatchTime.now()
-        let modelName = OpenAITranscribeClient.defaultModel
+        let modelName = config.provider.batchModelName
         engine.transcribeDetailed(samples: toneSamples()) { result in
             // 闭包里显式提一下 engine，保证它活到回调（引擎只被这里强引用）
             _ = engine
